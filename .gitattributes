@@ -1,0 +1,23 @@
+# 统一换行：仓库内一律 LF，避免 Windows 开发者 checkout 后产生整文件 diff
+* text=auto eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.mp4 binary
+*.apk binary
+*.aab binary
+
+# 契约与文档需要严格逐字比对，禁止任何换行/编码转换
+src/types/index.ts text eol=lf
+docs/**/*.md text eol=lf
+
+# lock 文件不再做二次格式化
+package-lock.json text eol=lf -diff

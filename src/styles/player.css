@@ -1,0 +1,129 @@
+/* 播放器专用样式：黑色画布、字幕叠加层、HUD、控制条渐变（PKG-A 阶段细化为组件级） */
+
+.player-root {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-player);
+  background-color: var(--color-bg-sunken);
+  color: var(--color-text-primary);
+  overflow: hidden;
+}
+
+.player-root--fullscreen {
+  padding: 0;
+}
+
+.player-canvas {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.player-canvas video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background-color: #000;
+}
+
+/* 竖屏时的 16:9 视频容器 */
+.player-stage--portrait {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background-color: #000;
+}
+
+/* 字幕叠加层：不可交互，底部留出控制条高度 */
+.subtitle-overlay {
+  position: absolute;
+  left: max(8%, var(--safe-left));
+  right: max(8%, var(--safe-right));
+  bottom: calc(var(--space-9) + var(--safe-bottom));
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  text-align: center;
+  font: var(--text-subtitle);
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  white-space: pre-line;
+}
+
+.subtitle-overlay--small {
+  font-size: var(--font-size-14);
+}
+
+.subtitle-overlay--large {
+  font-size: var(--font-size-24);
+}
+
+.subtitle-overlay--yellow {
+  color: #ffd84d;
+}
+
+.subtitle-overlay--no-bg {
+  background: none;
+  padding: 0;
+}
+
+.subtitle-overlay > span {
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background-color: rgba(0, 0, 0, 0.6);
+}
+
+.subtitle-overlay--no-bg > span {
+  background: none;
+}
+
+/* 控制条上下渐变 */
+.player-scrim--top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 96px;
+  background: var(--gradient-top-fade);
+  pointer-events: none;
+}
+
+.player-scrim--bottom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 140px;
+  background: var(--gradient-bottom-fade);
+  pointer-events: none;
+}
+
+/* HUD 浮层（音量/亮度/快进） */
+.player-hud {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 132px;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  background-color: rgba(0, 0, 0, 0.62);
+  border: var(--border-default);
+  backdrop-filter: var(--blur-player-hud);
+  -webkit-backdrop-filter: var(--blur-player-hud);
+  font: var(--text-label-strong);
+  color: var(--color-text-primary);
+}
+
+/* 底部 Tab 隐藏时的横屏沉浸 */
+.player-root--landscape .subtitle-overlay {
+  bottom: calc(var(--space-8) + var(--safe-bottom));
+  left: max(12%, var(--safe-left));
+  right: max(12%, var(--safe-right));
+}

@@ -1,0 +1,54 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物
+dist/
+dist-ssr/
+*.local
+
+# 测试
+coverage/
+.vitest/
+
+# Android 构建产物（android/ 工程本身入库）
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+android/capacitor-cordova-android-plugins/
+android/app/src/main/res/xml/config.xml
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# 编辑器和系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 日志
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# 缓存
+.vite/
+.eslintcache
+*.tsbuildinfo
