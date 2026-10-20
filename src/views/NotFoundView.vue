@@ -1,59 +1,78 @@
 <script setup lang="ts">
 /**
- * NotFoundView —— 404 页面不存在
- * 路由：/:pathMatch(.*)*（name: 'not-found'）
+ * 404（页面蓝图 §17）
  *
- * SCF 阶段占位：仅保证路由可导航、布局与 token 可验证。
- * 该文件路径为最终路径，由 PKG-A 在对应任务中替换为真实实现。
- * 设计依据：docs/03-设计规范/页面蓝图.md 中「not-found」一节。
+ * 不做自动重定向（不猜测意图）；「返回上一页」在无历史时回首页。
  */
+import { useRouter } from 'vue-router';
+
+const router = useRouter();
+
+function goHome(): void {
+  void router.replace('/');
+}
+
+function goBack(): void {
+  if (globalThis.history.length > 1) router.back();
+  else void router.replace('/');
+}
 </script>
 
 <template>
-  <main class="page placeholder-page" data-route="not-found">
-    <header class="placeholder-header">
-      <h1 class="page-title">404 页面不存在</h1>
-      <p class="text-tertiary">route.name = not-found</p>
-    </header>
-    <section class="placeholder-body">
-      <p class="placeholder-body__text text-secondary">
-        脚手架占位页（SCF）。真实界面由 PKG-A 按页面蓝图实现。
-      </p>
-    </section>
+  <main class="not-found" data-route="not-found">
+    <div class="not-found__content">
+      <p class="not-found__code">404</p>
+      <h1 class="not-found__title">页面不存在</h1>
+      <p class="not-found__desc">链接可能已失效，或该内容已被移除。</p>
+      <div class="not-found__actions">
+        <button class="btn btn--primary btn--md" type="button" @click="goHome">返回首页</button>
+        <button class="btn btn--ghost btn--md" type="button" @click="goBack">返回上一页</button>
+      </div>
+    </div>
   </main>
 </template>
 
 <style scoped>
-.placeholder-page {
-  min-height: 100%;
-  padding: calc(var(--safe-top) + var(--space-4)) var(--layout-page-padding-x)
-    calc(var(--safe-bottom) + var(--space-4));
-  gap: var(--space-4);
-}
-
-.placeholder-header {
+.not-found {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.placeholder-body {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: center;
   justify-content: center;
-  min-height: 200px;
-  padding: var(--space-6);
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--radius-lg);
-  background-color: var(--color-bg-surface);
+  flex: 1 1 auto;
+  min-height: 100%;
+  padding: calc(var(--safe-top) + var(--space-7)) var(--layout-page-padding-x)
+    calc(var(--safe-bottom) + var(--space-7));
+  background-color: var(--color-bg-base);
 }
 
-.placeholder-body__text {
-  max-width: 32ch;
+.not-found__content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  margin: auto;
+  max-width: 320px;
   text-align: center;
-  overflow-wrap: anywhere;
+}
+
+.not-found__code {
+  font: var(--text-display);
+  font-family: var(--font-family-number);
+  color: var(--color-brand-text);
+}
+
+.not-found__title {
+  font: var(--text-body-strong);
+  color: var(--color-text-secondary);
+}
+
+.not-found__desc {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.not-found__actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
 }
 </style>

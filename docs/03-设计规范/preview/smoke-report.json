@@ -1,0 +1,130 @@
+{
+  "steps": [
+    {
+      "name": "welcome",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\01-welcome.png"
+    },
+    {
+      "name": "home",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\02-home.png"
+    },
+    {
+      "name": "library",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\03-library.png"
+    },
+    {
+      "name": "detail",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\04-detail.png"
+    },
+    {
+      "name": "player",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\05-player.png"
+    },
+    {
+      "name": "downloads",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\06-downloads.png"
+    },
+    {
+      "name": "history",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\07-history.png"
+    },
+    {
+      "name": "favorites",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\08-favorites.png"
+    },
+    {
+      "name": "settings",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\09-settings.png"
+    },
+    {
+      "name": "sources",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\10-sources.png"
+    },
+    {
+      "name": "search",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\11-search.png"
+    },
+    {
+      "name": "backup",
+      "detail": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\12-backup.png"
+    }
+  ],
+  "logs": [],
+  "home": {
+    "cards": 12,
+    "hasContinue": false,
+    "tabbar": true,
+    "titles": [
+      "全 3 集 演示户外实验室2023 · 综艺",
+      "全 3 集 演示厨房时间2024 · 综艺",
+      "全 3 集 演示云端旅人2024 · 动漫"
+    ]
+  },
+  "library": {
+    "count": 12,
+    "tabs": [
+      "全部",
+      "电影",
+      "电视剧",
+      "动漫",
+      "综艺"
+    ],
+    "source": "内置演示",
+    "titles": [
+      "全 3 集 演示户外实验室2023 · 综艺",
+      "全 3 集 演示厨房时间2024 · 综艺",
+      "全 3 集 演示云端旅人2024 · 动漫",
+      "全 3 集 演示星轨少女2023 · 动漫"
+    ]
+  },
+  "detail": {
+    "hash": "#/detail/demo:demo-302~oz5c6j?sourceId=demo",
+    "title": "户外实验室",
+    "primary": "播放",
+    "episodes": 8
+  },
+  "player": {
+    "hash": "#/player/demo:demo-302~oz5c6j/demo-demo-302-oz5c6j:demo-demo-302-oz5c6j-0-yl69hw:1~18q6o41?lineId=demo-demo-302-oz5c6j:0~yl69hw",
+    "hasVideo": true,
+    "readyState": 4,
+    "duration": 5.06,
+    "paused": true,
+    "title": "户外实验室",
+    "loadingVisible": false,
+    "errorPanel": false
+  },
+  "downloads": {
+    "empty": true,
+    "tasks": 0,
+    "text": "下载还没有下载任务在详情页选择集数即可离线观看去媒体库"
+  },
+  "history": {
+    "empty": false,
+    "items": 0,
+    "text": "观看历史 清空 今天户外实验室第 1 集 · 看到 0:00 刚刚"
+  },
+  "favorites": {
+    "empty": true,
+    "cards": 0,
+    "text": "收藏 排序 还没有收藏在详情页点 ♥ 收藏想看的内容去媒体库看看"
+  },
+  "settings": {
+    "overview": "源 1 · 收藏 0 · 历史 1",
+    "rows": [
+      "片源管理1 个",
+      "片源管理1 个",
+      "片源管理",
+      "片源管理",
+      "1 个",
+      ""
+    ]
+  },
+  "sources": {
+    "cards": 12,
+    "text": "片源管理请仅添加你拥有访问权限的源；本 App 不提供任何片源，不对第三方内容负责。 新增源 导入订阅 重新检测内置演示演示内置默认内置公开版权样片，无需配置正常刚刚添加你自己的源 支持 AList、WebDAV、Jellyfin 与 TVBox 兼容站点。请仅添加你拥有访问权限的源。 新增源导入订阅"
+  },
+  "search": {
+    "text": "搜索结果1 条Sintel2010 · 电影 · 内置演示",
+    "results": 6
+  }
+}

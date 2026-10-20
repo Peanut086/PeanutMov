@@ -1,59 +1,281 @@
 <script setup lang="ts">
 /**
- * HomeView —— 继续观看 + 最近添加
- * 路由：/（name: 'home'）
+ * 首页（页面蓝图 §2）
  *
- * SCF 阶段占位：仅保证路由可导航、布局与 token 可验证。
- * 该文件路径为最终路径，由 PKG-A 在对应任务中替换为真实实现。
- * 设计依据：docs/03-设计规范/页面蓝图.md 中「home」一节。
+ * 信息层级：继续观看（横滑，无数据整块不渲染）→ 最近添加（2 列网格）。
+ * 不做运营位/Banner/推荐算法——本产品是工具。
+ * 四态：loading 骨架 / empty 引导 / error 顶部错误卡（缓存内容仍展示）/ offline 横幅。
  */
+import { computed, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
+
+import type { HistoryRecord, MediaItem } from '@/types';
+
+import AppHeader from '@/components/layout/AppHeader.vue';
+import SafeArea from '@/components/layout/SafeArea.vue';
+import OfflineBanner from '@/components/common/OfflineBanner.vue';
+import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import PosterGrid from '@/components/media/PosterGrid.vue';
+import ContinueWatchingRow from '@/components/media/ContinueWatchingRow.vue';
+import SkeletonPoster from '@/components/media/SkeletonPoster.vue';
+import { useDownloadStore } from '@/stores/downloadStore';
+import { useFavoriteStore } from '@/stores/favoriteStore';
+import { useHistoryStore } from '@/stores/historyStore';
+import { useLibraryStore } from '@/stores/libraryStore';
+import { useToast } from '@/composables/useToast';
+import { useOnlineStatus } from '@/composables/useOnlineStatus';
+import { toErrorShape } from '@/shared/errors';
+
+const router = useRouter();
+const history = useHistoryStore();
+const library = useLibraryStore();
+const downloads = useDownloadStore();
+const favorites = useFavoriteStore();
+const toast = useToast();
+const { isOffline } = useOnlineStatus();
+
+const errorMessage = ref<string | null>(null);
+const initialLoading = computed(() => library.state === 'idle' || library.state === 'loading');
+
+const continueItems = computed(() => history.continueWatching.slice(0, 10));
+const recentItems = computed(() => library.items.slice(0, 20));
+
+const downloadedIds = computed(() =>
+  downloads.tasks.filter((t) => t.status === 'completed').map((t) => t.mediaId),
+);
+
+const isEmpty = computed(
+  () => !initialLoading.value && recentItems.value.length === 0 && continueItems.value.length === 0,
+);
+
+async function load(): Promise<void> {
+  errorMessage.value = null;
+  try {
+    await Promise.all([history.load(), downloads.load(), favorites.load()]);
+    await library.openSource(null);
+    if (library.error) throw new Error(library.error.message);
+  } catch (e) {
+    errorMessage.value = toErrorShape(e).message;
+  }
+}
+
+onMounted(() => {
+  void load();
+});
+
+function openDetail(item: MediaItem): void {
+  void router.push({ name: 'detail', params: { mediaId: item.id }, query: { sourceId: item.sourceId } });
+}
+
+function continuePlay(rec: HistoryRecord): void {
+  const query: Record<string, string> = {};
+  if (rec.episodeId) query.episodeId = rec.episodeId;
+  void router.push({ name: 'player', params: { mediaId: rec.mediaId, episodeId: rec.episodeId ?? undefined }, query });
+}
+
+async function removeContinue(rec: HistoryRecord): Promise<void> {
+  try {
+    await history.remove(rec.id);
+    toast.success('已从继续观看移除');
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+    await load();
+  }
+}
+
+function goLibrary(): void {
+  void router.push('/library');
+}
+
+function openSearch(): void {
+  void router.push('/search');
+}
+
+async function retry(): Promise<void> {
+  await load();
+  if (!errorMessage.value) toast.success('已刷新');
+}
 </script>
 
 <template>
-  <main class="page placeholder-page" data-route="home">
-    <header class="placeholder-header">
-      <h1 class="page-title">继续观看 + 最近添加</h1>
-      <p class="text-tertiary">route.name = home</p>
-    </header>
-    <section class="placeholder-body">
-      <p class="placeholder-body__text text-secondary">
-        脚手架占位页（SCF）。真实界面由 PKG-A 按页面蓝图实现。
-      </p>
-    </section>
-  </main>
+  <SafeArea tabbar data-route="home">
+    <AppHeader title="PeanutMov" brand search @search="openSearch" />
+
+    <div class="home-body">
+      <OfflineBanner v-if="isOffline" />
+
+      <!-- error：顶部错误卡，已有缓存仍展示 -->
+      <div v-if="errorMessage" class="home-error" role="alert">
+        <span class="home-error__text">{{ errorMessage }}</span>
+        <button class="btn btn--secondary btn--sm" type="button" @click="retry">重试</button>
+      </div>
+
+      <!-- loading 骨架 -->
+      <template v-if="initialLoading">
+        <section class="home-section">
+          <h2 class="section-title">继续观看</h2>
+          <div class="home-skeleton-row">
+            <div v-for="n in 3" :key="`cw-${n}`" class="home-skeleton-card">
+              <SkeletonPoster />
+            </div>
+          </div>
+        </section>
+        <section class="home-section">
+          <h2 class="section-title">最近添加</h2>
+          <PosterGrid :items="[]" loading :skeleton-count="6" />
+        </section>
+      </template>
+
+      <!-- empty -->
+      <div v-else-if="isEmpty" class="home-empty">
+        <h2 class="home-empty__title">还没有内容</h2>
+        <p class="home-empty__desc">
+          添加一个你自己的源（NAS / AList / Jellyfin / 站点）后，内容会出现在这里。
+        </p>
+        <div class="home-empty__actions">
+          <button class="btn btn--primary btn--md" type="button" @click="goLibrary">去媒体库看看</button>
+          <button class="btn btn--secondary btn--md" type="button" @click="retry">刷新</button>
+        </div>
+      </div>
+
+      <!-- success -->
+      <template v-else>
+        <section v-if="continueItems.length > 0" class="home-section" aria-labelledby="home-continue">
+          <div class="home-section__head">
+            <h2 id="home-continue" class="section-title">继续观看</h2>
+            <RouterLink class="home-section__link" to="/history">全部历史</RouterLink>
+          </div>
+          <ContinueWatchingRow
+            :items="continueItems"
+            @select="continuePlay"
+            @remove="removeContinue"
+          />
+        </section>
+
+        <section class="home-section" aria-labelledby="home-recent">
+          <div class="home-section__head">
+            <h2 id="home-recent" class="section-title">最近添加</h2>
+            <RouterLink class="home-section__link" to="/library">全部内容</RouterLink>
+          </div>
+          <PosterGrid
+            :items="recentItems"
+            :downloaded-ids="downloadedIds"
+            :progress-map="{}"
+            @select="openDetail"
+          />
+          <p v-if="library.state === 'refreshing'" class="home-refreshing">
+            <LoadingSpinner :size="16" />
+            正在刷新…
+          </p>
+        </section>
+      </template>
+    </div>
+  </SafeArea>
 </template>
 
 <style scoped>
-.placeholder-page {
-  min-height: 100%;
-  padding: calc(var(--safe-top) + var(--space-4)) var(--layout-page-padding-x)
-    calc(var(--safe-bottom) + var(--space-4));
-  gap: var(--space-4);
-}
-
-.placeholder-header {
+.home-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-3) var(--layout-page-padding-x) var(--space-6);
 }
 
-.placeholder-body {
+.home-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 56px;
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--color-danger-soft);
+  border: 1px solid rgba(255, 90, 95, 0.3);
+}
+
+.home-error__text {
   flex: 1 1 auto;
   min-width: 0;
+  font: var(--text-label);
+  color: var(--color-text-primary);
+}
+
+.home-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.home-section + .home-section {
+  margin-top: var(--space-6);
+}
+
+.home-section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.home-section__link {
+  font: var(--text-caption);
+  color: var(--color-brand-text);
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.home-skeleton-row {
+  display: flex;
+  gap: var(--space-3);
+  overflow: hidden;
+}
+
+.home-skeleton-card {
+  flex: 0 0 auto;
+  width: 132px;
+}
+
+.home-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  margin: auto;
+  max-width: 300px;
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+}
+
+.home-empty__title {
+  font: var(--text-title-3);
+  color: var(--color-text-primary);
+}
+
+.home-empty__desc {
+  font: var(--text-label);
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
+
+.home-empty__actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.home-refreshing {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 200px;
-  padding: var(--space-6);
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--radius-lg);
-  background-color: var(--color-bg-surface);
+  gap: var(--space-2);
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  padding: var(--space-2);
 }
 
-.placeholder-body__text {
-  max-width: 32ch;
-  text-align: center;
-  overflow-wrap: anywhere;
-}
+/* 错误文案的兜底：无 error.message 时使用映射 */
 </style>

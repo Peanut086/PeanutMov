@@ -147,3 +147,232 @@
   color: var(--color-text-secondary);
   font: var(--text-caption);
 }
+
+/* =========================================================
+ * 按钮（设计规范 8.1，全局类）
+ * 形态：.btn--primary / --secondary / --ghost / --danger
+ * 尺寸：.btn--sm(32) / .btn--md(40) / .btn--lg(48，默认全宽)
+ * 所有页面统一复用，避免每页重复定义按钮样式。
+ * =======================================================*/
+.btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  white-space: nowrap;
+  text-align: center;
+  transition: var(--transition-color), transform var(--duration-fast) var(--ease-standard);
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn:disabled,
+.btn[aria-disabled='true'] {
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn--sm {
+  height: 32px;
+  padding: 0 var(--space-3);
+  font: var(--text-button-sm);
+}
+
+/* sm 高度不足 44：用伪元素扩大命中区（不改视觉尺寸，§12.1） */
+.btn--sm::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+}
+
+.btn--md {
+  height: 40px;
+  padding: 0 var(--space-4);
+  font: var(--text-button);
+}
+
+.btn--lg {
+  height: 48px;
+  padding: 0 var(--space-5);
+  font: var(--text-button);
+  width: 100%;
+}
+
+.btn--block {
+  width: 100%;
+}
+
+.btn--primary {
+  background-color: var(--color-brand);
+  color: var(--color-text-on-brand);
+}
+
+.btn--primary:active:not(:disabled) {
+  background-color: var(--color-brand-press);
+}
+
+.btn--secondary {
+  background-color: var(--color-bg-surface);
+  border-color: var(--color-border-strong);
+  color: var(--color-text-primary);
+}
+
+.btn--secondary:active:not(:disabled) {
+  background-color: var(--color-bg-elevated);
+}
+
+.btn--ghost {
+  background-color: transparent;
+  color: var(--color-text-secondary);
+}
+
+.btn--ghost:active:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.06);
+  color: var(--color-text-primary);
+}
+
+.btn--danger {
+  background-color: var(--color-danger-soft);
+  border-color: rgba(255, 90, 95, 0.4);
+  color: var(--color-danger);
+}
+
+.btn--danger:active:not(:disabled) {
+  background-color: rgba(255, 90, 95, 0.24);
+}
+
+.btn--primary:disabled {
+  background-color: rgba(255, 255, 255, 0.12);
+  color: var(--color-text-disabled);
+}
+
+.btn--secondary:disabled {
+  background-color: var(--color-bg-surface);
+  border-color: var(--color-border);
+  color: var(--color-text-disabled);
+}
+
+.btn--ghost:disabled {
+  color: var(--color-text-disabled);
+  background-color: transparent;
+}
+
+.btn--danger:disabled {
+  color: var(--color-text-disabled);
+  border-color: var(--color-border);
+  background-color: transparent;
+}
+
+.btn--loading {
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+/* ---------- 输入框（设计规范 8.2） ---------- */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.field__label {
+  font: var(--text-label-strong);
+  color: var(--color-text-secondary);
+}
+
+.field__label--required::after {
+  content: ' *';
+  color: var(--color-danger);
+}
+
+.field__input {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  font-size: var(--font-size-16);
+  transition: var(--transition-color), box-shadow var(--duration-fast) var(--ease-standard);
+}
+
+.field__input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.field__input:focus {
+  outline: none;
+  border-color: var(--color-brand);
+  box-shadow: var(--shadow-focus);
+}
+
+.field__input--error {
+  border-color: var(--color-danger);
+}
+
+.field__input--lg {
+  min-height: 52px;
+}
+
+.field__error {
+  font: var(--text-caption);
+  color: var(--color-danger);
+}
+
+.field__hint {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+/* ---------- 分组标题 ---------- */
+.group-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: var(--space-5) 0 var(--space-3);
+  font: var(--text-caption);
+  letter-spacing: var(--letter-spacing-wide);
+  color: var(--color-text-tertiary);
+}
+
+/* 卡片容器 */
+.card {
+  border-radius: var(--radius-lg);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+}
+
+/* 骨架辅助形状 */
+.skeleton-text {
+  height: var(--line-height-14);
+  border-radius: var(--radius-sm);
+}
+
+/* 可换行的正文（简介、合规文案） */
+.prose {
+  font: var(--text-body);
+  line-height: 1.6;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* 主题切换时短暂禁用过渡，避免整页"泛白"闪烁（设计规范 9.2） */
+html.theme-switching,
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition: none !important;
+}

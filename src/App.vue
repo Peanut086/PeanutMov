@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { computed, onErrorCaptured, ref } from 'vue';
+import { computed, onErrorCaptured, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
 import AppTabBar from '@/components/layout/AppTabBar.vue';
 import ToastHost from '@/components/common/ToastHost.vue';
+import ConfirmDialog from '@/components/common/ConfirmDialog.vue';
+import { useTheme } from '@/composables/useTheme';
+import { useOnlineStatus } from '@/composables/useOnlineStatus';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 /**
- * 根组件（SCF）：
+ * 根组件：
  * - `RouterView` 页面渲染（进入动画为纯 CSS keyframes，见 §过渡）
  * - `ToastHost`（全局轻提示宿主，uiStore 驱动）
+ * - `ConfirmDialog`（全局确认框宿主，uiStore.confirm 驱动）
+ * - 主题挂载（data-theme）与设置同步
+ * - 网络状态同步（OfflineBanner 由各页读取 uiStore.isOffline）
  * - 错误边界：捕获子树未处理异常 → 可恢复错误页（NFR-R04）
  * - 底部 TabBar 仅在 `meta.requiresLayout === true` 的路由渲染
  *
@@ -22,6 +29,26 @@ const route = useRoute();
 const showTabBar = computed(() => route.meta.requiresLayout === true);
 
 const fatal = ref<Error | null>(null);
+
+const theme = useTheme();
+const settings = useSettingsStore();
+useOnlineStatus();
+
+onMounted(async () => {
+  try {
+    if (!settings.ready) await settings.load();
+    theme.setMode(settings.settings?.theme ?? 'dark');
+  } catch {
+    /* 设置读取失败不阻塞启动；各页会单独展示错误态 */
+  }
+});
+
+watch(
+  () => settings.settings?.theme,
+  (mode) => {
+    if (mode) theme.setMode(mode);
+  },
+);
 
 onErrorCaptured((err) => {
   fatal.value = err instanceof Error ? err : new Error(String(err));
@@ -61,6 +88,7 @@ function recover(): void {
       <AppTabBar v-if="showTabBar" />
 
       <ToastHost />
+      <ConfirmDialog />
     </template>
   </div>
 </template>

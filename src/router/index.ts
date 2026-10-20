@@ -8,8 +8,7 @@ import { logger } from '@/shared/logger';
  * 合规门禁依赖注入点。
  *
  * router 只依赖 `get()` 与 `isComplianceAccepted()` 两个方法（API-10 的子集）。
- * SCF 阶段由 `src/mocks/mockServices.ts` 提供实现；集成时在 `main.ts` 中
- * 用真实 `settingsService` 覆盖，router 本身无需改动。
+ * 实现由 `main.ts` 注入真实 `settingsService`；router 本身不直接引用任何实现。
  */
 export interface ComplianceGateLike {
   get(): Promise<{ complianceVersion: number; complianceAcceptedAt: number | null }>;

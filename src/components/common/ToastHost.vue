@@ -1,18 +1,51 @@
 <script setup lang="ts">
 /**
- * Toast 宿主（SCF 占位，路径由 PKG-A 后续替换）
+ * Toast 宿主（设计规范 8.8）
  *
- * 规格见设计规范「Toast」：底部居中、宽度 ≤ 88% 屏宽、圆角 12px、
- * 背景 elevated + elevation-3、进入 200ms 上移淡入、默认 2400ms 自动消失。
- *
- * 真实实现将订阅 `uiStore.toasts`；SCF 阶段只渲染空容器以保证
- * `App.vue` 的结构与叠放层级（z-index: toast）在首日即可验证。
+ * 订阅 `uiStore.toasts`，底部居中、最多 3 条、可点击关闭。
+ * 进入 200ms 上移淡入、退出 150ms 加速淡出。
  */
+import { storeToRefs } from 'pinia';
+
+import { useUiStore } from '@/stores/uiStore';
+
+const ui = useUiStore();
+const { toasts } = storeToRefs(ui);
+
+const iconPath: Record<'info' | 'success' | 'error', string> = {
+  info: 'M12 3.6a8.4 8.4 0 1 0 0 16.8 8.4 8.4 0 0 0 0-16.8ZM12 11v5.4M12 7.9v.2',
+  success: 'M12 3.6a8.4 8.4 0 1 0 0 16.8 8.4 8.4 0 0 0 0-16.8Zm-4 8.2 2.9 2.9 5.2-5.6',
+  error: 'M12 3.6a8.4 8.4 0 1 0 0 16.8 8.4 8.4 0 0 0 0-16.8ZM12 8v5M12 16h.01',
+};
 </script>
 
 <template>
   <div class="toast-host" role="status" aria-live="polite" aria-atomic="false">
-    <!-- PKG-A：在此渲染 uiStore.toasts（type: info | success | error） -->
+    <TransitionGroup name="toast" tag="div" class="toast-host__list">
+      <button
+        v-for="t in toasts"
+        :key="t.id"
+        class="toast"
+        :class="`toast--${t.type}`"
+        type="button"
+        :role="t.type === 'error' ? 'alert' : 'status'"
+        @click="ui.dismiss(t.id)"
+      >
+        <svg
+          class="toast__icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path :d="iconPath[t.type]" />
+        </svg>
+        <span class="toast__text">{{ t.text }}</span>
+      </button>
+    </TransitionGroup>
   </div>
 </template>
 
@@ -22,12 +55,82 @@
   left: 50%;
   bottom: calc(var(--layout-tabbar-height) + var(--safe-bottom) + var(--space-4));
   z-index: var(--z-toast);
+  width: min(88vw, 420px);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.toast-host__list {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   align-items: center;
-  width: min(88vw, 420px);
-  transform: translateX(-50%);
-  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 40px;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-bg-elevated);
+  box-shadow: var(--shadow-3);
+  border: var(--border-default);
+  color: var(--color-text-primary);
+  font: var(--text-label);
+  text-align: left;
+  pointer-events: auto;
+}
+
+.toast__icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.toast--info .toast__icon {
+  color: var(--color-info);
+}
+
+.toast--success .toast__icon {
+  color: var(--color-success);
+}
+
+.toast--error .toast__icon {
+  color: var(--color-danger);
+}
+
+.toast__text {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.toast-enter-active {
+  transition: transform var(--duration-base) var(--ease-decelerate),
+    opacity var(--duration-base) var(--ease-decelerate);
+}
+
+.toast-leave-active {
+  transition: transform var(--duration-fast) var(--ease-accelerate),
+    opacity var(--duration-fast) var(--ease-accelerate);
+}
+
+.toast-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.toast-move {
+  transition: transform var(--duration-base) var(--ease-standard);
 }
 </style>

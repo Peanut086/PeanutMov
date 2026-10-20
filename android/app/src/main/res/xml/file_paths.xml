@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- App 私有数据目录（下载文件与备份 JSON 落点，castPlugin / fs 都用相对路径） -->
+    <files-path name="internal_files" path="." />
+    <external-path name="external_files" path="." />
+    <external-files-path name="external_files_dir" path="." />
+    <cache-path name="cache" path="." />
+    <external-cache-path name="external_cache" path="." />
+</paths>

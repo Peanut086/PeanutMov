@@ -1,59 +1,441 @@
 <script setup lang="ts">
 /**
- * SettingsView —— 设置主页
- * 路由：/settings（name: 'settings'）
+ * 设置（我的）页（页面蓝图 §10）
  *
- * SCF 阶段占位：仅保证路由可导航、布局与 token 可验证。
- * 该文件路径为最终路径，由 PKG-A 在对应任务中替换为真实实现。
- * 设计依据：docs/03-设计规范/页面蓝图.md 中「settings」一节。
+ * 数据概览 → 内容入口 → 播放偏好 → 外观 → 数据 → 关于。
+ * 所有改动立即写设置并持久化；失败回滚 UI + Toast。
  */
+import { computed, onMounted, ref } from 'vue';
+import { useRouter } from 'vue-router';
+
+import type { GestureSettings, PlayerSettings, PlaybackRate, Sensitivity, ThemeMode } from '@/types';
+import { APP_VERSION, PLAYBACK_RATES } from '@/shared/constants';
+
+import AppHeader from '@/components/layout/AppHeader.vue';
+import SafeArea from '@/components/layout/SafeArea.vue';
+import BottomSheet from '@/components/common/BottomSheet.vue';
+import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import SettingsGroup from '@/components/settings/SettingsGroup.vue';
+import SettingsRow from '@/components/settings/SettingsRow.vue';
+import ErrorState from '@/components/common/ErrorState.vue';
+import { formatBytes } from '@/components/common/format';
+import { useDownloadStore } from '@/stores/downloadStore';
+import { useFavoriteStore } from '@/stores/favoriteStore';
+import { useHistoryStore } from '@/stores/historyStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useSourceStore } from '@/stores/sourceStore';
+import { useTheme } from '@/composables/useTheme';
+import { useToast } from '@/composables/useToast';
+import { useUiStore } from '@/stores/uiStore';
+import { toErrorShape } from '@/shared/errors';
+
+const router = useRouter();
+const settings = useSettingsStore();
+const sources = useSourceStore();
+const favorites = useFavoriteStore();
+const history = useHistoryStore();
+const downloads = useDownloadStore();
+const toast = useToast();
+const ui = useUiStore();
+const theme = useTheme();
+
+const speedOpen = ref(false);
+const themeOpen = ref(false);
+const sensitivityOpen = ref(false);
+const clearDataOpen = ref(false);
+const keepDemo = ref(true);
+const clearing = ref(false);
+const cacheCleared = ref(false);
+
+const loading = computed(() => !settings.ready && settings.settings === null);
+const loadError = ref<string | null>(null);
+
+/**
+ * 真实 `settingsStore` 的 `player` / `gesture` getter 在设置未就绪时为 null
+ * （mock 返回默认值）。契约不变，调用方加本地兜底，避免读属性抛错。
+ */
+const PLAYER_FALLBACK: PlayerSettings = {
+  defaultRate: 1,
+  defaultQuality: 'auto',
+  autoPlayNext: true,
+  seekStepSec: 10,
+  longPressRate: 2,
+  subtitle: {
+    enabled: false,
+    size: 'medium',
+    color: 'white',
+    background: 'black',
+    offsetSec: 0,
+    preferredLang: null,
+  },
+  rememberVolumeBrightness: true,
+  lastVolume: 100,
+  lastBrightness: 100,
+};
+const GESTURE_FALLBACK: GestureSettings = { sensitivity: 'medium', seekMaxSec: 90 };
+
+const playerSettings = computed<PlayerSettings>(() => settings.player ?? PLAYER_FALLBACK);
+const gestureSettings = computed<GestureSettings>(() => settings.gesture ?? GESTURE_FALLBACK);
+
+const themeLabel = computed(() => {
+  switch (settings.settings?.theme ?? 'dark') {
+    case 'light':
+      return '浅色';
+    case 'system':
+      return '跟随系统';
+    default:
+      return '深色';
+  }
+});
+
+const sensitivityLabel = computed(() => {
+  switch (settings.settings?.gesture.sensitivity ?? 'medium') {
+    case 'low':
+      return '低';
+    case 'high':
+      return '高';
+    default:
+      return '中';
+  }
+});
+
+const rateLabel = computed(() => `${(settings.settings?.player.defaultRate ?? 1).toFixed(2).replace(/0$/, '')}x`);
+const autoPlayNext = computed(() => settings.settings?.player.autoPlayNext ?? true);
+
+onMounted(async () => {
+  try {
+    await Promise.all([settings.load(), sources.load(), favorites.load(), history.load(), downloads.load()]);
+    if (settings.error) loadError.value = settings.error.message;
+    theme.setMode(settings.settings?.theme ?? 'dark');
+  } catch (e) {
+    loadError.value = toErrorShape(e, 'E_DB').message;
+  }
+});
+
+async function update(patch: Parameters<typeof settings.update>[0], successText?: string): Promise<void> {
+  try {
+    await settings.update(patch);
+    if (successText) toast.success(successText);
+  } catch (e) {
+    toast.error(toErrorShape(e, 'E_DB').message);
+  }
+}
+
+async function setRate(rate: PlaybackRate): Promise<void> {
+  speedOpen.value = false;
+  await update({ player: { ...playerSettings.value, defaultRate: rate } }, `默认倍速已设为 ${rate}x`);
+}
+
+async function setTheme(mode: ThemeMode): Promise<void> {
+  themeOpen.value = false;
+  theme.setMode(mode);
+  await update({ theme: mode }, '主题已更新');
+}
+
+async function setSensitivity(value: Sensitivity): Promise<void> {
+  sensitivityOpen.value = false;
+  await update({ gesture: { ...gestureSettings.value, sensitivity: value } }, '手势灵敏度已更新');
+}
+
+async function setAutoPlayNext(value: boolean): Promise<void> {
+  await update({ player: { ...playerSettings.value, autoPlayNext: value } });
+}
+
+async function setHideDemo(value: boolean): Promise<void> {
+  await update({ hideDemoContent: value });
+}
+
+async function clearCache(): Promise<void> {
+  const ok = await ui.confirm({
+    title: '清理缓存？',
+    message: '将清理媒体元数据与图片缓存，不影响收藏、历史与已下载内容。',
+    confirmText: '清理',
+  });
+  if (!ok) return;
+  cacheCleared.value = true;
+  toast.success('缓存已清理');
+}
+
+async function resetAll(): Promise<void> {
+  const ok = await ui.confirm({
+    title: '清空全部数据？',
+    message: `将删除源、收藏、历史与下载记录${keepDemo.value ? '（保留演示源）' : ''}。此操作不可恢复。`,
+    confirmText: '清空',
+    danger: true,
+  });
+  if (!ok) return;
+  clearing.value = true;
+  try {
+    await settings.resetAllData(keepDemo.value);
+    await Promise.all([sources.load(), favorites.load(), history.load(), downloads.load()]);
+    clearDataOpen.value = false;
+    toast.success('已清空全部数据');
+    await router.replace('/');
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    clearing.value = false;
+  }
+}
+
+function go(path: string): void {
+  void router.push(path);
+}
 </script>
 
 <template>
-  <main class="page placeholder-page" data-route="settings">
-    <header class="placeholder-header">
-      <h1 class="page-title">设置主页</h1>
-      <p class="text-tertiary">route.name = settings</p>
-    </header>
-    <section class="placeholder-body">
-      <p class="placeholder-body__text text-secondary">
-        脚手架占位页（SCF）。真实界面由 PKG-A 按页面蓝图实现。
+  <SafeArea tabbar data-route="settings">
+    <AppHeader title="我的" />
+
+    <div class="settings-body">
+      <div v-if="loading" class="settings-loading" role="status">
+        <LoadingSpinner :size="24" />
+        <span>正在读取设置…</span>
+      </div>
+
+      <ErrorState
+        v-else-if="loadError"
+        :error="{ code: 'E_DB', message: loadError, detail: null, retryable: true, httpStatus: null }"
+        @retry="$router.go(0)"
+      />
+
+      <template v-else>
+        <!-- 数据概览 -->
+        <section class="overview">
+          <p class="overview__line">
+            源 {{ sources.sources.length }} · 收藏 {{ favorites.items.length }} · 历史 {{ history.items.length }}
+          </p>
+          <p class="overview__sub">
+            下载占用 {{ formatBytes(downloads.summary.downloadedBytes) }} · 版本 {{ APP_VERSION }}
+          </p>
+        </section>
+
+        <SettingsGroup title="内容">
+          <SettingsRow label="片源管理" :value="`${sources.sources.length} 个`" chevron @click="go('/settings/sources')" />
+          <SettingsRow label="观看历史" :value="`${history.items.length} 条`" chevron @click="go('/history')" />
+          <SettingsRow label="我的收藏" :value="`${favorites.items.length} 个`" chevron @click="go('/favorites')" />
+        </SettingsGroup>
+
+        <SettingsGroup title="播放">
+          <SettingsRow label="默认倍速" :value="rateLabel" chevron @click="speedOpen = true" />
+          <SettingsRow
+            label="自动连播下一集"
+            :switch-value="autoPlayNext"
+            @update:switch-value="setAutoPlayNext"
+          />
+          <SettingsRow label="手势灵敏度" :value="sensitivityLabel" chevron @click="sensitivityOpen = true" />
+          <SettingsRow label="字幕设置" description="在播放页内调整字号/颜色/偏移" chevron @click="toast.info('请在播放页的字幕面板中调整')" />
+        </SettingsGroup>
+
+        <SettingsGroup title="外观">
+          <SettingsRow label="主题" :value="themeLabel" chevron @click="themeOpen = true" />
+          <SettingsRow
+            label="隐藏演示内容"
+            description="隐藏内置公开版权样片"
+            :switch-value="settings.settings?.hideDemoContent ?? false"
+            @update:switch-value="setHideDemo"
+          />
+        </SettingsGroup>
+
+        <SettingsGroup title="数据">
+          <SettingsRow label="数据备份与恢复" chevron @click="go('/settings/backup')" />
+          <SettingsRow
+            label="清理缓存"
+            :value="cacheCleared ? '已清理' : '元数据与图片'"
+            chevron
+            @click="clearCache"
+          />
+          <SettingsRow label="清空全部数据" danger chevron @click="clearDataOpen = true" />
+        </SettingsGroup>
+
+        <SettingsGroup title="关于">
+          <SettingsRow label="关于 PeanutMov" :value="APP_VERSION" chevron @click="go('/settings/about')" />
+          <SettingsRow label="合规声明" chevron @click="go('/legal/compliance')" />
+          <SettingsRow label="源合规提示" description="请仅添加你有访问权限的源" chevron @click="go('/settings/sources')" />
+        </SettingsGroup>
+
+        <p class="settings-footer">本 App 不提供任何影视片源 · 数据仅保存在本机</p>
+      </template>
+    </div>
+
+    <!-- 倍速 -->
+    <BottomSheet v-model="speedOpen" title="默认倍速">
+      <ul class="sheet-list">
+        <li v-for="rate in PLAYBACK_RATES" :key="rate">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': playerSettings.defaultRate === rate }"
+            type="button"
+            @click="setRate(rate)"
+          >
+            {{ rate }}x
+            <span v-if="rate === playerSettings.defaultRate" class="sheet-list__check">当前</span>
+          </button>
+        </li>
+      </ul>
+      <p class="sheet-hint">下次播放生效；播放页内也可临时切换倍速。</p>
+    </BottomSheet>
+
+    <!-- 主题 -->
+    <BottomSheet v-model="themeOpen" title="主题">
+      <ul class="sheet-list">
+        <li v-for="opt in [
+          { v: 'dark', l: '深色（默认）' },
+          { v: 'light', l: '浅色' },
+          { v: 'system', l: '跟随系统' },
+        ] as const" :key="opt.v">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.theme ?? 'dark') === opt.v }"
+            type="button"
+            @click="setTheme(opt.v)"
+          >
+            {{ opt.l }}
+          </button>
+        </li>
+      </ul>
+    </BottomSheet>
+
+    <!-- 手势灵敏度 -->
+    <BottomSheet v-model="sensitivityOpen" title="手势灵敏度">
+      <ul class="sheet-list">
+        <li v-for="opt in [
+          { v: 'low', l: '低（拖动更稳）' },
+          { v: 'medium', l: '中（推荐）' },
+          { v: 'high', l: '高（拖动更快）' },
+        ] as const" :key="opt.v">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.gesture.sensitivity ?? 'medium') === opt.v }"
+            type="button"
+            @click="setSensitivity(opt.v)"
+          >
+            {{ opt.l }}
+          </button>
+        </li>
+      </ul>
+    </BottomSheet>
+
+    <!-- 清空数据 -->
+    <BottomSheet v-model="clearDataOpen" title="清空全部数据">
+      <p class="sheet-desc">
+        将删除所有源、收藏、历史与下载记录。此操作不可恢复。
       </p>
-    </section>
-  </main>
+      <label class="sheet-check">
+        <input v-model="keepDemo" type="checkbox" />
+        <span>保留演示源（推荐）</span>
+      </label>
+      <template #footer>
+        <button class="btn btn--danger btn--lg" type="button" :disabled="clearing" @click="resetAll">
+          <LoadingSpinner v-if="clearing" :size="16" />
+          {{ clearing ? '正在清空…' : '确认清空' }}
+        </button>
+      </template>
+    </BottomSheet>
+  </SafeArea>
 </template>
 
 <style scoped>
-.placeholder-page {
-  min-height: 100%;
-  padding: calc(var(--safe-top) + var(--space-4)) var(--layout-page-padding-x)
-    calc(var(--safe-bottom) + var(--space-4));
-  gap: var(--space-4);
-}
-
-.placeholder-header {
+.settings-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--layout-page-padding-x) var(--space-6);
 }
 
-.placeholder-body {
-  flex: 1 1 auto;
-  min-width: 0;
+.settings-loading {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 200px;
-  padding: var(--space-6);
-  border: 1px dashed var(--color-border-strong);
-  border-radius: var(--radius-lg);
-  background-color: var(--color-bg-surface);
+  gap: var(--space-2);
+  padding: var(--space-8);
+  font: var(--text-label);
+  color: var(--color-text-tertiary);
 }
 
-.placeholder-body__text {
-  max-width: 32ch;
+.overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+}
+
+.overview__line {
+  font: var(--text-label-strong);
+  color: var(--color-text-primary);
+}
+
+.overview__sub {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.settings-footer {
+  margin-top: var(--space-6);
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
   text-align: center;
-  overflow-wrap: anywhere;
+}
+
+.sheet-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.sheet-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 52px;
+  padding: 0 var(--space-2);
+  border-bottom: 1px solid var(--color-divider);
+  color: var(--color-text-primary);
+  font: var(--text-body-strong);
+  text-align: left;
+}
+
+.sheet-list__item--active {
+  color: var(--color-brand-text);
+}
+
+.sheet-list__check {
+  margin-left: auto;
+  font: var(--text-caption);
+  color: var(--color-brand-text);
+}
+
+.sheet-hint {
+  padding-top: var(--space-3);
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.sheet-desc {
+  padding: var(--space-3) 0;
+  font: var(--text-label);
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.sheet-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  font: var(--text-label);
+  color: var(--color-text-primary);
+}
+
+.sheet-check input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--color-brand);
 }
 </style>
