@@ -425,7 +425,10 @@ export class AlistAdapter extends BaseAdapter {
 
   private errorFromAlist(source: Source, code: number, message: string): AppError {
     const lowered = `${message}`.toLowerCase();
-    if (code === 401 || code === 403 || /password|token|auth|unauthor/i.test(lowered)) {
+    // AC-39 / REV-16：401（凭据失效）→ E_AUTH；403（无权限）→ E_HTTP_403，二者不合并。
+    if (code === 401) return new AppError('E_AUTH', undefined, { detail: message });
+    if (code === 403) return new AppError('E_HTTP_403', undefined, { detail: message });
+    if (/password|token|auth|unauthor/i.test(lowered)) {
       return new AppError('E_AUTH', undefined, { detail: message });
     }
     if (code === 404 || /not\s*found|不存在/i.test(lowered)) {

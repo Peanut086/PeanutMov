@@ -56,7 +56,10 @@ function mapFetchError(e: unknown, timeoutMs: number, timedOut: boolean): AppErr
 
 function mapStatusError(status: number, statusText: string): AppError {
   const code = httpStatusToErrorCode(status);
-  const mapCode = status === 401 || status === 403 ? 'E_AUTH' : code;
+  // AC-39 / REV-16：401 才是"需要登录"（E_AUTH），403 是"无权限访问"（E_HTTP_403），
+  // 不能合并，否则浏览/播放链路 403 文案会退化为「认证失败」。
+  // 两者都不在 RETRYABLE 集合中，AppError.retryable 自然为 false。
+  const mapCode = status === 401 ? 'E_AUTH' : code;
   return new AppError(mapCode, undefined, {
     detail: `HTTP ${status}${statusText ? ` ${statusText}` : ''}`,
     httpStatus: status,
