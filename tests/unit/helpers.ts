@@ -12,6 +12,10 @@ import { sourceRegistry, resetRegistryToDefaults } from '@/sources/registry';
 /** 清空数据库并重置所有模块级缓存（每个用例前调用） */
 export async function resetAll(): Promise<void> {
   downloadService.__resetQueue();
+  // `dispose()` 只是 abort，进行中的 `downloadRepo.get/save` 仍可能在 closeDb 之后
+  // 重新打开连接，导致 deleteDatabase 被 blocked（并行跑全量用例时偶发 hook 超时）。
+  // 这里给中止链路一个宏任务窗口落地，纯测试基建，不改断言语义。
+  await new Promise((resolve) => setTimeout(resolve, 20));
   settingsService.__resetCache();
   healthService.__reset();
   appEvents.clear();

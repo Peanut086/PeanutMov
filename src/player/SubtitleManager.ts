@@ -5,6 +5,8 @@
  * - SRT 自动转 WebVTT 后解析为 cue 数组，**不依赖浏览器原生字幕渲染**
  * - `textAt(currentTime)` 用二分查找命中 cue；字偏移 `offsetSec` 只影响查找基准
  * - 失败不阻断播放：抛 `AppError('E_PARSE')` 由上层 Toast 提示（AC-46）
+ * - 加载失败的轨道 id 记入 `failed` 集合，供字幕面板标记「不可用」（AC-46）；
+ *   切集/切线路（`setTracks` 中 id 对应 url 变化）或重试成功即清除。
  */
 import type { SubtitleTrack } from '@/types';
 import { AppError, httpStatusToErrorCode } from '@/shared/errors';
@@ -27,14 +29,25 @@ export class SubtitleManager {
   private activeId: string | null = null;
   private offsetSec = 0;
   private lastText = '';
+  /** 加载失败的轨道 id（AC-46）：面板据此标记「不可用」 */
+  private failed = new Set<string>();
 
   constructor(private readonly options: SubtitleManagerOptions = {}) {}
 
   setTracks(tracks: SubtitleTrack[]): void {
+    const previous = new Map(this.tracks.map((t) => [t.id, t.url]));
     this.tracks = [...tracks];
     // 已加载但不在新列表中的轨道要清理，避免切集后残留
     for (const id of [...this.loaded.keys()]) {
       if (!this.tracks.some((t) => t.id === id)) this.loaded.delete(id);
+    }
+    // 失败标记随轨道列表收敛：已消失的、或同一 id 换了地址（重载）的都清除
+    for (const id of [...this.failed]) {
+      const next = this.tracks.find((t) => t.id === id);
+      const before = previous.get(id);
+      if (!next || (before !== undefined && before !== next.url)) {
+        this.failed.delete(id);
+      }
     }
     if (this.activeId && !this.tracks.some((t) => t.id === this.activeId)) {
       this.activeId = null;
@@ -44,6 +57,20 @@ export class SubtitleManager {
 
   getTracks(): SubtitleTrack[] {
     return [...this.tracks];
+  }
+
+  /** 加载失败的轨道 id 集合（AC-46，供字幕面板标记「不可用」） */
+  get failedTrackIds(): ReadonlySet<string> {
+    return new Set(this.failed);
+  }
+
+  /** 加载失败的轨道 id 列表（数组视图，便于直接作为 props 传入） */
+  getFailedIds(): string[] {
+    return [...this.failed];
+  }
+
+  isFailed(id: string): boolean {
+    return this.failed.has(id);
   }
 
   getActiveId(): string | null {
@@ -72,11 +99,29 @@ export class SubtitleManager {
     const track = this.tracks.find((t) => t.id === id);
     if (!track) throw new AppError('E_NOT_FOUND', '字幕轨道不存在');
     if (!this.loaded.has(id)) {
-      const loaded = await this.loadTrack(track);
+      let loaded: LoadedTrack;
+      try {
+        loaded = await this.loadTrack(track);
+      } catch (e) {
+        // 记录失败轨道供面板标记「不可用」，再把错误交给上层 Toast（播放不中断）
+        this.failed.add(id);
+        throw e;
+      }
+      this.failed.delete(id);
       this.loaded.set(id, loaded);
     }
     this.activeId = id;
     this.lastText = '';
+  }
+
+  /**
+   * 重试加载一条失败轨道（AC-46）：成功后从失败集合移除并可立即激活。
+   * 非失败轨道调用时等价于 `setActive`（已加载则直接激活）。
+   */
+  async retry(id: string): Promise<void> {
+    this.failed.delete(id);
+    this.loaded.delete(id);
+    await this.setActive(id);
   }
 
   /** 新增本地字幕文件（拖入/文件选择）；自动设为激活轨道 */
@@ -126,6 +171,7 @@ export class SubtitleManager {
     this.activeId = null;
     this.lastText = '';
     this.offsetSec = 0;
+    this.failed.clear();
   }
 
   private async loadTrack(track: SubtitleTrack): Promise<LoadedTrack> {

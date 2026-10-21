@@ -30,6 +30,8 @@ export const usePlayerStore = defineStore('player', () => {
   const subtitles = ref<SubtitleTrack[]>([]);
   const activeSubtitleId = ref<string | null>(null);
   const subtitleText = ref<string>('');
+  /** 加载失败的字幕轨 id（AC-46：面板标记「不可用」） */
+  const failedSubtitleIds = ref<string[]>([]);
 
   const quality = ref('auto');
   const qualities = ref<string[]>([]);
@@ -55,6 +57,7 @@ export const usePlayerStore = defineStore('player', () => {
     subtitles.value = [];
     activeSubtitleId.value = null;
     subtitleText.value = '';
+    failedSubtitleIds.value = [];
     quality.value = 'auto';
     qualities.value = [];
     error.value = null;
@@ -79,6 +82,7 @@ export const usePlayerStore = defineStore('player', () => {
     subtitles: SubtitleTrack[];
     activeSubtitleId: string | null;
     subtitleText: string;
+    failedSubtitleIds: string[];
     quality: string;
     qualities: string[];
     error: AppErrorShape | null;
@@ -100,6 +104,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (p.subtitles !== undefined) subtitles.value = p.subtitles;
     if (p.activeSubtitleId !== undefined) activeSubtitleId.value = p.activeSubtitleId;
     if (p.subtitleText !== undefined) subtitleText.value = p.subtitleText;
+    if (p.failedSubtitleIds !== undefined) failedSubtitleIds.value = p.failedSubtitleIds;
     if (p.quality !== undefined) quality.value = p.quality;
     if (p.qualities !== undefined) qualities.value = p.qualities;
     if (p.error !== undefined) error.value = p.error;
@@ -123,6 +128,7 @@ export const usePlayerStore = defineStore('player', () => {
     subtitles,
     activeSubtitleId,
     subtitleText,
+    failedSubtitleIds,
     quality,
     qualities,
     error,

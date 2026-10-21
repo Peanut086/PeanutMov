@@ -19,7 +19,13 @@ export type PlayerEventMap = {
   ratechange: { rate: PlaybackRate };
   ended: void;
   error: AppErrorShape;
-  subtitlechange: { activeId: string | null; tracks: SubtitleTrack[]; text: string };
+  subtitlechange: {
+    activeId: string | null;
+    tracks: SubtitleTrack[];
+    text: string;
+    /** 加载失败的轨道 id（AC-46：面板标记「不可用」） */
+    failedIds: string[];
+  };
   qualitychange: { quality: string; levels: string[] };
   /** 引擎加载完成（可播放）——与 ready 的区别：loadedmetadata 前触发 */
   loaded: void;

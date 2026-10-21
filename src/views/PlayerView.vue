@@ -48,6 +48,7 @@ import { useLibraryStore } from '@/stores/libraryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { castService } from '@/services/castService';
 import { usePlayerController } from '@/composables/usePlayerController';
+import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
 import { useToast } from '@/composables/useToast';
 import { DIM_MAX_OPACITY, QUALITY_AUTO } from '@/player/constants';
 
@@ -90,6 +91,39 @@ const currentEpisode = computed<Episode | null>(() => {
   if (episodeIdParam.value) return list.find((ep) => ep.id === episodeIdParam.value) ?? list[0] ?? null;
   return list[0] ?? null;
 });
+
+/**
+ * 历史记录的集号已超出当前源范围（AC-68）。
+ *
+ * 路由里的 `episodeId` 在详情加载后可能已经不存在（剧集下线/换线路）。
+ * 只有「记录集号 > 当前最大集号」才算已下线；同集号但 id 变了属于正常重映射，
+ * 由 `resolveTargetEpisode` 按集号命中，不打扰用户。
+ */
+const offlineEpisodeNumber = computed<number | null>(() => {
+  const it = item.value;
+  const param = episodeIdParam.value;
+  const list = episodes.value;
+  if (!it || !param || list.length === 0) return null;
+  if (list.some((ep) => ep.id === param)) return null;
+  const rec = history.progressOf(it.sourceId, it.id);
+  if (!rec) return null;
+  return resolveTargetEpisode({
+    recordedEpisodeId: rec.episodeId,
+    recordedNumber: rec.episodeNumber,
+    episodes: list,
+  }).offlineNumber;
+});
+
+/** 同一集号只提示一次（避免切线路/重载时重复弹） */
+const announcedOffline = ref<number | null>(null);
+
+/** 已下线提示：Toast 文案「看到第 N 集（已下线），已从第 1 集开始」 */
+function announceOfflineEpisode(): void {
+  const n = offlineEpisodeNumber.value;
+  if (n === null || announcedOffline.value === n) return;
+  announcedOffline.value = n;
+  toast.info(offlineEpisodeMessage(n), 3600);
+}
 
 /* ---------- 播放器 composable ---------- */
 /**
@@ -171,6 +205,7 @@ const {
   prevEpisode,
   switchQuality,
   selectSubtitle,
+  retrySubtitle,
   addLocalSubtitle,
   setSubtitleOffset,
   toggleFullscreen,
@@ -280,6 +315,8 @@ onMounted(async () => {
   }
   if (stageRef.value) createController(stageRef.value);
   await resolveAndLoad();
+  // AC-68：记录集号已下线时明确提示，而不是静默从第 1 集起播
+  announceOfflineEpisode();
 });
 
 /* ---------- 关闭时写回进度 ---------- */
@@ -513,6 +550,8 @@ watch(episodeIdParam, async (next, prev) => {
   // 线路切换内部改路由时由 `switchLine` 自己加载，这里跳过以免同一集加载两次
   if (pendingLineSwitchEpisode !== null && next === pendingLineSwitchEpisode) return;
   await resolveAndLoad();
+  // 直接带旧集号进入（历史/继续观看）时同样提示已下线（AC-68）
+  announceOfflineEpisode();
 });
 
 /* ---------- 沉浸态 ---------- */
@@ -680,6 +719,14 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
       <div v-if="!immersive" class="player-info">
         <h1 class="player-info__title">{{ titleText }}</h1>
         <p v-if="episodeLabel" class="player-info__episode">{{ episodeLabel }}</p>
+        <p
+          v-if="offlineEpisodeNumber !== null"
+          class="player-info__offline"
+          role="status"
+          data-test="episode-offline"
+        >
+          {{ offlineEpisodeMessage(offlineEpisodeNumber) }}
+        </p>
 
         <div class="player-info__actions">
           <button class="player-info__action" type="button" @click="pickerOpen = true">
@@ -732,8 +779,10 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
       v-model="subtitleOpen"
       :tracks="player.subtitles"
       :active-id="player.activeSubtitleId"
+      :failed-ids="player.failedSubtitleIds"
       :settings="localSubtitles"
       @select="selectSubtitle"
+      @retry="retrySubtitle"
       @local-file="addLocalSubtitle"
       @update-settings="onSubtitleSettings"
     />
@@ -848,6 +897,12 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
   font: var(--text-title-2);
   color: var(--color-text-primary);
   overflow-wrap: anywhere;
+}
+
+.player-info__offline {
+  margin-top: var(--space-1);
+  font: var(--text-label);
+  color: var(--color-warning);
 }
 
 .player-info__episode {

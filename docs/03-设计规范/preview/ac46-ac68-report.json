@@ -1,0 +1,107 @@
+{
+  "base": "http://localhost:5175",
+  "dav": "http://127.0.0.1:8803",
+  "ranAt": "2026-10-21T04:47:55.322Z",
+  "total": 9,
+  "passed": 8,
+  "failed": 1,
+  "results": [
+    {
+      "id": "SETUP-01",
+      "name": "新增本地 WebDAV 假源（20 集 + 第 1 集字幕 404）",
+      "ok": true,
+      "detail": {
+        "saved": true
+      }
+    },
+    {
+      "id": "SETUP-02",
+      "name": "媒体库切到本地源并打开 20 集条目",
+      "ok": true,
+      "detail": {
+        "title": "demo-series",
+        "chips": 20,
+        "count": "共 20 集"
+      }
+    },
+    {
+      "id": "AC46-01",
+      "name": "进入播放页并出画（第 1 集）",
+      "ok": true,
+      "detail": {
+        "readyState": 4,
+        "duration": 5.05,
+        "paused": false
+      }
+    },
+    {
+      "id": "AC46-02",
+      "name": "字幕面板列出轨道；点击 404 轨 → Toast + 「不可用」标记 + 播放继续",
+      "ok": true,
+      "detail": {
+        "badgeText": "不可用",
+        "badgeColor": "rgb(90, 90, 99)",
+        "badgeFontSize": "14px",
+        "itemAriaDisabled": "true",
+        "closeItem": true,
+        "toasts": [
+          "字幕加载失败(404)"
+        ],
+        "playing": true,
+        "currentTime": 2.61,
+        "errorPanel": false,
+        "activeSubtitle": true,
+        "shot": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\ac46-subtitle-unavailable.png"
+      }
+    },
+    {
+      "id": "AC46-03",
+      "name": "失败轨仍可切到「关闭字幕」（不影响播放）",
+      "ok": true,
+      "detail": {
+        "toasts": [
+          "字幕加载失败(404)"
+        ],
+        "playing": true,
+        "subtitleText": null
+      }
+    },
+    {
+      "id": "AC68-01",
+      "name": "先在第 20 集产生真实历史，再改写为「第 30 集」",
+      "ok": true,
+      "detail": {
+        "patched": true,
+        "mediaId": "ae01b430-429a-4795-979e-c7c2c78d6fe7:%2Fdemo-series~aor6sj"
+      }
+    },
+    {
+      "id": "AC68-02",
+      "name": "详情页主按钮显示「看到第 30 集（已下线）」而非「继续观看」",
+      "ok": true,
+      "detail": {
+        "primary": "看到第 30 集（已下线）",
+        "chips": 20
+      }
+    },
+    {
+      "id": "AC68-03",
+      "name": "点击主按钮 → Toast「看到第 30 集（已下线），已从第 1 集开始」并从第 1 集起播",
+      "ok": true,
+      "detail": {
+        "toasts": [
+          "看到第 30 集（已下线），已从第 1 集开始"
+        ],
+        "episodeLabel": "第 1 集 · ep01",
+        "currentTime": 1.53,
+        "shot": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\ac68-episode-offline.png"
+      }
+    },
+    {
+      "id": "AC68-04",
+      "name": "播放页直接带失效集号进入：页面提示 + Toast，播放不中断",
+      "ok": false,
+      "detail": "timeout waiting: video deep link :: {\"hash\":\"#/player/ae01b430-429a-4795-979e-c7c2c78d6fe7:%2Fdemo-series~aor6sj/fake-episode-30\",\"body\":\"\\n    找不到要播放的内容重试返回详情demo- erie  下载  收藏 投屏  已看到 0:00 / 0:00 · 进度每 5 秒自动保存 \\n    \\n  \\n\\n\",\"lines\":0,\"toast\":[]}"
+    }
+  ]
+}

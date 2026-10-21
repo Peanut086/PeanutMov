@@ -141,8 +141,13 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       setControlsVisible(true);
     });
 
-    c.on('subtitlechange', ({ activeId, tracks, text }) => {
-      player.patch({ activeSubtitleId: activeId, subtitles: tracks, subtitleText: text });
+    c.on('subtitlechange', ({ activeId, tracks, text, failedIds }) => {
+      player.patch({
+        activeSubtitleId: activeId,
+        subtitles: tracks,
+        subtitleText: text,
+        failedSubtitleIds: failedIds,
+      });
     });
 
     c.on('qualitychange', ({ quality, levels }) => {
@@ -291,6 +296,20 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     try {
       await c.setSubtitle(id);
       localSubtitles.value = { ...localSubtitles.value, enabled: id !== null };
+    } catch (e) {
+      // 播放不中断：失败轨已在面板标记「不可用」，这里只补一条 Toast（AC-46）
+      ui.toast(toErrorShape(e).message, 'error');
+    }
+  }
+
+  /** 重试失败字幕轨（AC-46）：成功则激活，失败再提示一次 */
+  async function retrySubtitle(id: string): Promise<void> {
+    const c = controller.value;
+    if (!c) return;
+    try {
+      await c.retrySubtitle(id);
+      localSubtitles.value = { ...localSubtitles.value, enabled: true };
+      ui.toast('字幕已重新加载', 'success');
     } catch (e) {
       ui.toast(toErrorShape(e).message, 'error');
     }
@@ -481,6 +500,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     prevEpisode,
     switchQuality,
     selectSubtitle,
+    retrySubtitle,
     addLocalSubtitle,
     setSubtitleOffset,
     toggleFullscreen,

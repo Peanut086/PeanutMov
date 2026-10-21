@@ -139,6 +139,7 @@ export class PlayerController {
       activeId: this.subtitles.getActiveId(),
       tracks: this.subtitles.getTracks(),
       text: '',
+      failedIds: this.subtitles.getFailedIds(),
     });
 
     try {
@@ -263,6 +264,7 @@ export class PlayerController {
         activeId: this.subtitles.getActiveId(),
         tracks: this.subtitles.getTracks(),
         text,
+        failedIds: this.subtitles.getFailedIds(),
       });
     }
   }
@@ -384,16 +386,38 @@ export class PlayerController {
   /* ================= 字幕 ================= */
 
   async setSubtitle(id: string | null): Promise<void> {
-    await this.subtitles.setActive(id);
-    this.emit('subtitlechange', {
-      activeId: this.subtitles.getActiveId(),
-      tracks: this.subtitles.getTracks(),
-      text: this.subtitles.textAt(this.engine?.getCurrentTime() ?? 0),
-    });
+    try {
+      await this.subtitles.setActive(id);
+    } finally {
+      // 失败也要同步：`failedIds` 变化需让面板立刻显示「不可用」（AC-46），
+      // 错误继续向上抛给 View 弹 Toast，播放不中断。
+      this.emit('subtitlechange', {
+        activeId: this.subtitles.getActiveId(),
+        tracks: this.subtitles.getTracks(),
+        text: this.subtitles.textAt(this.engine?.getCurrentTime() ?? 0),
+        failedIds: this.subtitles.getFailedIds(),
+      });
+    }
   }
 
   setSubtitleOffset(offsetSec: number): void {
     this.subtitles.setOffset(offsetSec);
+  }
+
+  /** 重试加载失败的字幕轨（AC-46）：成功后标记消失并激活 */
+  async retrySubtitle(id: string): Promise<void> {
+    await this.subtitles.retry(id);
+    this.emit('subtitlechange', {
+      activeId: this.subtitles.getActiveId(),
+      tracks: this.subtitles.getTracks(),
+      text: this.subtitles.textAt(this.engine?.getCurrentTime() ?? 0),
+      failedIds: this.subtitles.getFailedIds(),
+    });
+  }
+
+  /** 当前失败的字幕轨 id（AC-46） */
+  getFailedSubtitleIds(): string[] {
+    return this.subtitles.getFailedIds();
   }
 
   async addLocalSubtitle(file: File): Promise<SubtitleTrack> {
@@ -402,6 +426,7 @@ export class PlayerController {
       activeId: this.subtitles.getActiveId(),
       tracks: this.subtitles.getTracks(),
       text: '',
+      failedIds: this.subtitles.getFailedIds(),
     });
     return track;
   }

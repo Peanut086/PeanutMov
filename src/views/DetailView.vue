@@ -5,6 +5,7 @@
  * 结构：顶部背景（poster 模糊铺满 + gradient-hero）+ 海报/标题/元信息 + 主操作按钮
  * + 简介（4 行截断可展开）+ 选集（多线路）+ 相关。
  * 主按钮文案随进度变化：播放 / 继续观看 · 第 N 集 / 重新播放（AC-36/37）。
+ * 记录集号已超出当前源范围时显示「看到第 N 集（已下线）」并从第 1 集开始（AC-68）。
  */
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -36,6 +37,7 @@ import { castService } from '@/services/castService';
 import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { toErrorShape } from '@/shared/errors';
+import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
 import { formatBytes } from '@/components/common/format';
 
 const route = useRoute();
@@ -99,11 +101,27 @@ const isFinished = computed(() => {
   return rec !== null && (rec.finished || rec.progress >= 0.95);
 });
 
+/**
+ * 记录集号超出当前源范围（剧集已下线，AC-68）。
+ * 只有「记录集号 > 当前最大集号」才判定下线；同集号换 id 属正常重映射。
+ */
+const offlineEpisodeNumber = computed<number | null>(() => {
+  const rec = progressRecord.value;
+  if (!rec || episodes.value.length === 0) return null;
+  if (rec.episodeId !== null && episodes.value.some((ep) => ep.id === rec.episodeId)) return null;
+  return resolveTargetEpisode({
+    recordedEpisodeId: rec.episodeId,
+    recordedNumber: rec.episodeNumber,
+    episodes: episodes.value,
+  }).offlineNumber;
+});
+
 const primaryLabel = computed(() => {
   const rec = progressRecord.value;
   if (!rec || isFinished.value) {
     return rec && isFinished.value ? '重新播放' : '播放';
   }
+  if (offlineEpisodeNumber.value !== null) return `看到第 ${offlineEpisodeNumber.value} 集（已下线）`;
   if (rec.progress > 0.05 && rec.progress < 0.95) {
     return rec.episodeNumber !== null ? `继续观看 · 第 ${rec.episodeNumber} 集` : '继续观看';
   }
@@ -112,11 +130,12 @@ const primaryLabel = computed(() => {
 
 const targetEpisode = computed<Episode | null>(() => {
   const rec = progressRecord.value;
-  if (rec?.episodeId) {
-    const hit = episodes.value.find((ep) => ep.id === rec.episodeId);
-    if (hit) return hit;
-  }
-  return episodes.value[0] ?? null;
+  if (!rec) return episodes.value[0] ?? null;
+  return resolveTargetEpisode({
+    recordedEpisodeId: rec.episodeId,
+    recordedNumber: rec.episodeNumber,
+    episodes: episodes.value,
+  }).episode;
 });
 
 const watchedNumbers = computed(() => {
@@ -180,6 +199,13 @@ function onPrimary(): void {
   const ep = targetEpisode.value;
   if (!ep) {
     toast.error('暂无可播放剧集');
+    return;
+  }
+  // AC-68：记录集号已下线时先给出明确提示，再从第 1 集开始，不静默跳集
+  const offline = offlineEpisodeNumber.value;
+  if (offline !== null) {
+    toast.info(offlineEpisodeMessage(offline), 3600);
+    playEpisode(ep, restart);
     return;
   }
   if (!isSeries.value && rec && !restart) {

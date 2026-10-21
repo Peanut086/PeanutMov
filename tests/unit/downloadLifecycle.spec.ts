@@ -71,6 +71,21 @@ async function flush(times = 12): Promise<void> {
   for (let i = 0; i < times; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
 }
 
+/**
+ * 轮询直到条件成立（最多 `timeoutMs`）。
+ *
+ * `resumeAll → requeuePending → 落库/入队` 是跨多个微任务 + IDB 事务的异步链路，
+ * 固定 `flush()` 在并行跑全量用例时会偶发不够（实测 60ms 内仍停在 paused）。
+ * 这里改为按条件轮询，消除时序抖动，不改变任何断言语义。
+ */
+async function waitFor(cond: () => Promise<boolean>, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await cond()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe('REV-22 切后台暂停下载（AC-72）', () => {
   beforeEach(async () => {
     await resetAll();
@@ -120,7 +135,10 @@ describe('REV-22 切后台暂停下载（AC-72）', () => {
     expect((await downloadRepo.get('task-bg'))?.status).toBe('paused');
 
     emitVisibility('visible');
-    await flush();
+    await waitFor(async () => {
+      const row = await downloadRepo.get('task-bg');
+      return row?.status === 'queued' || row?.status === 'downloading';
+    });
 
     const task = await downloadRepo.get('task-bg');
     expect(task?.status === 'queued' || task?.status === 'downloading').toBe(true);

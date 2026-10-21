@@ -3,6 +3,7 @@
  * 字幕面板（AC-44 / AC-45）
  *
  * - 轨道列表（关闭 / 远程 / 本地），当前项打勾
+ * - 加载失败的轨道标「不可用」（disabled 文字色 + 14px，点击给出说明）（AC-46）
  * - 本地字幕文件选择（Android 走系统选择器）
  * - 字幕样式：字号（小/中/大）、颜色（白/黄）、背景（半透明黑/无）
  * - 时间偏移 −5s ~ +5s，步进 0.5s
@@ -14,16 +15,22 @@ import type { SubtitleSettings, SubtitleTrack } from '@/types';
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
 
-const props = defineProps<{
-  modelValue: boolean;
-  tracks: SubtitleTrack[];
-  activeId: string | null;
-  settings: SubtitleSettings;
-}>();
+const props = withDefaults(
+  defineProps<{
+    modelValue: boolean;
+    tracks: SubtitleTrack[];
+    activeId: string | null;
+    settings: SubtitleSettings;
+    /** 加载失败的轨道 id（AC-46，由 SubtitleManager.failedTrackIds 经 Store 传入） */
+    failedIds?: string[];
+  }>(),
+  { failedIds: () => [] },
+);
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void;
   (e: 'select', id: string | null): void;
+  (e: 'retry', id: string): void;
   (e: 'local-file', file: File): void;
   (e: 'update-settings', patch: Partial<SubtitleSettings>): void;
 }>();
@@ -38,7 +45,22 @@ const offsetLabel = computed(() => {
   return `${v > 0 ? '+' : ''}${v.toFixed(1)}s`;
 });
 
+function isUnavailable(id: string): boolean {
+  return props.failedIds.includes(id);
+}
+
+/** 打开字幕时优先选第一条可用轨道（全部失败则退回首条，触发重试） */
+function firstAvailableId(): string | null {
+  const ok = props.tracks.find((t) => !isUnavailable(t.id));
+  return (ok ?? props.tracks[0])?.id ?? null;
+}
+
+/** 可用轨道直接切换；失败轨道不切换，改为重试一次并给出说明（AC-46） */
 function choose(id: string | null): void {
+  if (id !== null && isUnavailable(id)) {
+    emit('retry', id);
+    return;
+  }
   emit('select', id);
 }
 
@@ -83,7 +105,7 @@ function setBackground(background: SubtitleSettings['background']): void {
         <ToggleSwitch
           :model-value="activeId !== null"
           label="显示字幕"
-          @update:model-value="choose($event ? (tracks[0]?.id ?? null) : null)"
+          @update:model-value="choose($event ? firstAvailableId() : null)"
         />
       </div>
     </div>
@@ -105,12 +127,26 @@ function setBackground(background: SubtitleSettings['background']): void {
         <li v-for="track in tracks" :key="track.id">
           <button
             class="subtitle-item"
-            :class="{ 'subtitle-item--active': activeId === track.id }"
+            :class="{
+              'subtitle-item--active': activeId === track.id,
+              'subtitle-item--unavailable': isUnavailable(track.id),
+            }"
             type="button"
+            :aria-disabled="isUnavailable(track.id) ? 'true' : undefined"
+            :aria-label="
+              isUnavailable(track.id) ? `${track.label}（不可用，点击重试）` : undefined
+            "
             @click="choose(track.id)"
           >
             <span class="subtitle-item__label">{{ track.label }}</span>
-            <span class="subtitle-item__meta">
+            <span
+              v-if="isUnavailable(track.id)"
+              class="subtitle-item__unavailable"
+              data-test="subtitle-unavailable"
+            >
+              不可用
+            </span>
+            <span v-else class="subtitle-item__meta">
               {{ track.source === 'local' ? '本地' : track.format.toUpperCase() }}
             </span>
             <span v-if="activeId === track.id" class="subtitle-item__check">当前</span>
@@ -120,6 +156,9 @@ function setBackground(background: SubtitleSettings['background']): void {
 
       <p v-if="!hasTracks" class="subtitle-block__empty">
         该片源没有提供字幕。可选择本地 SRT / VTT 文件外挂。
+      </p>
+      <p v-else-if="failedIds.length > 0" class="subtitle-block__empty">
+        标记「不可用」的字幕加载失败，点击可重试；播放不受影响。
       </p>
 
       <button class="btn btn--secondary btn--md subtitle-block__file" type="button" @click="openFile">
@@ -293,6 +332,21 @@ function setBackground(background: SubtitleSettings['background']): void {
 .subtitle-item__meta {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+.subtitle-item--unavailable {
+  color: var(--color-text-disabled);
+}
+
+.subtitle-item--unavailable .subtitle-item__label {
+  color: var(--color-text-disabled);
+}
+
+/* 设计规范 §12.2：不可用标记用 disabled 文字色 + 14px */
+.subtitle-item__unavailable {
+  font-size: var(--font-size-14);
+  line-height: var(--line-height-14);
+  color: var(--color-text-disabled);
 }
 
 .subtitle-item__check {
