@@ -153,6 +153,67 @@ const downloadedIds = computed(() => {
 });
 
 const downloading = ref(false);
+/** 播放前置预检进行中（AC-33①）：阻止重复点击 */
+const prechecking = ref(false);
+/** 已确认解析不到播放地址的集（REV-20）：EpisodeList 渲染禁用态 */
+const unavailableIds = ref<string[]>([]);
+/** 投屏能力探测结果（AC-84）：null=探测中，false=禁用投屏按钮 */
+const castSupported = ref<boolean | null>(null);
+
+async function detectCastSupport(): Promise<void> {
+  try {
+    castSupported.value = await castService.isSupported();
+  } catch {
+    castSupported.value = false;
+  }
+}
+
+function markUnavailable(episodeId: string): void {
+  if (unavailableIds.value.includes(episodeId)) return;
+  unavailableIds.value = [...unavailableIds.value, episodeId];
+}
+
+/**
+ * 播放前置预检（AC-33① / REV-20）。
+ *
+ * 跳转前先解析当前集：解析不到（抛 `E_NO_PLAY_URL` 或返回空 `url`）时
+ * 留在详情页就地 Toast「该集暂无可播放地址」，并把该集标记为不可播（禁用态）。
+ */
+async function ensurePlayable(ep: Episode): Promise<boolean> {
+  const it = item.value;
+  if (!it || prechecking.value) return false;
+  prechecking.value = true;
+  try {
+    const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
+    // 预检只判断"能否播"，随后播放页会重新解析；本地源在这里产生的 blob URL 立即释放，避免泄漏
+    if (playback.isLocal && playback.url.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(playback.url);
+      } catch {
+        // 忽略
+      }
+    }
+    if (!playback.url) {
+      markUnavailable(ep.id);
+      toast.error('该集暂无可播放地址');
+      return false;
+    }
+    return true;
+  } catch (e) {
+    const err = toErrorShape(e);
+    if (err.code === 'E_NO_PLAY_URL') {
+      // 唯一"前置拦截"场景：该集确实没有地址
+      markUnavailable(ep.id);
+      toast.error('该集暂无可播放地址');
+      return false;
+    }
+    // 其它错误（网络/源不可用等）保持原行为：跳转后由播放页错误面板给出重试/切换线路
+    return true;
+  } finally {
+    prechecking.value = false;
+  }
+}
+
 
 async function load(refresh = false): Promise<void> {
   if (!mediaId.value) return;
@@ -161,6 +222,7 @@ async function load(refresh = false): Promise<void> {
 }
 
 onMounted(async () => {
+  void detectCastSupport();
   await Promise.all([history.load(), favorites.load(), downloads.load()]);
   await load(false);
 });
@@ -176,13 +238,15 @@ function goBack(): void {
   else void router.replace('/');
 }
 
-function playEpisode(ep: Episode | null, restart = false): void {
+async function playEpisode(ep: Episode | null, restart = false): Promise<void> {
   const it = item.value;
   if (!it || !ep) return;
   if (isOffline.value && !downloadedIds.value.includes(ep.id)) {
     toast.error('离线不可播放，该集尚未下载');
     return;
   }
+  // AC-33① / REV-20：解析不到可播放地址时不跳转，就地 Toast
+  if (!(await ensurePlayable(ep))) return;
   void router.push({
     name: 'player',
     params: { mediaId: it.id, episodeId: ep.id },
@@ -193,7 +257,7 @@ function playEpisode(ep: Episode | null, restart = false): void {
   });
 }
 
-function onPrimary(): void {
+async function onPrimary(): Promise<void> {
   const rec = progressRecord.value;
   const restart = isFinished.value;
   const ep = targetEpisode.value;
@@ -205,18 +269,18 @@ function onPrimary(): void {
   const offline = offlineEpisodeNumber.value;
   if (offline !== null) {
     toast.info(offlineEpisodeMessage(offline), 3600);
-    playEpisode(ep, restart);
+    await playEpisode(ep, restart);
     return;
   }
   if (!isSeries.value && rec && !restart) {
-    playEpisode(ep, false);
+    await playEpisode(ep, false);
     return;
   }
-  playEpisode(ep, restart);
+  await playEpisode(ep, restart);
 }
 
-function onEpisodeSelect(ep: Episode): void {
-  playEpisode(ep, false);
+async function onEpisodeSelect(ep: Episode): Promise<void> {
+  await playEpisode(ep, false);
 }
 
 async function toggleFavorite(): Promise<void> {
@@ -445,7 +509,12 @@ function openCompliance(): void {
         </section>
 
         <section class="detail-actions">
-          <button class="btn btn--primary btn--lg detail-actions__main" type="button" @click="onPrimary">
+          <button
+            class="btn btn--primary btn--lg detail-actions__main"
+            type="button"
+            :aria-busy="prechecking ? 'true' : undefined"
+            @click="onPrimary"
+          >
             <IconPlay :size="20" />
             {{ primaryLabel }}
           </button>
@@ -468,7 +537,16 @@ function openCompliance(): void {
           >
             <IconDownload :size="20" />
           </button>
-          <button class="detail-actions__icon" type="button" aria-label="投屏" @click="castPlay">
+          <button
+            class="detail-actions__icon"
+            :class="{ 'detail-actions__icon--disabled': castSupported === false }"
+            type="button"
+            :aria-label="castSupported === false ? '投屏（当前平台不支持投屏）' : '投屏'"
+            :aria-disabled="castSupported === false ? 'true' : undefined"
+            :disabled="castSupported === false"
+            :title="castSupported === false ? '当前平台不支持投屏' : undefined"
+            @click="castPlay"
+          >
             <IconCast :size="20" />
           </button>
         </section>
@@ -514,6 +592,7 @@ function openCompliance(): void {
             :current-id="progressRecord?.episodeId ?? null"
             :watched-numbers="watchedNumbers"
             :downloaded-ids="downloadedIds"
+            :unavailable-ids="unavailableIds"
             @select="onEpisodeSelect"
             @unavailable="toast.error('该集暂无可播放地址')"
           />
@@ -696,11 +775,19 @@ function openCompliance(): void {
   background-color: var(--color-brand-soft);
 }
 
-.detail-actions__icon--bump {
-  animation: heart-bump 320ms var(--ease-standard);
+/* 投屏不可用（AC-84）：设计规范禁用色，不做点击降级 Toast */
+.detail-actions__icon:disabled,
+.detail-actions__icon--disabled {
+  color: var(--color-text-disabled);
+  border-color: var(--color-border);
+  background-color: transparent;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
-@keyframes heart-bump {
+.detail-actions__icon--bump {
+  animation: heart-bump 320ms var(--ease-standard);
+}@keyframes heart-bump {
   0%,
   100% {
     transform: scale(1);

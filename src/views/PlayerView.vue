@@ -224,11 +224,67 @@ const moreOpen = ref(false);
 const pickerOpen = ref(false);
 const downloading = ref(false);
 
-const castSupported = ref(true);
+const castSupported = ref<boolean | null>(null);
 /** 最近一次解析出的播放源（投屏/分享用，避免再次解析触发网络请求） */
 const currentPlayback = ref<PlaybackSource | null>(null);
 /** 线路切换进行中（防连点造成两次并发加载，REV-05） */
 const switchingLine = ref(false);
+
+/**
+ * 「本地文件不可用」任务（AC-78 / REV-23）。
+ *
+ * `resolvePlay` 优先本地播放；若该集已有 `completed` 任务但解析结果仍是网络源，
+ * 说明本地文件/Blob 已丢失（服务层同时发出 `local:missing` 事件弹全局 Toast）。
+ * 这里记下 taskId，在页面上常驻一条提示条并给出「重新下载」按钮。
+ */
+const localMissingTaskId = ref<string | null>(null);
+const redownloading = ref(false);
+
+/** 投屏能力探测（AC-84）：`isSupported()===false` 时按钮渲染为禁用态 */
+async function detectCastSupport(): Promise<void> {
+  try {
+    castSupported.value = await castService.isSupported();
+  } catch {
+    castSupported.value = false;
+  }
+}
+
+function detectLocalMissing(): void {
+  const it = item.value;
+  const ep = currentEpisode.value;
+  const playback = currentPlayback.value;
+  if (!it || !ep || !playback || playback.isLocal) {
+    localMissingTaskId.value = null;
+    return;
+  }
+  const task = downloads.tasks.find(
+    (t) => t.mediaId === it.id && t.episodeId === ep.id && t.status === 'completed',
+  );
+  localMissingTaskId.value = task?.id ?? null;
+}
+
+/**
+ * 重新下载（AC-78②）。
+ *
+ * 不直接 import `@/services/downloadService`（不在 UI 白名单），
+ * 走白名单内的 `downloadStore.retry()`——已完成任务在 Service 内部即转入
+ * `redownload()`（复用原记录：清空 blobKey/filePath、进度归零、重新入队）。
+ */
+async function onRedownload(): Promise<void> {
+  const id = localMissingTaskId.value;
+  if (!id || redownloading.value) return;
+  redownloading.value = true;
+  try {
+    await downloads.retry(id);
+    // 任务已回到 queued（blobKey=null），提示条随状态变化消失
+    localMissingTaskId.value = null;
+    toast.success('已重新加入下载队列', 3000);
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    redownloading.value = false;
+  }
+}
 
 /* ---------- 加载播放源 ---------- */
 /**
@@ -294,6 +350,8 @@ async function resolveAndLoad(): Promise<boolean> {
     };
 
     await load(opts);
+    // 「本地文件不可用，已切换网络源」时在页面给出「重新下载」入口（AC-78②）
+    detectLocalMissing();
     // `load()` 内部把失败写入 player.error 而不抛出，这里显式判定
     return loadError.value === null && player.error === null;
   } catch (e) {
@@ -305,6 +363,7 @@ async function resolveAndLoad(): Promise<boolean> {
 }
 
 onMounted(async () => {
+  void detectCastSupport();
   await Promise.all([settings.load(), history.load(), favorites.load(), downloads.load()]);
   await library.loadDetail(mediaId.value);
   detailReady.value = true;
@@ -653,6 +712,7 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             :quality-label="qualityLabel"
             :can-download="!!currentEpisode"
             :downloading="downloading"
+            :cast-disabled="castSupported === false"
             :immersive="immersive"
             @back="goBack"
             @toggle-play="togglePlay"
@@ -728,6 +788,25 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
           {{ offlineEpisodeMessage(offlineEpisodeNumber) }}
         </p>
 
+        <!-- 本地文件不可用（AC-78）：常驻提示条 + 「重新下载」入口 -->
+        <div
+          v-if="localMissingTaskId"
+          class="player-local-missing"
+          role="status"
+          data-test="local-missing"
+        >
+          <span class="player-local-missing__text">本地文件不可用，已切换网络源</span>
+          <button
+            class="btn btn--secondary btn--sm player-local-missing__btn"
+            type="button"
+            data-test="redownload"
+            :disabled="redownloading"
+            @click="onRedownload"
+          >
+            {{ redownloading ? '重新下载中…' : '重新下载' }}
+          </button>
+        </div>
+
         <div class="player-info__actions">
           <button class="player-info__action" type="button" @click="pickerOpen = true">
             <IconDownload :size="18" />
@@ -742,7 +821,19 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             <IconHeart :size="18" :filled="isFavorite" />
             {{ isFavorite ? '已收藏' : '收藏' }}
           </button>
-          <button class="player-info__action" type="button" @click="onCast">
+          <button
+            class="player-info__action"
+            :class="{
+              'player-info__action--on': isFavorite,
+              'player-info__action--disabled': castSupported === false,
+            }"
+            type="button"
+            :aria-label="castSupported === false ? '投屏（当前平台不支持投屏）' : '投屏'"
+            :aria-disabled="castSupported === false ? 'true' : undefined"
+            :disabled="castSupported === false"
+            :title="castSupported === false ? '当前平台不支持投屏' : undefined"
+            @click="onCast"
+          >
             <IconCast :size="18" />
             投屏
           </button>
@@ -905,6 +996,28 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
   color: var(--color-warning);
 }
 
+/* 本地文件不可用提示条（AC-78②） */
+.player-local-missing {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-warning-soft);
+  border: 1px solid rgba(255, 176, 32, 0.36);
+}
+
+.player-local-missing__text {
+  font: var(--text-caption);
+  color: var(--color-warning);
+}
+
+.player-local-missing__btn {
+  flex: 0 0 auto;
+}
+
 .player-info__episode {
   margin-top: var(--space-1);
   font: var(--text-label);
@@ -934,6 +1047,16 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
   color: var(--color-brand-text);
   border-color: var(--color-brand);
   background-color: var(--color-brand-soft);
+}
+
+/* 投屏不可用（AC-84）：设计规范禁用色 + 不可点 */
+.player-info__action:disabled,
+.player-info__action--disabled {
+  color: var(--color-text-disabled);
+  border-color: var(--color-border);
+  background-color: transparent;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .player-info__section {

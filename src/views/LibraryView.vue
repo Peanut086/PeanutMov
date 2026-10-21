@@ -77,6 +77,13 @@ const showSkeleton = computed(
   () => library.state === 'loading' && library.items.length === 0,
 );
 const showError = computed(() => library.state === 'error' && library.items.length === 0);
+/**
+ * 离线且无缓存（AC-92）：应展示空态「离线且无本地缓存」，而不是错误态「网络不可用 + 重试」。
+ * 文案与 `StateView` 的 offline 分支保持一致。
+ */
+const showOfflineEmpty = computed(
+  () => library.state === 'offline' && library.items.length === 0 && !showSkeleton.value,
+);
 const showEmpty = computed(
   () => library.state === 'empty' && !showSkeleton.value && !showError.value,
 );
@@ -254,6 +261,16 @@ function openSettings(): void {
       <template v-if="showSkeleton">
         <PosterGrid :items="[]" loading :skeleton-count="6" />
       </template>
+
+      <!-- 离线且无缓存（AC-92）：空态而非错误态 -->
+      <EmptyState
+        v-else-if="showOfflineEmpty"
+        variant="box"
+        title="离线且无本地缓存"
+        description="当前没有网络，本地也没有缓存内容；连接网络后刷新即可加载。"
+        action-text="连接网络后刷新"
+        @action="refresh"
+      />
 
       <!-- error（无缓存） -->
       <ErrorState

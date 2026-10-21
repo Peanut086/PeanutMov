@@ -21,10 +21,18 @@ const props = withDefaults(
     watchedNumbers?: number[];
     /** 已下载的剧集 id */
     downloadedIds?: string[];
+    /** 已确认解析不到播放地址的剧集 id（REV-20：渲染禁用态） */
+    unavailableIds?: string[];
     /** 起播批次大小 */
     batchSize?: number;
   }>(),
-  { currentId: null, watchedNumbers: () => [], downloadedIds: () => [], batchSize: 50 },
+  {
+    currentId: null,
+    watchedNumbers: () => [],
+    downloadedIds: () => [],
+    unavailableIds: () => [],
+    batchSize: 50,
+  },
 );
 
 const emit = defineEmits<{
@@ -53,8 +61,18 @@ function isDownloaded(ep: Episode): boolean {
   return props.downloadedIds.includes(ep.id);
 }
 
+/** 已确认解析不到播放地址（REV-20）：渲染禁用态并阻止点击进入播放页 */
+function isUnavailable(ep: Episode): boolean {
+  return props.unavailableIds.includes(ep.id);
+}
+
 function onClick(ep: Episode): void {
-  // mock 数据里所有集都有地址；真实集成后 unavailable 由 resolvePlay 决定
+  // 地址探测由父级完成（详情页播放前预检 `resolvePlay`），
+  // 探测为空的集由父级写入 `unavailableIds`，这里渲染禁用态并回传 `unavailable`。
+  if (isUnavailable(ep)) {
+    emit('unavailable', ep);
+    return;
+  }
   emit('select', ep);
 }
 </script>
@@ -66,11 +84,20 @@ function onClick(ep: Episode): void {
         v-for="ep in visible"
         :key="ep.id"
         class="episode-chip"
-        :class="{ 'episode-chip--current': ep.id === currentId }"
+        :class="{
+          'episode-chip--current': ep.id === currentId,
+          'episode-chip--unavailable': isUnavailable(ep),
+        }"
         type="button"
         role="listitem"
         :aria-current="ep.id === currentId ? 'true' : undefined"
-        :aria-label="`第 ${ep.number} 集${ep.title && ep.title !== `第 ${ep.number} 集` ? ` ${ep.title}` : ''}`"
+        :aria-disabled="isUnavailable(ep) ? 'true' : undefined"
+        :aria-label="
+          isUnavailable(ep)
+            ? `第 ${ep.number} 集（暂无可播放地址）`
+            : `第 ${ep.number} 集${ep.title && ep.title !== `第 ${ep.number} 集` ? ` ${ep.title}` : ''}`
+        "
+        :title="isUnavailable(ep) ? '该集暂无可播放地址' : undefined"
         @click="onClick(ep)"
       >
         <span class="episode-chip__number">{{ ep.number }}</span>
@@ -127,6 +154,16 @@ function onClick(ep: Episode): void {
   border-color: var(--color-brand);
   background-color: var(--color-brand-soft);
   color: var(--color-brand-text);
+}
+
+/* 不可播（REV-20 / AC-33）：设计规范禁用色，删除线示意无地址 */
+.episode-chip--unavailable {
+  color: var(--color-text-disabled);
+  cursor: not-allowed;
+}
+
+.episode-chip--unavailable .episode-chip__number {
+  text-decoration: line-through;
 }
 
 .episode-chip__check {

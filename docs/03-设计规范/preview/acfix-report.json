@@ -1,0 +1,147 @@
+{
+  "series": {
+    "mediaId": "demo:demo-102~oz5ai1",
+    "episodes": 4
+  },
+  "ac33_beforeHash": "#/detail/demo:demo-102~oz5ai1",
+  "ac33_stub": {
+    "episodeId": "demo-demo-102-oz5ai1:demo-demo-102-oz5ai1-0-7ewo16:1~1w0ce43",
+    "number": 1
+  },
+  "ac33_primary": {
+    "hash": "#/detail/demo:demo-102~oz5ai1",
+    "onDetail": true,
+    "onPlayer": false,
+    "toasts": [
+      "该集暂无可播放地址"
+    ]
+  },
+  "ac33_chip": {
+    "found": true,
+    "ariaDisabled": "true",
+    "label": "第 1 集（暂无可播放地址）",
+    "title": "该集暂无可播放地址",
+    "color": "rgb(90, 90, 99)"
+  },
+  "ac33_afterClick": {
+    "hash": "#/detail/demo:demo-102~oz5ai1",
+    "onPlayer": false,
+    "toasts": [
+      "该集暂无可播放地址",
+      "该集暂无可播放地址"
+    ]
+  },
+  "ac33_throw": {
+    "ctor": "AppError",
+    "before": "#/detail/demo:demo-102~oz5ai1",
+    "after": "#/detail/demo:demo-102~oz5ai1",
+    "onPlayer": false,
+    "toasts": [
+      "该集暂无可播放地址",
+      "该集暂无可播放地址"
+    ]
+  },
+  "ac84_detail": {
+    "disabled": true,
+    "ariaDisabled": "true",
+    "ariaLabel": "投屏（当前平台不支持投屏）",
+    "title": "当前平台不支持投屏",
+    "color": "rgb(90, 90, 99)",
+    "castSupportedStore": null
+  },
+  "ac84_service": false,
+  "ac78_seed": {
+    "mediaId": "demo:demo-102~oz5ai1",
+    "episodeId": "demo-demo-102-oz5ai1:demo-demo-102-oz5ai1-0-7ewo16:2~1w0ce44",
+    "number": 2,
+    "lineId": "demo-demo-102-oz5ai1:0~7ewo16"
+  },
+  "ac78_page": {
+    "readyState": 4,
+    "bannerText": "本地文件不可用，已切换网络源重新下载",
+    "buttonText": "重新下载",
+    "toasts": [],
+    "before": {
+      "status": "completed",
+      "blobKey": "gone-blob-acfix"
+    }
+  },
+  "ac78_transition": [
+    "completed|gone-blob-acfix|1000",
+    "queued|null|0",
+    "downloading|null|0"
+  ],
+  "ac78_shotToasts": [
+    "已重新加入下载队列"
+  ],
+  "ac78_toastRect": {
+    "viewport": [
+      390,
+      844
+    ],
+    "host": [
+      23.40625,
+      726,
+      343.1875,
+      46
+    ],
+    "toast": [
+      23.40625,
+      726,
+      343.1875,
+      46
+    ],
+    "opacity": "1"
+  },
+  "ac78_dbg": {
+    "exists": false
+  },
+  "ac78_dbg2": {
+    "exists": false
+  },
+  "ac78_afterClick": {
+    "store": {
+      "status": "downloading",
+      "blobKey": null,
+      "downloadedBytes": 0
+    },
+    "db": {
+      "status": "downloading",
+      "blobKey": null,
+      "downloadedBytes": 0
+    },
+    "bannerGone": true,
+    "toasts": []
+  },
+  "ac84_player": {
+    "controls": {
+      "disabled": true,
+      "ariaDisabled": "true",
+      "ariaLabel": "投屏（当前平台不支持投屏）",
+      "title": "当前平台不支持投屏",
+      "color": "rgb(90, 90, 99)"
+    },
+    "info": {
+      "disabled": true,
+      "ariaDisabled": "true",
+      "ariaLabel": "投屏（当前平台不支持投屏）",
+      "title": "当前平台不支持投屏",
+      "color": "rgb(90, 90, 99)"
+    }
+  },
+  "ac92_clear": [
+    true,
+    true,
+    true,
+    true
+  ],
+  "ac92": {
+    "online": false,
+    "libraryState": "offline",
+    "items": 0,
+    "emptyShown": true,
+    "emptyText": "离线且无本地缓存当前没有网络，本地也没有缓存内容；连接网络后刷新即可加载。连接网络后刷新",
+    "errorShown": false,
+    "bodyText": "离线且无本地缓存当前没有网络，本地也没有缓存内容；连接网络后刷新即可加载。连接网络后刷新"
+  }
+}

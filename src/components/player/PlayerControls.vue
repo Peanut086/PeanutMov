@@ -45,9 +45,11 @@ const props = withDefaults(
     canDownload: boolean;
     /** 正在下载 */
     downloading?: boolean;
+    /** 当前平台不支持投屏（AC-84）：渲染为禁用态 */
+    castDisabled?: boolean;
     immersive?: boolean;
   }>(),
-  { downloading: false, immersive: false },
+  { downloading: false, castDisabled: false, immersive: false },
 );
 
 const emit = defineEmits<{
@@ -92,7 +94,15 @@ const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
       </div>
 
       <div class="controls-top__actions">
-        <button class="controls-btn" type="button" aria-label="投屏" @click="emit('cast')">
+        <button
+          class="controls-btn"
+          type="button"
+          :aria-label="castDisabled ? '投屏（当前平台不支持投屏）' : '投屏'"
+          :aria-disabled="castDisabled ? 'true' : undefined"
+          :disabled="castDisabled"
+          :title="castDisabled ? '当前平台不支持投屏' : undefined"
+          @click="emit('cast')"
+        >
           <IconCast :size="20" />
         </button>
         <button
