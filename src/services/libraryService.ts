@@ -3,7 +3,8 @@
  *
  * 缓存策略（技术方案 6 章）：
  * - 分类：先读缓存，`refresh` 或缓存为空时回源并全量替换；
- * - 浏览：第 1 页同源同分类缓存 5 分钟内先返回；第 2+ 页必须回源；离线第 1 页返回缓存；
+ * - 浏览：第 1 页「全部」+ 无筛选命中缓存 5 分钟内先返回；指定分类或带筛选必须回源；
+ *   第 2+ 页必须回源；离线第 1 页「全部」返回缓存，离线指定分类给出明确离线态；
  * - 搜索：本地 by-title 检索（≤50）+ 各启用源并发远程（单源 5s，失败收集）；
  * - 详情：缓存优先并后台刷新；`refresh:true` 强制回源。
  */
@@ -99,6 +100,17 @@ function applyFiltersLocally(items: MediaItem[], filters: LibraryFilters): Media
   });
 }
 
+/**
+ * 离线 + 指定分类时的错误（BUG-01）
+ *
+ * `MediaItem` 无分类字段（分类只在 `Category` 上，`categoryId` 是源内任意值，
+ * 如 `demo:movie`、`alist:/movies/动作`），缓存无法还原"该条目属于哪个分类"，
+ * 因此离线时按分类浏览只能给出明确离线态，不能把同源全量缓存当分类结果返回。
+ */
+function offlineCategoryError(): AppError {
+  return new AppError('E_NETWORK', '离线无法按分类浏览，请联网后重试或切回「全部」查看本地缓存');
+}
+
 async function requireSource(sourceId: string): Promise<Source> {
   const source = await sourceRepo.get(sourceId);
   if (!source) throw new AppError('E_NOT_FOUND', '源不存在');
@@ -177,8 +189,11 @@ export const libraryService: LibraryService = {
       signal: query.signal,
     };
 
-    // 第 1 页缓存快速路径：无筛选时用同源缓存直接返回，再后台刷新
-    if (query.page === 1 && !query.refresh && filtersAreEmpty(query.filters)) {
+    // 第 1 页缓存快速路径：仅「全部」且无筛选时用同源缓存直接返回，再后台刷新。
+    // 指定分类时必须回源适配器：缓存条目无分类字段，无法在本地还原分类维度（BUG-01）。
+    const useFirstPageCache =
+      query.page === 1 && !query.refresh && query.categoryId === null && filtersAreEmpty(query.filters);
+    if (useFirstPageCache) {
       const cached = await mediaRepo.listBySource(query.sourceId, { limit: pageSize, offset: 0 });
       const filtered = hideDemo ? cached.filter((item) => !item.isDemo) : cached;
       const fresh =
@@ -197,6 +212,8 @@ export const libraryService: LibraryService = {
     }
 
     if (!isOnline()) {
+      // 离线 + 指定分类：缓存无法按分类过滤，给明确离线态而不是全量（BUG-01）
+      if (query.categoryId !== null) throw offlineCategoryError();
       const cached = await mediaRepo.listBySource(query.sourceId, { limit: pageSize, offset: 0 });
       const filtered = applyFiltersLocally(hideDemo ? cached.filter((item) => !item.isDemo) : cached, query.filters);
       if (filtered.length > 0) {
@@ -210,10 +227,12 @@ export const libraryService: LibraryService = {
       result = await adapter.browse(params);
     } catch (e) {
       if (query.page === 1 && isNetworkError(e)) {
-        // AC-28：刷新失败保留旧数据
-        const cached = await mediaRepo.listBySource(query.sourceId, { limit: pageSize, offset: 0 });
-        if (cached.length > 0) {
-          return { items: applyFiltersLocally(cached, query.filters), page: 1, pageSize, total: cached.length, hasMore: false };
+        // AC-28：刷新失败保留旧数据；指定分类时缓存无法还原分类维度，不返回全量
+        if (query.categoryId === null) {
+          const cached = await mediaRepo.listBySource(query.sourceId, { limit: pageSize, offset: 0 });
+          if (cached.length > 0) {
+            return { items: applyFiltersLocally(cached, query.filters), page: 1, pageSize, total: cached.length, hasMore: false };
+          }
         }
       }
       throw e;

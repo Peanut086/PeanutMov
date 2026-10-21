@@ -1,0 +1,256 @@
+{
+  "base": "http://localhost:5175",
+  "ranAt": "2026-10-20T11:13:53.772Z",
+  "total": 25,
+  "passed": 18,
+  "failed": 7,
+  "results": [
+    {
+      "id": "E2E-01",
+      "name": "首启合规页含四项要点且无跳过入口",
+      "ok": true,
+      "detail": {
+        "ok": true
+      }
+    },
+    {
+      "id": "E2E-02",
+      "name": "首页海报墙 12 条且未播放时无「继续观看」",
+      "ok": true,
+      "detail": {
+        "cards": 12,
+        "continueSection": false,
+        "demoBadges": 12
+      }
+    },
+    {
+      "id": "E2E-03",
+      "name": "媒体库 12 条 + 分类 Tab 完整",
+      "ok": true,
+      "detail": {
+        "cards": 12,
+        "tabs": [
+          "全部",
+          "电影",
+          "电视剧",
+          "动漫",
+          "综艺"
+        ],
+        "source": "内置演示"
+      }
+    },
+    {
+      "id": "E2E-04",
+      "name": "分类「电影」切换后列表按类型过滤",
+      "ok": false,
+      "detail": "分类未过滤：before=12 after=12，选中=电影"
+    },
+    {
+      "id": "E2E-05",
+      "name": "搜索 \"Sintel\" 结果条数与列表行数一致",
+      "ok": true,
+      "detail": {
+        "count": "1 条",
+        "rows": 1,
+        "empty": false
+      }
+    },
+    {
+      "id": "E2E-06",
+      "name": "详情页集数文案与集数节点一致（Sintel 双线路）",
+      "ok": true,
+      "detail": {
+        "title": "Sintel",
+        "count": "共 1 集",
+        "chips": 1,
+        "lines": 2,
+        "descToggle": false,
+        "compliance": true
+      }
+    },
+    {
+      "id": "E2E-07",
+      "name": "详情页收藏 → aria-pressed 变 true",
+      "ok": true,
+      "detail": {
+        "pressed": "true",
+        "cnt": 1
+      }
+    },
+    {
+      "id": "E2E-08",
+      "name": "播放页出画（readyState≥2 且有 duration）",
+      "ok": true,
+      "detail": {
+        "hasVideo": true,
+        "readyState": 4,
+        "duration": 120,
+        "errorPanel": false,
+        "loading": false
+      }
+    },
+    {
+      "id": "E2E-09",
+      "name": "倍速 1.5x 生效且进度不跳变",
+      "ok": true,
+      "detail": {
+        "rate": 1.5,
+        "t": 2.499729
+      }
+    },
+    {
+      "id": "E2E-10",
+      "name": "暂停在 40% 后历史写回（positionSec 与进度）",
+      "ok": true,
+      "detail": {
+        "positionSec": 48,
+        "durationSec": 120,
+        "progress": 0.4
+      }
+    },
+    {
+      "id": "E2E-11",
+      "name": "返回详情主按钮显示「继续观看 · 第 N 集」",
+      "ok": true,
+      "detail": {
+        "primary": "继续观看 · 第 1 集"
+      }
+    },
+    {
+      "id": "E2E-12",
+      "name": "再次进入播放页从记录位置续播（±2s）",
+      "ok": true,
+      "detail": {
+        "start": 49.5,
+        "recorded": 48
+      }
+    },
+    {
+      "id": "E2E-13",
+      "name": "播放后首页出现「继续观看」横滑区且可点",
+      "ok": true,
+      "detail": {
+        "section": true,
+        "cards": 1,
+        "meta": "剩余 2 分钟"
+      }
+    },
+    {
+      "id": "E2E-14",
+      "name": "历史页 1 条记录、含集号/进度/分组",
+      "ok": true,
+      "detail": {
+        "rows": 1,
+        "groups": [
+          "今天"
+        ],
+        "text": "观看历史 清空 今天Sintel第 1 集 · 看到 0:49 刚刚"
+      }
+    },
+    {
+      "id": "E2E-15",
+      "name": "收藏页显示 1 条收藏",
+      "ok": true,
+      "detail": {
+        "cards": 4,
+        "text": "收藏 排序 共 1 个 · 按最近收藏排序Sintel2010 · 电影"
+      }
+    },
+    {
+      "id": "E2E-16",
+      "name": "详情页选择集数下载并生成任务（AC-69）",
+      "ok": false,
+      "detail": "未找到下载按钮"
+    },
+    {
+      "id": "E2E-17",
+      "name": "下载任务完成并写 blobKey（Web 落盘）",
+      "ok": false,
+      "detail": "无下载任务行"
+    },
+    {
+      "id": "E2E-18",
+      "name": "设置页行无重复渲染 + 概览计数",
+      "ok": true,
+      "detail": {
+        "rows": 15,
+        "labels": [
+          "片源管理",
+          "观看历史",
+          "我的收藏",
+          "默认倍速",
+          "自动连播下一集",
+          "手势灵敏度",
+          "字幕设置",
+          "主题",
+          "隐藏演示内容",
+          "数据备份与恢复",
+          "清理缓存",
+          "清空全部数据",
+          "关于 PeanutMov",
+          "合规声明",
+          "源合规提示"
+        ],
+        "dupes": [],
+        "overview": "源 1 · 收藏 1 · 历史 1"
+      }
+    },
+    {
+      "id": "E2E-19",
+      "name": "源管理仅 1 个内置演示源并显示健康状态",
+      "ok": true,
+      "detail": {
+        "cards": 1,
+        "flags": [
+          "内置",
+          "默认"
+        ],
+        "health": [
+          "正常"
+        ],
+        "hasCompliance": true
+      }
+    },
+    {
+      "id": "E2E-20",
+      "name": "新增 AList 源可保存并出现在源列表（AC-03）",
+      "ok": false,
+      "detail": "sources 表 1 → 1（期望 +1）；表单字段=[{\"type\":\"text\",\"name\":\"source-name\",\"ph\":\"如：家里 NAS\"},{\"type\":\"url\",\"name\":\"source-url\",\"ph\":\"https://alist.example.com\"},{\"type\":\"text\",\"name\":\"source-path\",\"ph\":\"/movies\"}]"
+    },
+    {
+      "id": "E2E-21",
+      "name": "订阅链接解析并提交写入源（AC-08/13）",
+      "ok": false,
+      "detail": "sources 1 → 1（期望 +2，缺 api 的应跳过）"
+    },
+    {
+      "id": "E2E-22",
+      "name": "备份导出 JSON 且默认脱敏、含 schemaVersion",
+      "ok": false,
+      "detail": "下载目录无 JSON: (空)"
+    },
+    {
+      "id": "E2E-23",
+      "name": "备份文件可解析预览并导入（AC-89）",
+      "ok": false,
+      "detail": "无备份文件可导入"
+    },
+    {
+      "id": "E2E-24",
+      "name": "离线时媒体库展示缓存并显示离线横幅",
+      "ok": true,
+      "detail": {
+        "cards": 12,
+        "offline": true,
+        "text": " 媒体库离线模式，展示本地缓存 全部 电影电视剧动漫综艺源内置演示筛选演示Sintel2010 · 电影 全 3 集 演示户外实验室2023 · 综艺 全 3 集 演示厨房时间2024 · 综艺 全 "
+      }
+    },
+    {
+      "id": "E2E-25",
+      "name": "未知路由展示 404 页",
+      "ok": true,
+      "detail": " 404页面不存在链接可能已失效，或该内容已被移除。返回首页返回上一页网络已恢复网络已恢复 "
+    }
+  ],
+  "consoleLogs": []
+}

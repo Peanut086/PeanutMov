@@ -8,8 +8,15 @@ import { computed, ref } from 'vue';
 
 import { sourceService } from '@/services/sourceService';
 import { appEvents } from '@/services/events';
-import { toErrorShape } from '@/shared/errors';
-import type { AppErrorShape, Source } from '@/types';
+import { toAppError, toErrorShape } from '@/shared/errors';
+import type { AppErrorShape, Source, SourceInput } from '@/types';
+
+/** `testConnection` 的 UI 投影（不暴露 health/itemCount 等枚举细节） */
+export interface TestConnectionFeedback {
+  ok: boolean;
+  message: string;
+  latencyMs?: number;
+}
 
 export const useSourceStore = defineStore('source', () => {
   const sources = ref<Source[]>([]);
@@ -119,6 +126,62 @@ export const useSourceStore = defineStore('source', () => {
     unsubscribe = null;
   }
 
+  /* ---------- v1.1（CHG-01）新增：写操作统一「落库 → 刷新内存」 ---------- */
+
+  async function create(input: SourceInput): Promise<Source> {
+    error.value = null;
+    try {
+      const created = await sourceService.create(input);
+      await reload();
+      return created;
+    } catch (e) {
+      error.value = toErrorShape(e, 'E_DB');
+      throw toAppError(e, 'E_DB');
+    }
+  }
+
+  async function update(id: string, patch: Partial<SourceInput>): Promise<Source> {
+    error.value = null;
+    try {
+      const updated = await sourceService.update(id, patch);
+      await reload();
+      return updated;
+    } catch (e) {
+      error.value = toErrorShape(e, 'E_DB');
+      throw toAppError(e, 'E_DB');
+    }
+  }
+
+  async function remove(id: string, opts?: { removeDownloads?: boolean }): Promise<void> {
+    error.value = null;
+    try {
+      await sourceService.remove(id, opts);
+      if (currentSourceId.value === id) currentSourceId.value = null;
+      await reload();
+    } catch (e) {
+      error.value = toErrorShape(e, 'E_DB');
+      throw toAppError(e, 'E_DB');
+    }
+  }
+
+  /**
+   * 连接测试：直接转发 `sourceService.testConnection` 的真实探测结果。
+   * 与 API-01 一致，本方法不抛错——失败经 `ok:false` + `message` 表达。
+   */
+  async function testConnection(input: SourceInput): Promise<TestConnectionFeedback> {
+    try {
+      const result = await sourceService.testConnection(input);
+      return {
+        ok: result.ok,
+        message: result.error?.message ?? (result.ok ? '连接成功' : '连接失败'),
+        latencyMs: result.latencyMs,
+      };
+    } catch (e) {
+      // 兜底：适配器意外抛错也不穿透到 UI
+      return { ok: false, message: toErrorShape(e, 'E_NETWORK').message };
+    }
+  }
+
   return {
     sources,
     currentSourceId,
@@ -133,6 +196,10 @@ export const useSourceStore = defineStore('source', () => {
     setEnabled,
     reorder,
     refreshHealth,
+    create,
+    update,
+    remove,
+    testConnection,
     $dispose,
   };
 });
