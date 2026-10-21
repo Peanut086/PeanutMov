@@ -72,22 +72,30 @@ export const useDownloadStore = defineStore('download', () => {
     }
   }
 
-  async function create(input: CreateDownloadInput): Promise<void> {
+  /** 单集创建：返回是否命中已有有效任务（FR-30 重复下载提示） */
+  async function create(input: CreateDownloadInput): Promise<{ existed: boolean }> {
     error.value = null;
     try {
-      await downloadService.create(input);
+      const result = await downloadService.create(input);
       await refresh();
+      return { existed: result.existed };
     } catch (e) {
       error.value = toErrorShape(e);
       throw e;
     }
   }
 
-  async function createMany(inputs: CreateDownloadInput[]): Promise<void> {
+  /**
+   * 批量创建：回传 `{ created, skipped }`，UI 据此提示"该集已在下载列表中"（REV-15 / FR-30）。
+   */
+  async function createMany(
+    inputs: CreateDownloadInput[],
+  ): Promise<{ created: DownloadTask[]; skipped: DownloadTask[] }> {
     error.value = null;
     try {
-      await downloadService.createMany(inputs);
+      const result = await downloadService.createMany(inputs);
       await refresh();
+      return result;
     } catch (e) {
       error.value = toErrorShape(e);
       throw e;

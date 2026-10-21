@@ -22,6 +22,7 @@ import { formatBytes } from '@/components/common/format';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
+import { useCacheStore } from '@/stores/cacheStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useSourceStore } from '@/stores/sourceStore';
 import { useTheme } from '@/composables/useTheme';
@@ -35,6 +36,7 @@ const sources = useSourceStore();
 const favorites = useFavoriteStore();
 const history = useHistoryStore();
 const downloads = useDownloadStore();
+const cache = useCacheStore();
 const toast = useToast();
 const ui = useUiStore();
 const theme = useTheme();
@@ -148,12 +150,24 @@ async function setHideDemo(value: boolean): Promise<void> {
 async function clearCache(): Promise<void> {
   const ok = await ui.confirm({
     title: '清理缓存？',
-    message: '将清理媒体元数据与图片缓存，不影响收藏、历史与已下载内容。',
+    message: '将清理媒体元数据与分类缓存，不影响收藏、历史与已下载内容。',
     confirmText: '清理',
   });
   if (!ok) return;
-  cacheCleared.value = true;
-  toast.success('缓存已清理');
+  try {
+    // REV-12：真实清空 media/lines/episodes/categories（AC-91），保留历史/收藏/下载
+    const result = await cache.clearMetadataCache();
+    cacheCleared.value = true;
+    // 元数据已删 → 重新进入媒体库时由 LibraryView 回源拉取（AC-91 后半段）
+    if (result.total === 0) {
+      toast.info('没有可清理的缓存');
+      return;
+    }
+    const freed = result.freedBytes !== null ? `，释放约 ${formatBytes(result.freedBytes)}` : '';
+    toast.success(`已清理 ${result.total} 条缓存${freed}`);
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
 }
 
 async function resetAll(): Promise<void> {

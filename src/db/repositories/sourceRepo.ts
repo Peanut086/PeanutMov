@@ -2,7 +2,7 @@
  * 源配置仓储（`sources` store，技术方案 5.1 / API-03）
  */
 import { withTx } from '@/db/index';
-import { STORE_NAMES, type CinemaDB, type CinemaReadTx } from '@/db/schema';
+import { STORE_NAMES, type CinemaDB, type CinemaReadTx, type CinemaTx } from '@/db/schema';
 import type { Source } from '@/types';
 
 type SourceStore = CinemaDB['sources'];
@@ -71,9 +71,14 @@ export const sourceRepo = {
     });
   },
 
-  async clear(): Promise<void> {
-    await withTx(['sources'], 'readwrite', async (tx) => {
+  /** 清空全部源；`tx` 由调用方提供时并入外层事务（清空全部数据用，REV-02） */
+  async clear(tx?: CinemaTx): Promise<void> {
+    if (tx) {
       await tx.objectStore(STORE_NAMES.sources).clear();
+      return;
+    }
+    await withTx(['sources'], 'readwrite', async (inner) => {
+      await inner.objectStore(STORE_NAMES.sources).clear();
     });
   },
 };

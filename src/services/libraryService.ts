@@ -384,6 +384,20 @@ export const libraryService: LibraryService = {
     const local = await downloadService.findLocalPlay(params.mediaId, params.episodeId);
     if (local) return local;
 
+    // 任务已完成但本地文件/Blob 丢失 → 回退网络源时**明确告知**（AC-78 / REV-23）。
+    // `PlaybackSource` 无"本地不可用"字段且类型冻结，故用事件把 taskId 透出：
+    // UI 可提示"本地文件不可用，已切换网络源"，并调用 `downloadService.redownload(taskId)`。
+    const missingTask = await downloadService.localMissingTaskOf(params.mediaId, params.episodeId);
+    if (missingTask) {
+      logger.warn('本地文件缺失，回退网络源', { taskId: missingTask.id, mediaId: params.mediaId });
+      appEvents.emit('local:missing', {
+        taskId: missingTask.id,
+        mediaId: params.mediaId,
+        episodeId: params.episodeId,
+        text: '本地文件不可用，已切换网络源',
+      });
+    }
+
     const source = await sourceRepo.get(item.sourceId);
     if (!source) throw new AppError('E_SOURCE_UNAVAILABLE', '该源已被移除');
     const adapter = await adapterFor(source);

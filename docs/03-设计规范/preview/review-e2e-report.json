@@ -1,6 +1,6 @@
 {
   "base": "http://localhost:5175",
-  "ranAt": "2026-10-21T02:18:25.090Z",
+  "ranAt": "2026-10-21T03:52:00.106Z",
   "total": 25,
   "passed": 25,
   "failed": 0,
@@ -111,7 +111,7 @@
       "ok": true,
       "detail": {
         "rate": 1.5,
-        "t": 2.599929
+        "t": 2.56319
       }
     },
     {
@@ -119,9 +119,9 @@
       "name": "暂停在 40% 后历史写回（positionSec 与进度）",
       "ok": true,
       "detail": {
-        "positionSec": 49.1,
+        "positionSec": 51.4,
         "durationSec": 120,
-        "progress": 0.41
+        "progress": 0.43
       }
     },
     {
@@ -137,8 +137,8 @@
       "name": "再次进入播放页从记录位置续播（±2s）",
       "ok": true,
       "detail": {
-        "start": 50.6,
-        "recorded": 49.1
+        "start": 52.9,
+        "recorded": 51.4
       }
     },
     {
@@ -160,7 +160,7 @@
         "groups": [
           "今天"
         ],
-        "text": "观看历史 清空 今天Sintel第 1 集 · 看到 0:50 刚刚"
+        "text": "观看历史 清空 今天Sintel第 1 集 · 看到 0:52 刚刚"
       }
     },
     {
@@ -201,7 +201,7 @@
         ],
         "text": "下载共 1 个任务21.3 MB / 21.3 MB100% 已完成 1全部下载中已完成失败Sintel · 第 1 集已完成 · 21.3 MB · 可离线观看21.3 MB / 21.3 MB ",
         "completedBytes": 22306323,
-        "blobKey": "b53452d9-cb7d-4b76-b44f-843b7b760494"
+        "blobKey": "9cc5e6a7-5189-44d8-a8d4-ae0e52bb93f0"
       }
     },
     {

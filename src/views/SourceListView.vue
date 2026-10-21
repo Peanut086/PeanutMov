@@ -21,6 +21,7 @@ import SourceCard from '@/components/source/SourceCard.vue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useSourceStore } from '@/stores/sourceStore';
+import { restoreDemoSource } from '@/stores/bootstrap';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
@@ -50,6 +51,14 @@ const ordered = computed(() =>
 );
 
 const defaultSourceId = computed(() => settings.settings?.defaultSourceId ?? sources.defaultSource?.id ?? null);
+
+/**
+ * 演示源状态（REV-14 / FR-43 / AC-97）
+ * 「恢复演示源」仅在内置源被禁用或被清空时可见；正常可用时不打扰用户。
+ */
+const demoSource = computed(() => sources.sources.find((s) => s.builtin && s.type === 'demo') ?? null);
+const demoNeedsRestore = computed(() => demoSource.value === null || !demoSource.value.enabled);
+const restoringDemo = ref(false);
 
 onMounted(async () => {
   try {
@@ -172,6 +181,24 @@ function goImport(): void {
   void router.push('/settings/sources/import');
 }
 
+/**
+ * 恢复演示源（AC-97 后半段）：`seedService.restoreDemo()` 经 `@/stores/bootstrap` 调用，
+ * 内部强制启用 + 幂等补齐条目（不重复插入），成功后 `sources:changed` 触发 Store 重载。
+ */
+async function restoreDemo(): Promise<void> {
+  if (restoringDemo.value) return;
+  restoringDemo.value = true;
+  try {
+    const source = await restoreDemoSource();
+    await sources.load();
+    toast.success(`已恢复「${source.name}」并补齐演示条目`);
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    restoringDemo.value = false;
+  }
+}
+
 
 async function retry(): Promise<void> {
   error.value = null;
@@ -195,6 +222,18 @@ async function retry(): Promise<void> {
       <ComplianceNotice />
 
       <OfflineBanner v-if="isOffline" text="离线模式，健康状态可能不准确" />
+
+      <!-- 恢复演示源（REV-14 / AC-97）：仅内置演示源被禁用或被清理时可见 -->
+      <button
+        v-if="demoNeedsRestore"
+        class="sources-restore"
+        type="button"
+        :disabled="restoringDemo"
+        @click="restoreDemo"
+      >
+        <LoadingSpinner v-if="restoringDemo" :size="16" />
+        {{ restoringDemo ? '正在恢复…' : '恢复演示源' }}
+      </button>
 
       <div class="sources-actions">
         <button class="btn btn--secondary btn--md sources-actions__btn" type="button" @click="goNew">
@@ -322,6 +361,27 @@ async function retry(): Promise<void> {
   align-items: center;
   gap: var(--space-2);
   margin-top: var(--space-4);
+}
+
+.sources-restore {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 44px;
+  margin-top: var(--space-3);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  border: var(--border-strong);
+  background-color: var(--color-brand-soft);
+  color: var(--color-brand-text);
+  font: var(--text-button-sm);
+}
+
+.sources-restore:disabled {
+  color: var(--color-text-disabled);
+  background-color: var(--color-bg-surface);
 }
 
 .sources-actions__btn {

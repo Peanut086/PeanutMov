@@ -23,7 +23,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   E_AUTH: '认证失败，请检查账号或 Token',
   E_PARSE: '数据解析失败，源可能已变更',
   E_INVALID_INPUT: '输入内容不合法，请检查后重试',
-  E_NOT_FOUND: '内容不存在',
+  // AC-60 指定文案：`E_NOT_FOUND → "资源不存在(404)"`（REV-04）
+  E_NOT_FOUND: '资源不存在(404)',
   E_NOT_IMPLEMENTED: '该源不支持此操作',
   E_SOURCE_DISABLED: '该源已禁用，请先在源管理中启用',
   E_SOURCE_UNAVAILABLE: '该源暂不可用，可切换其他源',

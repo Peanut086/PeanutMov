@@ -213,13 +213,16 @@ export const settingsService = {
   /**
    * 清空业务数据（源/媒体/线路/剧集/分类/历史/收藏/下载/Blob），可选保留演示源与演示条目。
    * 设置本身（主题、搜索历史、合规状态）保留；`keepDemo` 为 true 时重新种入演示数据。
+   *
+   * 9 张表在**同一个事务**内清空：所有 repo 必须传 `tx`，否则内部自开事务会让外层事务
+   * 提前提交，后续写入抛 `InvalidStateError` 并留下"半清空"数据（REV-02）。
    */
   async resetAllData(opts: { keepDemo: boolean }): Promise<void> {
     await withTx(
       ['sources', 'media', 'lines', 'episodes', 'categories', 'history', 'favorites', 'downloads', 'blobs'],
       'readwrite',
       async (tx) => {
-        await sourceRepo.clear();
+        await sourceRepo.clear(tx);
         await mediaRepo.clear(tx);
         await lineRepo.clear(tx);
         await episodeRepo.clear(tx);
@@ -235,6 +238,7 @@ export const settingsService = {
     });
 
     if (opts.keepDemo) {
+      // 重新种入演示源与演示条目（AC-99）：演示源、分类、12 条媒体、线路与剧集
       await seedDemoData({ sourceId: DEMO_SOURCE_ID, restore: true });
     }
     const current = await load();

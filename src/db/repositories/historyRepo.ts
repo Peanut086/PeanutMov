@@ -8,6 +8,26 @@ import { STORE_NAMES, type CinemaTx } from '@/db/schema';
 import { HISTORY_MAX } from '@/shared/constants';
 import type { HistoryRecord } from '@/types';
 
+/**
+ * 写入一条历史并在超限时淘汰最旧（在给定事务内完成）。
+ *
+ * 迁移到 `tx` 时只能 await 本事务的请求：因此先 `count()` 再按需开游标，
+ * 不调用任何会自开事务的方法（REV-01）。
+ */
+async function saveVia(tx: CinemaTx, record: HistoryRecord): Promise<void> {
+  const store = tx.objectStore(STORE_NAMES.history);
+  await store.put(record);
+  const total = await store.count();
+  if (total <= HISTORY_MAX) return;
+  let overflow = total - HISTORY_MAX;
+  let cursor = await store.index('by-updated').openCursor(null, 'next');
+  while (cursor && overflow > 0) {
+    await cursor.delete();
+    overflow -= 1;
+    cursor = await cursor.continue();
+  }
+}
+
 export const historyRepo = {
   async get(id: string): Promise<HistoryRecord | null> {
     return withTx(['history'], 'readonly', async (tx) => {
@@ -41,20 +61,26 @@ export const historyRepo = {
   /**
    * 写入一条历史（覆盖同 id），并在超限时淘汰最旧。
    * 整个过程在一个读写事务内完成，保证条数不会超过上限。
+   *
+   * `tx` 由调用方（如备份导入）提供时，写入并入外层事务，保证跨表原子性（REV-01）。
    */
-  async save(record: HistoryRecord): Promise<void> {
-    await withTx(['history'], 'readwrite', async (tx) => {
-      const store = tx.objectStore(STORE_NAMES.history);
-      await store.put(record);
-      const total = await store.count();
-      if (total <= HISTORY_MAX) return;
-      let overflow = total - HISTORY_MAX;
-      let cursor = await store.index('by-updated').openCursor(null, 'next');
-      while (cursor && overflow > 0) {
-        await cursor.delete();
-        overflow -= 1;
-        cursor = await cursor.continue();
-      }
+  async save(record: HistoryRecord, tx?: CinemaTx): Promise<void> {
+    if (tx) {
+      await saveVia(tx, record);
+      return;
+    }
+    await withTx(['history'], 'readwrite', (inner) => saveVia(inner, record));
+  },
+
+  /** 批量写入（导入用；`tx` 缺省时同一事务内写完全部记录） */
+  async saveMany(records: HistoryRecord[], tx?: CinemaTx): Promise<void> {
+    if (records.length === 0) return;
+    if (tx) {
+      for (const record of records) await saveVia(tx, record);
+      return;
+    }
+    await withTx(['history'], 'readwrite', async (inner) => {
+      for (const record of records) await saveVia(inner, record);
     });
   },
 

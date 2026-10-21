@@ -9,7 +9,9 @@
  * - 不节流（节流由 PlayerController 负责）。
  */
 import { historyRepo } from '@/db/repositories/historyRepo';
+import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { appEvents } from '@/services/events';
+import { settingsService } from '@/services/settingsService';
 import { CONTINUE_WATCHING_LIMIT, HISTORY_MAX, PROGRESS_FINISHED_THRESHOLD } from '@/shared/constants';
 import { AppError } from '@/shared/errors';
 import { historyIdOf } from '@/shared/id';
@@ -82,14 +84,25 @@ export const historyService: HistoryService = {
 
   async listContinueWatching(limit = CONTINUE_WATCHING_LIMIT): Promise<HistoryRecord[]> {
     const all = await historyRepo.listAll(HISTORY_MAX);
-    return all
-      .filter(
-        (record) =>
-          !record.finished &&
-          record.progress > 0.05 &&
-          record.progress < PROGRESS_FINISHED_THRESHOLD,
-      )
-      .slice(0, limit);
+    const pending = all.filter(
+      (record) =>
+        !record.finished &&
+        record.progress > 0.05 &&
+        record.progress < PROGRESS_FINISHED_THRESHOLD,
+    );
+
+    // 「隐藏演示内容」必须同时作用于继续观看（AC-98 / REV-24）。
+    // `HistoryRecord` 不含 `isDemo`，按 mediaId 回查 `media` 表取 isDemo；
+    // 媒体缓存已被清理（查不到条目）时按"非演示"处理，避免把真实历史误隐藏。
+    const settings = await settingsService.get();
+    if (!settings.hideDemoContent) return pending.slice(0, limit);
+
+    const demoIds = new Set<string>();
+    for (const record of pending) {
+      const item = await mediaRepo.get(record.mediaId);
+      if (item?.isDemo) demoIds.add(record.mediaId);
+    }
+    return pending.filter((record) => !demoIds.has(record.mediaId)).slice(0, limit);
   },
 
   async getSeriesProgress(

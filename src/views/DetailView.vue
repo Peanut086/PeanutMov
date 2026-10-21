@@ -30,10 +30,13 @@ import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
 import { useLibraryStore } from '@/stores/libraryStore';
+import { useCacheStore } from '@/stores/cacheStore';
+import { useUiStore } from '@/stores/uiStore';
 import { castService } from '@/services/castService';
 import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { toErrorShape } from '@/shared/errors';
+import { formatBytes } from '@/components/common/format';
 
 const route = useRoute();
 const router = useRouter();
@@ -41,6 +44,8 @@ const library = useLibraryStore();
 const history = useHistoryStore();
 const favorites = useFavoriteStore();
 const downloads = useDownloadStore();
+const cache = useCacheStore();
+const ui = useUiStore();
 const toast = useToast();
 const { isOffline } = useOnlineStatus();
 
@@ -235,9 +240,22 @@ async function downloadEpisodes(episodeIds: string[]): Promise<void> {
       toast.error('所选剧集暂无可用的播放地址');
       return;
     }
-    await downloads.createMany(inputs);
-    toast.success(`已加入下载队列（${inputs.length} 集）`);
+    // REV-15 / FR-30：重复下载必须提示，不能静默忽略（AC-70 的 skipped 分支）
+    const { created, skipped } = await downloads.createMany(inputs);
     pickerOpen.value = false;
+    if (created.length === 0 && skipped.length > 0) {
+      toast.info(skipped.length === 1 ? '该集已在下载列表中' : `所选 ${skipped.length} 集已在下载列表中`);
+      return;
+    }
+    if (created.length > 0 && skipped.length > 0) {
+      toast.success(`已加入 ${created.length} 集，${skipped.length} 集已在下载列表中`);
+      return;
+    }
+    if (created.length === 0) {
+      toast.info('已在下载列表中');
+      return;
+    }
+    toast.success(`已加入下载队列（${created.length} 集）`);
   } catch (e) {
     toast.error(toErrorShape(e).message);
   } finally {
@@ -287,9 +305,33 @@ async function copyTitle(): Promise<void> {
   }
 }
 
-function clearCache(): void {
+/**
+ * 删除本地缓存（REV-13）：真实删除该媒体的 `media` 行与 `lines`/`episodes`。
+ * 收藏、历史与已下载文件不受影响；删除后返回媒体库（条目会按需回源重新拉取）。
+ */
+async function clearCache(): Promise<void> {
+  const it = item.value;
   moreOpen.value = false;
-  toast.info('已清除该条目的本地缓存元数据');
+  if (!it) return;
+  const ok = await ui.confirm({
+    title: '删除本地缓存？',
+    message: '将删除该条目的详情、线路与剧集缓存，收藏、历史与已下载内容不受影响。',
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    const result = await cache.removeMediaCache(it.id);
+    if (result.total === 0) {
+      toast.info('该条目没有本地缓存');
+      return;
+    }
+    const freed = result.freedBytes !== null ? `，释放约 ${formatBytes(result.freedBytes)}` : '';
+    toast.success(`已删除 ${result.total} 条缓存${freed}`);
+    void router.replace('/library');
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
 }
 
 function openCompliance(): void {

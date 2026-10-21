@@ -192,15 +192,22 @@ const downloading = ref(false);
 const castSupported = ref(true);
 /** 最近一次解析出的播放源（投屏/分享用，避免再次解析触发网络请求） */
 const currentPlayback = ref<PlaybackSource | null>(null);
+/** 线路切换进行中（防连点造成两次并发加载，REV-05） */
+const switchingLine = ref(false);
 
 /* ---------- 加载播放源 ---------- */
-async function resolveAndLoad(): Promise<void> {
+/**
+ * 解析并加载当前集/线路。
+ * 返回是否成功：`resolvePlay` 抛错 → `loadError`；引擎加载失败 → `player.error`。
+ * 线路切换需要据此判断是否回退原线路（AC-55 / REV-05）。
+ */
+async function resolveAndLoad(): Promise<boolean> {
   const it = item.value;
   const ep = currentEpisode.value;
   if (!it || !ep) {
     loadError.value = '找不到要播放的内容';
     pageLoading.value = false;
-    return;
+    return false;
   }
   pageLoading.value = true;
   loadError.value = null;
@@ -252,8 +259,11 @@ async function resolveAndLoad(): Promise<void> {
     };
 
     await load(opts);
+    // `load()` 内部把失败写入 player.error 而不抛出，这里显式判定
+    return loadError.value === null && player.error === null;
   } catch (e) {
     loadError.value = toErrorShape(e, 'E_NO_PLAY_URL').message;
+    return false;
   } finally {
     pageLoading.value = false;
   }
@@ -302,6 +312,64 @@ function openDetail(): void {
   void router.replace({ name: 'detail', params: { mediaId: mediaId.value } });
 }
 
+/* ---------- 切换线路（AC-31 保持集号 / AC-55 失败回退原线路） ---------- */
+
+/**
+ * 线路切换内部改路由时，`episodeId` watcher 会跟着触发第二次加载。
+ * 这里用"待加载目标集"标记让 watcher 跳过——比布尔开关更精确（只吞自己发起的那一次）。
+ */
+let pendingLineSwitchEpisode: string | null = null;
+
+/** 当前线路下按集号取目标集（保持集号，AC-31）；找不到同集号时回退首集 */
+function episodeOnLine(lineIdValue: string, number: number): Episode | null {
+  const all = library.detail?.episodes ?? [];
+  const list = all.filter((ep) => ep.lineId === lineIdValue).sort((a, b) => a.number - b.number);
+  return list.find((ep) => ep.number === number) ?? list[0] ?? null;
+}
+
+/** 只更新路由（集号 / 线路 query），加载由调用方统一负责 */
+async function replaceRoute(episodeId: string | null, targetLineId: string | null): Promise<void> {
+  if (episodeId === episodeIdParam.value && targetLineId === lineIdParam.value) return;
+  await router.replace({
+    name: 'player',
+    params: { mediaId: mediaId.value, ...(episodeId ? { episodeId } : {}) },
+    query: targetLineId ? { lineId: targetLineId } : {},
+  });
+}
+
+/**
+ * 切换到目标线路；失败时恢复原线路与原集并提示（AC-55）。
+ *
+ * `resolveAndLoad()` 会重建引擎，因此"回退"是重新加载原线路（不是复用旧实例），
+ * 对用户表现为"未切走"；原线路也失败时给出更明确的提示。
+ */
+async function switchLine(targetLineId: string): Promise<void> {
+  const it = item.value;
+  const previousLineId = currentLineId.value;
+  if (!it || targetLineId === previousLineId || switchingLine.value) return;
+  const previousEpisodeId = currentEpisode.value?.id ?? null;
+  const currentNumber = currentEpisode.value?.number ?? 1;
+  const targetEpisode = episodeOnLine(targetLineId, currentNumber);
+
+  switchingLine.value = true;
+  try {
+    lineId.value = targetLineId;
+    pendingLineSwitchEpisode = targetEpisode?.id ?? previousEpisodeId;
+    await replaceRoute(targetEpisode?.id ?? previousEpisodeId, targetLineId);
+    if (await resolveAndLoad()) return;
+
+    // ---- 回退原线路 ----
+    lineId.value = previousLineId;
+    pendingLineSwitchEpisode = previousEpisodeId;
+    await replaceRoute(previousEpisodeId, previousLineId);
+    const restored = await resolveAndLoad();
+    toast.info(restored ? '切换失败，已保持原线路' : '切换失败，原线路也无法播放');
+  } finally {
+    pendingLineSwitchEpisode = null;
+    switchingLine.value = false;
+  }
+}
+
 async function onSwitchLine(): Promise<void> {
   if (lines.value.length <= 1) {
     toast.info('该内容只有一条线路');
@@ -309,25 +377,12 @@ async function onSwitchLine(): Promise<void> {
   }
   const next = lines.value.find((l) => l.id !== currentLineId.value);
   if (!next) return;
-  lineId.value = next.id;
-  toast.info(`正在切换到 ${next.name}…`);
-  await resolveAndLoad();
+  await switchLine(next.id);
 }
 
 /** LineSelector 选择线路：保持当前集号（AC-31） */
 async function onSwitchLineById(id: string): Promise<void> {
-  if (id === currentLineId.value) return;
-  const currentNumber = currentEpisode.value?.number ?? 1;
-  lineId.value = id;
-  const target = episodes.value.find((ep) => ep.number === currentNumber) ?? episodes.value[0];
-  if (target && target.id !== episodeIdParam.value) {
-    await router.replace({
-      name: 'player',
-      params: { mediaId: mediaId.value, episodeId: target.id },
-      query: { lineId: id },
-    });
-  }
-  await resolveAndLoad();
+  await switchLine(id);
 }
 
 async function onCast(): Promise<void> {
@@ -367,9 +422,14 @@ async function onDownloadCurrent(): Promise<void> {
   downloading.value = true;
   try {
     const inputs = await library.toDownloadInputs(it.id, [ep.id]);
-    await downloads.createMany(inputs);
-    toast.success('已加入下载');
+    // REV-15 / FR-30：重复下载给出明确提示，而不是静默忽略
+    const { created, skipped } = await downloads.createMany(inputs);
     pickerOpen.value = false;
+    if (created.length === 0 && skipped.length > 0) {
+      toast.info('该集已在下载列表中');
+      return;
+    }
+    toast.success(skipped.length > 0 ? '已加入下载（该集已在列表中）' : '已加入下载');
   } catch (e) {
     toast.error(toErrorShape(e).message);
   } finally {
@@ -450,6 +510,8 @@ function onBackgroundExit(): void {
 /* ---------- 监听 route 集号变化（选集/切集后重新加载） ---------- */
 watch(episodeIdParam, async (next, prev) => {
   if (!detailReady.value || next === prev) return;
+  // 线路切换内部改路由时由 `switchLine` 自己加载，这里跳过以免同一集加载两次
+  if (pendingLineSwitchEpisode !== null && next === pendingLineSwitchEpisode) return;
   await resolveAndLoad();
 });
 

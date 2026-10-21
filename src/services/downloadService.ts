@@ -19,6 +19,7 @@ import { createDownloadEngine, setDownloadEngine } from '@/services/downloadEngi
 import { nativeFilePathOf, readBlob } from '@/services/downloadSink';
 import { deleteFile, stat, toPlayableUrl } from '@/native/fs';
 import { currentNetworkType, isOnline } from '@/native/network';
+import { onAppStateChange, type AppLifecycleState } from '@/native/appLifecycle';
 import {
   DOWNLOAD_CELLULAR_WARN_BYTES,
   DOWNLOAD_DEFAULT_CONCURRENCY,
@@ -65,6 +66,9 @@ function emitDownload(event: DownloadEvent): void {
 let queue: DownloadQueue | null = null;
 let concurrency: 1 | 2 | 3 = DOWNLOAD_DEFAULT_CONCURRENCY;
 let bootstrapped = false;
+/** 前后台监听解绑函数（REV-22：切后台暂停、回前台按设置自动恢复） */
+let lifecycleUnbind: (() => void) | null = null;
+let lastLifecycleState: AppLifecycleState = 'active';
 
 function sinkKindFor(): DownloadTask['sink'] {
   return isNative() ? 'filesystem' : 'idb-blob';
@@ -179,11 +183,6 @@ export const downloadService = {
     const existing = await this.findActiveByEpisode(input.mediaId, input.episodeId);
     if (existing) {
       return { task: existing, existed: true };
-    }
-
-    // Web 端大文件前置提示（AC-76）
-    if (!isNative() && input.format === 'hls') {
-      throw new AppError('E_UNSUPPORTED_FORMAT', 'HLS 分片下载暂不支持，请改用直链 MP4/TS');
     }
 
     const now = Date.now();
@@ -393,6 +392,9 @@ export const downloadService = {
   /**
    * 若该集已下载完成且本地可用，返回本地 PlaybackSource；否则 null。
    * 供 `libraryService.resolvePlay` 优先本地（AC-77）。
+   *
+   * 注意：本地文件缺失时这里**只返回 null**，是否"任务存在但文件丢了"由
+   * `isLocalFileMissing()` 单独判定（REV-23：避免静默回退网络源）。
    */
   async findLocalPlay(mediaId: string, episodeId: string): Promise<PlaybackSource | null> {
     const task = await this.findActiveByEpisode(mediaId, episodeId);
@@ -415,6 +417,29 @@ export const downloadService = {
     }
   },
 
+  /**
+   * 「任务已完成但本地文件/Blob 已丢失」（AC-78 / REV-23）。
+   *
+   * `PlaybackSource` 没有"本地不可用"字段（类型冻结，不改），因此服务层用
+   * `downloadService.localMissingTaskOf()` 暴露该状态，供 `resolvePlay` 在回退网络源时
+   * 发事件提示，UI 可据此展示"本地文件不可用 → 重新下载"。
+   */
+  async isLocalFileMissing(mediaId: string, episodeId: string): Promise<boolean> {
+    return (await this.localMissingTaskOf(mediaId, episodeId)) !== null;
+  },
+
+  /** 返回"已完成但本地不可用"的任务（可用于「重新下载」按钮），无则 null */
+  async localMissingTaskOf(mediaId: string, episodeId: string): Promise<DownloadTask | null> {
+    const task = await this.findActiveByEpisode(mediaId, episodeId);
+    if (!task || task.status !== 'completed') return null;
+    try {
+      await this.getLocalPlayUrl(task.id);
+      return null;
+    } catch {
+      return task;
+    }
+  },
+
   async getSummary(): Promise<DownloadSummary> {
     return summaryOf();
   },
@@ -426,16 +451,52 @@ export const downloadService = {
     q.setConcurrency(n);
   },
 
-  /** 启动/回前台恢复队列 */
+  /** 启动/回前台恢复队列；同时接线应用生命周期（AC-72 / REV-22） */
   async bootstrap(): Promise<void> {
+    downloadService.bindLifecycle();
     if (!isOnline()) return;
     bootstrapped = true;
     await requeuePending();
   },
 
+  /**
+   * 订阅前后台切换（AC-72 / REV-22）：
+   * - 进后台：所有"下载中"转"已暂停"，进度保留（abort 传输但不清进度）；
+   * - 回前台：`settings.download.autoResume` 为 true 时自动恢复，否则等用户手动继续。
+   * 重复调用幂等（`bootstrap()` 可能被多次触发）。
+   */
+  bindLifecycle(): void {
+    if (lifecycleUnbind) return;
+    lifecycleUnbind = onAppStateChange((state) => {
+      if (state === lastLifecycleState) return;
+      lastLifecycleState = state;
+      if (state === 'background') {
+        void downloadService.pauseAll('background').catch((e: unknown) => {
+          logger.warn('切后台暂停下载失败', toAppError(e));
+        });
+        return;
+      }
+      void downloadService.resumeAll().catch((e: unknown) => {
+        logger.warn('回前台恢复下载失败', toAppError(e));
+      });
+    });
+  },
+
   async pauseAll(reason: 'background' | 'user'): Promise<void> {
     const q = await ensureQueue();
     await q.pauseAll();
+    // 队列里没有的"下载中"任务（如后台被系统冻结后队列已清空）也要落成"已暂停"，
+    // 保证 AC-72「所有下载中 → 已暂停且进度保留」不留漏网任务。
+    const leftover = await downloadRepo.listByStatus(['downloading']);
+    for (const task of leftover) {
+      try {
+        const next = transition(task, 'pause');
+        await downloadRepo.save(next);
+        emitDownload({ type: 'status', task: next, previous: task.status });
+      } catch (e) {
+        logger.warn('暂停任务失败（忽略该条）', { taskId: task.id, error: toAppError(e).message });
+      }
+    }
     if (reason === 'background') {
       logger.debug('进入后台，已暂停全部下载');
     }
@@ -470,6 +531,27 @@ export const downloadService = {
     return !isNative() && totalBytes !== null && totalBytes > DOWNLOAD_WEB_SIZE_WARN_BYTES;
   },
 
+  /**
+   * 用 HEAD 预检单文件体积（AC-76 前置提示 / REV-07）。
+   *
+   * 返回 `null` 表示无法判定（离线、CORS 禁止 HEAD、服务端未给 `Content-Length`）：
+   * 此时放行，由下载引擎拿到响应头后的同阈值检查兜底。
+   */
+  async preflightSize(url: string, headers: Record<string, string> = {}): Promise<number | null> {
+    if (isNative() || !isOnline()) return null;
+    try {
+      const response = await fetch(url, { method: 'HEAD', headers, cache: 'no-store' });
+      if (!response.ok) return null;
+      const raw = response.headers.get('content-length');
+      if (!raw) return null;
+      const size = Number.parseInt(raw, 10);
+      return Number.isFinite(size) && size >= 0 ? size : null;
+    } catch (e) {
+      logger.debug('下载体积预检失败（忽略）', toAppError(e).message);
+      return null;
+    }
+  },
+
   /** 是否已完成 bootstrap（测试用） */
   isBootstrapped(): boolean {
     return bootstrapped;
@@ -477,6 +559,9 @@ export const downloadService = {
 
   /** 测试辅助：卸载队列（不删数据） */
   __resetQueue(): void {
+    lifecycleUnbind?.();
+    lifecycleUnbind = null;
+    lastLifecycleState = 'active';
     queue?.dispose();
     queue = null;
     listeners.clear();

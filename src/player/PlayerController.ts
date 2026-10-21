@@ -61,6 +61,8 @@ export class PlayerController {
   private quality: string = QUALITY_AUTO;
 
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 网络错误自动重试定时器（REV-06）：必须可取消，避免页面销毁/切集后仍触发 */
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private networkRetries = 0;
 
   private readonly subtitles: SubtitleManager;
@@ -127,6 +129,8 @@ export class PlayerController {
 
   async load(opts: PlayerLoadOptions): Promise<void> {
     if (this.destroyed) throw new AppError('E_INVALID_STATE', '播放器已销毁');
+    // 切集/切线路：取消上一轮尚未触发的网络重试，避免旧重试把新加载顶掉（REV-06）
+    this.clearRetryTimer();
     this.setState('loading');
     this.options = opts;
     this.networkRetries = 0;
@@ -278,7 +282,10 @@ export class PlayerController {
     if (error.code === 'E_NETWORK' && this.networkRetries < NETWORK_RETRY_TIMES) {
       this.networkRetries += 1;
       this.emit('statechange', { playing: false, waiting: true });
-      setTimeout(() => {
+      // 先清旧定时器再登记新定时器：同一时刻最多一个在飞
+      this.clearRetryTimer();
+      this.retryTimer = setTimeout(() => {
+        this.retryTimer = null;
         const opts = this.options;
         if (!opts || this.destroyed) return;
         void this.attachEngine(opts.playback)
@@ -292,6 +299,12 @@ export class PlayerController {
     }
     this.setState('error');
     this.emit('error', error);
+  }
+
+  /** 取消网络重试定时器（load / destroy 共用，REV-06） */
+  private clearRetryTimer(): void {
+    if (this.retryTimer !== null) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
   }
 
   /* ================= 播放控制 ================= */
@@ -540,6 +553,7 @@ export class PlayerController {
     this.destroyed = true;
     if (this.hideTimer !== null) clearTimeout(this.hideTimer);
     this.hideTimer = null;
+    this.clearRetryTimer();
     this.progress.stop();
     await this.progress.flush();
     this.progress.dispose();

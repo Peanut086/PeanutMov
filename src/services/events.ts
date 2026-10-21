@@ -16,6 +16,8 @@ export type AppEventMap = {
   'history:changed': { id: string | null };
   'favorites:changed': { id: string | null };
   'downloads:changed': { id: string | null };
+  /** 已下载任务但本地文件/Blob 丢失（AC-78 / REV-23）：UI 提示并提供「重新下载」 */
+  'local:missing': { taskId: string; mediaId: string; episodeId: string; text: string };
   'settings:changed': { patch: Record<string, unknown> };
   'toast': { text: string; type: 'info' | 'success' | 'error' };
 };

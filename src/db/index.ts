@@ -73,6 +73,35 @@ export function getDb(): Promise<IDBPDatabase<CinemaDB>> {
   return dbPromise;
 }
 
+/** 是否开发期构建（用于事务诊断日志；生产构建不产生额外副作用） */
+function isDevBuild(): boolean {
+  try {
+    return Boolean(import.meta.env?.DEV);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 事务提前结束诊断（REV-01 / REV-02）。
+ *
+ * 回调里只要 await 了"非本事务"的 Promise（最典型：调用未传 `tx` 的 repository 方法，
+ * 内部又自开了一个事务），浏览器会在 await 期间把本事务自动提交；此后本事务的写入
+ * 会抛 `InvalidStateError`，且已写入的数据无法回滚。这里在**回调返回时**检查
+ * `tx.done` 是否已经 settle，命中即记录错误日志（只在开发期输出，不抛异常影响功能）。
+ */
+function reportPrematureSettle(
+  stores: StoreName[],
+  mode: IDBTransactionMode,
+  outcome: 'commit' | 'abort',
+): void {
+  if (!isDevBuild()) return;
+  logger.error(
+    'withTx 回调结束时事务已提前结束，原子性可能已丢失：请在回调内把 tx 传给 repository，避免嵌套自开事务',
+    { stores, mode, outcome },
+  );
+}
+
 /**
  * 事务封装：成功提交后返回结果；失败时回滚并抛出映射后的 AppError。
  *
@@ -90,13 +119,23 @@ export async function withTx<Mode extends IDBTransactionMode, Result>(
   } catch (e) {
     throw mapDbError(e);
   }
-  // 事务失败时 tx.done 会 reject：这里提前挂 catch，避免未处理的 Promise 拒绝
-  const done = tx.done.catch(() => undefined);
+  // 记录事务结束时机：若回调返回前就已 settle，说明回调 await 了非本事务的 Promise
+  let settleOutcome: 'commit' | 'abort' | null = null;
+  const done = tx.done.then(
+    () => {
+      settleOutcome = 'commit';
+    },
+    () => {
+      settleOutcome = 'abort';
+    },
+  );
   try {
     const result = await fn(tx);
+    if (settleOutcome !== null) reportPrematureSettle(stores, mode, settleOutcome);
     await tx.done;
     return result;
   } catch (e) {
+    if (settleOutcome === 'commit') reportPrematureSettle(stores, mode, 'commit');
     try {
       tx.abort();
     } catch {

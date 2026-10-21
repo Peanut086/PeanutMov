@@ -9,7 +9,7 @@
  */
 import { AppError, toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
-import { DOWNLOAD_PROGRESS_PERSIST_MS } from '@/shared/constants';
+import { DOWNLOAD_PROGRESS_PERSIST_MS, DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/shared/constants';
 import { createSink, type DownloadSink } from '@/services/downloadSink';
 import { appEvents } from '@/services/events';
 import type { DownloadTask } from '@/types';
@@ -113,6 +113,12 @@ export class DownloadEngine {
     const contentLength = parseContentLength(response.headers);
     const totalBytes =
       contentLength === null ? task.totalBytes : resumable ? startBytes + contentLength : contentLength;
+
+    // Web 端 1GB 前置拒绝（FR-33 / AC-76 / REV-07）：已知体积且超限时，
+    // 在写入任何分片之前抛明确错误码，避免"先吃掉内存再失败"。
+    if (task.sink === 'idb-blob' && totalBytes !== null && totalBytes > DOWNLOAD_WEB_SIZE_WARN_BYTES) {
+      throw new AppError('E_STORAGE_QUOTA', '单文件超过 1GB，浏览器环境建议改用 App 下载');
+    }
 
     const sink = sinkFactory(task.sink);
     await sink.begin({ task: { ...task, resumable }, startBytes: resumable ? startBytes : 0 });

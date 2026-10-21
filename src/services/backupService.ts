@@ -341,7 +341,8 @@ export const backupService: BackupService = {
         const sourceStore = tx.objectStore('sources');
         for (const source of sources) await sourceStore.put(source);
         await favoriteRepo.saveMany(favorites, tx);
-        for (const record of history) await historyRepo.save(record);
+        // 必须传 tx：historyRepo 自开事务会让外层事务在 await 期间自动提交（REV-01）
+        await historyRepo.saveMany(history, tx);
       });
     } catch (e) {
       throw toAppError(e, 'E_DB');

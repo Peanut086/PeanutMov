@@ -10,6 +10,7 @@
  */
 import { blobRepo } from '@/db/repositories/blobRepo';
 import { AppError } from '@/shared/errors';
+import { DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/shared/constants';
 import { extensionOf } from '@/shared/id';
 import { logger } from '@/shared/logger';
 import { arrayBufferToBase64, FS_ROOT, deleteFile, ensureDir, writeBase64, appendBase64 } from '@/native/fs';
@@ -100,8 +101,15 @@ export class NativeFsSink implements DownloadSink {
  * Web：内存收集 → IndexedDB blobs
  * =======================================================*/
 
-/** 单块上限保护：超过 512MB 直接抛配额错误（Web 端不建议大文件） */
-const WEB_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+/**
+ * Web 端单文件硬上限：与 FR-33 / AC-76 的 1GB 提示阈值**保持一致**（REV-07）。
+ *
+ * 三层阈值统一为 1GB：
+ * - 引擎在拿到 `Content-Length` 后、写入任何分片前前置拒绝（见 `downloadEngine`）；
+ * - sink 层同一阈值兜底（服务端未给 Content-Length 的流式响应）；
+ * - `downloadService.needsAppForLargeFile()` 供已知体积的 UI 入口提前提示。
+ */
+const WEB_MAX_BYTES = DOWNLOAD_WEB_SIZE_WARN_BYTES;
 
 export class IdbBlobSink implements DownloadSink {
   readonly kind: DownloadSinkKind = 'idb-blob';
