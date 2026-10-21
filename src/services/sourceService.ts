@@ -18,10 +18,12 @@ import {
   HEALTH_CHECK_CONCURRENCY,
   SOURCE_NAME_MAX_LENGTH,
   SOURCE_NAME_MIN_LENGTH,
+  TIMEOUT_TEST_CONNECTION_MS,
 } from '@/shared/constants';
 import { AppError, toAppError } from '@/shared/errors';
 import { newId } from '@/shared/id';
 import { isValidHttpUrl, normalizeBaseUrl } from '@/shared/url';
+import { httpClient } from '@/sources/base/httpClient';
 import { sourceRegistry } from '@/sources/registry';
 import type {
   AppErrorShape,
@@ -126,6 +128,19 @@ async function runWithConcurrency<T, R>(
   });
   await Promise.all(runners);
   return results;
+}
+
+/**
+ * AC-15 / FR-07：探测（健康检查 + 测试连接）统一 3s 超时。
+ *
+ * 适配器 `probe` 内部的 `httpClient` 调用不传 `timeoutMs`（默认 10s），且多数不透传 AbortSignal，
+ * 所以由 `httpClient.withProbeTimeout` 在该源的探测窗口内把默认超时收到 `TIMEOUT_TEST_CONNECTION_MS`
+ * 并关闭重试；超时抛 `E_TIMEOUT` → `healthOfError` → `'timeout'` → `HealthBadge` 显示「连接超时」。
+ */
+function probeWithinTimeout<T>(source: Source, run: () => Promise<T>): Promise<T> {
+  // 演示源无网络请求（baseUrl 为空），不进窗口，避免误伤其它并发请求
+  if (source.baseUrl.length === 0) return run();
+  return httpClient.withProbeTimeout(TIMEOUT_TEST_CONNECTION_MS, run, source.baseUrl);
 }
 
 export const sourceService = {
@@ -373,8 +388,8 @@ export const sourceService = {
     }
 
     const adapter = sourceRegistry.get(input.type);
-    // testConnection 本身不抛错（API-01）
-    return adapter.testConnection(probeSource);
+    // testConnection 本身不抛错（API-01）；AC-15：探测窗口 3s
+    return probeWithinTimeout(probeSource, () => adapter.testConnection(probeSource));
   },
 
   /** 并发上限 3 的批量健康检查（AC-16） */
@@ -403,7 +418,7 @@ export const sourceService = {
         await sourceService.markHealth(source.id, result.health, result.error);
         return result;
       }
-      const connection = await adapter.testConnection(source);
+      const connection = await probeWithinTimeout(source, () => adapter.testConnection(source));
       const result: HealthCheckResult = {
         sourceId: source.id,
         health: connection.health,

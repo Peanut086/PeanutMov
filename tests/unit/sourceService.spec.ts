@@ -1,6 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { sourceService } from '@/services/sourceService';
+import { healthService } from '@/services/healthService';
 import { settingsService } from '@/services/settingsService';
 import { episodeRepo } from '@/db/repositories/episodeRepo';
 import { favoriteRepo } from '@/db/repositories/favoriteRepo';
@@ -8,11 +9,14 @@ import { historyRepo } from '@/db/repositories/historyRepo';
 import { lineRepo } from '@/db/repositories/lineRepo';
 import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { categoryRepo } from '@/db/repositories/categoryRepo';
+import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { appEvents } from '@/services/events';
 import { DEMO_SOURCE_ID, DEMO_SOURCE_SORT } from '@/data/demo/demoSeed';
 import { DEMO_ITEMS } from '@/data/demo/demoCatalog';
-import { AppError } from '@/shared/errors';
+import { AppError, ERROR_MESSAGES } from '@/shared/errors';
+import { TIMEOUT_TEST_CONNECTION_MS } from '@/shared/constants';
 import { categoryIdFor } from '@/sources/base/normalize';
+import { DEFAULT_HTTP_TIMEOUT_MS, httpClient, httpRequest, probeTimeoutFor } from '@/sources/base/httpClient';
 import { mediaIdOf, lineIdOf, episodeIdOf, historyIdOf } from '@/shared/id';
 import type { FavoriteRecord, HistoryRecord, MediaItem, Source } from '@/types';
 
@@ -400,6 +404,167 @@ describe('源服务（AC-03 ~ AC-07）', () => {
       const persisted = await sourceService.get(b.id);
       expect(persisted?.health).toBe('timeout');
       expect(persisted?.lastErrorCode).toBe('E_TIMEOUT');
+    });
+  });
+
+  /**
+   * AC-15 / FR-07：断网后 3s 内状态变「连接超时」
+   *
+   * 适配器探活内部的 `httpClient` 请求不传 `timeoutMs`（默认 10s），且多数 `probe` 拿不到
+   * AbortSignal，因此断网最长要等 10s。现由 `httpClient.withProbeTimeout` 在探活窗口内把
+   * 有效超时收到 `TIMEOUT_TEST_CONNECTION_MS` 并关闭重试；`E_TIMEOUT` → `'timeout'` →
+   * `HealthBadge` 显示「连接超时」（UI 无需改动）。
+   */
+  describe('检查超时口径（AC-15）', () => {
+    const realWithProbeTimeout = httpClient.withProbeTimeout.bind(httpClient);
+
+    /** 缩短窗口但记录真实入参，避免用例真的等 3s */
+    function shrinkProbeWindow(): number[] {
+      const timeouts: number[] = [];
+      vi.spyOn(httpClient, 'withProbeTimeout').mockImplementation((timeoutMs, fn, baseUrl) => {
+        timeouts.push(timeoutMs);
+        return realWithProbeTimeout(25, fn, baseUrl);
+      });
+      return timeouts;
+    }
+
+    /** 模拟断网：fetch 永不 resolve，仅在超时 abort 时以 AbortError 拒绝（与真实 fetch 一致） */
+    function installHangingFetch(): () => number {
+      let calls = 0;
+      vi.stubGlobal('fetch', (_input: unknown, init?: RequestInit) => {
+        calls += 1;
+        return new Promise<Response>((_resolve, reject) => {
+          const onAbort = (): void => reject(new DOMException('The operation was aborted.', 'AbortError'));
+          const signal = init?.signal;
+          if (!signal) return; // 无 signal 则永远挂起
+          if (signal.aborted) {
+            onAbort();
+            return;
+          }
+          signal.addEventListener('abort', onAbort, { once: true });
+        });
+      });
+      return () => calls;
+    }
+
+    async function createOfflineAlist(name = '断网源'): Promise<Source> {
+      return sourceService.create({
+        name,
+        type: 'alist',
+        baseUrl: 'https://offline.example.com',
+        key: 'offline',
+        auth: { mode: 'token', token: 'tok' },
+        ext: { root: '/' },
+      });
+    }
+
+    beforeEach(async () => {
+      await resetAll();
+      settingsService.__resetCache();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
+
+    it('testConnection 以 3000ms 开窗；断网返回 timeout/E_TIMEOUT、只请求一次', async () => {
+      expect(TIMEOUT_TEST_CONNECTION_MS).toBe(3000);
+      expect(DEFAULT_HTTP_TIMEOUT_MS).toBe(10_000); // 默认值保持不动
+      const timeouts = shrinkProbeWindow();
+      const fetchCalls = installHangingFetch();
+
+      const result = await sourceService.testConnection({
+        type: 'alist',
+        baseUrl: 'https://offline.example.com',
+        auth: { token: 'tok' },
+      });
+
+      expect(timeouts).toEqual([TIMEOUT_TEST_CONNECTION_MS]);
+      expect(result.ok).toBe(false);
+      expect(result.health).toBe('timeout');
+      expect(result.error?.code).toBe('E_TIMEOUT');
+      // 超时语义取自 ErrorCode 表（非 E_NETWORK），与 HealthBadge「连接超时」一致
+      expect(result.error?.message).toBe(ERROR_MESSAGES.E_TIMEOUT);
+      expect(fetchCalls()).toBe(1); // 窗口内不重试，否则会被拉长到 2×3s
+    });
+
+    it('边界：窗口内请求 2999ms 仍挂起、3000ms 以 E_TIMEOUT 返回', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const fetchCalls = installHangingFetch();
+      const url = 'https://offline.example.com/api/fs/list';
+
+      let settled = false;
+      const scoped = httpClient
+        .withProbeTimeout(
+          TIMEOUT_TEST_CONNECTION_MS,
+          () => httpRequest(url, { responseType: 'none' }),
+          'https://offline.example.com',
+        )
+        .catch((e: unknown) => e)
+        .finally(() => {
+          settled = true;
+        });
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchCalls()).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(TIMEOUT_TEST_CONNECTION_MS - 1);
+      expect(settled).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await scoped).toMatchObject({ code: 'E_TIMEOUT' });
+      expect(fetchCalls()).toBe(1); // 不重试
+    });
+
+    it('窗口只收窄同一源；窗口外仍为 10s 默认值', async () => {
+      const url = 'https://offline.example.com/api/fs/list';
+      expect(probeTimeoutFor(url)).toBeNull();
+
+      let inside: number | null = null;
+      let otherSource: number | null = null;
+      await httpClient.withProbeTimeout(
+        TIMEOUT_TEST_CONNECTION_MS,
+        async () => {
+          inside = probeTimeoutFor(url);
+          otherSource = probeTimeoutFor('https://other.example.com/api/fs/list');
+        },
+        'https://offline.example.com',
+      );
+
+      expect(inside).toBe(3000);
+      expect(otherSource).toBeNull();
+      expect(probeTimeoutFor(url)).toBeNull();
+    });
+
+    it('checkHealth 断网不抛穿：返回并落库 timeout/E_TIMEOUT（AC-16 单源失败不影响其它源）', async () => {
+      const timeouts = shrinkProbeWindow();
+      const fetchCalls = installHangingFetch();
+      const created = await createOfflineAlist();
+
+      const results = await sourceService.checkHealth();
+
+      expect(timeouts).toEqual([TIMEOUT_TEST_CONNECTION_MS]);
+      expect(results[created.id]?.health).toBe('timeout');
+      expect(results[created.id]?.error?.code).toBe('E_TIMEOUT');
+      expect(fetchCalls()).toBe(1);
+
+      const persisted = await sourceRepo.get(created.id);
+      expect(persisted?.health).toBe('timeout');
+      expect(persisted?.lastErrorCode).toBe('E_TIMEOUT');
+    });
+
+    it('healthService 门面同样拿到「连接超时」，失败计数 1', async () => {
+      shrinkProbeWindow();
+      installHangingFetch();
+      const created = await createOfflineAlist();
+
+      const snapshot = await healthService.check([created.id]);
+
+      expect(snapshot.results[created.id]?.health).toBe('timeout');
+      expect(snapshot.failedCount).toBe(1);
+      expect(healthService.labelOf('timeout')).toBe('连接超时');
     });
   });
 

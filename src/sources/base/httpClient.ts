@@ -28,6 +28,69 @@ export const DEFAULT_HTTP_RETRIES = 1;
 
 const RETRY_BACKOFF_MS = [400, 900, 1600] as const;
 
+/* ---------- 探测超时作用域（AC-15） ---------- */
+/**
+ * 健康检查 / 测试连接的探测超时（毫秒）。默认值 `DEFAULT_HTTP_TIMEOUT_MS`（10s）保持不变，
+ * 只在探测窗口内生效：`withProbeTimeout(3000, fn, baseUrl)` 执行期间，**同一源（URL 前缀匹配）**
+ * 且未显式传 `timeoutMs` 的请求按 3s 超时、不重试。
+ *
+ * 为什么需要作用域：适配器的 `probe` 都在内部调用 `httpClient.request` 且不传 `timeoutMs`、
+ * 多数也不透传 AbortSignal（`probe` 只收 `source`），因此 `BaseAdapter` 外层的 3s AbortController
+ * 管不到底层 fetch；若不在此处兜底，断网时实际要等满 10s（含 1 次重试更久），与 AC-15 冲突。
+ * 按 baseUrl 前缀匹配可避免影响其它源的并发请求；显式 `timeoutMs` 始终优先。
+ */
+interface ProbeScope {
+  timeoutMs: number;
+  baseUrl: string | null;
+}
+
+const probeScopes: ProbeScope[] = [];
+
+/** 该 URL 在探测窗口内的有效超时；不在窗口内 → null */
+export function probeTimeoutFor(url: string): number | null {
+  for (let i = probeScopes.length - 1; i >= 0; i -= 1) {
+    const scope = probeScopes[i];
+    if (!scope) continue;
+    if (scope.baseUrl === null || matchesBase(url, scope.baseUrl)) return scope.timeoutMs;
+  }
+  return null;
+}
+
+/** 同源前缀匹配（`https://a.com` 不应匹配 `https://a.com.evil.com`） */
+function matchesBase(url: string, baseUrl: string): boolean {
+  if (url === baseUrl) return true;
+  const next = url.charAt(baseUrl.length);
+  return url.startsWith(baseUrl) && (next === '/' || next === '?' || next === '#');
+}
+
+/** 在探测窗口内执行 `fn`（AC-15：健康检查 / 测试连接 3s 超时） */
+export async function withProbeTimeout<T>(
+  timeoutMs: number,
+  fn: () => Promise<T>,
+  baseUrl?: string | null,
+): Promise<T> {
+  const scope: ProbeScope = { timeoutMs, baseUrl: baseUrl && baseUrl.length > 0 ? baseUrl : null };
+  probeScopes.push(scope);
+  try {
+    return await fn();
+  } finally {
+    const index = probeScopes.lastIndexOf(scope);
+    if (index >= 0) probeScopes.splice(index, 1);
+  }
+}
+
+/** 本次请求的有效超时：显式值 → 10s 默认；探测窗口内无显式值时用窗口值（≤10s） */
+function effectiveTimeoutMs(url: string, options: HttpRequestOptions): number {
+  if (options.timeoutMs !== undefined) return options.timeoutMs;
+  return probeTimeoutFor(url) ?? DEFAULT_HTTP_TIMEOUT_MS;
+}
+
+/** 本次请求的有效重试次数：探测窗口内一律不重试（否则 3s 上限会被二次尝试突破） */
+function effectiveRetries(url: string, options: HttpRequestOptions): number {
+  if (probeTimeoutFor(url) !== null) return 0;
+  return options.retries ?? DEFAULT_HTTP_RETRIES;
+}
+
 /** 可重试的错误码 */
 const RETRYABLE: ReadonlySet<string> = new Set([
   'E_NETWORK',
@@ -85,13 +148,8 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
 
 /** 单次 fetch（带超时与外部取消） */
 async function fetchOnce(url: string, options: HttpRequestOptions): Promise<Response> {
-  const {
-    method = 'GET',
-    headers = {},
-    body = null,
-    timeoutMs = DEFAULT_HTTP_TIMEOUT_MS,
-    signal,
-  } = options;
+  const { method = 'GET', headers = {}, body = null, signal } = options;
+  const timeoutMs = effectiveTimeoutMs(url, options);
 
   if (signal?.aborted) throw abortError();
 
@@ -170,7 +228,7 @@ export async function httpRequestWithMeta<T>(
   url: string,
   options: HttpRequestOptions = {},
 ): Promise<HttpResponse<T>> {
-  const retries = options.retries ?? DEFAULT_HTTP_RETRIES;
+  const retries = effectiveRetries(url, options);
   let attempt = 0;
   for (;;) {
     try {
@@ -213,4 +271,7 @@ export const httpClient = {
   requestWithMeta: httpRequestWithMeta,
   rawFetch,
   basicAuthHeader,
+  /** 探测窗口：窗口内未显式传 timeoutMs 的请求按 3s 超时（AC-15） */
+  withProbeTimeout,
+  probeTimeoutFor,
 };
