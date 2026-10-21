@@ -13,7 +13,6 @@ export interface FullscreenHooks {
   onEnter?: () => void | Promise<void>;
   onExit?: () => void | Promise<void>;
 }
-
 type FsDocument = Document & {
   webkitFullscreenElement?: Element | null;
   webkitExitFullscreen?: () => Promise<void> | void;
@@ -47,8 +46,8 @@ export class FullscreenController {
       if (next !== this.active) {
         this.active = next;
         this.hooks.onChange(next);
-        if (next) void this.hooks.onEnter?.();
-        else void this.hooks.onExit?.();
+        if (next) this.runHook(this.hooks.onEnter);
+        else this.runHook(this.hooks.onExit);
       }
     };
     const doc = document as FsDocument;
@@ -61,6 +60,26 @@ export class FullscreenController {
   }
 
   private element: HTMLElement | null = null;
+
+  /**
+   * 安全执行生命周期钩子（AC-52）。
+   *
+   * 进入/退出全屏时的附带动作（隐藏状态栏、锁横屏等）**不得阻断全屏**：
+   * 同步异常与 Promise reject 都在这里吞掉，只留 `console.warn` 便于排查。
+   */
+  private runHook(hook: (() => void | Promise<void>) | undefined): void {
+    if (!hook) return;
+    try {
+      const result = hook();
+      if (result && typeof (result as Promise<void>).then === 'function') {
+        void (result as Promise<void>).catch((e: unknown) => {
+          console.warn('[fullscreen] 全屏附带动作失败（已忽略）', e);
+        });
+      }
+    } catch (e) {
+      console.warn('[fullscreen] 全屏附带动作失败（已忽略）', e);
+    }
+  }
 
   setElement(el: HTMLElement | null): void {
     this.element = el;
@@ -85,7 +104,8 @@ export class FullscreenController {
       await request();
       this.active = true;
       this.hooks.onChange(true);
-      await this.hooks.onEnter?.();
+      // 状态栏/横屏等附带动作失败不影响全屏本身（AC-52）
+      this.runHook(this.hooks.onEnter);
     } catch {
       this.applyCssFallback(true);
     }
@@ -106,7 +126,7 @@ export class FullscreenController {
     }
     this.active = false;
     this.hooks.onChange(false);
-    await this.hooks.onExit?.();
+    this.runHook(this.hooks.onExit);
   }
 
   async toggle(): Promise<void> {
@@ -131,7 +151,7 @@ export class FullscreenController {
     this.cssFallback = on;
     this.active = on;
     this.hooks.onChange(on);
-    if (on) void this.hooks.onEnter?.();
-    else void this.hooks.onExit?.();
+    if (on) this.runHook(this.hooks.onEnter);
+    else this.runHook(this.hooks.onExit);
   }
 }

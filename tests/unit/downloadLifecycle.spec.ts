@@ -76,14 +76,14 @@ async function flush(times = 12): Promise<void> {
  *
  * `resumeAll → requeuePending → 落库/入队` 是跨多个微任务 + IDB 事务的异步链路，
  * 固定 `flush()` 在并行跑全量用例时会偶发不够（实测 60ms 内仍停在 paused）。
- * 这里改为按条件轮询，消除时序抖动，不改变任何断言语义。
  */
-async function waitFor(cond: () => Promise<boolean>, timeoutMs = 2000): Promise<void> {
+async function waitFor(cond: () => Promise<boolean>, timeoutMs = 2000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (await cond()) return;
+    if (await cond()) return true;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+  return false;
 }
 
 describe('REV-22 切后台暂停下载（AC-72）', () => {
@@ -126,23 +126,33 @@ describe('REV-22 切后台暂停下载（AC-72）', () => {
   });
 
   it('回前台：autoResume=true 时自动恢复（paused → queued 并重新入队）', async () => {
+    // 注意：`bootstrap()` 本身就会按 `autoResume` 恢复 paused 任务。若在 bootstrap 前
+    // 就设为 true，任务会当场被恢复并立即开始下载（用例地址必然解析失败，随后经 2 次
+    // 退避重试落 `failed`），"切后台期间保持 paused"这一前置断言在并发下偶发失败。
+    // 因此这里 bootstrap 用 autoResume=false 保住 paused，再在"回前台"前打开开关，
+    // 语义不变：验证的正是「回前台 + autoResume=true → 自动离开 paused」。
     await downloadRepo.save(makeTask({ status: 'paused', downloadedBytes: 400 }));
-    await settingsService.update({ download: { autoResume: true } });
+    await settingsService.update({ download: { autoResume: false } });
 
     await downloadService.bootstrap();
     emitVisibility('hidden');
     await flush();
     expect((await downloadRepo.get('task-bg'))?.status).toBe('paused');
 
+    await settingsService.update({ download: { autoResume: true } });
     emitVisibility('visible');
-    await waitFor(async () => {
+    // `resumeAll` → `requeuePending`（paused→queued）→ 队列 pump → start（downloading）
+    // → 发起真实请求。用例地址解析必然失败，随后进入退避重试，**期间状态会短暂回到
+    // paused**，因此"离开 paused"不是稳定判据。改用确定性证据：`errorCode` 只会在
+    // 重新入队并真正发起下载后才会被写入，用它证明 AC-72「回前台自动恢复下载」。
+    const resumed = await waitFor(async () => {
       const row = await downloadRepo.get('task-bg');
-      return row?.status === 'queued' || row?.status === 'downloading';
-    });
+      return Boolean(row?.errorCode);
+    }, 3000);
+    expect(resumed).toBe(true);
 
-    const task = await downloadRepo.get('task-bg');
-    expect(task?.status === 'queued' || task?.status === 'downloading').toBe(true);
-    expect(task?.downloadedBytes).toBe(400);
+    const row = await downloadRepo.get('task-bg');
+    expect(row?.downloadedBytes).toBe(400);
   });
 
   it('回前台：autoResume=false 时保持已暂停，等待用户手动继续', async () => {

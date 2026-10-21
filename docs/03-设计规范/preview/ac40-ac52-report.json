@@ -1,0 +1,308 @@
+{
+  "detect": [
+    {
+      "name": "mpd",
+      "code": "E_UNSUPPORTED_FORMAT",
+      "message": "暂不支持 DASH(.mpd) 格式",
+      "retryable": false
+    },
+    {
+      "name": "mpd+query",
+      "code": "E_UNSUPPORTED_FORMAT",
+      "message": "暂不支持 DASH(.mpd) 格式",
+      "retryable": false
+    },
+    {
+      "name": "m3u8 sample-aes",
+      "code": "E_DRM_PROTECTED",
+      "message": "不支持受保护内容",
+      "retryable": false
+    },
+    {
+      "name": "m3u8 plain",
+      "code": null,
+      "message": null,
+      "retryable": null
+    },
+    {
+      "name": "mp4",
+      "code": null,
+      "message": null,
+      "retryable": null
+    },
+    {
+      "name": "mp4+query",
+      "code": null,
+      "message": null,
+      "retryable": null
+    }
+  ],
+  "realPath": {
+    "mpd": {
+      "url": "https://cdn.example.com/v/manifest.mpd",
+      "format": "other",
+      "code": "E_UNSUPPORTED_FORMAT",
+      "message": "暂不支持 DASH(.mpd) 格式",
+      "fetches": 0,
+      "videoCount": 0
+    },
+    "mpdQuery": {
+      "url": "https://cdn.example.com/v/manifest.mpd?a=1",
+      "format": "other",
+      "code": "E_UNSUPPORTED_FORMAT",
+      "message": "暂不支持 DASH(.mpd) 格式",
+      "fetches": 0,
+      "videoCount": 0
+    },
+    "m3u8Drm": {
+      "url": "https://cdn.example.com/v/index.m3u8",
+      "format": "hls",
+      "code": "E_DRM_PROTECTED",
+      "message": "不支持受保护内容",
+      "fetches": 0,
+      "videoCount": 0
+    },
+    "m3u8Flaky": {
+      "url": "https://cdn.example.com/v/index.m3u8",
+      "format": "hls",
+      "code": "E_DECODE",
+      "message": "视频加载失败，请尝试切换线路",
+      "fetches": 0,
+      "videoCount": 1
+    },
+    "diag": {
+      "hasKeyLine": true,
+      "code": "E_DRM_PROTECTED"
+    }
+  },
+  "panel": {
+    "texts": [
+      {
+        "code": "E_UNSUPPORTED_FORMAT",
+        "title": "暂不支持 DASH(.mpd) 格式",
+        "hint": "可能原因：当前编码或封装不受支持。请切换其他线路或清晰度。",
+        "retryShown": false,
+        "switchLineShown": true,
+        "backShown": true
+      },
+      {
+        "code": "E_DRM_PROTECTED",
+        "title": "不支持受保护内容",
+        "hint": "可能原因：当前编码或封装不受支持。请切换其他线路或清晰度。",
+        "retryShown": false,
+        "switchLineShown": true,
+        "backShown": true
+      }
+    ],
+    "__mounted": true
+  },
+  "ac52": {
+    "enter": {
+      "calls": [
+        false
+      ],
+      "fullscreen": true,
+      "immersiveRoot": true,
+      "videos": 1
+    },
+    "exit": {
+      "calls": [
+        false,
+        true
+      ],
+      "backButtonVisible": true
+    }
+  },
+  "checks": [
+    {
+      "id": "AC40-06",
+      "name": "错误面板展示「暂不支持 DASH(.mpd) 格式」",
+      "ok": true,
+      "detail": {
+        "code": "E_UNSUPPORTED_FORMAT",
+        "title": "暂不支持 DASH(.mpd) 格式",
+        "hint": "可能原因：当前编码或封装不受支持。请切换其他线路或清晰度。",
+        "retryShown": false,
+        "switchLineShown": true,
+        "backShown": true
+      }
+    },
+    {
+      "id": "AC40-07",
+      "name": "错误面板展示「不支持受保护内容」",
+      "ok": true,
+      "detail": {
+        "code": "E_DRM_PROTECTED",
+        "title": "不支持受保护内容",
+        "hint": "可能原因：当前编码或封装不受支持。请切换其他线路或清晰度。",
+        "retryShown": false,
+        "switchLineShown": true,
+        "backShown": true
+      }
+    },
+    {
+      "id": "AC40-08",
+      "name": "错误面板不提供「重试」（明确拒绝、不引导重试绕过）",
+      "ok": true,
+      "detail": {
+        "dashRetry": false,
+        "drmRetry": false,
+        "dashBack": true
+      }
+    },
+    {
+      "id": "AC40-09",
+      "name": "真实加载路径：.mpd 不发请求、不创建 video",
+      "ok": true,
+      "detail": {
+        "url": "https://cdn.example.com/v/manifest.mpd",
+        "format": "other",
+        "code": "E_UNSUPPORTED_FORMAT",
+        "message": "暂不支持 DASH(.mpd) 格式",
+        "fetches": 0,
+        "videoCount": 0
+      }
+    },
+    {
+      "id": "AC40-10",
+      "name": "真实加载路径：.mpd?a=1 同样拒绝",
+      "ok": true,
+      "detail": {
+        "url": "https://cdn.example.com/v/manifest.mpd?a=1",
+        "format": "other",
+        "code": "E_UNSUPPORTED_FORMAT",
+        "message": "暂不支持 DASH(.mpd) 格式",
+        "fetches": 0,
+        "videoCount": 0
+      }
+    },
+    {
+      "id": "AC40-11",
+      "name": "真实加载路径：SAMPLE-AES m3u8 → E_DRM_PROTECTED 且未创建 video",
+      "ok": true,
+      "detail": {
+        "url": "https://cdn.example.com/v/index.m3u8",
+        "format": "hls",
+        "code": "E_DRM_PROTECTED",
+        "message": "不支持受保护内容",
+        "fetches": 0,
+        "videoCount": 0
+      }
+    },
+    {
+      "id": "AC40-12",
+      "name": "预检网络失败不误判 DRM（回退正常加载）",
+      "ok": true,
+      "detail": {
+        "url": "https://cdn.example.com/v/index.m3u8",
+        "format": "hls",
+        "code": "E_DECODE",
+        "message": "视频加载失败，请尝试切换线路",
+        "fetches": 0,
+        "videoCount": 1
+      }
+    },
+    {
+      "id": "AC40-01",
+      "name": "detectUnsupportedSource(.mpd) → E_UNSUPPORTED_FORMAT",
+      "ok": true,
+      "detail": {
+        "name": "mpd",
+        "code": "E_UNSUPPORTED_FORMAT",
+        "message": "暂不支持 DASH(.mpd) 格式",
+        "retryable": false
+      }
+    },
+    {
+      "id": "AC40-02",
+      "name": ".mpd?a=1&token=x 仍识别为 DASH",
+      "ok": true,
+      "detail": {
+        "name": "mpd+query",
+        "code": "E_UNSUPPORTED_FORMAT",
+        "message": "暂不支持 DASH(.mpd) 格式",
+        "retryable": false
+      }
+    },
+    {
+      "id": "AC40-03",
+      "name": "m3u8 + SAMPLE-AES → E_DRM_PROTECTED",
+      "ok": true,
+      "detail": {
+        "name": "m3u8 sample-aes",
+        "code": "E_DRM_PROTECTED",
+        "message": "不支持受保护内容",
+        "retryable": false
+      }
+    },
+    {
+      "id": "AC40-04",
+      "name": "普通 m3u8 放行",
+      "ok": true,
+      "detail": {
+        "name": "m3u8 plain",
+        "code": null,
+        "message": null,
+        "retryable": null
+      }
+    },
+    {
+      "id": "AC40-05",
+      "name": "mp4 / mp4?token=1 放行",
+      "ok": true,
+      "detail": [
+        {
+          "name": "mp4",
+          "code": null,
+          "message": null,
+          "retryable": null
+        },
+        {
+          "name": "mp4+query",
+          "code": null,
+          "message": null,
+          "retryable": null
+        }
+      ]
+    },
+    {
+      "id": "AC52-01",
+      "name": "点全屏 → deviceService.setStatusBarVisible(false) 被调用",
+      "ok": true,
+      "detail": {
+        "calls": [
+          false
+        ],
+        "fullscreen": true,
+        "immersiveRoot": true,
+        "videos": 1
+      }
+    },
+    {
+      "id": "AC52-02",
+      "name": "退出全屏 → deviceService.setStatusBarVisible(true) 被调用",
+      "ok": true,
+      "detail": {
+        "calls": [
+          false,
+          true
+        ],
+        "backButtonVisible": true
+      }
+    },
+    {
+      "id": "AC52-03",
+      "name": "全屏期间播放不中断（video 仍在，未重载）",
+      "ok": true,
+      "detail": {
+        "videos": 1
+      }
+    }
+  ],
+  "screenshots": {
+    "board": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\ac40-ac52-assertions.png",
+    "dashPanel": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\ac40-error-panel-dash.png",
+    "drmPanel": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\ac40-error-panel-drm.png",
+    "fullscreen": "E:\\PnutCode\\PeanutMov\\docs\\03-设计规范\\preview\\ac52-fullscreen-statusbar-call.png"
+  }
+}

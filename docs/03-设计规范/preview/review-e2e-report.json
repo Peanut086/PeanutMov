@@ -1,6 +1,6 @@
 {
   "base": "http://localhost:5175",
-  "ranAt": "2026-10-21T07:17:02.947Z",
+  "ranAt": "2026-10-21T09:18:18.893Z",
   "total": 25,
   "passed": 25,
   "failed": 0,
@@ -111,7 +111,7 @@
       "ok": true,
       "detail": {
         "rate": 1.5,
-        "t": 2.583948
+        "t": 2.419299
       }
     },
     {
@@ -119,7 +119,7 @@
       "name": "暂停在 40% 后历史写回（positionSec 与进度）",
       "ok": true,
       "detail": {
-        "positionSec": 51.3,
+        "positionSec": 51.1,
         "durationSec": 120,
         "progress": 0.43
       }
@@ -137,8 +137,8 @@
       "name": "再次进入播放页从记录位置续播（±2s）",
       "ok": true,
       "detail": {
-        "start": 52.8,
-        "recorded": 51.3
+        "start": 52.6,
+        "recorded": 51.1
       }
     },
     {
@@ -201,7 +201,7 @@
         ],
         "text": "下载共 1 个任务21.3 MB / 21.3 MB100% 已完成 1全部下载中已完成失败Sintel · 第 1 集已完成 · 21.3 MB · 可离线观看21.3 MB / 21.3 MB ",
         "completedBytes": 22306323,
-        "blobKey": "c7bedcc3-cd8e-4ca3-8fa3-562fbc218698"
+        "blobKey": "7d9a4d4e-5cbf-4ec3-b119-037136a6bf1d"
       }
     },
     {

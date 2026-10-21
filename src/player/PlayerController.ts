@@ -40,10 +40,18 @@ import { GestureRecognizer, type GestureIntent } from '@/player/GestureRecognize
 import { ProgressReporter, type ProgressSnapshot } from '@/player/ProgressReporter';
 import { FullscreenController } from '@/player/FullscreenController';
 import { OrientationController } from '@/player/OrientationController';
+import { assertSourceSupported, preflightManifest } from '@/player/sourceGuard';
 
 export interface PlayerControllerDeps {
   /** 进度写回调（由 View 注入 historyStore.save） */
   onProgress: (snapshot: ProgressSnapshot, opts: PlayerLoadOptions) => void | Promise<void>;
+  /**
+   * 全屏时状态栏显隐（AC-52）。
+   *
+   * 由 View 注入 `deviceService.setStatusBarVisible`——播放器层**不直接调用 Service**
+   * （本文件分层约束），Web 下 Service 自身为 no-op，异常也被 FullscreenController 吞掉。
+   */
+  setStatusBarVisible?: (visible: boolean) => void | Promise<void>;
 }
 
 export class PlayerController {
@@ -65,6 +73,9 @@ export class PlayerController {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private networkRetries = 0;
 
+  /** m3u8 DRM 预检的取消句柄（AC-40）：切集/重试/销毁时中止上一轮预检 */
+  private preflightAbort: AbortController | null = null;
+
   private readonly subtitles: SubtitleManager;
   private readonly progress: ProgressReporter;
   readonly fullscreen: FullscreenController;
@@ -84,6 +95,9 @@ export class PlayerController {
     });
     this.fullscreen = new FullscreenController({
       onChange: (fs) => this.emit('fullscreenchange', { fullscreen: fs }),
+      // AC-52：全屏隐藏状态栏，退出恢复。异常不得阻断全屏（FullscreenController 已兜底）
+      onEnter: () => this.deps.setStatusBarVisible?.(false),
+      onExit: () => this.deps.setStatusBarVisible?.(true),
     });
     this.fullscreen.bind();
     this.orientation = new OrientationController();
@@ -131,6 +145,8 @@ export class PlayerController {
     if (this.destroyed) throw new AppError('E_INVALID_STATE', '播放器已销毁');
     // 切集/切线路：取消上一轮尚未触发的网络重试，避免旧重试把新加载顶掉（REV-06）
     this.clearRetryTimer();
+    // 同时中止上一轮 m3u8 DRM 预检（AC-40）：旧预检结果不得影响本次加载
+    this.resetPreflight();
     this.setState('loading');
     this.options = opts;
     this.networkRetries = 0;
@@ -166,12 +182,31 @@ export class PlayerController {
   /** 根据格式与原生能力选择引擎并 attach/load */
   private async attachEngine(playback: PlaybackSource): Promise<void> {
     const format = playback.format === 'other' ? guessFormatFromUrl(playback.url) ?? 'mp4' : playback.format;
+
+    /*
+     * AC-40 / FR-17：DASH 与 DRM 流**明确拒绝且不尝试绕过**。
+     *
+     * 必须在 `destroyEngine()` 与任何引擎实例创建**之前**判断：`.mpd` 不创建 video/hls、
+     * 不发任何请求。`.mpd` 在 `guessFormatFromUrl` 里返回 null（SCF 冻结，不改），
+     * 旧行为会当普通视频试播并最终显示「视频解码失败」，与此 AC 不符。
+     */
+    assertSourceSupported(playback.url);
+
     this.destroyEngine();
 
     const host = this.videoHost ?? this.container;
     if (!host) throw new AppError('E_INVALID_STATE', '播放器容器未挂载');
 
     const useHls = format === 'hls' && !canPlayNativeHls();
+    if (format === 'hls') {
+      // AC-40：m3u8 清单 DRM 预检——可取消、失败即放行（不把网络抖动当 DRM）。
+      // 原生 HLS 与 hls.js 两条路径共用同一判定，行为一致。
+      const manifest = await preflightManifest(playback.url, {
+        signal: this.preflightAbort?.signal,
+        headers: playback.headers,
+      });
+      assertSourceSupported(playback.url, manifest);
+    }
     if (useHls) {
       const supported = await isHlsSupported();
       if (!supported) {
@@ -307,6 +342,12 @@ export class PlayerController {
   private clearRetryTimer(): void {
     if (this.retryTimer !== null) clearTimeout(this.retryTimer);
     this.retryTimer = null;
+  }
+
+  /** 丢弃上一轮 DRM 预检（中止在飞请求并新建句柄，AC-40） */
+  private resetPreflight(): void {
+    this.preflightAbort?.abort();
+    this.preflightAbort = typeof AbortController === 'function' ? new AbortController() : null;
   }
 
   /* ================= 播放控制 ================= */

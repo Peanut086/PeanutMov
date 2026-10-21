@@ -13,6 +13,14 @@ export const PLAYER_ENGINE_KIND = {
 /** 加载元数据超时（与 shared 的 TIMEOUT_LOAD_METADATA_MS 一致，本地引用便于阅读） */
 export const LOAD_METADATA_TIMEOUT_MS = 15000;
 
+/**
+ * HLS 清单预检超时（AC-40）
+ *
+ * 仅用于 m3u8 的 DRM 探测（`#EXT-X-KEY:METHOD=SAMPLE-AES`）：
+ * 超时/网络失败一律放行给 hls.js 正常加载，避免把网络抖动误判为"受保护内容"。
+ */
+export const MANIFEST_PREFLIGHT_TIMEOUT_MS = 4000;
+
 /** 网络错误自动重试次数（技术方案 9.7：1 次） */
 export const NETWORK_RETRY_TIMES = 1;
 export const NETWORK_RETRY_DELAY_MS = 1000;

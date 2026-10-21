@@ -22,6 +22,11 @@ import { useUiStore } from '@/stores/uiStore';
 export interface UsePlayerControllerOptions {
   /** 进度写回（由 View 注入历史 Store） */
   saveProgress: (input: SaveProgressInput) => Promise<unknown>;
+  /**
+   * 全屏时状态栏显隐（AC-52）：由 View 注入 `deviceService.setStatusBarVisible`。
+   * 不传时播放器不做任何状态栏操作（Web/测试环境天然 no-op）。
+   */
+  setStatusBarVisible?: (visible: boolean) => void | Promise<void>;
   /** 初始字幕设置 */
   subtitle: SubtitleSettings;
   /** 默认倍速 */
@@ -188,6 +193,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
           ui.toast(toErrorShape(e, 'E_DB').message, 'error');
         }
       },
+      // AC-52：全屏隐藏状态栏 / 退出恢复（Web 下 Service 自身 no-op）
+      setStatusBarVisible: (visible) => options.setStatusBarVisible?.(visible),
     });
     bindController(c);
     c.mount(container);

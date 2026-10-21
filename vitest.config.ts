@@ -22,6 +22,9 @@ export default defineConfig({
     // 数据层用例的 beforeEach 会 closeDb/deleteDatabase（fake-indexeddb）；
     // 26 个文件并行时偶发超过默认 10s。仅放宽钩子超时，不改任何断言语义。
     hookTimeout: 30000,
+    // 路由导航用例（17 条懒加载路由逐个 push）在 31 个文件并发时实测 >5s，
+    // 单跑 2.2s 通过 → 属并发资源竞争，非逻辑缺陷。仅放宽单测超时。
+    testTimeout: 20000,
     // 脚手架阶段两包尚未提交测试用例，允许 0 用例通过；PKG-A/B 补齐后该配置可移除
     passWithNoTests: true,
     coverage: {

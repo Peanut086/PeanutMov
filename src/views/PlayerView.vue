@@ -47,6 +47,7 @@ import { useHistoryStore } from '@/stores/historyStore';
 import { useLibraryStore } from '@/stores/libraryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { castService } from '@/services/castService';
+import { useBackButton } from '@/composables/useBackButton';
 import { usePlayerController } from '@/composables/usePlayerController';
 import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
 import { useToast } from '@/composables/useToast';
@@ -165,6 +166,13 @@ const playerCtl = usePlayerController({
   saveProgress: async (input) => {
     await history.save(input);
   },
+  // AC-52：全屏隐藏状态栏、退出恢复；Web 下 deviceService 自身为 no-op，异常不阻断全屏。
+  // 用动态 import 延迟到首次进入全屏：避免把 Capacitor status-bar 插件拉进首屏模块图
+  // （会让路由级测试的模块加载变慢）。
+  setStatusBarVisible: (visible) =>
+    import('@/services/deviceService')
+      .then((m) => m.deviceService.setStatusBarVisible(visible))
+      .catch(() => undefined),
   subtitle: subtitleSettings.value,
   defaultRate: defaultRate.value,
   autoPlayNext: autoPlayNext.value,
@@ -394,6 +402,15 @@ const episodeLabel = computed(() => {
 const qualityLabel = computed(() => (resolvedQuality.value === QUALITY_AUTO ? '自动' : resolvedQuality.value));
 
 /* ---------- 操作 ---------- */
+
+/**
+ * 返回键 / 顶栏返回（AC-52 返回键分层）：
+ * - 第 1 次：全屏中 → 只退全屏，保持播放页与播放状态；
+ * - 第 2 次：退出播放页 → 先 `flushProgress()` 写回进度，再回详情。
+ *
+ * 同时注册到 `useBackButton`（Android 硬件返回键），使物理返回键与 UI 返回
+ * 走完全相同的分支。
+ */
 function goBack(): void {
   if (player.fullscreen) {
     void exitFullscreen();
@@ -403,6 +420,15 @@ function goBack(): void {
   if (globalThis.history.length > 1) router.back();
   else void router.replace({ name: 'detail', params: { mediaId: mediaId.value } });
 }
+
+useBackButton({
+  // 始终消费：与顶栏返回按钮完全同一套分支（全屏→退全屏；否则写回进度→回详情），
+  // 避免 Android 返回键走 useBackButton 默认的 router.back() 而跳过进度写回。
+  handler: () => {
+    goBack();
+    return true;
+  },
+});
 
 function openDetail(): void {
   void router.replace({ name: 'detail', params: { mediaId: mediaId.value } });

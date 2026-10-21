@@ -12,6 +12,7 @@ import type { AppErrorShape, PlaybackSource } from '@/types';
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 import { VideoEngine } from '@/player/VideoEngine';
 import { NETWORK_RETRY_TIMES } from '@/player/constants';
+import { assertSourceSupported } from '@/player/sourceGuard';
 
 type HlsModule = typeof import('hls.js');
 type HlsInstance = InstanceType<HlsModule['default']>;
@@ -88,6 +89,11 @@ export class HlsEngine implements PlayableEngine {
   }
 
   async load(source: PlaybackSource): Promise<void> {
+    // AC-40：DASH / 明显加密地址直接拒绝，不创建 hls 实例、不发请求。
+    // 清单文本级预检（#EXT-X-KEY:METHOD=SAMPLE-AES）在 PlayerController 统一完成，
+    // 这里只做不触网的 URL 级兜底（防止其他调用方绕过控制器）。
+    assertSourceSupported(source.url);
+
     this.pendingSource = source;
     const mod = await loadHlsModule();
     this.hlsModule = mod;
