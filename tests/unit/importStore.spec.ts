@@ -111,6 +111,41 @@ describe('importStore（API-14 v1.1 / CHG-02）', () => {
     expect(result.issues.some((i) => i.code === 'SKIPPED_DUPLICATE')).toBe(true);
   });
 
+  it('commit：预览无效条目经 Store 透传后计入 skipped（AC-13 / CHG-03）', async () => {
+    const store = useImportStore();
+    // 3 条里第 2 条缺 api → 预览阶段即无效
+    await store.previewFromText(
+      JSON.stringify({
+        name: '混合订阅',
+        sources: [
+          { key: 'alist-a', name: '家里 AList', type: 'alist', api: 'https://alist.example.com/' },
+          { key: 'broken', name: '缺地址的源', type: 'alist' },
+          { key: 'webdav-b', name: 'NAS', type: 'webdav', api: 'https://nas.example.com/dav' },
+        ],
+      }),
+      'mixed.json',
+    );
+    expect(store.preview?.total).toBe(3);
+
+    const result = await store.commit({ selectedKeys: [], onDuplicate: 'skip' });
+
+    expect(result.success).toBe(2);
+    expect(result.skipped).toBe(1);
+    expect(result.issues.some((i) => i.code === 'SKIPPED_INVALID')).toBe(true);
+    expect(result.success + result.skipped).toBe(store.preview?.total);
+  });
+
+  it('commit：selectedKeys 为空 = 导入全部有效项（Store 透传语义）', async () => {
+    const store = useImportStore();
+    await store.previewFromText(SUBSCRIPTION, 'sub.json');
+
+    const result = await store.commit({ selectedKeys: [], onDuplicate: 'skip' });
+
+    expect(result.success).toBe(2);
+    expect(result.skipped).toBe(0);
+    expect((await sourceRepo.list()).map((s) => s.key).sort()).toEqual(['alist-a', 'webdav-b']);
+  });
+
   it('commit：preview 为 null 时抛 E_INVALID_STATE 并写 error', async () => {
     const store = useImportStore();
     await expect(store.commit({ selectedKeys: [], onDuplicate: 'skip' })).rejects.toMatchObject({

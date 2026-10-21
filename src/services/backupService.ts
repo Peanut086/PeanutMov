@@ -4,8 +4,15 @@
  * - 导出：`schemaVersion = 1`，默认脱敏 `auth.password` / `auth.token`；
  * - 导入：校验 `schemaVersion`（缺失/过高 → `E_VERSION_UNSUPPORTED`），
  *   单事务写 sources/favorites/history（可选 settings），失败全回滚。
+ *
+ * `downloads`（FR-40 / CHG-04）：备份**包含下载任务元数据**，但不含视频文件与
+ * blob 内容，且剔除 `sink`/`filePath`/`blobKey` 三个"指向本机存储"的字段
+ * （`BackupFile.downloads` 的 `Omit<...>` 即此意）。导入时**不恢复**下载任务：
+ * 元数据脱离了视频文件与源缓存后无法续传，恢复只会造出死任务；`BackupImportReport.downloads`
+ * 仅表示"备份文件中携带的下载任务条数"，UI 不展示为"已恢复"。
  */
 import { withTx } from '@/db/index';
+import { downloadRepo } from '@/db/repositories/downloadRepo';
 import { favoriteRepo } from '@/db/repositories/favoriteRepo';
 import { historyRepo } from '@/db/repositories/historyRepo';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
@@ -52,6 +59,83 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+/** 凭据类 header / query 参数名（导出脱敏时命中即剔除） */
+const SENSITIVE_META_KEY = /authorization|cookie|token|api[-_]?key|secret|password|passwd/i;
+
+function redactHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (SENSITIVE_META_KEY.test(key)) continue; // 整条丢弃，不写空值占位
+    out[key] = value;
+  }
+  return out;
+}
+
+function redactUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    let changed = false;
+    for (const key of [...url.searchParams.keys()]) {
+      if (SENSITIVE_META_KEY.test(key)) {
+        url.searchParams.delete(key);
+        changed = true;
+      }
+    }
+    return changed ? url.toString() : raw;
+  } catch {
+    return raw; // 非绝对 URL（相对路径/自定义 scheme）原样保留
+  }
+}
+
+/**
+ * 下载任务 → 备份元数据。
+ *
+ * - 剔除 `sink`/`filePath`/`blobKey`（指向本机存储，换机无意义且可能泄漏路径）；
+ * - `includeCredentials=false` 时额外剔除凭据类 header 与 URL query（播放直链常带 token）。
+ */
+function toDownloadMeta(task: DownloadTask, includeCredentials: boolean): BackupDownloadMeta {
+  // 解构 + rest 即"按黑名单剔除"：三个本机存储字段被丢掉，其余全属元数据
+  const { sink, filePath, blobKey, ...meta } = task;
+  void sink;
+  void filePath;
+  void blobKey;
+  return {
+    ...meta,
+    // 瞬时速度对备份无意义（导入不恢复任务），统一落 0，避免把运行时噪声写进文件
+    speedBps: 0,
+    url: includeCredentials ? meta.url : redactUrl(meta.url),
+    headers: includeCredentials ? meta.headers : redactHeaders(meta.headers ?? {}),
+  };
+}
+
+/**
+ * 校验备份里的下载任务元数据。
+ *
+ * 只保留可识别的条目；并**强制**剔除 `sink`/`filePath`/`blobKey`——即使备份文件被
+ * 人为塞入这些字段也不会被采纳（它们指向导出机器的本地存储，恢复后必然失效）。
+ */
+function validateDownloadMeta(value: unknown): BackupDownloadMeta | null {
+  if (!isRecord(value)) return null;
+  if (typeof value['id'] !== 'string' || typeof value['episodeId'] !== 'string') return null;
+  if (typeof value['mediaId'] !== 'string' || typeof value['url'] !== 'string') return null;
+  const { sink, filePath, blobKey, ...rest } = value;
+  void sink;
+  void filePath;
+  void blobKey;
+  return {
+    ...(rest as unknown as BackupDownloadMeta),
+    sourceId: typeof rest['sourceId'] === 'string' ? rest['sourceId'] : '',
+    title: typeof rest['title'] === 'string' ? rest['title'] : '未命名',
+    headers: isRecord(rest['headers']) ? (rest['headers'] as Record<string, string>) : {},
+    downloadedBytes: typeof rest['downloadedBytes'] === 'number' ? rest['downloadedBytes'] : 0,
+    speedBps: 0,
+    totalBytes: typeof rest['totalBytes'] === 'number' ? rest['totalBytes'] : null,
+    createdAt: typeof rest['createdAt'] === 'number' ? rest['createdAt'] : Date.now(),
+    updatedAt: typeof rest['updatedAt'] === 'number' ? rest['updatedAt'] : Date.now(),
+    completedAt: typeof rest['completedAt'] === 'number' ? rest['completedAt'] : null,
+  };
 }
 
 function validateSource(value: unknown): Source | null {
@@ -152,16 +236,26 @@ export function normalizeBackupFile(raw: unknown): BackupFile {
       .map(validateHistory)
       .filter((value): value is HistoryRecord => value !== null),
     settings: isRecord(raw['settings']) ? (raw['settings'] as unknown as BackupFile['settings']) : null,
-    downloads: asArray<unknown>(raw['downloads']).filter(isRecord) as BackupFile['downloads'],
+    downloads: asArray<unknown>(raw['downloads'])
+      .map(validateDownloadMeta)
+      .filter((value): value is BackupDownloadMeta => value !== null),
   };
 }
 
+/**
+ * 生成备份载荷。
+ *
+ * 下载任务只导出**元数据**（FR-40："下载任务元数据…不含视频文件与 Blob"）：
+ * 从 `downloads` 表读全量任务，剥离 `sink`/`filePath`/`blobKey` 后写入；
+ * 不读 `blobs` 表，故备份体积与已下载视频大小无关。
+ */
 async function collectBackup(includeCredentials: boolean): Promise<BackupFile> {
-  const [sources, favorites, history, settings] = await Promise.all([
+  const [sources, favorites, history, settings, downloads] = await Promise.all([
     sourceRepo.list(),
     favoriteRepo.listByCreated(),
     historyRepo.listAll(HISTORY_MAX),
     settingsService.get(),
+    downloadRepo.listAll(),
   ]);
 
   return {
@@ -172,7 +266,7 @@ async function collectBackup(includeCredentials: boolean): Promise<BackupFile> {
     favorites,
     history,
     settings,
-    downloads: [],
+    downloads: downloads.map((task) => toDownloadMeta(task, includeCredentials)),
   };
 }
 

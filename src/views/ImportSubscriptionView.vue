@@ -41,8 +41,6 @@ const selectedKeys = ref<string[]>([]);
 const localError = ref<string | null>(null);
 const duplicateStrategy = ref<'skip' | 'overwrite' | 'keep-both'>('skip');
 const result = ref<ImportResult | null>(null);
-/** 提交瞬间预览里「配置无效、未提交」的条目数（ImportResult.skipped 只统计同名跳过） */
-const invalidAtCommit = ref(0);
 const resultOpen = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 
@@ -141,16 +139,15 @@ async function commit(): Promise<void> {
     return;
   }
   try {
-    // 记录本次提交前的无效条目数：`ImportResult.skipped` 只统计「同名已存在被跳过」，
-    // 不含预览阶段就判定为无效（如缺 api）的条目，两者需分开如实展示（AC-13）。
-    invalidAtCommit.value = skippedCount.value;
+    // CHG-03：`ImportResult.skipped` 已统一包含「预览无效」与「同名跳过」两类，
+    // 展示层不再额外补偿，避免重复计数（AC-13）。
     const next = await importer.commit({
       selectedKeys: [...selectedKeys.value],
       onDuplicate: duplicateStrategy.value,
     });
     result.value = next;
     resultOpen.value = true;
-    const skippedTotal = next.skipped + invalidAtCommit.value;
+    const skippedTotal = next.skipped;
     if (next.failed > 0) {
       toast.error(`导入完成：成功 ${next.success}，跳过 ${skippedTotal}，失败 ${next.failed}`);
     } else {
@@ -159,7 +156,6 @@ async function commit(): Promise<void> {
   } catch (e) {
     // 事务失败（全回滚）：错误明细进结果面板 + Toast
     const message = toErrorShape(e).message;
-    invalidAtCommit.value = 0;
     result.value = {
       success: 0,
       skipped: 0,
@@ -363,13 +359,10 @@ function leave(): void {
         <h2 class="import-result__title">导入结果</h2>
         <p class="import-result__line">
           成功 {{ result?.success ?? 0 }} · 跳过
-          {{ (result?.skipped ?? 0) + invalidAtCommit }} · 失败 {{ result?.failed ?? 0 }}
+          {{ result?.skipped ?? 0 }} · 失败 {{ result?.failed ?? 0 }}
         </p>
         <p v-if="result && result.success > 0" class="import-result__sub">
           已写入 {{ result.sourceIds.length }} 个源，源列表已自动刷新
-        </p>
-        <p v-if="invalidAtCommit > 0" class="import-result__sub">
-          其中 {{ invalidAtCommit }} 个源因配置不完整（如缺 api）未提交
         </p>
         <ul v-if="(result?.issues.length ?? 0) > 0" class="import-result__issues">
           <li
