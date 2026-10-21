@@ -1,0 +1,74 @@
+{
+  "base": "http://localhost:5175",
+  "ranAt": "2026-10-21T01:49:15.990Z",
+  "total": 7,
+  "passed": 7,
+  "failed": 0,
+  "results": [
+    {
+      "id": "SUP-01",
+      "name": "新增源保存后落库并 replace 到源列表",
+      "ok": true,
+      "detail": {
+        "id": "d7dfeb1b-47a9-4633-89d1-de6020c23780",
+        "name": "补充 AList",
+        "baseUrl": "https://supp-alist.example.com",
+        "key": "alist-853bfa66"
+      }
+    },
+    {
+      "id": "SUP-02",
+      "name": "测试连接展示真实结果（不可达地址 → 失败，非\"本地校验\"）",
+      "ok": true,
+      "detail": {
+        "text": "请求超时，请稍后重试。可先保存配置，稍后在源列表中重试健康检查。",
+        "cls": "source-form__test-result source-form__test-result--fail"
+      }
+    },
+    {
+      "id": "SUP-03",
+      "name": "编辑源改名后落库并返回列表",
+      "ok": true,
+      "detail": {
+        "name": "补充 AList 改名",
+        "updatedAt": 1792547341952
+      }
+    },
+    {
+      "id": "SUP-04",
+      "name": "删除源 → 确认后真实删除并返回列表",
+      "ok": true,
+      "detail": {
+        "remaining": [
+          "内置演示"
+        ]
+      }
+    },
+    {
+      "id": "SUP-05",
+      "name": "订阅导入：成功 2 / 跳过 1，结果面板展示明细",
+      "ok": true,
+      "detail": {
+        "text": "导入结果 成功 2 · 跳过 1 · 失败 0 已写入 2 个源，源列表已自动刷新 其中 1 个源因配置不完整（如缺 api）未提交 完成",
+        "before": 1,
+        "after": 3
+      }
+    },
+    {
+      "id": "SUP-06",
+      "name": "缺 api 条目在预览中给出跳过原因",
+      "ok": true,
+      "detail": "skip-section-ok"
+    },
+    {
+      "id": "SUP-07",
+      "name": "单集电影点下载直接建任务，不打开抽屉",
+      "ok": true,
+      "detail": {
+        "label": "下载",
+        "before": 0,
+        "after": 1
+      }
+    }
+  ]
+}

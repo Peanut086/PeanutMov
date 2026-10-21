@@ -69,6 +69,14 @@ const episodes = computed<Episode[]>(() => {
   return filtered.sort((a, b) => a.number - b.number);
 });
 const isSeries = computed(() => episodes.value.length > 1 || (item.value?.type !== 'movie' && episodes.value.length > 0));
+/**
+ * 是否需要「选集下载」抽屉。
+ *
+ * 单集电影直接创建任务（一次点击即可下载）；多集或多线路时打开抽屉，
+ * 让用户勾选（抽屉内含「全选」「开始下载」）。
+ * 注意：多线路各 1 集的电影（如演示 Sintel）也必须走抽屉，否则用户无法选择线路。
+ */
+const needsEpisodePicker = computed(() => episodes.value.length > 1 || lines.value.length > 1);
 
 const progressRecord = computed(() => {
   const it = item.value;
@@ -204,10 +212,15 @@ async function toggleFavorite(): Promise<void> {
 
 function onDownload(): void {
   if (!item.value) return;
-  if (isSeries.value) {
+  if (episodes.value.length === 0) {
+    toast.error('暂无可下载的剧集');
+    return;
+  }
+  if (needsEpisodePicker.value) {
     pickerOpen.value = true;
     return;
   }
+  // 单集电影：直接创建任务，不打断用户
   void downloadEpisodes(episodes.value.slice(0, 1).map((e) => e.id));
 }
 
@@ -216,7 +229,12 @@ async function downloadEpisodes(episodeIds: string[]): Promise<void> {
   if (!it || episodeIds.length === 0) return;
   downloading.value = true;
   try {
-    const inputs = await library.toDownloadInputs(it.id, episodeIds);
+    // CreateDownloadInput 统一由 libraryStore.toDownloadInputs 生成（sourceId/mediaId/episodeId/url/format/title…）
+    const inputs = await library.toDownloadInputs(it.id, episodeIds, currentLineId.value);
+    if (inputs.length === 0) {
+      toast.error('所选剧集暂无可用的播放地址');
+      return;
+    }
     await downloads.createMany(inputs);
     toast.success(`已加入下载队列（${inputs.length} 集）`);
     pickerOpen.value = false;
@@ -376,7 +394,8 @@ function openCompliance(): void {
           <button
             class="detail-actions__icon"
             type="button"
-            :aria-label="isSeries ? '选择集数下载' : '下载'"
+            :aria-label="needsEpisodePicker ? '选择集数下载' : '下载'"
+            :disabled="downloading"
             @click="onDownload"
           >
             <IconDownload :size="20" />
@@ -480,6 +499,10 @@ function openCompliance(): void {
   height: 320px;
   overflow: hidden;
   pointer-events: none;
+  /* 背景必须留在内容下方：`.detail__scroll` 提升到 z-index 1，
+     否则绝对定位的背景（含不透明的 gradient-hero 下缘）会盖住静态定位的操作按钮，
+     表现为「详情页找不到下载/收藏/投屏按钮」（BUG-04 根因）。 */
+  z-index: 0;
 }
 
 .detail__backdrop-img {
@@ -525,6 +548,8 @@ function openCompliance(): void {
 }
 
 .detail__scroll {
+  position: relative;
+  z-index: 1;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;

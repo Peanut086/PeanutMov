@@ -4,7 +4,7 @@
  *
  * - 类型切换动态字段：AList/WebDAV（账号密码）、Jellyfin（API Key + userId）、站点（请求头）
  * - 校验：名称 1–30、地址 `isValidHttpUrl`、子路径可选；保存前 `normalizeBaseUrl`
- * - 测试连接：地址非法不发请求；合法则回调父级（真实调用由数据包提供）
+ * - 测试连接：地址非法不发请求；合法则回调父级（父级走 `sourceStore.testConnection` 真实探测）
  * - 错误就地展示（12px danger），保存按钮禁用直到合法（AC-04）
  *
  * 本组件**只做表单与本地校验**，不直接调用 Service；提交/测试连接通过事件抛给视图。

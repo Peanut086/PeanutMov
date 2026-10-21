@@ -126,7 +126,10 @@ async function connect() {
   await page.send('DOM.enable');
   await page.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
   await page.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
-  await page.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: DL_DIR });
+  // 注意：本脚本使用独立 incognito browserContext。`Browser.setDownloadBehavior` 若不带
+  // `browserContextId`，只作用于**默认**上下文，本上下文里的下载不会落盘（表现为下载目录为空）。
+  // 必须带 browserContextId，并在 browser session 上调用。
+  await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: DL_DIR, browserContextId });
   return { page };
 }
 
@@ -166,6 +169,19 @@ const CLICK = (text) => `(() => {
 const CLICK_ARIA = (label) => `(() => {
   const nodes = [...document.querySelectorAll('[aria-label]')];
   const hit = nodes.find((n) => n.getAttribute('aria-label') === ${JSON.stringify(label)} && n.offsetParent !== null);
+  if (!hit) return false;
+  hit.click();
+  return true;
+})()`;
+
+/**
+ * 按 CSS 选择器点击（用于文案有歧义的按钮）。
+ * 例：导入页的 `导入 N 个源` 会被分段控件「从链接导入 / 从文件导入」先命中，
+ * 文本匹配会点到分段控件而不是提交按钮。
+ */
+const CLICK_SEL = (selector) => `(() => {
+  const hit = [...document.querySelectorAll(${JSON.stringify(selector)})]
+    .find((n) => n.offsetParent !== null && !n.disabled);
   if (!hit) return false;
   hit.click();
   return true;
@@ -520,6 +536,30 @@ function startSubServer() {
     await waitFor(page, `!!document.querySelector('.detail-hero__title')`, 20000, 'detail for dl');
     await sleep(800);
     await step('E2E-16', '详情页选择集数下载并生成任务（AC-69）', async () => {
+      // 回归护栏（BUG-04）：历史缺陷是背景层盖住操作按钮，按钮存在却「看不见/找不到」。
+      // 仅查 aria-label 存在会漏掉该缺陷，必须断言按钮在视口内可见且命中测试确实落在按钮上。
+      const visibility = await page.eval(`(() => {
+        const label = '选择集数下载';
+        const btn = [...document.querySelectorAll('[aria-label]')].find(n => n.getAttribute('aria-label') === label);
+        if (!btn) return { found: false };
+        const r = btn.getBoundingClientRect();
+        const cx = r.x + r.width / 2;
+        const cy = r.y + r.height / 2;
+        const top = document.elementFromPoint(cx, cy);
+        const hit = !!top && (top === btn || btn.contains(top));
+        return {
+          found: true,
+          size: [Math.round(r.width), Math.round(r.height)],
+          inViewport: r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth,
+          hit,
+          // 取按钮上方 1px 处的背景色，确认背景层不再遮挡（命中测试通过即足够，这里只做证据留存）
+          bg: getComputedStyle(btn).backgroundColor,
+        };
+      })()`);
+      if (!visibility.found) throw new Error('未找到下载按钮');
+      if (!visibility.inViewport) throw new Error(`下载按钮不在视口内：${JSON.stringify(visibility.size)}`);
+      if (!visibility.hit) throw new Error('下载按钮被其他图层遮挡（命中测试未落在按钮上）');
+      await shot(page, 'review-15a-detail-actions');
       if (!(await page.eval(CLICK_ARIA('选择集数下载')))) throw new Error('未找到下载按钮');
       await sleep(700);
       if (!(await page.eval(CLICK('全选')))) throw new Error('未找到全选');
@@ -529,7 +569,21 @@ function startSubServer() {
       const tasks = await page.eval(IDB_ALL('downloads'));
       await shot(page, 'review-15-detail-download');
       if (!tasks.length) throw new Error('downloads 表无任务');
-      return tasks.map((t) => ({ status: t.status, format: t.format, total: t.totalBytes, sink: t.sink }));
+      const incomplete = tasks.filter((t) => !t.sourceId || !t.mediaId || !t.episodeId || !t.url || !t.format || !t.title);
+      if (incomplete.length) {
+        throw new Error(`CreateDownloadInput 字段不全：${JSON.stringify(incomplete.map((t) => Object.keys(t)))}`);
+      }
+      return tasks.map((t) => ({
+        status: t.status,
+        format: t.format,
+        total: t.totalBytes,
+        sink: t.sink,
+        sourceId: Boolean(t.sourceId),
+        mediaId: Boolean(t.mediaId),
+        episodeId: Boolean(t.episodeId),
+        url: Boolean(t.url),
+        title: t.title,
+      }));
     });
 
     /* ===== 17. 下载完成 ===== */
@@ -602,6 +656,8 @@ function startSubServer() {
         return inputs.map(i => ({ type: i.type, name: i.name || i.id, ph: i.placeholder }));
       })()`);
       // 通过原生 setter 填名称与地址
+      // 注意：名称/地址须与 E2E-21 的订阅夹具区分，否则 E2E-21 导入时会被
+      // 「同名同地址 → 重复」策略跳过（默认 skip），导致步数依赖执行顺序。
       await page.eval(`(() => {
         const setV = (el, v) => {
           const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -609,8 +665,8 @@ function startSubServer() {
           el.dispatchEvent(new Event('input', { bubbles: true }));
         };
         const inputs = [...document.querySelectorAll('input')].filter(i => i.type !== 'file' && i.offsetParent !== null);
-        if (inputs[0]) setV(inputs[0], '评审 AList');
-        if (inputs[1]) setV(inputs[1], 'https://alist.example.com');
+        if (inputs[0]) setV(inputs[0], '评审新增 AList');
+        if (inputs[1]) setV(inputs[1], 'https://alist-new.example.com');
         return inputs.length;
       })()`);
       await sleep(500);
@@ -640,7 +696,7 @@ function startSubServer() {
       const preview = await page.eval(`document.querySelector('[data-route="source-import"]').textContent.replace(/\\s+/g,' ').slice(0, 200)`);
       await shot(page, 'review-20-import-preview');
       const before = await page.eval(IDB_COUNT('sources'));
-      if (!(await page.eval(CLICK('导入')))) throw new Error('未找到导入按钮');
+      if (!(await page.eval(CLICK_SEL('.import-commit')))) throw new Error('未找到导入按钮');
       await sleep(2500);
       const after = await page.eval(IDB_COUNT('sources'));
       const resultText = await page.eval(`document.body.textContent.replace(/\\s+/g,' ').slice(0, 400)`);
@@ -663,7 +719,12 @@ function startSubServer() {
       await shot(page, 'review-22-backup');
       if (json.schemaVersion !== 1) throw new Error(`schemaVersion=${json.schemaVersion}`);
       if (!Array.isArray(json.sources)) throw new Error('缺少 sources');
-      return { file: files[0], sources: json.sources.length, favorites: json.favorites?.length, history: json.history?.length, downloads: json.downloads?.length };
+      // 默认（未勾选"包含密码与 Token"）必须脱敏
+      const leaked = json.sources.filter(
+        (s) => s.auth && (s.auth.password !== null && s.auth.password !== undefined || s.auth.token !== null && s.auth.token !== undefined),
+      );
+      if (leaked.length) throw new Error(`未脱敏：${leaked.map((s) => s.name).join(',')}`);
+      return { file: files[0], sources: json.sources.length, favorites: json.favorites?.length, history: json.history?.length, downloads: json.downloads?.length, redacted: true };
     });
 
     /* ===== 23. 备份导入 ===== */

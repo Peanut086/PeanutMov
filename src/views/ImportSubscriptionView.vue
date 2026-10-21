@@ -4,23 +4,15 @@
  *
  * 输入方式（链接/文件）→ 解析预览（逐条状态与跳过原因）→ 同名策略 → 导入。
  *
- * 契约缺口（重要）：
- * `importService`（API-05）不在 UI 包 import 白名单内（开发任务拆分 2.2），
- * API-14 也没有 import 相关 action，因此本视图保留**内置最小解析**用于预览
- * （支持 TVBox `sites[]` 与简化 `sources[]`、2MB 上限、必填字段校验、重复检测），
- * 提交时**如实告知未写入**，不伪造成功。预览结构已是 `ImportPreview` 契约，
- * 白名单放开或补 Store action 后只需替换 `fetchPreview` / `onFileChange` / `commit` 内部实现。
+ * v1.1 / CHG-02：解析与提交全部走 `importStore`（`previewFromUrl / previewFromFile /
+ * previewFromText / commit`），内部由 `importService` 落库；预览结构以 `ImportPreview`
+ * 契约字段为准（`entries[].valid/selected/duplicateOf/warning/issues/normalized`）。
+ * 导入成功后源列表刷新由 `importService` 发出的 `sources:changed` 驱动，UI 不双写。
  */
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
-import type {
-  ImportPreview,
-  ImportPreviewEntry,
-  ImportResult,
-  SourceInput,
-  SourceType,
-} from '@/types';
+import type { ImportPreviewEntry, ImportResult } from '@/types';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import ComplianceNotice from '@/components/common/ComplianceNotice.vue';
@@ -29,30 +21,28 @@ import SegmentedControl from '@/components/common/SegmentedControl.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import ImportPreviewList from '@/components/source/ImportPreviewList.vue';
-import { useSourceStore } from '@/stores/sourceStore';
+import { useImportStore } from '@/stores/importStore';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
-import { isValidHttpUrl, normalizeBaseUrl } from '@/shared/url';
-import { MAX_SUBSCRIPTION_BYTES, MAX_SUBSCRIPTION_SOURCES } from '@/shared/constants';
+import { isValidHttpUrl } from '@/shared/url';
 
 const router = useRouter();
-const sources = useSourceStore();
+const importer = useImportStore();
 const toast = useToast();
 const ui = useUiStore();
 const { isOffline } = useOnlineStatus();
 
 const mode = ref<'url' | 'file'>('url');
 const url = ref('');
-const loading = ref(false);
 const fileName = ref<string | null>(null);
-const preview = ref<ImportPreview | null>(null);
 const selectedKeys = ref<string[]>([]);
-const parseError = ref<string | null>(null);
+const localError = ref<string | null>(null);
 const duplicateStrategy = ref<'skip' | 'overwrite' | 'keep-both'>('skip');
-const importing = ref(false);
 const result = ref<ImportResult | null>(null);
+/** 提交瞬间预览里「配置无效、未提交」的条目数（ImportResult.skipped 只统计同名跳过） */
+const invalidAtCommit = ref(0);
 const resultOpen = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 
@@ -62,176 +52,59 @@ const strategyOptions = [
   { value: 'keep-both', label: '保留两份' },
 ];
 
-const importableCount = computed(
-  () => preview.value?.entries.filter((e) => e.valid && selectedKeys.value.includes(e.key)).length ?? 0,
-);
-const validCount = computed(() => preview.value?.entries.filter((e) => e.valid).length ?? 0);
-const skippedCount = computed(() => preview.value?.entries.filter((e) => !e.valid).length ?? 0);
+const preview = computed(() => importer.preview);
+const parsing = computed(() => importer.parsing);
+const importing = computed(() => importer.committing);
 const hasPreview = computed(() => preview.value !== null);
+const parseError = computed(() => localError.value ?? importer.error?.message ?? null);
 
-const SENSITIVE_WORDS = ['破解', '盗版', '白嫖', '免费看'];
+const validEntries = computed<ImportPreviewEntry[]>(
+  () => preview.value?.entries.filter((e) => e.valid) ?? [],
+);
+const importableCount = computed(
+  () => validEntries.value.filter((e) => selectedKeys.value.includes(e.key)).length,
+);
+const validCount = computed(() => validEntries.value.length);
+const skippedCount = computed(() => (preview.value?.entries.filter((e) => !e.valid).length ?? 0));
 
-/* ---------- 临时解析（集成时替换为 importService） ---------- */
+const globalWarnings = computed(
+  () => preview.value?.globalIssues.filter((i) => i.level !== 'info') ?? [],
+);
+const globalErrors = computed(
+  () => preview.value?.globalIssues.filter((i) => i.level === 'error') ?? [],
+);
 
-interface RawSite {
-  key?: unknown;
-  name?: unknown;
-  type?: unknown;
-  api?: unknown;
-  searchable?: unknown;
-  ext?: unknown;
-}
+onMounted(() => {
+  // 进入页面清空上一次会话的预览（保留历史导入记录）
+  importer.reset();
+});
 
-function typeOf(raw: unknown): SourceType | 'unknown' {
-  const value = String(raw ?? '').toLowerCase();
-  if (value === '0' || value.includes('xml') || value.includes('site') || value.includes('cms')) return 'site';
-  if (value === '1' || value.includes('alist')) return 'alist';
-  if (value === '2' || value.includes('webdav')) return 'webdav';
-  if (value === '3' || value.includes('jellyfin')) return 'jellyfin';
-  if (value === 'demo') return 'demo';
-  return 'unknown';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function buildPreview(json: unknown, origin: 'url' | 'file', name: string | null): ImportPreview {
-  if (!isRecord(json)) throw new Error('订阅格式不支持：根节点必须是对象');
-  const rawList = Array.isArray(json.sites)
-    ? json.sites
-    : Array.isArray(json.sources)
-      ? json.sources
-      : null;
-  if (!rawList) throw new Error('订阅格式不支持：缺少 sites 或 sources 数组');
-  if (rawList.length === 0) throw new Error('订阅中没有任何源');
-  if (rawList.length > MAX_SUBSCRIPTION_SOURCES) {
-    throw new Error(`订阅源数量超过上限（${MAX_SUBSCRIPTION_SOURCES} 个）`);
-  }
-
-  const existingKeys = new Set(sources.sources.map((s) => s.key));
-  const existingUrls = new Set(sources.sources.map((s) => s.baseUrl).filter((u) => u.length > 0));
-  const seenKeys = new Set<string>();
-
-  const entries: ImportPreviewEntry[] = rawList.map((raw, index) => {
-    const site: RawSite = isRecord(raw) ? raw : {};
-    const nameValue = typeof site.name === 'string' ? site.name.trim() : '';
-    const keyValue =
-      typeof site.key === 'string' && site.key.trim().length > 0 ? site.key.trim() : `site-${index + 1}`;
-    const apiValue = typeof site.api === 'string' ? site.api.trim() : '';
-    const type = typeOf(site.type);
-    const issues: ImportPreviewEntry['issues'] = [];
-
-    if (nameValue.length === 0) issues.push({ level: 'error', code: 'missing_name', field: 'name', message: '缺少 name 字段' });
-    if (apiValue.length === 0) issues.push({ level: 'error', code: 'missing_api', field: 'api', message: '缺少 api 字段' });
-    else if (!isValidHttpUrl(apiValue)) {
-      issues.push({ level: 'error', code: 'invalid_api', field: 'api', message: 'api 必须是 http(s) 地址' });
-    }
-    if (type === 'unknown') {
-      issues.push({ level: 'warning', code: 'unknown_type', field: 'type', message: '未识别的源类型，将按站点处理' });
-    }
-    if (seenKeys.has(keyValue)) {
-      issues.push({ level: 'error', code: 'duplicate_key_in_file', field: 'key', message: '同一订阅内 key 重复' });
-    }
-    seenKeys.add(keyValue);
-
-    const valid = issues.every((i) => i.level !== 'error');
-    const normalized: SourceInput | null = valid
-      ? {
-          name: nameValue.slice(0, 30),
-          type: type === 'unknown' ? 'site' : type,
-          baseUrl: normalizeBaseUrl(apiValue),
-          key: keyValue,
-        }
-      : null;
-
-    const warningHit = SENSITIVE_WORDS.find((w) => nameValue.includes(w) || apiValue.includes(w));
-    const duplicateOf = existingKeys.has(keyValue)
-      ? 'name'
-      : existingUrls.has(normalizeBaseUrl(apiValue))
-        ? 'url'
-        : null;
-
-    return {
-      key: keyValue,
-      name: nameValue,
-      type,
-      baseUrl: apiValue,
-      enabled: true,
-      selected: valid,
-      valid,
-      duplicateOf,
-      warning: warningHit ? `名称或地址含敏感词「${warningHit}」，请确认拥有该源的访问权限` : null,
-      issues,
-      normalized,
-    };
-  });
-
-  return {
-    origin,
-    sourceUrl: origin === 'url' ? url.value.trim() : null,
-    fileName: name,
-    fetchedAt: Date.now(),
-    name: typeof json.name === 'string' ? json.name : null,
-    total: entries.length,
-    entries,
-    globalIssues: [],
-  };
-}
-
-function fileSizeError(file: File): string | null {
-  if (!/\.json$/i.test(file.name)) return '仅支持 JSON 文件';
-  if (file.size > MAX_SUBSCRIPTION_BYTES) return '文件过大（上限 2MB）';
-  if (file.size === 0) return '文件内容为空';
-  return null;
-}
+/** 预览变化 → 默认全选有效条目（AC-08） */
+watch(preview, (next) => {
+  selectedKeys.value = next
+    ? next.entries.filter((entry) => entry.valid && entry.selected).map((entry) => entry.key)
+    : [];
+});
 
 /* ---------- 交互 ---------- */
 
 async function fetchPreview(): Promise<void> {
-  parseError.value = null;
+  localError.value = null;
   result.value = null;
   const target = url.value.trim();
   if (!isValidHttpUrl(target)) {
-    parseError.value = '请填写合法的 http(s) 订阅地址';
+    localError.value = '请填写合法的 http(s) 订阅地址';
     return;
   }
   if (isOffline.value) {
-    parseError.value = '网络不可用，请改用「从文件导入」';
+    localError.value = '网络不可用，请改用「从文件导入」';
     return;
   }
-  loading.value = true;
-  try {
-    const res = await fetch(target);
-    if (!res.ok) {
-      parseError.value = `地址不可访问(${res.status})`;
-      return;
-    }
-    const text = await res.text();
-    if (text.length > MAX_SUBSCRIPTION_BYTES) {
-      parseError.value = '订阅内容过大（上限 2MB）';
-      return;
-    }
-    let json: unknown;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      parseError.value = '内容不是合法 JSON';
-      return;
-    }
-    await sources.load();
-    const next = buildPreview(json, 'url', null);
-    applyPreview(next);
-  } catch (e) {
-    parseError.value = toErrorShape(e, 'E_NETWORK').message;
-  } finally {
-    loading.value = false;
+  await importer.previewFromUrl(target);
+  if (preview.value === null) {
+    // 解析失败：错误已落在 store.error（保留用户输入的 URL，AC-09/AC-10）
+    return;
   }
-}
-
-function applyPreview(next: ImportPreview): void {
-  preview.value = next;
-  selectedKeys.value = next.entries.filter((e) => e.valid && e.selected).map((e) => e.key);
 }
 
 function openFilePicker(): void {
@@ -243,34 +116,11 @@ async function onFileChange(ev: Event): Promise<void> {
   const file = input.files?.[0];
   input.value = '';
   if (!file) return;
-  parseError.value = null;
+  localError.value = null;
   result.value = null;
-
-  const sizeError = fileSizeError(file);
-  if (sizeError) {
-    parseError.value = sizeError;
-    return;
-  }
-
-  loading.value = true;
-  try {
-    const text = await file.text();
-    let json: unknown;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      parseError.value = '内容不是合法 JSON';
-      return;
-    }
-    await sources.load();
-    const next = buildPreview(json, 'file', file.name);
-    fileName.value = file.name;
-    applyPreview(next);
-  } catch (e) {
-    parseError.value = toErrorShape(e, 'E_PARSE').message;
-  } finally {
-    loading.value = false;
-  }
+  fileName.value = file.name;
+  // 后缀 / 大小 / 空文件校验在 importService.previewFromFile 内（AC-12）
+  await importer.previewFromFile(file);
 }
 
 function toggle(key: string, selected: boolean): void {
@@ -280,37 +130,56 @@ function toggle(key: string, selected: boolean): void {
 }
 
 function toggleAll(): void {
-  const validKeys = preview.value?.entries.filter((e) => e.valid).map((e) => e.key) ?? [];
-  selectedKeys.value =
-    selectedKeys.value.length === validKeys.length ? [] : validKeys;
+  const validKeys = validEntries.value.map((e) => e.key);
+  selectedKeys.value = selectedKeys.value.length === validKeys.length ? [] : validKeys;
 }
 
 async function commit(): Promise<void> {
-  if (!preview.value || importableCount.value === 0) return;
-  importing.value = true;
+  if (!preview.value || importableCount.value === 0 || importing.value) return;
+  if (globalErrors.value.length > 0) {
+    toast.error(globalErrors.value[0]?.message ?? '订阅存在错误，无法导入');
+    return;
+  }
   try {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    // 契约未开放写入入口：结果必须如实反映"未写入"，不伪造成功
+    // 记录本次提交前的无效条目数：`ImportResult.skipped` 只统计「同名已存在被跳过」，
+    // 不含预览阶段就判定为无效（如缺 api）的条目，两者需分开如实展示（AC-13）。
+    invalidAtCommit.value = skippedCount.value;
+    const next = await importer.commit({
+      selectedKeys: [...selectedKeys.value],
+      onDuplicate: duplicateStrategy.value,
+    });
+    result.value = next;
+    resultOpen.value = true;
+    const skippedTotal = next.skipped + invalidAtCommit.value;
+    if (next.failed > 0) {
+      toast.error(`导入完成：成功 ${next.success}，跳过 ${skippedTotal}，失败 ${next.failed}`);
+    } else {
+      toast.success(`成功 ${next.success}，跳过 ${skippedTotal}，失败 ${next.failed}`);
+    }
+  } catch (e) {
+    // 事务失败（全回滚）：错误明细进结果面板 + Toast
+    const message = toErrorShape(e).message;
+    invalidAtCommit.value = 0;
     result.value = {
       success: 0,
-      skipped: preview.value.total - importableCount.value,
+      skipped: 0,
       failed: importableCount.value,
       sourceIds: [],
-      issues: [
-        {
-          level: 'error',
-          code: 'import_not_available',
-          field: null,
-          message: '应用内订阅导入暂未开放，本次未写入任何源',
-        },
-      ],
+      issues: [{ level: 'error', code: 'IMPORT_FAILED', field: null, message }],
     };
     resultOpen.value = true;
-    toast.info('应用内订阅导入暂未开放，未写入任何源');
-  } catch (e) {
-    toast.error(toErrorShape(e).message);
-  } finally {
-    importing.value = false;
+    toast.error(`导入失败，未写入任何源：${message}`);
+  }
+}
+
+function closeResult(): void {
+  resultOpen.value = false;
+  const committed = result.value !== null && result.value.success > 0;
+  if (committed) {
+    // 已落库：清空预览避免重复提交（源列表已由 sources:changed 刷新）
+    importer.reset();
+    fileName.value = null;
+    selectedKeys.value = [];
   }
 }
 
@@ -332,6 +201,7 @@ function goBack(): void {
 }
 
 function leave(): void {
+  importer.reset();
   if (globalThis.history.length > 1) router.back();
   else void router.replace('/settings/sources');
 }
@@ -368,24 +238,29 @@ function leave(): void {
             type="url"
             inputmode="url"
             placeholder="https://example.com/sub.json"
-            :disabled="loading"
+            :disabled="parsing || importing"
             @keydown.enter.prevent="fetchPreview"
           />
           <button
             class="btn btn--secondary btn--md import-fetch"
             type="button"
-            :disabled="loading || isOffline"
+            :disabled="parsing || importing || isOffline"
             @click="fetchPreview"
           >
-            <LoadingSpinner v-if="loading" :size="16" />
-            {{ loading ? '获取中' : '获取' }}
+            <LoadingSpinner v-if="parsing" :size="16" />
+            {{ parsing ? '获取中' : '获取' }}
           </button>
         </div>
         <p class="field__hint">支持 TVBox 风格 sites[] 或简化 sources[] 格式，单份上限 2MB。</p>
       </section>
 
       <section v-else class="import-input-block">
-        <button class="import-dropzone" type="button" :disabled="loading" @click="openFilePicker">
+        <button
+          class="import-dropzone"
+          type="button"
+          :disabled="parsing || importing"
+          @click="openFilePicker"
+        >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M6 3.6h8l4 4v12.8H6z" />
             <path d="M14 3.6v4h4" />
@@ -408,7 +283,7 @@ function leave(): void {
 
       <!-- 未解析 -->
       <EmptyState
-        v-if="!hasPreview && !loading && !parseError"
+        v-if="!hasPreview && !parsing && !parseError"
         variant="source"
         title="尚未解析订阅"
         description="粘贴订阅链接或选择本地 JSON 文件后，可在此预览将导入哪些源"
@@ -421,11 +296,22 @@ function leave(): void {
             <span class="import-summary__title">
               共 {{ preview.total }} 个源 · 可导入 {{ validCount }} · 跳过 {{ skippedCount }}
             </span>
-            <button class="import-summary__all" type="button" @click="toggleAll">
+            <button
+              v-if="validCount > 0"
+              class="import-summary__all"
+              type="button"
+              :disabled="importing"
+              @click="toggleAll"
+            >
               {{ selectedKeys.length === validCount ? '取消全选' : '全选' }}
             </button>
           </div>
           <p v-if="preview.name" class="import-summary__name">订阅名称：{{ preview.name }}</p>
+          <p v-if="preview.sourceUrl" class="import-summary__name">来源：{{ preview.sourceUrl }}</p>
+          <p v-else-if="preview.fileName" class="import-summary__name">来源：{{ preview.fileName }}</p>
+          <p v-for="issue in globalWarnings" :key="issue.code" class="import-summary__warn">
+            {{ issue.message }}
+          </p>
         </section>
 
         <ImportPreviewList
@@ -434,6 +320,22 @@ function leave(): void {
           :disabled="importing"
           @toggle="toggle"
         />
+
+        <!-- 缺字段 / 无效条目：逐条给出跳过原因（AC-09/AC-13） -->
+        <section v-if="skippedCount > 0" class="import-skipped">
+          <h2 class="field__label">将跳过 {{ skippedCount }} 个源</h2>
+          <ul class="import-skipped__list">
+            <li
+              v-for="entry in preview.entries.filter((e) => !e.valid)"
+              :key="`skip-${entry.key}`"
+              class="import-skipped__item"
+            >
+              {{ entry.name || entry.key }}：{{
+                entry.issues.find((i) => i.level === 'error')?.message ?? '配置无效'
+              }}
+            </li>
+          </ul>
+        </section>
 
         <section class="import-strategy">
           <h2 class="field__label">同名源处理</h2>
@@ -456,17 +358,31 @@ function leave(): void {
     </div>
 
     <!-- 导入结果 -->
-    <div v-if="resultOpen" class="import-result" role="dialog" aria-modal="true">
+    <div v-if="resultOpen" class="import-result" role="dialog" aria-modal="true" aria-label="导入结果">
       <div class="import-result__card">
         <h2 class="import-result__title">导入结果</h2>
         <p class="import-result__line">
-          成功 {{ result?.success ?? 0 }} · 跳过 {{ result?.skipped ?? 0 }} · 失败 {{ result?.failed ?? 0 }}
+          成功 {{ result?.success ?? 0 }} · 跳过
+          {{ (result?.skipped ?? 0) + invalidAtCommit }} · 失败 {{ result?.failed ?? 0 }}
         </p>
-        <p v-for="issue in result?.issues ?? []" :key="issue.code" class="import-result__issue">
-          {{ issue.message }}
+        <p v-if="result && result.success > 0" class="import-result__sub">
+          已写入 {{ result.sourceIds.length }} 个源，源列表已自动刷新
         </p>
-        <button class="btn btn--primary btn--md import-result__btn" type="button" @click="resultOpen = false">
-          知道了
+        <p v-if="invalidAtCommit > 0" class="import-result__sub">
+          其中 {{ invalidAtCommit }} 个源因配置不完整（如缺 api）未提交
+        </p>
+        <ul v-if="(result?.issues.length ?? 0) > 0" class="import-result__issues">
+          <li
+            v-for="(issue, index) in result?.issues ?? []"
+            :key="`${issue.code}-${index}`"
+            class="import-result__issue"
+            :class="{ 'import-result__issue--error': issue.level === 'error' }"
+          >
+            {{ issue.message }}
+          </li>
+        </ul>
+        <button class="btn btn--primary btn--md import-result__btn" type="button" @click="closeResult">
+          {{ result && result.success > 0 ? '完成' : '知道了' }}
         </button>
       </div>
     </div>
@@ -593,6 +509,36 @@ function leave(): void {
 .import-summary__name {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.import-summary__warn {
+  font: var(--text-caption);
+  color: var(--color-warning);
+}
+
+.import-skipped {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+}
+
+.import-skipped__list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: disc;
+  padding-left: var(--space-4);
+}
+
+.import-skipped__item {
+  font: var(--text-caption);
+  color: var(--color-danger);
+  line-height: 1.5;
 }
 
 .import-strategy {
@@ -618,6 +564,8 @@ function leave(): void {
 
 .import-result__card {
   width: min(88vw, 360px);
+  max-height: 72vh;
+  overflow-y: auto;
   padding: var(--space-5);
   border-radius: var(--radius-xl);
   background-color: var(--color-bg-elevated);
@@ -636,9 +584,29 @@ function leave(): void {
   color: var(--color-text-secondary);
 }
 
-.import-result__issue {
-  margin-top: var(--space-2);
+.import-result__sub {
+  margin-top: var(--space-1);
   font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.import-result__issues {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: var(--space-3);
+  text-align: left;
+  list-style: disc;
+  padding-left: var(--space-4);
+}
+
+.import-result__issue {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  line-height: 1.5;
+}
+
+.import-result__issue--error {
   color: var(--color-danger);
 }
 

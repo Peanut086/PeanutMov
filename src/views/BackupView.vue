@@ -21,7 +21,7 @@ import { useSourceStore } from '@/stores/sourceStore';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
 import { isNative } from '@/shared/platform';
-import { toErrorShape } from '@/shared/errors';
+import { AppError, toErrorShape } from '@/shared/errors';
 
 const sources = useSourceStore();
 const favorites = useFavoriteStore();
@@ -88,32 +88,64 @@ async function exportBackup(): Promise<void> {
       toast.success(`已导出 ${result.fileName}`);
     } else {
       const blob = await backupService.exportData({ includeCredentials: includeCredentials.value });
-      lastExportName.value = fileName;
-      triggerDownload(blob, fileName);
-      toast.success(`已导出 ${fileName}`);
+      if (blob.size === 0) throw new AppError('E_INVALID_STATE', '备份内容为空，未生成文件');
+      const ok = triggerDownload(blob, fileName);
+      lastExportName.value = ok ? fileName : lastExportName.value;
+      if (ok) toast.success(`已导出 ${fileName}（${formatBytes(blob.size)}）`);
+      else toast.error('浏览器阻止了文件下载，请允许本站下载后重试');
     }
   } catch (e) {
-    toast.error(toErrorShape(e, 'E_DB').message);
+    // 导出失败（DB 读取 / 序列化 / 下载被拒）必须可见，不能静默吞掉
+    toast.error(`导出失败：${toErrorShape(e, 'E_DB').message}`);
   } finally {
     exporting.value = false;
   }
 }
 
-function triggerDownload(blob: Blob, fileName: string): void {
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * 触发真实文件下载（Web）。
+ *
+ * 要点（`/settings/backup` E2E 曾报「下载目录无 JSON」的排查结论）：
+ * - Blob MIME 必须是 `application/json`（导出服务已保证），此处再兜底一次；
+ * - `<a download>` 必须挂到文档里才会被浏览器接管，`display:none` 只是让它不可见；
+ * - **不能立刻 `revokeObjectURL`**：下载是异步读取 Blob 的，过早回收可能得到空文件/中断，
+ *   这里延后到 60s，且期间不移除节点；
+ * - 返回是否真的触发了点击，失败时由调用方明确提示（不伪造成功）。
+ *
+ * 注：headless Chrome 落盘还取决于 CDP `Browser.setDownloadBehavior` 的 `browserContextId`
+ * 作用域，与本函数无关（详见自测记录 BUG-05）。
+ */
+function triggerDownload(blob: Blob, fileName: string): boolean {
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return false;
+  const payload =
+    blob.type === 'application/json' ? blob : new Blob([blob], { type: 'application/json;charset=utf-8' });
+  const href = URL.createObjectURL(payload);
+
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = fileName;
+  a.rel = 'noopener';
+  a.style.display = 'none';
   try {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    a.rel = 'noopener';
     document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch {
-    // 无 DOM 下载能力（部分 WebView）：退化为提示用户使用 App 导出
-    toast.info('当前环境不支持直接下载，请在 Android App 内导出');
+    if (a.parentNode) a.parentNode.removeChild(a);
+    URL.revokeObjectURL(href);
+    return false;
   }
+  // 留在 DOM 中直到下载被浏览器接管（headless/慢磁盘下立刻移除会丢下载）
+  setTimeout(() => {
+    if (a.parentNode) a.parentNode.removeChild(a);
+    URL.revokeObjectURL(href);
+  }, 60_000);
+  return true;
 }
 
 function openFilePicker(): void {

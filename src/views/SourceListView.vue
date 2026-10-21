@@ -154,8 +154,14 @@ async function remove(): Promise<void> {
     danger: true,
   });
   if (!ok) return;
-  // API-14 sourceStore 未提供 remove：如实提示，不伪造成功（契约缺口见自测记录）
-  toast.info('应用内删除源暂未开放，本次未做任何改动');
+  try {
+    // v1.1 / CHG-01：真实删除；下载任务默认保留（已落盘文件由下载页单独清理）
+    await sources.remove(source.id);
+    active.value = null;
+    toast.success(`已删除「${source.name}」`);
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
 }
 
 function goNew(): void {

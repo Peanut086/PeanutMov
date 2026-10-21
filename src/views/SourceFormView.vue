@@ -4,9 +4,9 @@
  *
  * 表单逻辑在 `SourceForm` 组件内；本视图负责：
  * - 编辑态加载已有源
- * - 「测试连接」（本地地址校验，见 `onTest` 注释；不伪造"成功"）
- * - 保存/删除：API-14 未暴露写接口，UI 只做校验并如实提示
- * - 保存后返回 + Toast；未保存离开时二次确认
+ * - 「测试连接」→ `sourceStore.testConnection`（真实探测，不伪造"成功"）
+ * - 保存 / 删除 → `sourceStore.create / update / remove`（v1.1 / CHG-01）
+ * - 保存成功后 Toast + `router.replace('/settings/sources')`；未保存离开时二次确认
  */
 import { computed, onMounted, ref } from 'vue';
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
@@ -24,7 +24,6 @@ import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
-import { getHost } from '@/shared/url';
 
 const route = useRoute();
 const router = useRouter();
@@ -41,6 +40,7 @@ const source = ref<Source | null>(null);
 const loading = ref(false);
 const testing = ref(false);
 const saving = ref(false);
+const removing = ref(false);
 const dirty = ref(false);
 const testResult = ref<{ ok: boolean; message: string } | null>(null);
 
@@ -69,12 +69,11 @@ onMounted(async () => {
 });
 
 /**
- * 测试连接。
+ * 测试连接（v1.1 / CHG-01）。
  *
- * 契约缺口：API-14 `sourceStore` 只有 load/select/setEnabled/reorder/refreshHealth，
- * 未暴露 `testConnection`；而 `sourceService.testConnection` 不在 UI 包 import 白名单内
- * （开发任务拆分 2.2）。因此这里只做本地地址可达性预检，并**明确标注为本地校验**，
- * 不伪造"连接成功"。待 PM 决策（扩 API-14 或放开白名单）后替换为真实探测。
+ * 直接转发 `sourceStore.testConnection` 的真实探测结果：Store 不抛错，
+ * 失败通过 `ok:false + message` 表达；成功时展示延迟毫秒数。
+ * 未保存的修改（含地址）也会用当前表单值探测，不会落库。
  */
 async function onTest(input: SourceInput): Promise<void> {
   testResult.value = null;
@@ -84,33 +83,42 @@ async function onTest(input: SourceInput): Promise<void> {
   }
   testing.value = true;
   try {
-    const host = getHost(input.baseUrl);
-    await new Promise((resolve) => setTimeout(resolve, 320));
+    const feedback = await sources.testConnection(input);
+    const latency =
+      feedback.ok && typeof feedback.latencyMs === 'number' ? `（${Math.round(feedback.latencyMs)} ms）` : '';
     testResult.value = {
-      ok: true,
-      message: `地址格式有效（${host}）。此为本地校验，不代表源真实可用。`,
+      ok: feedback.ok,
+      message: feedback.ok
+        ? `${feedback.message}${latency}`
+        : `${feedback.message}。可先保存配置，稍后在源列表中重试健康检查。`,
     };
-  } catch (e) {
-    testResult.value = { ok: false, message: toErrorShape(e).message };
+    if (feedback.ok) toast.success(`连接成功${latency}`);
   } finally {
     testing.value = false;
   }
 }
 
 /**
- * 保存。
+ * 保存（v1.1 / CHG-01）。
  *
- * 契约缺口：API-14 `sourceStore` 未提供 create/update/remove，UI 不得直接引用
- * `sourceService`（不在 2.2 白名单），所以当前只做表单校验，**不伪造落库成功**。
+ * 新增 → `sourceStore.create`；编辑 → `sourceStore.update`。
+ * 成功后 Toast + `router.replace('/settings/sources')`（replace 避免回退再次进入表单）。
  */
-async function onSubmit(_input: SourceInput): Promise<void> {
+async function onSubmit(input: SourceInput): Promise<void> {
   if (saving.value) return;
   saving.value = true;
   try {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    toast.info('表单校验已通过；应用内新增/编辑源暂未开放，本次未写入');
-    dirty.value = false;
-    void router.back();
+    if (isEdit.value && sourceId.value) {
+      const updated = await sources.update(sourceId.value, input);
+      source.value = updated;
+      dirty.value = false;
+      toast.success(`已保存「${updated.name}」`);
+    } else {
+      const created = await sources.create(input);
+      dirty.value = false;
+      toast.success(`已添加「${created.name}」`);
+    }
+    await router.replace('/settings/sources');
   } catch (e) {
     toast.error(toErrorShape(e).message);
   } finally {
@@ -119,15 +127,30 @@ async function onSubmit(_input: SourceInput): Promise<void> {
 }
 
 async function removeSource(): Promise<void> {
-  if (!source.value) return;
+  const target = source.value;
+  if (!target || removing.value) return;
+  if (target.builtin) {
+    toast.info('内置源不可删除，只能禁用');
+    return;
+  }
   const ok = await ui.confirm({
-    title: `删除「${source.value.name}」？`,
+    title: `删除「${target.name}」？`,
     message: '删除后将无法从该源浏览内容，收藏与历史会保留。',
     confirmText: '删除',
     danger: true,
   });
   if (!ok) return;
-  toast.info('应用内删除源暂未开放，本次未做任何改动');
+  removing.value = true;
+  try {
+    await sources.remove(target.id);
+    dirty.value = false;
+    toast.success(`已删除「${target.name}」`);
+    await router.replace('/settings/sources');
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    removing.value = false;
+  }
 }
 
 function cancel(): void {
@@ -187,10 +210,12 @@ onBeforeRouteLeave(async () => {
         v-if="isEdit && source && !source.builtin"
         class="source-form-page__delete"
         type="button"
+        :disabled="removing || saving"
         @click="removeSource"
       >
-        <IconTrash :size="18" />
-        删除该源
+        <LoadingSpinner v-if="removing" :size="16" />
+        <IconTrash v-else :size="18" />
+        {{ removing ? '正在删除…' : '删除该源' }}
       </button>
     </div>
   </main>
