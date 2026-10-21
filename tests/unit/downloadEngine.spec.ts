@@ -205,6 +205,35 @@ describe('下载引擎（AC-73 / AC-76）', () => {
     });
   });
 
+  it('HTTP 403 → E_HTTP_403（与 401 的 E_AUTH 区分，AC-39 / REV-16）', async () => {
+    const engine403 = createDownloadEngine({
+      load: async () => task(),
+      saveProgress: async () => undefined,
+      fetchImpl: (async () => new Response('', { status: 403 })) as unknown as typeof fetch,
+      createSinkImpl: () => new IdbBlobSink(),
+    });
+    // 403 语义是"无权限访问"，不能退化为"需要登录"；且 403/401 均不可重试
+    await expect(engine403.run(task(), new AbortController().signal)).rejects.toMatchObject({
+      code: 'E_HTTP_403',
+      message: '无权限访问(403)',
+      httpStatus: 403,
+      retryable: false,
+    });
+
+    const engine401 = createDownloadEngine({
+      load: async () => task(),
+      saveProgress: async () => undefined,
+      fetchImpl: (async () => new Response('', { status: 401 })) as unknown as typeof fetch,
+      createSinkImpl: () => new IdbBlobSink(),
+    });
+    await expect(engine401.run(task(), new AbortController().signal)).rejects.toMatchObject({
+      code: 'E_AUTH',
+      message: '认证失败，请检查账号或 Token',
+      httpStatus: 401,
+      retryable: false,
+    });
+  });
+
   it('取消（abort）：中断读取并清理 sink（AC-80 支撑）', async () => {
     const controller = new AbortController();
     // 永不结束的流：读到第一块后触发取消

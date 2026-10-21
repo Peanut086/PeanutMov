@@ -121,4 +121,15 @@ describe('AC-60 错误码 → 用户文案映射', () => {
     expect(toAppError(quota).code).toBe('E_STORAGE_QUOTA');
     expect(toAppError(quota).message).toBe(ERROR_MESSAGES.E_STORAGE_QUOTA);
   });
+
+  it('鉴权类错误码不可重试（AC-39 / REV-16：403 重试无意义）', () => {
+    expect(RETRYABLE_CODES.has('E_HTTP_403')).toBe(false);
+    expect(RETRYABLE_CODES.has('E_AUTH')).toBe(false);
+    expect(RETRYABLE_CODES.has('E_HTTP_401')).toBe(false);
+    expect(new AppError('E_HTTP_403').retryable).toBe(false);
+    expect(new AppError('E_AUTH').retryable).toBe(false);
+    // 403 保留"无权限访问"文案，不被 401 的认证文案覆盖
+    expect(ERROR_MESSAGES.E_HTTP_403).toBe('无权限访问(403)');
+    expect(new AppError('E_HTTP_403').message).not.toBe(ERROR_MESSAGES.E_AUTH);
+  });
 });

@@ -87,16 +87,20 @@ export class DownloadEngine {
         appEvents.emit('toast', { text: '该地址不支持断点续传，将重新下载', type: 'info' });
         return this.run({ ...task, resumable: false, downloadedBytes: 0 }, signal);
       }
+      // AC-39 / REV-16：401 才是"需要登录"（E_AUTH），403 是"无权限访问"，
+      // 不能合并，否则错误面板文案会退化为「认证失败」。
       throw new AppError(
-        response.status === 401 || response.status === 403
+        response.status === 401
           ? 'E_AUTH'
-          : response.status >= 500
-            ? 'E_HTTP_5XX'
-            : response.status === 404
-              ? 'E_HTTP_404'
-              : response.status === 429
-                ? 'E_HTTP_429'
-                : 'E_UNKNOWN',
+          : response.status === 403
+            ? 'E_HTTP_403'
+            : response.status >= 500
+              ? 'E_HTTP_5XX'
+              : response.status === 404
+                ? 'E_HTTP_404'
+                : response.status === 429
+                  ? 'E_HTTP_429'
+                  : 'E_UNKNOWN',
         undefined,
         { httpStatus: response.status },
       );
