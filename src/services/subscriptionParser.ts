@@ -275,44 +275,90 @@ function stripLineComments(text: string): string {
     .join('\n');
 }
 
+/** 一行里"未转义的双引号"数量 */
+function quoteCount(line: string): number {
+  let count = 0;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '\\') {
+      i++;
+      continue;
+    }
+    if (line[i] === '"') count++;
+  }
+  return count;
+}
+
+/**
+ * 拼接被编辑器硬折行的字符串。
+ *
+ * 手工编辑 JSON 时，长字符串常被自动折行成两行（`"优` + `酷"`），
+ * 产生"字符串内真实换行"，标准解析器直接拒绝。
+ *
+ * 判据：**本行未转义引号为奇数** → 说明有个字符串没闭合，把下一行原样接上。
+ * 只在前一层（剥注释）仍失败时兜底，不进入合法 JSON 的解析路径。
+ *
+ * 该判据对合法 JSON 是安全的：转义引号（`\"`）、URL 里的 `//`、emoji
+ * 都不会造成引号计数为奇（已用 package.json / tsconfig / 含转义引号样本验证）。
+ */
+function joinWrappedStrings(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (quoteCount(line) % 2 === 1 && i + 1 < lines.length) {
+      out.push(line + lines[i + 1]);
+      i++;
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join('\n');
+}
+
 /**
  * 给解析失败一个可操作的诊断，而不是笼统的"不是合法 JSON"。
  *
- * 按可能性排序，只报最可能的那一个原因，避免一次抛一堆术语。
+ * 关键：诊断必须基于**剥离注释后**的重新解析错误，而不是原始错误。
+ * 否则含注释的文件会一直把"注释"当唯一原因报出来，掩盖真正的问题
+ * （如字符串被折行截断）——用户按提示删了注释还是导不进去。
  */
 function diagnoseJsonFailure(text: string, error: unknown): string {
-  const message = error instanceof Error ? error.message : '';
+  const original = error instanceof Error ? error.message : '';
+
+  // 重新解析剥离注释后的文本，拿到"真正的"失败原因
+  let afterStrip = original;
+  const withoutComments = stripLineComments(text);
+  if (withoutComments !== text) {
+    try {
+      JSON.parse(withoutComments);
+      return '该订阅含 // 注释（非标准 JSON），已尝试忽略注释但仍需修正格式';
+    } catch (e) {
+      afterStrip = e instanceof Error ? e.message : original;
+    }
+  }
 
   // 1. 字符串内出现真实换行：`"优\n酷"` 这类被编辑器硬折行的结果
-  if (/Bad control character|Unterminated string/i.test(message)) {
-    const line = /line (\d+)/i.exec(message)?.[1];
+  if (/Bad control character|Unterminated string/i.test(afterStrip)) {
+    const line = /line (\d+)/i.exec(afterStrip)?.[1];
     return line
       ? `第 ${line} 行附近有未转义的换行或缺失引号，可能是手工编辑时被折行截断`
       : '字符串里有未转义的换行或缺失引号，可能是手工编辑时被折行截断';
   }
 
-  // 2. 去掉整行注释后能解析 → 明确告诉用户是注释导致的
-  try {
-    JSON.parse(stripLineComments(text));
-    return '该订阅含 // 注释（非标准 JSON），已尝试忽略注释但仍需修正格式';
-  } catch {
-    // 继续判断
-  }
-
-  // 3. Node 的真实报错措辞（见 tests/unit/subscriptionParserRelaxed.spec.ts）
-  if (/Unexpected token '\/'|Unexpected token \//i.test(message)) {
+  // 2. 注释本身导致的语法错误（剥离后仍报 / 相关）
+  if (/Unexpected token '\/'|Unexpected token \//i.test(afterStrip)) {
     return '该订阅含 // 注释或多余的 / 字符，不是标准 JSON';
   }
-  // 截断：Expected ',' or '}' after property value / Unexpected end of JSON input
-  if (/Unexpected end of JSON input|Expected ',' or '\}'/i.test(message)) {
+  // 3. 截断：Expected ',' or '}' after property value / Unexpected end of JSON input
+  if (/Unexpected end of JSON input|Expected ',' or '\}'/i.test(afterStrip)) {
     return 'JSON 内容不完整（可能被截断），请确认地址可完整下载';
   }
-  // 结构错误：Expected property name / Expected double-quoted property name
-  if (/Expected (property name|double-quoted property name)/i.test(message)) {
+  // 4. 结构错误：Expected property name / Expected double-quoted property name
+  if (/Expected (property name|double-quoted property name)/i.test(afterStrip)) {
     return 'JSON 结构有误：缺少属性名或多余逗号，可能是手工编辑时改坏的';
   }
-  // 末尾多余逗号后紧跟 ] 或 }
-  if (/Unexpected token ']'|Unexpected token '}'/i.test(message)) {
+  // 5. 末尾多余逗号后紧跟 ] 或 }
+  if (/Unexpected token ']'|Unexpected token '}'/i.test(afterStrip)) {
     return 'JSON 结构有误：疑似有多余逗号，可能是手工编辑时改坏的';
   }
 
@@ -327,16 +373,22 @@ export const subscriptionParser: SubscriptionParser = {
     }
 
     let payload: unknown;
-    let relaxed = false;
+    let relaxed: 'none' | 'comments' | 'wrapped' | 'both' = 'none';
     try {
       payload = JSON.parse(text);
     } catch (strictError) {
-      // 容错：剥离整行 // 注释后重试（TVBox 订阅常见的手工编辑痕迹）
+      // 容错链（仅严格解析失败后走，不改变合法 JSON 的路径）：
+      //   1. 剥离整行 // 注释
+      //   2. 拼接被编辑器硬折行的字符串
       const withoutComments = stripLineComments(text);
-      if (withoutComments !== text) {
+      const commentStripped = withoutComments !== text;
+      const joined = joinWrappedStrings(withoutComments);
+      const wrappedJoined = joined !== withoutComments;
+
+      if (commentStripped || wrappedJoined) {
         try {
-          payload = JSON.parse(withoutComments);
-          relaxed = true;
+          payload = JSON.parse(joined);
+          relaxed = commentStripped && wrappedJoined ? 'both' : commentStripped ? 'comments' : 'wrapped';
         } catch {
           payload = undefined;
         }
@@ -386,10 +438,13 @@ export const subscriptionParser: SubscriptionParser = {
     const seenKeys = new Set<string>();
     const entries = rawList.map((raw, index) => parseEntry(raw, index, seenKeys));
     const globalIssues: ImportIssue[] = [];
-    if (relaxed) {
-      globalIssues.push(
-        issue('info', 'RELAXED_JSON', null, '该订阅含 // 注释（非标准 JSON），已忽略注释后解析'),
-      );
+    if (relaxed !== 'none') {
+      const detail = {
+        comments: '该订阅含 // 注释（非标准 JSON），已忽略注释后解析',
+        wrapped: '该订阅有字符串被折行截断，已自动拼接后解析',
+        both: '该订阅含 // 注释且有字符串被折行截断，已自动修正后解析',
+      }[relaxed];
+      globalIssues.push(issue('info', 'RELAXED_JSON', null, detail));
     }
     const invalidCount = entries.filter((entry) => !entry.valid).length;
     if (invalidCount > 0) {

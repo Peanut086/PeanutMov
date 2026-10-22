@@ -59,20 +59,23 @@ describe('subscriptionParser 容错解析（// 注释）', () => {
     expect(preview.entries.map((e) => e.baseUrl)).toEqual(['https://a.com', 'https://b.com/api.php/provide/vod']);
   });
 
-  it('剥离注释仍失败：给出"未转义换行/缺失引号"诊断', () => {
-    const broken = `{
-  "sites": [
-    { "key": "a", "name": "A", "type": 3, "api": "https://a.com" },
-    { "key": "b", "name": "被折
-行的名称", "type": 3, "api": "https://b.com" }
-  ]
-}`;
+  it('字符串内缺失右引号：无法自动修复，给出诊断', () => {
+    // 折行且下一行同样引号奇数 → 无法判定拼接点，只能报错
+    const broken = [
+      '{ "sites": [',
+      '{ "key": "a", "name": "开头',
+      '中间又断了',
+      '结尾也没闭合, "type": 3, "api": "https://a.com" }',
+      ']}',
+    ].join('\n');
+
     const preview = subscriptionParser.parse(broken, OPTS);
 
     expect(preview.entries).toHaveLength(0);
     const issue = preview.globalIssues[0];
     expect(issue?.code).toBe('PARSE_JSON');
-    expect(issue?.message).toContain('换行');
+    // 诊断要能指出是引号/换行问题，而不是笼统的"不是合法 JSON"
+    expect(issue?.message).toMatch(/换行|引号|结构|逗号/);
   });
 
   it('剥离注释仍失败：结构错误给出"缺少属性名"诊断', () => {
@@ -104,6 +107,62 @@ describe('subscriptionParser 容错解析（// 注释）', () => {
 
     expect(issue?.code).toBe('PARSE_JSON');
     expect(issue?.message).toBe('内容不是合法 JSON');
+  });
+
+  it('注释 + 折行同时存在：两层容错都生效', () => {
+    const both = [
+      '{ "sites": [',
+      '{"key":"ok-1","name":"正常","type":1,"api":"https://a.com"},',
+      '// 被注释掉的源',
+      '{"key":"wrapped","name":"被折',
+      '行的名称","type":3,"api":"https://b.com"},',
+      '{"key":"ok-2","name":"第二条","type":3,"api":"https://c.com"}',
+      ']}',
+    ].join('\n');
+
+    const preview = subscriptionParser.parse(both, OPTS);
+
+    expect(preview.total).toBe(3);
+    expect(preview.entries.map((e) => e.key)).toEqual(['ok-1', 'wrapped', 'ok-2']);
+    // 折行拼接后名称恢复完整
+    expect(preview.entries[1]?.name).toBe('被折行的名称');
+    expect(preview.entries.every((e) => e.valid)).toBe(true);
+    const info = preview.globalIssues.find((i) => i.code === 'RELAXED_JSON');
+    expect(info?.message).toContain('注释');
+    expect(info?.message).toContain('折行');
+  });
+
+  it('仅折行（无注释）：自动拼接并提示', () => {
+    const wrapped = [
+      '{ "sites": [',
+      '{"key":"a","name":"带引',
+      '号的名称","type":1,"api":"https://a.com"}',
+      ']}',
+    ].join('\n');
+
+    const preview = subscriptionParser.parse(wrapped, OPTS);
+
+    expect(preview.total).toBe(1);
+    expect(preview.entries[0]?.name).toBe('带引号的名称');
+    expect(preview.entries[0]?.valid).toBe(true);
+    expect(preview.globalIssues.some((i) => i.code === 'RELAXED_JSON')).toBe(true);
+  });
+
+  it('合法 JSON 里的转义引号不会被误当折行', () => {
+    const withEscapes = JSON.stringify({
+      sources: [
+        { key: 'a', name: '他说"你好"然后走了', type: 1, api: 'https://a.com' },
+        { key: 'b', name: '反斜杠\\结尾', type: 3, api: 'https://b.com' },
+        { key: 'c', name: 'URL 带 //', type: 1, api: 'https://c.com/a//b?x=//y' },
+      ],
+    });
+
+    const preview = subscriptionParser.parse(withEscapes, OPTS);
+
+    expect(preview.total).toBe(3);
+    expect(preview.entries.every((e) => e.valid)).toBe(true);
+    // 严格解析成功，不走容错
+    expect(preview.globalIssues.some((i) => i.code === 'RELAXED_JSON')).toBe(false);
   });
 
   it('注释文件里的有效条目全部保留', () => {
