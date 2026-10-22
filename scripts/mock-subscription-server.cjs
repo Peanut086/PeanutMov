@@ -247,6 +247,24 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/sub.json') return json(res, 200, subscriptionFor(req.headers.host));
   if (url.pathname === '/tvbox') return tvbox(req, res, url);
   if (url.pathname.startsWith('/alist')) return alist(req, res, url);
+  if (url.pathname === '/bulk') {
+    // 虚拟滚动回归用：返回 400 条公开样片（地址复用内置样片）
+    const total = 400;
+    const list = Array.from({ length: total }, (_, i) => ({
+      vod_id: `bulk-${i}`,
+      vod_name: `批量影片 ${String(i + 1).padStart(3, '0')}`,
+      type_id: 1,
+      type_name: '电影',
+      vod_year: '2024',
+      vod_area: '测试',
+      vod_remarks: '批量',
+      vod_content: '用于验证列表虚拟滚动（REV-11）。',
+      vod_play_from: '线路1',
+      vod_play_url: `正片$${V.bbb}`,
+    }));
+    return json(res, 200, { code: 1, class: CLASSES, list, total, pagecount: 1, page: 1 });
+  }
+
   if (url.pathname === '/dead') return text(res, 503, 'service unavailable');
   if (url.pathname === '/dc.json') {
     const host = req.headers.host;
