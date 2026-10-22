@@ -6,6 +6,7 @@
  */
 import { sourceService } from '@/services/sourceService';
 import { DIM_MAX_PERCENT } from '@/shared/constants';
+import { healthTierOf, type HealthTier } from '@/shared/healthTier';
 import type { HealthCheckResult, SourceHealth } from '@/types';
 
 export interface HealthSnapshot {
@@ -19,7 +20,7 @@ let cachedSnapshot: HealthSnapshot | null = null;
 let running: Promise<HealthSnapshot> | null = null;
 
 export const healthService = {
-  /** 检查全部启用源（并发上限 3，单源 3s 超时） */
+  /** 检查全部启用源（并发上限 6，单源 3s 超时） */
   async checkAll(): Promise<HealthSnapshot> {
     if (running) return running;
     running = (async () => {
@@ -61,9 +62,19 @@ export const healthService = {
     return cachedSnapshot?.results[sourceId]?.health ?? 'unknown';
   },
 
+  /** 最近一次探测耗时（毫秒）；无记录 / 不可用 → null（CHG-05 / API-14 代理源） */
+  latencyOf(sourceId: string): number | null {
+    const latency = cachedSnapshot?.results[sourceId]?.latencyMs;
+    return typeof latency === 'number' && Number.isFinite(latency) ? latency : null;
+  },
+
+  /** 单源质量档位（CHG-05）：分级口径只认 `healthTierOf` */
+  tierOf(sourceId: string): HealthTier {
+    return healthTierOf(this.healthOf(sourceId), this.latencyOf(sourceId));
+  },
+
   /** 健康状态 → 中文文案（源管理列表用） */
-  labelOf(health: SourceHealth): string {
-    switch (health) {
+  labelOf(health: SourceHealth): string {    switch (health) {
       case 'ok':
         return '正常';
       case 'auth_failed':

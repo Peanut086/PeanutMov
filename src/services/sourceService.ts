@@ -392,17 +392,37 @@ export const sourceService = {
     return probeWithinTimeout(probeSource, () => adapter.testConnection(probeSource));
   },
 
-  /** 并发上限 3 的批量健康检查（AC-16） */
+  /**
+   * 批量健康检查（AC-16 / AC-107）
+   *
+   * - 并发上限 `HEALTH_CHECK_CONCURRENCY`（CHG-05 起为 6，不写死）；
+   * - 进度事件 `sources:healthProgress`（唯一发送方）：起点 `{0,total}`，每完成一个源（
+   *   `markHealth` 之后，成功失败均计）`{n,total}` 严格 +1，终点 `{total,total}`；
+   * - `total === 0` 只发一次 `{0,0}`；整体抛错时不发终点事件。
+   */
   async checkHealth(ids?: string[]): Promise<Record<string, HealthCheckResult>> {
     const sources = await sourceRepo.list();
     const targets = sources.filter(
       (source) => source.enabled && (ids === undefined || ids.includes(source.id)),
     );
+    const total = targets.length;
+    let done = 0;
+    let lastEmitted = -1;
+    /** 进度去重：最后一个源完成时已经发过 {total,total}，终点不再重复发（AC-107 不重不漏） */
+    const emitProgress = (value: number): void => {
+      if (value === lastEmitted) return;
+      lastEmitted = value;
+      appEvents.emit('sources:healthProgress', { done: value, total });
+    };
+    emitProgress(0);
+    if (total === 0) return {};
+
     const results = await runWithConcurrency(targets, HEALTH_CHECK_CONCURRENCY, async (source) => {
       const adapter = sourceRegistry.has(source.type) ? sourceRegistry.get(source.type) : null;
       const checkedAt = Date.now();
+      let result: HealthCheckResult;
       if (!adapter) {
-        const result: HealthCheckResult = {
+        result = {
           sourceId: source.id,
           health: 'bad_config',
           checkedAt,
@@ -416,19 +436,23 @@ export const sourceService = {
           },
         };
         await sourceService.markHealth(source.id, result.health, result.error);
-        return result;
+      } else {
+        const connection = await probeWithinTimeout(source, () => adapter.testConnection(source));
+        result = {
+          sourceId: source.id,
+          health: connection.health,
+          checkedAt,
+          latencyMs: connection.latencyMs,
+          error: connection.error,
+        };
+        await sourceService.markHealth(source.id, result.health, result.error);
       }
-      const connection = await probeWithinTimeout(source, () => adapter.testConnection(source));
-      const result: HealthCheckResult = {
-        sourceId: source.id,
-        health: connection.health,
-        checkedAt,
-        latencyMs: connection.latencyMs,
-        error: connection.error,
-      };
-      await sourceService.markHealth(source.id, result.health, result.error);
+      done += 1;
+      emitProgress(done);
       return result;
     });
+
+    emitProgress(total);
 
     const map: Record<string, HealthCheckResult> = {};
     for (const result of results) map[result.sourceId] = result;

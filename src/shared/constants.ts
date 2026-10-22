@@ -48,8 +48,8 @@ export const INFINITE_SCROLL_THRESHOLD_PX = 300;
 /* ---------- 超时（毫秒） ---------- */
 /** 源连通性探测（AC-15/AC-16） */
 export const TIMEOUT_TEST_CONNECTION_MS = 3000;
-/** 健康检查并发上限（AC-16） */
-export const HEALTH_CHECK_CONCURRENCY = 3;
+/** 健康检查并发上限（AC-16；CHG-05 由 3 提升为 6） */
+export const HEALTH_CHECK_CONCURRENCY = 6;
 /** 订阅拉取 */
 export const TIMEOUT_SUBSCRIPTION_FETCH_MS = 10000;
 /** 远程搜索单源超时（AC-24） */

@@ -7,6 +7,7 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 
 import { sourceService } from '@/services/sourceService';
+import { healthService } from '@/services/healthService';
 import { appEvents } from '@/services/events';
 import { toAppError, toErrorShape } from '@/shared/errors';
 import type { AppErrorShape, Source, SourceInput } from '@/types';
@@ -18,11 +19,19 @@ export interface TestConnectionFeedback {
   latencyMs?: number;
 }
 
+/** 批量测速进度（CHG-05 / API-14）：`done / total`，未开始或已结束为 null */
+export interface HealthProgress {
+  done: number;
+  total: number;
+}
+
 export const useSourceStore = defineStore('source', () => {
   const sources = ref<Source[]>([]);
   const currentSourceId = ref<string | null>(null);
   const loading = ref(false);
   const healthChecking = ref(false);
+  /** 批量测速进度（CHG-05）：由 `sources:healthProgress` 驱动，结束后置 null */
+  const healthProgress = ref<HealthProgress | null>(null);
   const error = ref<AppErrorShape | null>(null);
 
   const enabledSources = computed(() => sources.value.filter((source) => source.enabled));
@@ -38,6 +47,21 @@ export const useSourceStore = defineStore('source', () => {
 
   /** 取消订阅句柄（store 生命周期内只订阅一次） */
   let unsubscribe: (() => void) | null = null;
+  let unsubscribeProgress: (() => void) | null = null;
+
+  /** 订阅数据层事件（幂等，store 生命周期内只订阅一次） */
+  function ensureSubscriptions(): void {
+    if (!unsubscribe) {
+      unsubscribe = appEvents.on('sources:changed', () => {
+        void reload();
+      });
+    }
+    if (!unsubscribeProgress) {
+      unsubscribeProgress = appEvents.on('sources:healthProgress', (payload) => {
+        healthProgress.value = { done: payload.done, total: payload.total };
+      });
+    }
+  }
 
   async function load(): Promise<void> {
     loading.value = true;
@@ -50,11 +74,7 @@ export const useSourceStore = defineStore('source', () => {
       } else if (!sources.value.some((source) => source.id === currentSourceId.value)) {
         currentSourceId.value = null;
       }
-      if (!unsubscribe) {
-        unsubscribe = appEvents.on('sources:changed', () => {
-          void reload();
-        });
-      }
+      ensureSubscriptions();
     } catch (e) {
       error.value = toErrorShape(e, 'E_DB');
     } finally {
@@ -111,19 +131,33 @@ export const useSourceStore = defineStore('source', () => {
     healthChecking.value = true;
     error.value = null;
     try {
-      await sourceService.checkHealth();
+      // 走 healthService 而非 sourceService：后者不维护延迟快照，
+      // 会导致 `latencyOf` 恒为 null → 所有 ok 源被降级为「异常」（CHG-05 / AC-106）。
+      await healthService.checkAll();
       await reload();
     } catch (e) {
       error.value = toErrorShape(e, 'E_NETWORK');
     } finally {
       healthChecking.value = false;
+      healthProgress.value = null;
     }
+  }
+
+  /**
+   * 单源延迟（CHG-05 / API-14）：代理 `healthService`，UI 不得直接 import 服务层。
+   * `Source` 实体没有 `latencyMs` 字段（类型冻结）。
+   */
+  function latencyOf(sourceId: string): number | null {
+    return healthService.latencyOf(sourceId);
   }
 
   /** 测试/登出时重置（非契约方法，仅供内部使用） */
   function $dispose(): void {
     unsubscribe?.();
     unsubscribe = null;
+    unsubscribeProgress?.();
+    unsubscribeProgress = null;
+    healthProgress.value = null;
   }
 
   /* ---------- v1.1（CHG-01）新增：写操作统一「落库 → 刷新内存」 ---------- */
@@ -187,6 +221,7 @@ export const useSourceStore = defineStore('source', () => {
     currentSourceId,
     loading,
     healthChecking,
+    healthProgress,
     error,
     enabledSources,
     currentSource,
@@ -200,6 +235,7 @@ export const useSourceStore = defineStore('source', () => {
     update,
     remove,
     testConnection,
+    latencyOf,
     $dispose,
   };
 });

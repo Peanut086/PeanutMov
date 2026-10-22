@@ -31,6 +31,10 @@
   --p-amber-warn-400: #ffb020;
   --p-red-400: #ff5a5f;
   --p-blue-400: #4d9eff;
+  /* v1.2 / CHG-05：线路质量「极速」档紫。设计规范 v1.0 色板无紫色原始值，
+     按 §2 规则补齐（深色取高亮档、浅色取加深档，与 success/warning/info 同构） */
+  --p-violet-300: #b18cff;
+  --p-violet-700: #6d28d9;
 }
 
 /* ---------- 2. 语义层 ---------- */
@@ -69,6 +73,13 @@
   --color-warning-soft: rgba(255, 176, 32, 0.16);
   --color-danger-soft: rgba(255, 90, 95, 0.16);
   --color-info-soft: rgba(77, 158, 255, 0.16);
+
+  /* 色彩 · 线路质量档位（v1.2 / CHG-05，见技术方案 17.3）
+     仅 fast 需新增紫色；good/fair/slow/bad/unknown 复用上列语义色。
+     来源：设计规范 v1.0 未定义紫色，按 §2 色板规则补 --p-violet-300/700，
+     深色用高亮档（surface 上 7.05:1、soft 底上 5.47:1，均 ≥ 4.5:1） */
+  --color-tier-fast: var(--p-violet-300);
+  --color-tier-fast-soft: rgba(177, 140, 255, 0.16);
 
   /* 色彩 · 描边与分割 */
   --color-border: rgba(255, 255, 255, 0.08);
@@ -127,6 +138,10 @@
   --color-warning-soft: rgba(138, 90, 0, 0.12);
   --color-danger-soft: rgba(211, 43, 49, 0.12);
   --color-info-soft: rgba(26, 111, 212, 0.12);
+
+  /* 线路质量档位（v1.2 / CHG-05）：浅色用加深档，白底 7.10:1、soft 底上 5.82:1 */
+  --color-tier-fast: var(--p-violet-700);
+  --color-tier-fast-soft: rgba(109, 40, 217, 0.12);
 
   --color-border: rgba(20, 20, 26, 0.1);
   --color-border-strong: rgba(20, 20, 26, 0.2);

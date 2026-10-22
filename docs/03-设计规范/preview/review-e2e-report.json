@@ -1,6 +1,6 @@
 {
-  "base": "http://localhost:5175",
-  "ranAt": "2026-10-21T09:18:18.893Z",
+  "base": "http://localhost:5174",
+  "ranAt": "2026-10-22T01:10:43.309Z",
   "total": 25,
   "passed": 25,
   "failed": 0,
@@ -111,7 +111,7 @@
       "ok": true,
       "detail": {
         "rate": 1.5,
-        "t": 2.419299
+        "t": 2.513408
       }
     },
     {
@@ -119,9 +119,9 @@
       "name": "暂停在 40% 后历史写回（positionSec 与进度）",
       "ok": true,
       "detail": {
-        "positionSec": 51.1,
+        "positionSec": 50.7,
         "durationSec": 120,
-        "progress": 0.43
+        "progress": 0.42
       }
     },
     {
@@ -137,8 +137,8 @@
       "name": "再次进入播放页从记录位置续播（±2s）",
       "ok": true,
       "detail": {
-        "start": 52.6,
-        "recorded": 51.1
+        "start": 52.2,
+        "recorded": 50.7
       }
     },
     {
@@ -201,7 +201,7 @@
         ],
         "text": "下载共 1 个任务21.3 MB / 21.3 MB100% 已完成 1全部下载中已完成失败Sintel · 第 1 集已完成 · 21.3 MB · 可离线观看21.3 MB / 21.3 MB ",
         "completedBytes": 22306323,
-        "blobKey": "7d9a4d4e-5cbf-4ec3-b119-037136a6bf1d"
+        "blobKey": "bf8e9515-4c68-49c2-aa82-2a92ca8cf100"
       }
     },
     {
@@ -242,7 +242,7 @@
           "默认"
         ],
         "health": [
-          "正常"
+          "极速 0ms"
         ],
         "hasCompliance": true
       }
@@ -271,7 +271,7 @@
       "name": "备份导出 JSON 且默认脱敏、含 schemaVersion",
       "ok": true,
       "detail": {
-        "file": "peanutmov-backup-2026-10-21.json",
+        "file": "peanutmov-backup-2026-10-22.json",
         "sources": 4,
         "favorites": 1,
         "history": 1,
@@ -284,7 +284,7 @@
       "name": "备份文件可解析预览并导入（AC-89）",
       "ok": true,
       "detail": {
-        "text": "数据备份与恢复导出 将源配置、收藏、历史、设置与下载任务元数据导出为 JSON 文件（不含视频文件）。 包含密码与 Token勾选后凭据将以明文写入备份文件 导出备份文件已导出：peanutmov-backup-2026-10-21.json导入选择备份 JSON 文件仅支持本 App 导出的备份文件已选择：peanutmov-backup-2026-10-21.json 源 4 · 收藏 1 ·",
+        "text": "数据备份与恢复导出 将源配置、收藏、历史、设置与下载任务元数据导出为 JSON 文件（不含视频文件）。 包含密码与 Token勾选后凭据将以明文写入备份文件 导出备份文件已导出：peanutmov-backup-2026-10-22.json导入选择备份 JSON 文件仅支持本 App 导出的备份文件已选择：peanutmov-backup-2026-10-22.json 源 4 · 收藏 1 ·",
         "parsed": true
       }
     },

@@ -190,3 +190,86 @@ node scripts/review-supplement.cjs
 # 4) 三项基线
 npm run typecheck && npx vitest run && npm run build
 ```
+
+---
+
+# 9. CHG-05 线路质量管理（2026-10-21）
+
+| 项目 | 内容 |
+| --- | --- |
+| 变更单 | `docs/02-方案/契约变更-CHG-05.md`（FR-47 / FR-48，AC-106 ~ AC-111） |
+| 范围 | 延迟分级、按质量排序、批量测速进度、失效线路自动跳过、TVBox 错误分类 |
+| 结论 | **通过**：单测 328 / E2E 25/25 / CHG-05 专项 9/9 |
+
+## 9.1 实现点
+
+| 项 | 落点 | 说明 |
+| --- | --- | --- |
+| 六档分级 | `src/shared/healthTier.ts` | `healthTierOf` 按序短路；阈值常量 300/800/2000，测试不写字面量 |
+| 排序 | 同上 `sortSources` | `manual` 与既有行为逐字等价；`tier` 模式不特判 builtin |
+| 偏好持久化 | `peanutmov.sourceSortMode` | 读写异常降级 manual，不进 AppSettings/备份 |
+| 徽标 | `src/components/source/HealthBadge.vue` | 传 `tier` 时六档着色 + 延迟；**不传 `tier` 时与 v1.1 完全一致**（14 条组件测试覆盖回归） |
+| 紫色 token | `src/styles/tokens.css` | `--color-tier-fast` 深浅主题各一组（深色 `--p-violet-300` / 浅色 `--p-violet-700`），未硬编码 hex |
+| 总览 | `src/views/SourceListView.vue` | 「共 N 条线路 · 极速 x · 快速 x · …」；仅在有检测结果时出现 |
+| 进度 | `sourceStore.healthProgress` | 按钮文案 `检测中 12/49`；数据来自 `sources:healthProgress` |
+| 自动跳过 | `src/stores/libraryStore.ts` | `pickFallbackSource` 只读查询，切换动作在 store（保证必须告知）；`(from→to)` 会话内只切一次 |
+| 错误分类 | `src/sources/site/SiteAdapter.ts` | HTML/图片/非 JSON/缺 list|class → `E_UNSUPPORTED_FORMAT`；401/403/404/网络各归各类，未新增 `ErrorCode` |
+
+## 9.2 本轮修掉的 3 个真实缺陷（E2E 抓出，非测试问题）
+
+| # | 现象 | 根因 | 修复 |
+| --- | --- | --- | --- |
+| D-06 | 所有 `ok` 源都被判成「异常」，延迟恒为 `—` | `sourceStore.refreshHealth()` 走 `sourceService.checkHealth()`，而延迟快照只由 `healthService` 维护 | 改走 `healthService.checkAll()`；`latencyOf` 才有值 |
+| D-07 | 404 失效线路**不会**自动跳过 | `FALLBACK_ERROR_CODES` 漏列 `E_HTTP_404`，而 AC-109 的场景正是"地址失效" | 补入 `E_HTTP_404`（仅扩集合，不改错误码语义） |
+| D-08 | 进度事件末次 `{4,4}` 重复发两次 | 循环内最后一个源 + 终点各发一次 | 加 `lastEmitted` 去重，严格 +1、不重不漏 |
+
+> 三个缺陷均为**实现与契约不一致**，契约本身未改（D-07 属契约枚举漏项，已在代码注释与本节登记，建议方案方在下个补丁同步 17.6.2）。
+
+## 9.3 验证证据
+
+| 项 | 命令 / 证据 | 结果 |
+| --- | --- | --- |
+| 分级边界 | `tests/unit/healthTier.spec.ts` | 18 用例（300±1 / 800±1 / 2000±1、非 ok、NaN/Infinity/负数、unknown 优先、排序全序、localStorage 异常） |
+| 进度事件 | `tests/unit/healthProgress.spec.ts` | 5 用例（0→N 严格递增、失败也计数、空集合只发一次、并发 ≤6、50 源 <25s） |
+| TVBox 分类 | `tests/unit/siteAdapter.spec.ts` | 11 用例（HTML / 图片 / 非 JSON / 缺 list / 401 / 403 / 404 / DNS / 合法 JSON / 数组 / 未新增码） |
+| 徽标 | `tests/components/HealthBadge.spec.ts` | 14 用例（六档 tone、延迟文案、无 tier 回归、sr 文案） |
+| 全量单测 | `npx vitest run` | **35 文件 / 328 用例全绿** |
+| 类型 | `npx vue-tsc --noEmit` | 0 错误 |
+| 构建 | `npm run build` | 成功；`hls` 仍独立懒加载 chunk |
+| 主链路 E2E | `node scripts/review-e2e.cjs` | **25/25** |
+| CHG-05 专项 | `node scripts/review-chg05.cjs` | **9/9**（见 §9.4） |
+| 合规 | 15 个第三方线路特征串全仓搜索 | **src / dist / android assets 均 0 命中** |
+
+## 9.4 CHG-05 专项 E2E（本地模拟线路，不含任何真实第三方地址）
+
+`scripts/review-chg05.cjs` 本地起 3 条模拟线路：可用（TVBox JSON）、HTML、404。
+
+| 用例 | 断言 | 实测 |
+| --- | --- | --- |
+| CHG05-01 | 从链接导入 3 条模拟线路 | sources 1 → 4 |
+| CHG05-02 | 进度文案出现 | `检测中 1/4` |
+| CHG05-03 | 六档徽标与总览计数 | `快速 363ms` / `极速 1ms` / `无法连接` / `配置有误`；总览「极速 1 · 快速 1 · 异常 2」 |
+| CHG05-04 | 排序切换 + 持久化 | `localStorage= tier`，顺序变为 可用 → 404 → HTML |
+| CHG05-05 | 非 JSON 用户可见文案 | 「该地址返回的不是订阅 JSON，可能是网页地址或已被拦截」 |
+| CHG05-06 | 失效源自动跳过 + Toast 点名 | 「「模拟404线」暂不可用，已自动切换到「模拟可用线」」；当前源=模拟可用线；海报墙 1 张 |
+| CHG05-06b | 无候选不切换（AC-110） | 停在 404 错误态，提示「没有其他可用线路」，**无切换 Toast** |
+| CHG05-07 | 刷新后偏好保持 | `tier` |
+
+截图：`chg05-source-tier-list.png`、`chg05-import-preview.png`、`chg05-source-sorted.png`、`chg05-nonjson-error.png`、`chg05-fallback-toast.png`、`chg05-fallback-none.png`。
+
+## 9.5 已知限制（如实记录）
+
+1. **浏览器 CORS**：第三方站点源若未返回 `Access-Control-Allow-Origin`，Web 端会被浏览器拦截（报 `E_NETWORK`）。这是浏览器同源策略，不是 App 缺陷；Android WebView 同样受 WebView 的 CORS 约束，需源端配合或走原生 HTTP 桥。专项 E2E 的 mock 已显式返回 CORS 头以隔离该因素。
+2. **真实站点未验证**：全部验证使用本地模拟线路；真实 TVBox 站点的字段差异（`vod_play_url` 变体、分页参数）仍需实际导入后观察。
+3. **延迟含义**：`latencyMs` 是"一次探测请求的往返耗时"，不等于视频起播速度；仅作相对排序参考。
+4. **失败源保留在列表**：自动跳过不会禁用或删除失效源，用户仍需在源管理手动清理（设计取舍：避免自动删数据）。
+
+## 9.6 复现
+
+```bash
+# 专项（默认 5174；若 dev 端口不同用 BASE_URL 覆盖）
+BASE_URL=http://localhost:5174 node scripts/review-chg05.cjs
+
+# 主链路回归
+BASE_URL=http://localhost:5174 node scripts/review-e2e.cjs
+```

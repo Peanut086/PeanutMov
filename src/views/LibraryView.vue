@@ -92,6 +92,23 @@ const stateText = computed(() => {
   return '没有更多了';
 });
 
+/**
+ * 错误态补充说明（AC-110 / 17.6.4）：自动切换只会发生一次；
+ * 停在错误态时明确告诉用户还有其它源可用，把决定权交回用户。
+ */
+const errorHint = computed(() => {
+  if (library.error?.code === 'E_SOURCE_DISABLED') {
+    return '可能原因：该源已被禁用。请在源管理中启用，或切换其他源。';
+  }
+  const alternatives = sources.enabledSources.filter(
+    (source) => source.id !== sources.currentSourceId && source.health === 'ok',
+  );
+  if (alternatives.length > 0) {
+    return `可能原因：该线路已失效。可手动切换其他源（当前有 ${alternatives.length} 条可用线路）。`;
+  }
+  return '可能原因：该线路已失效，且没有其他可用线路。请到源管理检查或新增源。';
+});
+
 const { sentinelRef } = useInfiniteScroll({
   hasMore: () => library.hasMore && !isOffline.value,
   loading: () => library.state === 'refreshing',
@@ -276,10 +293,17 @@ function openSettings(): void {
       <ErrorState
         v-else-if="showError"
         :error="library.error"
+        :hint="errorHint"
         back-text="返回首页"
         @retry="refresh"
         @back="router.replace('/')"
-      />
+      >
+        <template #extra>
+          <button class="btn btn--secondary btn--md" type="button" @click="sourceOpen = true">
+            切换其他源
+          </button>
+        </template>
+      </ErrorState>
 
       <!-- empty：三种原因 -->
       <template v-else-if="showEmpty">

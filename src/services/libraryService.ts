@@ -15,14 +15,17 @@ import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { appEvents } from '@/services/events';
 import { downloadService } from '@/services/downloadService';
+import { healthService } from '@/services/healthService';
 import { settingsService } from '@/services/settingsService';
 import { sourceRegistry } from '@/sources/registry';
+import { healthOfError } from '@/sources/base/BaseAdapter';
 import {
   PAGE_SIZE,
   SEARCH_LOCAL_LIMIT,
   TIMEOUT_SEARCH_MS,
 } from '@/shared/constants';
 import { AppError, isCanceled, toErrorShape } from '@/shared/errors';
+import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
 import type {
@@ -55,6 +58,11 @@ export interface BrowseQuery {
 export interface LibraryService {
   listCategories(sourceId: string, opts?: { refresh?: boolean }): Promise<Category[]>;
   browse(query: BrowseQuery): Promise<PageResult<MediaItem>>;
+  /**
+   * 失效源的最佳替代源；无候选返回 null（CHG-05 / 17.6.3）。
+   * 只读查询，**不切换**：切换编排在 `libraryStore`（必须告知用户）。
+   */
+  pickFallbackSource(failedSourceId: string): Promise<Source | null>;
   search(params: {
     keyword: string;
     sourceIds?: string[];
@@ -261,6 +269,36 @@ export const libraryService: LibraryService = {
     };
   },
 
+  async pickFallbackSource(failedSourceId: string): Promise<Source | null> {
+    const sources = await sourceRepo.list();
+    const candidates = sources.filter(
+      (source) => source.enabled && source.health === 'ok' && source.id !== failedSourceId,
+    );
+    if (candidates.length === 0) return null;
+
+    const latencyOf = (sourceId: string): number | null => healthService.latencyOf(sourceId);
+    const ranked = [...candidates].sort((a, b) => {
+      // ① builtin 升序（演示源排最后，与 getDefault 口径一致）
+      if (a.builtin !== b.builtin) return a.builtin ? 1 : -1;
+      // ② 质量档位升序
+      const tierA = healthTierOf(a.health, latencyOf(a.id));
+      const tierB = healthTierOf(b.health, latencyOf(b.id));
+      if (tierA !== tierB) return HEALTH_TIER_ORDER[tierA] - HEALTH_TIER_ORDER[tierB];
+      // ③ 延迟升序（null 最后）
+      const latencyA = latencyOf(a.id);
+      const latencyB = latencyOf(b.id);
+      const rankA = latencyA === null || !Number.isFinite(latencyA) ? Number.POSITIVE_INFINITY : latencyA;
+      const rankB = latencyB === null || !Number.isFinite(latencyB) ? Number.POSITIVE_INFINITY : latencyB;
+      if (rankA !== rankB) return rankA - rankB;
+      // ④ 手动顺序 → ⑤ id（确定性兜底）
+      if (a.sort !== b.sort) return a.sort - b.sort;
+      if (a.id === b.id) return 0;
+      return a.id < b.id ? -1 : 1;
+    });
+
+    return ranked[0] ?? null;
+  },
+
   async search(params): Promise<SearchResult> {
     const keyword = params.keyword.trim();
     if (keyword.length === 0) return { items: [], sourceIds: [], failed: [] };
@@ -417,7 +455,7 @@ export const libraryService: LibraryService = {
     } catch (e) {
       const error = e instanceof AppError ? e : new AppError('E_UNKNOWN', undefined, { detail: String(e) });
       if (error.code === 'E_NETWORK' || error.code === 'E_TIMEOUT' || error.code === 'E_HTTP_5XX') {
-        await markSourceUnreachable(source.id, error);
+        await markSourceFailed(source.id, error);
         throw new AppError('E_SOURCE_UNAVAILABLE', undefined, { detail: error.message });
       }
       throw error;
@@ -510,10 +548,16 @@ async function refreshDetail(item: MediaItem): Promise<MediaDetail> {
   return { item: mediaItem, lines: detail.lines, episodes: detail.episodes };
 }
 
-/** 播放失败时标记源不可用（不阻断错误抛出） */
-async function markSourceUnreachable(sourceId: string, error: AppError): Promise<void> {
+/** 播放/浏览失败时标记源健康（按 `healthOfError` 映射，不阻断错误抛出） */
+async function markSourceFailed(sourceId: string, error: AppError): Promise<void> {
   const { sourceService } = await import('@/services/sourceService');
-  await sourceService.markHealth(sourceId, 'unreachable', error.toShape()).catch(() => undefined);
+  await sourceService.markHealth(sourceId, healthOfError(error), error.toShape()).catch(() => undefined);
+}
+
+/** 供 `libraryStore` 在自动切换前落库失败态（CHG-05 / 17.6.4 第 1 步） */
+export async function markSourceFailedByError(sourceId: string, error: unknown): Promise<void> {
+  const appError = error instanceof AppError ? error : new AppError('E_SOURCE_UNAVAILABLE', undefined, { detail: String(error) });
+  await markSourceFailed(sourceId, appError);
 }
 
 /** 空筛选常量（供 store 复用） */

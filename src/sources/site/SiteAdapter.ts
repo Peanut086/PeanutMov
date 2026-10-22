@@ -52,6 +52,11 @@ function extOf(source: Source): SiteExt {
   return (source.ext ?? {}) as SiteExt;
 }
 
+/** 非订阅 JSON 的统一用户文案（17.7.2，四条 format 类共用） */
+const UNSUPPORTED_FORMAT_MESSAGE = '该地址返回的不是订阅 JSON，可能是网页地址或已被拦截';
+/** JSON 可解析但缺 TVBox 必需字段 */
+const NOT_TVBOX_MESSAGE = '该地址返回的 JSON 不是 TVBox 订阅格式（缺少 list/class 字段）';
+
 /** 占位符替换：`{type}` / `{page}` / `{kw}` / `{id}` */
 function fillTemplate(template: string, values: Record<string, string | number>): string {
   return template.replace(/\{(type|page|kw|id)\}/g, (_, key: string) => String(values[key] ?? ''));
@@ -211,23 +216,102 @@ export class SiteAdapter extends BaseAdapter {
       });
     }
 
-    const payload = await httpClient.request<unknown>(url, {
-      method: 'GET',
-      headers: this.headersWith(source, { Accept: 'application/json' }),
-      signal: opts.signal,
-      retries: 1,
-    });
+    let response: { data: string; headers: Headers };
+    try {
+      response = await httpClient.requestWithMeta<string>(url, {
+        method: 'GET',
+        headers: this.headersWith(source, { Accept: 'application/json' }),
+        signal: opts.signal,
+        retries: 1,
+        // 取 text 而非 json：需要在 JSON.parse 之前先按 Content-Type 区分 HTML / 图片（17.7）
+        responseType: 'text',
+      });
+    } catch (e) {
+      // `httpClient` 的 E_PARSE 语义被其它适配器依赖，只在此处包装为格式错误（17.7.3）
+      if (e instanceof AppError && e.code === 'E_PARSE') {
+        throw new AppError('E_UNSUPPORTED_FORMAT', UNSUPPORTED_FORMAT_MESSAGE, {
+          detail: e.detail ?? e.message,
+          cause: e,
+        });
+      }
+      throw e;
+    }
 
+    return this.parsePayload(response.data, response.headers.get('content-type'));
+  }
+
+  /**
+   * 响应体分类（17.7.2 / AC-111）
+   *
+   * 只区分"格式不支持"这一类；401/403/404/超时/DNS 由 `httpClient` 直接抛出既有 code，
+   * 这里不再包装（不新增 ErrorCode）。
+   * 具体原因写 `detail`（诊断用），用户可见 `message` 只用契约规定的 6 句。
+   */
+  private parsePayload(payload: unknown, contentType: string | null): TvboxListResponse {
+    const formatError = (message: string, detail: string): AppError =>
+      new AppError('E_UNSUPPORTED_FORMAT', message, { detail });
+
+    const contentTypeReadable = typeof contentType === 'string' && contentType.trim().length > 0;
+    const normalizedType = contentTypeReadable ? contentType.toLowerCase() : '';
+    const withTypeHint = (detail: string): string =>
+      contentTypeReadable ? detail : `${detail}；Content-Type 不可读`;
+
+    if (contentTypeReadable && normalizedType.includes('text/html')) {
+      throw formatError(UNSUPPORTED_FORMAT_MESSAGE, `响应为 HTML 页面（Content-Type: ${contentType}）`);
+    }
+    if (contentTypeReadable && normalizedType.includes('image/')) {
+      throw formatError(UNSUPPORTED_FORMAT_MESSAGE, `响应为图片（Content-Type: ${contentType}）`);
+    }
+
+    if (typeof payload !== 'string') {
+      // 理论上 responseType='text' 必为字符串；兜底防类型漂移
+      return this.classifyParsed(payload, contentTypeReadable ? '' : '；Content-Type 不可读');
+    }
+
+    const text = payload;
+    if (text.trim().length === 0) {
+      throw formatError(UNSUPPORTED_FORMAT_MESSAGE, withTypeHint('响应体为空'));
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text) as unknown;
+    } catch {
+      const snippet = text.trim().slice(0, 80);
+      throw formatError(
+        UNSUPPORTED_FORMAT_MESSAGE,
+        withTypeHint(`响应不是合法 JSON（前 80 字符：${snippet}）`),
+      );
+    }
+
+    return this.classifyParsed(parsed, contentTypeReadable ? '' : '；Content-Type 不可读');
+  }
+
+  /** 已解析 JSON 的顶层形状判定 */
+  private classifyParsed(payload: unknown, suffix: string): TvboxListResponse {
     if (Array.isArray(payload)) {
       // 少数站点直接返回数组
       return { list: payload as TvboxVod[] };
     }
     if (typeof payload !== 'object' || payload === null) {
-      throw new AppError('E_PARSE', '站点返回的数据格式不支持');
+      throw new AppError('E_UNSUPPORTED_FORMAT', UNSUPPORTED_FORMAT_MESSAGE, {
+        detail: `顶层值类型：${payload === null ? 'null' : typeof payload}${suffix}`,
+      });
     }
+
     const response = payload as TvboxListResponse;
     if (response.list !== undefined && response.list !== null && !Array.isArray(response.list)) {
-      throw new AppError('E_PARSE', '站点返回的 list 字段不是数组');
+      throw new AppError('E_UNSUPPORTED_FORMAT', UNSUPPORTED_FORMAT_MESSAGE, {
+        detail: `list 字段不是数组${suffix}`,
+      });
+    }
+    if (response.list === undefined || response.list === null) {
+      if (response.class === undefined || response.class === null) {
+        const keys = Object.keys(payload).slice(0, 10).join(',');
+        throw new AppError('E_UNSUPPORTED_FORMAT', NOT_TVBOX_MESSAGE, {
+          detail: `顶层键：${keys.length > 0 ? keys : '（空对象）'}${suffix}`,
+        });
+      }
     }
     return response;
   }

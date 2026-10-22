@@ -8,6 +8,7 @@
 import { computed } from 'vue';
 
 import type { Source, SourceType } from '@/types';
+import type { HealthTier } from '@/shared/healthTier';
 import { formatRelativeTime } from '@/shared/time';
 
 import HealthBadge from '@/components/source/HealthBadge.vue';
@@ -20,8 +21,12 @@ const props = withDefaults(
     isDefault?: boolean;
     /** 是否健康检查中 */
     checking?: boolean;
+    /** 线路质量档位（v1.2 / CHG-05；缺省时徽标回落到 health 映射） */
+    tier?: HealthTier;
+    /** 最近一次探测耗时（v1.2 / CHG-05） */
+    latencyMs?: number | null;
   }>(),
-  { isDefault: false, checking: false },
+  { isDefault: false, checking: false, tier: undefined, latencyMs: null },
 );
 
 const emit = defineEmits<{
@@ -72,7 +77,7 @@ const checkedText = computed(() => {
           检测中…
         </span>
         <template v-else>
-          <HealthBadge :health="source.health" />
+          <HealthBadge :health="source.health" :tier="tier" :latency-ms="latencyMs" />
           <span class="source-card__checked">{{ checkedText }}</span>
         </template>
         <span v-if="!source.enabled" class="source-card__disabled">已禁用</span>

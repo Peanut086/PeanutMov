@@ -12,6 +12,8 @@ import { logger } from '@/shared/logger';
 export type AppEventMap = {
   'sources:changed': { reason: 'create' | 'update' | 'remove' | 'enable' | 'reorder' | 'default' | 'import' | 'restore' };
   'sources:health': { sourceId: string; health: string };
+  /** 批量测速进度（CHG-05 / AC-107）：起点 {0,total}，逐源 +1，终点 {total,total} */
+  'sources:healthProgress': { done: number; total: number };
   'library:changed': { sourceId: string };
   'history:changed': { id: string | null };
   'favorites:changed': { id: string | null };

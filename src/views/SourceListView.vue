@@ -9,6 +9,14 @@ import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import type { Source } from '@/types';
+import {
+  HEALTH_TIER_LABELS,
+  healthTierOf,
+  readSourceSortMode,
+  sortSources,
+  writeSourceSortMode,
+} from '@/shared/healthTier';
+import type { HealthTier, SourceSortMode } from '@/shared/healthTier';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import ComplianceNotice from '@/components/common/ComplianceNotice.vue';
@@ -17,6 +25,7 @@ import EmptyState from '@/components/common/EmptyState.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
+import SegmentedControl from '@/components/common/SegmentedControl.vue';
 import SourceCard from '@/components/source/SourceCard.vue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -43,12 +52,52 @@ const error = ref<string | null>(null);
 const loading = computed(() => sources.loading && sources.sources.length === 0);
 const isEmpty = computed(() => sources.sources.length === 0);
 
-const ordered = computed(() =>
-  [...sources.sources].sort((a, b) => {
-    if (a.builtin !== b.builtin) return a.builtin ? 1 : -1;
-    return a.sort - b.sort;
-  }),
-);
+/** 排序模式（v1.2 / CHG-05 / AC-108）：偏好经 `shared/healthTier` 读写，本页不碰 localStorage key */
+const sortMode = ref<SourceSortMode>(readSourceSortMode());
+const SORT_OPTIONS = [
+  { value: 'manual', label: '手动排序' },
+  { value: 'tier', label: '按线路质量' },
+];
+
+function changeSortMode(value: string): void {
+  const next: SourceSortMode = value === 'tier' ? 'tier' : 'manual';
+  if (next === sortMode.value) return;
+  sortMode.value = next;
+  writeSourceSortMode(next);
+  toast.info(next === 'tier' ? '已按线路质量排序' : '已切换为手动排序');
+}
+
+/** 延迟统一由 `sourceStore.latencyOf` 代理（UI 不得 import healthService） */
+function latencyOf(id: string): number | null {
+  return sources.latencyOf(id);
+}
+
+function tierOf(source: Source): HealthTier {
+  return healthTierOf(source.health, latencyOf(source.id));
+}
+
+const ordered = computed(() => sortSources(sources.sources, sortMode.value, latencyOf));
+
+/** 手动顺序：上移/下移始终作用于 `manual` 序列，避免在质量排序下打乱用户的手动顺序 */
+const manualOrdered = computed(() => sortSources(sources.sources, 'manual', latencyOf));
+
+/** 线路质量总览（AC-106 六档计数，数据来自 health 快照） */
+const tierSummary = computed(() => {
+  const counts: Record<HealthTier, number> = { fast: 0, good: 0, fair: 0, slow: 0, bad: 0, unknown: 0 };
+  for (const source of sources.sources) counts[tierOf(source)] += 1;
+  const order: HealthTier[] = ['fast', 'good', 'fair', 'slow', 'bad'];
+  return order.map((tier) => ({ tier, label: HEALTH_TIER_LABELS[tier], count: counts[tier] }));
+});
+
+/** 至少有一个源检测过（非 unknown）才展示总览，避免首屏出现"全部未检测 0"的噪音 */
+const showTierSummary = computed(() => sources.sources.some((source) => source.health !== 'unknown'));
+
+/** 进度文案（AC-107 / 17.5.2）：`检测中 12/49`，无进度时回落到 `检测中…` */
+const progressText = computed(() => {
+  const progress = sources.healthProgress;
+  if (!progress || progress.done >= progress.total) return '检测中…';
+  return `检测中 ${progress.done}/${progress.total}`;
+});
 
 const defaultSourceId = computed(() => settings.settings?.defaultSourceId ?? sources.defaultSource?.id ?? null);
 
@@ -125,7 +174,8 @@ async function move(direction: -1 | 1): Promise<void> {
   const source = active.value;
   if (!source) return;
   menuOpen.value = false;
-  const list = [...ordered.value];
+  // 手动顺序是唯一真值：质量排序下也按 manual 序列移动（AC-108 的 manual 语义不变）
+  const list = [...manualOrdered.value];
   const idx = list.findIndex((s) => s.id === source.id);
   const target = idx + direction;
   if (idx < 0 || target < 0 || target >= list.length) {
@@ -249,8 +299,30 @@ async function retry(): Promise<void> {
           @click="checkHealth"
         >
           <LoadingSpinner v-if="healthChecking" :size="16" />
-          {{ healthChecking ? '检测中…' : '重新检测' }}
+          {{ healthChecking ? progressText : '重新检测' }}
         </button>
+      </div>
+
+      <!-- 排序模式切换（CHG-05 / AC-108）：手动排序 ↔ 按线路质量，偏好经 shared/healthTier 持久化 -->
+      <div v-if="!loading && !error && !isEmpty" class="sources-sort">
+        <span class="sources-sort__label">排序</span>
+        <SegmentedControl
+          :model-value="sortMode"
+          :options="SORT_OPTIONS"
+          label="排序方式"
+          @update:model-value="changeSortMode"
+        />
+      </div>
+
+      <!-- 线路质量总览（CHG-05 / AC-106）：六档计数，仅在已有检测结果时展示 -->
+      <div v-if="!loading && !error && !isEmpty && showTierSummary" class="sources-overview" aria-live="polite">
+        <p class="sources-overview__text">
+          <span>共 {{ sources.sources.length }} 条线路</span>
+          <template v-for="item in tierSummary" :key="item.tier">
+            <span class="sources-overview__sep" aria-hidden="true"> · </span>
+            <span class="sources-overview__item" :data-tier="item.tier">{{ item.label }} {{ item.count }}</span>
+          </template>
+        </p>
       </div>
 
       <div v-if="loading" class="sources-loading" role="status">
@@ -271,6 +343,8 @@ async function retry(): Promise<void> {
               :source="source"
               :is-default="defaultSourceId === source.id"
               :checking="healthChecking"
+              :tier="tierOf(source)"
+              :latency-ms="latencyOf(source.id)"
               @select="edit"
               @toggle="toggle"
               @menu="openMenu"
@@ -390,6 +464,44 @@ async function retry(): Promise<void> {
 
 .sources-actions__refresh {
   flex: 0 0 auto;
+}
+
+/* 线路质量总览 + 排序切换（CHG-05） */
+.sources-overview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.sources-overview__text {
+  font: var(--text-caption);
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.sources-overview__sep {
+  color: var(--color-text-tertiary);
+}
+
+.sources-overview__item[data-tier='fast'] {
+  color: var(--color-tier-fast);
+}
+
+.sources-overview__item[data-tier='good'] {
+  color: var(--color-success);
+}
+
+.sources-overview__item[data-tier='fair'] {
+  color: var(--color-warning);
+}
+
+.sources-overview__item[data-tier='slow'] {
+  color: var(--color-text-secondary);
+}
+
+.sources-overview__item[data-tier='bad'] {
+  color: var(--color-danger);
 }
 
 .sources-list {

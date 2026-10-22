@@ -323,7 +323,7 @@ describe('源服务（AC-03 ~ AC-07）', () => {
   });
 
   describe('checkHealth（AC-15 / AC-16）', () => {
-    it('并发上限 3：5 个源、每个探测 500ms，总耗时 < 2s', async () => {
+    it('并发上限 6：5 个源、每个探测 500ms，总耗时 < 2s（AC-16 / CHG-05）', async () => {
       const sources: Source[] = [];
       for (let i = 0; i < 5; i += 1) {
         sources.push(await createAlist(`源 ${i}`, `https://s${i}.example.com`));
@@ -364,7 +364,8 @@ describe('源服务（AC-03 ~ AC-07）', () => {
       const elapsed = Date.now() - started;
 
       expect(Object.keys(results)).toHaveLength(5);
-      expect(peak).toBeLessThanOrEqual(3);
+      expect(peak).toBeLessThanOrEqual(6);
+      expect(peak).toBeGreaterThanOrEqual(5);
       expect(elapsed).toBeLessThanOrEqual(1600);
       expect(Object.values(results).every((r) => r.health === 'ok')).toBe(true);
     });

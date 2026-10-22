@@ -105,6 +105,8 @@ const advice = computed(() => {
       >
         {{ backText }}
       </button>
+      <!-- 额外行动入口（v1.2 / CHG-05：媒体库错误态的「切换其他源」） -->
+      <slot name="extra" />
     </div>
   </div>
 </template>

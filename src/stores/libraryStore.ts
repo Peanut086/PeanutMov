@@ -7,10 +7,12 @@ import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 
 import { libraryService } from '@/services/libraryService';
-import { EMPTY_LIBRARY_FILTERS } from '@/services/libraryService';
+import { EMPTY_LIBRARY_FILTERS, markSourceFailedByError } from '@/services/libraryService';
+import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
 import { PAGE_SIZE } from '@/shared/constants';
 import { AppError, isCanceled, toErrorShape } from '@/shared/errors';
+import { isOnline } from '@/native/network';
 import type {
   AppErrorShape,
   Category,
@@ -19,6 +21,7 @@ import type {
   LoadState,
   MediaDetail,
   MediaItem,
+  PageResult,
   PlaybackSource,
 } from '@/types';
 
@@ -46,11 +49,43 @@ export const useLibraryStore = defineStore('library', () => {
   let requestSeq = 0;
   const sourceStore = useSourceStore();
 
+  /** 源侧故障码（17.6.2 条件 2）：只有这些错误才考虑自动换源 */
+  const FALLBACK_ERROR_CODES: ReadonlySet<string> = new Set([
+    'E_SOURCE_UNAVAILABLE',
+    'E_NETWORK',
+    'E_TIMEOUT',
+    'E_HTTP_5XX',
+    // 地址失效的典型表现（AC-109「B（地址失效）」）：404 属源侧故障，必须参与自动跳过。
+    // 契约 17.6.2 的枚举漏列，按 AC 原文补入（CHG-05 勘误，不改错误码语义）。
+    'E_HTTP_404',
+    'E_PARSE',
+    'E_UNSUPPORTED_FORMAT',
+  ]);
+
+  /**
+   * 会话内已尝试过的 `(fromId → toId)` 组合（内存态，不落库、不进备份）。
+   * 同一组合最多自动切换一次，避免源连环失效导致页面反复跳变。
+   */
+  const fallbackPairs = new Set<string>();
+
+  function pairKey(fromId: string, toId: string): string {
+    return `${fromId}→${toId}`;
+  }
+
+  /** 用户手动切源时清空该源相关的组合记录（17.6.4 防抖重置） */
+  function clearFallbackPairsOf(sourceId: string): void {
+    const prefix = `${sourceId}→`;
+    for (const key of [...fallbackPairs]) {
+      if (key.startsWith(prefix)) fallbackPairs.delete(key);
+    }
+  }
+
   function activeSourceId(): string | null {
     return sourceStore.currentSource?.id ?? null;
   }
 
   async function openSource(sourceId: string | null): Promise<void> {
+    if (sourceId !== null) clearFallbackPairsOf(sourceId);
     await sourceStore.load();
     await sourceStore.select(sourceId);
     currentCategoryId.value = null;
@@ -96,6 +131,42 @@ export const useLibraryStore = defineStore('library', () => {
     await loadFirstPage(false);
   }
 
+  /**
+   * 失效自动跳过（CHG-05 / 17.6.2）
+   *
+   * 全部条件满足才返回替代源 id：在线、源侧故障码、会话内该组合未尝试过、存在候选。
+   * 副作用：落库失败态 → 选中替代源 → 发 Toast（**必须**，不得静默切换）。
+   * 返回 null 时调用方**原样抛出原始错误**（不改 code、不包装）。
+   */
+  async function tryFallbackSource(failedSourceId: string, cause: unknown): Promise<string | null> {
+    if (!isOnline()) return null;
+    const code = cause instanceof AppError ? cause.code : null;
+    if (code === null || !FALLBACK_ERROR_CODES.has(code)) return null;
+
+    // ① 先落库失败态（E_PARSE / E_UNSUPPORTED_FORMAT → bad_config，网络类 → unreachable）
+    await markSourceFailedByError(failedSourceId, cause);
+
+    // ② 只读查询候选；无候选不切换
+    const fallback = await libraryService.pickFallbackSource(failedSourceId);
+    if (!fallback) return null;
+
+    // ③ 同一 (from → to) 组合在本次会话内最多切一次
+    const key = pairKey(failedSourceId, fallback.id);
+    if (fallbackPairs.has(key)) return null;
+    fallbackPairs.add(key);
+
+    const failed = sourceStore.sources.find((source) => source.id === failedSourceId);
+    await sourceStore.select(fallback.id);
+
+    // ④ 必须告知（bootstrap.bindAppToasts 已把 toast 事件桥接到 uiStore）
+    appEvents.emit('toast', {
+      text: `「${failed?.name ?? '当前源'}」暂不可用，已自动切换到「${fallback.name}」`,
+      type: 'info',
+    });
+
+    return fallback.id;
+  }
+
   async function loadFirstPage(refresh = false): Promise<void> {
     const sourceId = activeSourceId();
     if (!sourceId) {
@@ -109,14 +180,32 @@ export const useLibraryStore = defineStore('library', () => {
     state.value = refresh ? 'refreshing' : 'loading';
     error.value = null;
     try {
-      const result = await libraryService.browse({
-        sourceId,
-        categoryId: currentCategoryId.value,
-        filters: filters.value,
-        page: 1,
-        pageSize: PAGE_SIZE,
-        refresh,
-      });
+      let result: PageResult<MediaItem>;
+      try {
+        result = await libraryService.browse({
+          sourceId,
+          categoryId: currentCategoryId.value,
+          filters: filters.value,
+          page: 1,
+          pageSize: PAGE_SIZE,
+          refresh,
+        });
+      } catch (e) {
+        if (seq !== requestSeq) return;
+        const fallbackId = await tryFallbackSource(sourceId, e);
+        // 无候选 / 防抖命中 / 非源侧故障 → 原样抛出，保持既有错误语义
+        if (fallbackId === null) throw e;
+        // 切换后重跑分类 + 第 1 页，**只重试一次**（第二次失败不再切换）
+        await loadCategories(false);
+        result = await libraryService.browse({
+          sourceId: fallbackId,
+          categoryId: currentCategoryId.value,
+          filters: filters.value,
+          page: 1,
+          pageSize: PAGE_SIZE,
+          refresh,
+        });
+      }
       if (seq !== requestSeq) return;
       items.value = result.items;
       page.value = 1;
