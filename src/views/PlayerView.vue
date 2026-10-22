@@ -22,6 +22,7 @@ import type {
   SubtitleSettings,
 } from '@/types';
 import type { PlayerLoadOptions } from '@/player/types';
+import { shouldIgnoreShortcut } from '@/player/shortcutGuard';
 import { formatClock } from '@/shared/time';
 import { toErrorShape } from '@/shared/errors';
 
@@ -544,6 +545,12 @@ async function onDownloadCurrent(): Promise<void> {
   downloading.value = true;
   try {
     const inputs = await library.toDownloadInputs(it.id, [ep.id]);
+    // REV-07 / AC-76：Web 端 >1GB 在下单前提示改用 App
+    const largeFileHint = await downloads.checkLargeFile(inputs);
+    if (largeFileHint !== null) {
+      toast.info(largeFileHint);
+      return;
+    }
     // REV-15 / FR-30：重复下载给出明确提示，而不是静默忽略
     const { created, skipped } = await downloads.createMany(inputs);
     pickerOpen.value = false;
@@ -643,8 +650,11 @@ watch(episodeIdParam, async (next, prev) => {
 const immersive = computed(() => player.fullscreen);
 
 /* ---------- 键盘快捷键（桌面浏览器） ---------- */
+/**
+ * 焦点落在输入区或弹层内时让出键盘控制（REV-18，判定见 `player/shortcutGuard`）。
+ */
 function onKeydown(ev: KeyboardEvent): void {
-  if (ev.target instanceof HTMLInputElement || ev.target instanceof HTMLTextAreaElement) return;
+  if (shouldIgnoreShortcut(ev.target)) return;
   switch (ev.key) {
     case ' ':
       ev.preventDefault();

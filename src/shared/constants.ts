@@ -14,6 +14,10 @@ export const APP_ID = 'com.qoder.cinema';
 export const APP_VERSION: string =
   typeof __APP_VERSION__ === 'string' && __APP_VERSION__.length > 0 ? __APP_VERSION__ : '未知版本';
 
+/** 构建时间戳（毫秒）；未注入时为 null，UI 不展示构建日期（REV-19） */
+export const BUILD_TIME: number | null =
+  typeof __BUILD_TIME__ === 'string' && __BUILD_TIME__.length > 0 ? Date.parse(__BUILD_TIME__) : null;
+
 /* ---------- IndexedDB ---------- */
 export const DB_NAME = 'cinema-db';
 export const DB_VERSION = 1;

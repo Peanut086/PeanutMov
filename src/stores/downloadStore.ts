@@ -9,6 +9,7 @@ import { ref } from 'vue';
 
 import { downloadService } from '@/services/downloadService';
 import { toErrorShape } from '@/shared/errors';
+import { logger } from '@/shared/logger';
 import type {
   AppErrorShape,
   CreateDownloadInput,
@@ -102,6 +103,27 @@ export const useDownloadStore = defineStore('download', () => {
     }
   }
 
+  /** 下载前体积预检：Web 端单文件超过 1GB 时给出改用 App 的提示（REV-07 / AC-76） */
+  const checkLargeFile = async (inputs: CreateDownloadInput[]): Promise<string | null> => {
+    if (inputs.length === 0) return null;
+    try {
+      const sizes = await Promise.all(
+        inputs.map(async (input) => {
+          const size = await downloadService.preflightSize(input.url, input.headers ?? {});
+          return size;
+        }),
+      );
+      const oversizedCount = sizes.filter((size) => downloadService.needsAppForLargeFile(size)).length;
+      if (oversizedCount === 0) return null;
+      const maxSize = Math.max(...sizes.filter((size) => size !== null).map((size) => size ?? 0));
+      return `有 ${oversizedCount} 个文件超过 1GB（最大 ${maxSize} 字节），浏览器环境建议改用 App 下载`;
+    } catch (e) {
+      // 预检失败不阻断下载，交给引擎层同阈值拒绝
+      logger.debug('下载体积预检失败（放行）', toErrorShape(e).message);
+      return null;
+    }
+  };
+
   async function pause(id: string): Promise<void> {
     await downloadService.pause(id);
   }
@@ -151,6 +173,7 @@ export const useDownloadStore = defineStore('download', () => {
     load,
     create,
     createMany,
+    checkLargeFile,
     pause,
     resume,
     cancel,

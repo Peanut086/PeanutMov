@@ -7,7 +7,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import { APP_NAME, APP_VERSION, DB_VERSION } from '@/shared/constants';
+import { APP_NAME, APP_VERSION, BUILD_TIME, DB_VERSION } from '@/shared/constants';
 import { getPlatform } from '@/shared/platform';
 import { formatDateStamp } from '@/shared/time';
 
@@ -30,7 +30,11 @@ const licensesOpen = ref(false);
 const castOpen = ref(false);
 
 const versionText = computed(() => (APP_VERSION === '未知版本' ? '未知版本' : `版本 ${APP_VERSION}`));
-const buildText = computed(() => `构建日期 ${formatDateStamp(Date.parse('2026-10-20T00:00:00Z'))}`);
+/** 构建日期由 `vite define: __BUILD_TIME__` 注入（REV-19）；未注入时不展示，避免显示假日期 */
+const buildDateText = BUILD_TIME === null ? null : formatDateStamp(BUILD_TIME);
+const buildText = computed(() =>
+  buildDateText === null ? '开发构建' : `构建日期 ${buildDateText}`,
+);
 
 const platformText = computed(() => {
   switch (getPlatform()) {
@@ -114,7 +118,7 @@ function onFeedback(): void {
           <li>平台：{{ platformText }}</li>
           <li>应用版本：{{ APP_VERSION }}</li>
           <li>DB 版本：{{ DB_VERSION }}</li>
-          <li>构建日期：{{ formatDateStamp(Date.parse('2026-10-20T00:00:00Z')) }}</li>
+          <li>构建日期：{{ buildDateText ?? '未注入' }}</li>
           <li>离线状态：{{ isOffline ? '离线' : '在线' }}</li>
         </ul>
       </section>
