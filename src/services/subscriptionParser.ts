@@ -257,6 +257,68 @@ function reposPreview(opts: ParseOptions, name: string | null, repos: string[]):
   };
 }
 
+/**
+ * 剥离整行 `//` 注释后重新解析（容错，非标准 JSON）。
+ *
+ * 现实里大量 TVBox 订阅是手工编辑的：作者用 `//` 注释掉不要的源，
+ * 或用 `//////` 画分隔线。TVBox 客户端用宽容解析器能吞掉这些，
+ * 标准 `JSON.parse` 不能。这里只在**严格解析失败后**兜底一次，
+ * 不改变合法 JSON 的解析路径。
+ *
+ * 只处理"整行注释"（行首空白后紧跟 `//`），不做行尾注释剥离：
+ * 行尾 `//` 在 URL 里极其常见（`https://…`），按位置判断不可靠。
+ */
+function stripLineComments(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*\/\//.test(line))
+    .join('\n');
+}
+
+/**
+ * 给解析失败一个可操作的诊断，而不是笼统的"不是合法 JSON"。
+ *
+ * 按可能性排序，只报最可能的那一个原因，避免一次抛一堆术语。
+ */
+function diagnoseJsonFailure(text: string, error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+
+  // 1. 字符串内出现真实换行：`"优\n酷"` 这类被编辑器硬折行的结果
+  if (/Bad control character|Unterminated string/i.test(message)) {
+    const line = /line (\d+)/i.exec(message)?.[1];
+    return line
+      ? `第 ${line} 行附近有未转义的换行或缺失引号，可能是手工编辑时被折行截断`
+      : '字符串里有未转义的换行或缺失引号，可能是手工编辑时被折行截断';
+  }
+
+  // 2. 去掉整行注释后能解析 → 明确告诉用户是注释导致的
+  try {
+    JSON.parse(stripLineComments(text));
+    return '该订阅含 // 注释（非标准 JSON），已尝试忽略注释但仍需修正格式';
+  } catch {
+    // 继续判断
+  }
+
+  // 3. Node 的真实报错措辞（见 tests/unit/subscriptionParserRelaxed.spec.ts）
+  if (/Unexpected token '\/'|Unexpected token \//i.test(message)) {
+    return '该订阅含 // 注释或多余的 / 字符，不是标准 JSON';
+  }
+  // 截断：Expected ',' or '}' after property value / Unexpected end of JSON input
+  if (/Unexpected end of JSON input|Expected ',' or '\}'/i.test(message)) {
+    return 'JSON 内容不完整（可能被截断），请确认地址可完整下载';
+  }
+  // 结构错误：Expected property name / Expected double-quoted property name
+  if (/Expected (property name|double-quoted property name)/i.test(message)) {
+    return 'JSON 结构有误：缺少属性名或多余逗号，可能是手工编辑时改坏的';
+  }
+  // 末尾多余逗号后紧跟 ] 或 }
+  if (/Unexpected token ']'|Unexpected token '}'/i.test(message)) {
+    return 'JSON 结构有误：疑似有多余逗号，可能是手工编辑时改坏的';
+  }
+
+  return '内容不是合法 JSON';
+}
+
 export const subscriptionParser: SubscriptionParser = {
   parse(rawText: string, opts: ParseOptions): ImportPreview {
     const text = typeof rawText === 'string' ? rawText.trim() : '';
@@ -265,13 +327,29 @@ export const subscriptionParser: SubscriptionParser = {
     }
 
     let payload: unknown;
+    let relaxed = false;
     try {
       payload = JSON.parse(text);
-    } catch {
-      // 逐行 URL 的多仓文本（dc.txt）：不是 JSON，但可以展开
-      const repos = reposOf(null, text);
-      if (repos.length > 0) return reposPreview(opts, null, repos);
-      return emptyPreview(opts, null, [issue('error', 'PARSE_JSON', null, '内容不是合法 JSON')]);
+    } catch (strictError) {
+      // 容错：剥离整行 // 注释后重试（TVBox 订阅常见的手工编辑痕迹）
+      const withoutComments = stripLineComments(text);
+      if (withoutComments !== text) {
+        try {
+          payload = JSON.parse(withoutComments);
+          relaxed = true;
+        } catch {
+          payload = undefined;
+        }
+      }
+
+      if (payload === undefined) {
+        // 逐行 URL 的多仓文本（dc.txt）：不是 JSON，但可以展开
+        const repos = reposOf(null, text);
+        if (repos.length > 0) return reposPreview(opts, null, repos);
+        return emptyPreview(opts, null, [
+          issue('error', 'PARSE_JSON', null, diagnoseJsonFailure(text, strictError)),
+        ]);
+      }
     }
 
     if (!isRecord(payload)) {
@@ -308,6 +386,11 @@ export const subscriptionParser: SubscriptionParser = {
     const seenKeys = new Set<string>();
     const entries = rawList.map((raw, index) => parseEntry(raw, index, seenKeys));
     const globalIssues: ImportIssue[] = [];
+    if (relaxed) {
+      globalIssues.push(
+        issue('info', 'RELAXED_JSON', null, '该订阅含 // 注释（非标准 JSON），已忽略注释后解析'),
+      );
+    }
     const invalidCount = entries.filter((entry) => !entry.valid).length;
     if (invalidCount > 0) {
       globalIssues.push(
