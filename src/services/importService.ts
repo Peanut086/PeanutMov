@@ -42,6 +42,8 @@ import type {
 
 export interface ImportService {
   previewFromUrl(url: string, signal?: AbortSignal): Promise<ImportPreview>;
+  /** 多仓索引展开：拉取其中一个仓库地址的源列表 */
+  previewFromRepo(repoUrl: string, signal?: AbortSignal): Promise<ImportPreview>;
   previewFromText(text: string, fileName: string): Promise<ImportPreview>;
   previewFromFile(file: File): Promise<ImportPreview>;
   commit(preview: ImportPreview, options: ImportCommitOptions): Promise<ImportResult>;
@@ -91,36 +93,48 @@ async function previewFromRaw(
   return annotateDuplicates(preview);
 }
 
-export const importService: ImportService = {
-  async previewFromUrl(url: string, signal?: AbortSignal): Promise<ImportPreview> {
-    const trimmed = url.trim();
-    if (!isValidHttpUrl(trimmed)) {
-      throw new AppError('E_INVALID_INPUT', '订阅地址必须是 http(s):// 开头的合法地址');
-    }
-    const response = await httpClient.requestWithMeta<string>(trimmed, {
-      method: 'GET',
-      responseType: 'text',
-      timeoutMs: TIMEOUT_SUBSCRIPTION_FETCH_MS,
-      retries: 0,
-      signal,
-      headers: { Accept: 'application/json, text/plain, */*' },
-    });
+/** 拉取订阅文本（10s 超时 / 2MB 上限），URL 预览与多仓展开共用 */
+async function fetchSubscriptionText(url: string, signal?: AbortSignal): Promise<string> {
+  const trimmed = url.trim();
+  if (!isValidHttpUrl(trimmed)) {
+    throw new AppError('E_INVALID_INPUT', '订阅地址必须是 http(s):// 开头的合法地址');
+  }
+  const response = await httpClient.requestWithMeta<string>(trimmed, {
+    method: 'GET',
+    responseType: 'text',
+    timeoutMs: TIMEOUT_SUBSCRIPTION_FETCH_MS,
+    retries: 0,
+    signal,
+    headers: { Accept: 'application/json, text/plain, */*' },
+  });
 
-    const lengthHeader = response.headers.get('content-length');
-    if (lengthHeader) {
-      const declared = Number.parseInt(lengthHeader, 10);
-      if (Number.isFinite(declared) && declared > MAX_SUBSCRIPTION_BYTES) {
-        throw new AppError('E_INVALID_INPUT', '订阅内容过大（上限 2MB）');
-      }
-    }
-
-    const text = response.data ?? '';
-    // 用 UTF-8 字节长度判断（中文按 3 字节）
-    const bytes = new TextEncoder().encode(text).byteLength;
-    if (bytes > MAX_SUBSCRIPTION_BYTES) {
+  const lengthHeader = response.headers.get('content-length');
+  if (lengthHeader) {
+    const declared = Number.parseInt(lengthHeader, 10);
+    if (Number.isFinite(declared) && declared > MAX_SUBSCRIPTION_BYTES) {
       throw new AppError('E_INVALID_INPUT', '订阅内容过大（上限 2MB）');
     }
-    return previewFromRaw(text, { origin: 'url', sourceUrl: trimmed });
+  }
+
+  const text = response.data ?? '';
+  // 用 UTF-8 字节长度判断（中文按 3 字节）
+  const bytes = new TextEncoder().encode(text).byteLength;
+  if (bytes > MAX_SUBSCRIPTION_BYTES) {
+    throw new AppError('E_INVALID_INPUT', '订阅内容过大（上限 2MB）');
+  }
+  return text;
+}
+
+export const importService: ImportService = {
+  async previewFromUrl(url: string, signal?: AbortSignal): Promise<ImportPreview> {
+    const text = await fetchSubscriptionText(url, signal);
+    return previewFromRaw(text, { origin: 'url', sourceUrl: url.trim() });
+  },
+
+  /** 展开多仓索引中的一个仓库地址，返回该仓库的源预览 */
+  async previewFromRepo(repoUrl: string, signal?: AbortSignal): Promise<ImportPreview> {
+    const text = await fetchSubscriptionText(repoUrl, signal);
+    return previewFromRaw(text, { origin: 'url', sourceUrl: repoUrl.trim() });
   },
 
   async previewFromText(text: string, fileName: string): Promise<ImportPreview> {

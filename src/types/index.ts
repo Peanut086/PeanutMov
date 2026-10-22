@@ -497,6 +497,8 @@ export interface ImportPreview {
   total: number;
   entries: ImportPreviewEntry[];
   globalIssues: ImportIssue[];
+  /** 多仓索引（顶层 `urls[]` 或逐行 URL 文本）：待用户选择后展开，非空时 `entries` 为空 */
+  repos: string[];
 }
 
 export interface ImportCommitOptions {

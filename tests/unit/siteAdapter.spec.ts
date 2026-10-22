@@ -159,3 +159,134 @@ describe('SiteAdapter 响应分类（AC-111）', () => {
     expect(result.error?.message).not.toBe(ERROR_MESSAGES.E_UNSUPPORTED_FORMAT);
   });
 });
+
+describe('SiteAdapter ac=videolist 回退', () => {
+  const adapter = new SiteAdapter();
+  const categoryId = 'src-site:1';
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('ac=detail 列表为空 → 回退 ac=videolist 并返回其条目', async () => {
+    const urls: string[] = [];
+    const emptyDetail = JSON.stringify({ code: 1, list: [], total: 0 });
+    const videoList = JSON.stringify({
+      code: 1,
+      list: [{ vod_id: 7, vod_name: '回退影片', vod_play_from: '线路1', vod_play_url: '正片$https://cdn.example.com/a.mp4' }],
+      total: 1,
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      urls.push(url);
+      return respond(url.includes('ac=videolist') ? videoList : emptyDetail, {
+        contentType: 'application/json',
+      });
+    });
+
+    const page = await adapter.browse({
+      source: makeSource(),
+      categoryId,
+      page: 1,
+      pageSize: 20,
+      filters: { type: null, yearFrom: null, yearTo: null, area: null },
+    });
+
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toContain('ac=detail');
+    expect(urls[1]).toContain('ac=videolist');
+    expect(page.items.map((item) => item.title)).toEqual(['回退影片']);
+  });
+
+  it('ac=detail 有数据 → 不回退（只发一次请求）', async () => {
+    const urls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      urls.push(String(input));
+      return respond(TVBOX_BODY, { contentType: 'application/json' });
+    });
+
+    const page = await adapter.browse({
+      source: makeSource(),
+      categoryId,
+      page: 1,
+      pageSize: 20,
+      filters: { type: null, yearFrom: null, yearTo: null, area: null },
+    });
+
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain('ac=detail');
+    expect(page.items).toHaveLength(1);
+  });
+
+  it('回退也拿不到数据 → 返回首次结果，不抛错', async () => {
+    const urls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      urls.push(String(input));
+      return respond(JSON.stringify({ code: 1, list: [] }), { contentType: 'application/json' });
+    });
+
+    const page = await adapter.browse({
+      source: makeSource(),
+      categoryId,
+      page: 1,
+      pageSize: 20,
+      filters: { type: null, yearFrom: null, yearTo: null, area: null },
+    });
+
+    expect(urls).toHaveLength(2);
+    expect(page.items).toHaveLength(0);
+    expect(page.hasMore).toBe(false);
+  });
+
+  it('ac=detail 详情为空 → 回退 ac=videolist&ids= 拿回剧集', async () => {
+    const urls: string[] = [];
+    const emptyDetail = JSON.stringify({ code: 1, list: [] });
+    const withDetail = JSON.stringify({
+      code: 1,
+      list: [
+        {
+          vod_id: 'demo-101',
+          vod_name: '示例剧集',
+          vod_play_from: '线路1',
+          vod_play_url: '第1集$https://cdn.example.com/1.mp4#第2集$https://cdn.example.com/2.mp4',
+        },
+      ],
+    });
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      urls.push(url);
+      return respond(url.includes('ac=videolist') ? withDetail : emptyDetail, {
+        contentType: 'application/json',
+      });
+    });
+
+    const detail = await adapter.getDetail({ source: makeSource(), sourceItemId: 'demo-101' });
+
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toContain('ac=detail');
+    expect(urls[0]).toContain('ids=demo-101');
+    expect(urls[1]).toContain('ac=videolist');
+    expect(detail.episodes).toHaveLength(2);
+  });
+
+  it('ext.listPath 自定义路径时不回退', async () => {
+    const urls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      urls.push(String(input));
+      return respond(JSON.stringify({ list: [] }), { contentType: 'application/json' });
+    });
+
+    await adapter.browse({
+      source: makeSource({ ext: { listPath: '?ac=custom&t={type}&pg={page}' } }),
+      categoryId,
+      page: 1,
+      pageSize: 20,
+      filters: { type: null, yearFrom: null, yearTo: null, area: null },
+    });
+
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain('ac=custom');
+  });
+});

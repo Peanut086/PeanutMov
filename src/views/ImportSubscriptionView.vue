@@ -71,6 +71,8 @@ const globalWarnings = computed(
 const globalErrors = computed(
   () => preview.value?.globalIssues.filter((i) => i.level === 'error') ?? [],
 );
+const repoList = computed(() => preview.value?.repos ?? []);
+const isMultiRepo = computed(() => repoList.value.length > 0);
 
 onMounted(() => {
   // 进入页面清空上一次会话的预览（保留历史导入记录）
@@ -103,6 +105,19 @@ async function fetchPreview(): Promise<void> {
     // 解析失败：错误已落在 store.error（保留用户输入的 URL，AC-09/AC-10）
     return;
   }
+}
+
+/** 多仓索引：选中一个仓库展开成源列表 */
+async function expandRepo(repoUrl: string): Promise<void> {
+  localError.value = null;
+  result.value = null;
+  await importer.previewFromRepo(repoUrl);
+  if (preview.value === null) {
+    localError.value = importer.error?.message ?? '该仓库解析失败，请换一个仓库';
+    return;
+  }
+  // 展开后来源变成具体仓库地址，方便用户回溯
+  url.value = repoUrl;
 }
 
 function openFilePicker(): void {
@@ -287,69 +302,95 @@ function leave(): void {
 
       <!-- 预览 -->
       <template v-if="hasPreview && preview">
-        <section class="import-summary">
+        <section v-if="isMultiRepo" class="import-summary">
           <div class="import-summary__head">
-            <span class="import-summary__title">
-              共 {{ preview.total }} 个源 · 可导入 {{ validCount }} · 跳过 {{ skippedCount }}
-            </span>
-            <button
-              v-if="validCount > 0"
-              class="import-summary__all"
-              type="button"
-              :disabled="importing"
-              @click="toggleAll"
-            >
-              {{ selectedKeys.length === validCount ? '取消全选' : '全选' }}
-            </button>
+            <span class="import-summary__title">多仓索引 · 共 {{ repoList.length }} 个仓库</span>
           </div>
-          <p v-if="preview.name" class="import-summary__name">订阅名称：{{ preview.name }}</p>
-          <p v-if="preview.sourceUrl" class="import-summary__name">来源：{{ preview.sourceUrl }}</p>
-          <p v-else-if="preview.fileName" class="import-summary__name">来源：{{ preview.fileName }}</p>
-          <p v-for="issue in globalWarnings" :key="issue.code" class="import-summary__warn">
-            {{ issue.message }}
+          <p class="import-summary__name">
+            这是多仓索引，请选择其中一个仓库展开后再导入。
           </p>
         </section>
 
-        <ImportPreviewList
-          :entries="preview.entries"
-          :selected-keys="selectedKeys"
-          :disabled="importing"
-          @toggle="toggle"
-        />
-
-        <!-- 缺字段 / 无效条目：逐条给出跳过原因（AC-09/AC-13） -->
-        <section v-if="skippedCount > 0" class="import-skipped">
-          <h2 class="field__label">将跳过 {{ skippedCount }} 个源</h2>
+        <section v-if="isMultiRepo" class="import-skipped">
           <ul class="import-skipped__list">
-            <li
-              v-for="entry in preview.entries.filter((e) => !e.valid)"
-              :key="`skip-${entry.key}`"
-              class="import-skipped__item"
-            >
-              {{ entry.name || entry.key }}：{{
-                entry.issues.find((i) => i.level === 'error')?.message ?? '配置无效'
-              }}
+            <li v-for="repo in repoList" :key="repo" class="import-skipped__item">
+              <button
+                class="btn btn--secondary btn--md"
+                type="button"
+                :disabled="parsing || importing"
+                @click="expandRepo(repo)"
+              >
+                展开 {{ repo }}
+              </button>
             </li>
           </ul>
         </section>
 
-        <section class="import-strategy">
-          <h2 class="field__label">同名源处理</h2>
-          <SegmentedControl v-model="duplicateStrategy" :options="strategyOptions" label="同名源处理" block />
-          <p class="field__hint">
-            默认「跳过」；「覆盖」会用订阅里的配置更新同名源；「保留两份」会生成新的 key。
-          </p>
-        </section>
+        <template v-if="!isMultiRepo">
+          <section class="import-summary">
+            <div class="import-summary__head">
+              <span class="import-summary__title">
+                共 {{ preview.total }} 个源 · 可导入 {{ validCount }} · 跳过 {{ skippedCount }}
+              </span>
+              <button
+                v-if="validCount > 0"
+                class="import-summary__all"
+                type="button"
+                :disabled="importing"
+                @click="toggleAll"
+              >
+                {{ selectedKeys.length === validCount ? '取消全选' : '全选' }}
+              </button>
+            </div>
+            <p v-if="preview.name" class="import-summary__name">订阅名称：{{ preview.name }}</p>
+            <p v-if="preview.sourceUrl" class="import-summary__name">来源：{{ preview.sourceUrl }}</p>
+            <p v-else-if="preview.fileName" class="import-summary__name">来源：{{ preview.fileName }}</p>
+            <p v-for="issue in globalWarnings" :key="issue.code" class="import-summary__warn">
+              {{ issue.message }}
+            </p>
+          </section>
 
-        <button
-          class="btn btn--primary btn--lg import-commit"
-          type="button"
-          :disabled="importableCount === 0 || importing"
-          @click="commit"
-        >
-          <LoadingSpinner v-if="importing" :size="16" />
-          {{ importing ? '正在导入…' : `导入 ${importableCount} 个源` }}
-        </button>
+          <ImportPreviewList
+            :entries="preview.entries"
+            :selected-keys="selectedKeys"
+            :disabled="importing"
+            @toggle="toggle"
+          />
+
+          <!-- 缺字段 / 无效条目：逐条给出跳过原因（AC-09/AC-13） -->
+          <section v-if="skippedCount > 0" class="import-skipped">
+            <h2 class="field__label">将跳过 {{ skippedCount }} 个源</h2>
+            <ul class="import-skipped__list">
+              <li
+                v-for="entry in preview.entries.filter((e) => !e.valid)"
+                :key="`skip-${entry.key}`"
+                class="import-skipped__item"
+              >
+                {{ entry.name || entry.key }}：{{
+                  entry.issues.find((i) => i.level === 'error')?.message ?? '配置无效'
+                }}
+              </li>
+            </ul>
+          </section>
+
+          <section class="import-strategy">
+            <h2 class="field__label">同名源处理</h2>
+            <SegmentedControl v-model="duplicateStrategy" :options="strategyOptions" label="同名源处理" block />
+            <p class="field__hint">
+              默认「跳过」；「覆盖」会用订阅里的配置更新同名源；「保留两份」会生成新的 key。
+            </p>
+          </section>
+
+          <button
+            class="btn btn--primary btn--lg import-commit"
+            type="button"
+            :disabled="importableCount === 0 || importing"
+            @click="commit"
+          >
+            <LoadingSpinner v-if="importing" :size="16" />
+            {{ importing ? '正在导入…' : `导入 ${importableCount} 个源` }}
+          </button>
+        </template>
       </template>
     </div>
 

@@ -202,4 +202,38 @@ describe('importStore（API-14 v1.1 / CHG-02）', () => {
     expect(store.error).toBeNull();
     expect(store.records).toHaveLength(1);
   });
+
+  it('多仓索引：预览带 repos，commit 被拒绝（E_INVALID_STATE）', async () => {
+    const multi = JSON.stringify({
+      name: '多仓',
+      urls: [
+        { url: 'https://a.example.com/box.json', name: 'A' },
+        'https://b.example.com/box.json',
+      ],
+    });
+    const store = useImportStore();
+    await store.previewFromText(multi, 'dc.txt');
+
+    expect(store.preview?.repos).toEqual([
+      'https://a.example.com/box.json',
+      'https://b.example.com/box.json',
+    ]);
+    expect(store.preview?.entries).toHaveLength(0);
+
+    await expect(store.commit({ selectedKeys: [], onDuplicate: 'skip' })).rejects.toThrow('多仓');
+    expect(store.error?.code).toBe('E_INVALID_STATE');
+  });
+
+  it('previewFromRepo：展开单个仓库地址后得到源列表', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(jsonResponse(SUBSCRIPTION));
+    const store = useImportStore();
+
+    await store.previewFromRepo('https://a.example.com/box.json');
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0]?.[0])).toBe('https://a.example.com/box.json');
+    expect(store.preview?.repos).toEqual([]);
+    expect(store.preview?.entries.map((e) => e.key)).toEqual(['alist-a', 'webdav-b']);
+    expect(store.preview?.sourceUrl).toBe('https://a.example.com/box.json');
+  });
 });

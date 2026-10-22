@@ -187,57 +187,72 @@ export class SiteAdapter extends BaseAdapter {
     const base = source.baseUrl;
     const page = opts.page ?? 1;
 
-    let url: string;
     const custom =
       action === 'list'
         ? (ext.listPath ?? null)
         : action === 'detail'
           ? (ext.detailPath ?? null)
           : (ext.searchPath ?? null);
-    if (custom && custom.trim().length > 0) {
-      url = joinUrl(
-        base,
-        fillTemplate(custom, {
-          type: opts.typeId ?? '',
-          page,
-          kw: encodeURIComponent(opts.keyword ?? ''),
-          id: opts.ids ?? '',
-        }),
-      );
-    } else if (action === 'search') {
-      url = withQuery(base, { wd: opts.keyword ?? '', ac: 'detail', pg: page });
-    } else if (action === 'detail') {
-      url = withQuery(base, { ac: 'detail', ids: opts.ids ?? '' });
-    } else {
-      url = withQuery(base, {
-        ac: 'detail',
+    const usesCustomPath = custom !== null && custom.trim().length > 0;
+
+    const buildUrl = (ac: 'detail' | 'videolist'): string => {
+      if (usesCustomPath && custom) {
+        return joinUrl(
+          base,
+          fillTemplate(custom, {
+            type: opts.typeId ?? '',
+            page,
+            kw: encodeURIComponent(opts.keyword ?? ''),
+            id: opts.ids ?? '',
+          }),
+        );
+      }
+      if (action === 'search') {
+        return withQuery(base, { wd: opts.keyword ?? '', ac, pg: page });
+      }
+      if (action === 'detail') {
+        return withQuery(base, { ac, ids: opts.ids ?? '' });
+      }
+      return withQuery(base, {
+        ac,
         t: opts.typeId && opts.typeId.length > 0 ? opts.typeId : undefined,
         pg: page,
       });
-    }
+    };
 
-    let response: { data: string; headers: Headers };
-    try {
-      response = await httpClient.requestWithMeta<string>(url, {
-        method: 'GET',
-        headers: this.headersWith(source, { Accept: 'application/json' }),
-        signal: opts.signal,
-        retries: 1,
-        // 取 text 而非 json：需要在 JSON.parse 之前先按 Content-Type 区分 HTML / 图片（17.7）
-        responseType: 'text',
-      });
-    } catch (e) {
-      // `httpClient` 的 E_PARSE 语义被其它适配器依赖，只在此处包装为格式错误（17.7.3）
-      if (e instanceof AppError && e.code === 'E_PARSE') {
-        throw new AppError('E_UNSUPPORTED_FORMAT', UNSUPPORTED_FORMAT_MESSAGE, {
-          detail: e.detail ?? e.message,
-          cause: e,
+    const send = async (ac: 'detail' | 'videolist'): Promise<TvboxListResponse> => {
+      const url = buildUrl(ac);
+      let response: { data: string; headers: Headers };
+      try {
+        response = await httpClient.requestWithMeta<string>(url, {
+          method: 'GET',
+          headers: this.headersWith(source, { Accept: 'application/json' }),
+          signal: opts.signal,
+          retries: 1,
+          // 取 text 而非 json：需要在 JSON.parse 之前先按 Content-Type 区分 HTML / 图片（17.7）
+          responseType: 'text',
         });
+      } catch (e) {
+        // `httpClient` 的 E_PARSE 语义被其它适配器依赖，只在此处包装为格式错误（17.7.3）
+        if (e instanceof AppError && e.code === 'E_PARSE') {
+          throw new AppError('E_UNSUPPORTED_FORMAT', UNSUPPORTED_FORMAT_MESSAGE, {
+            detail: e.detail ?? e.message,
+            cause: e,
+          });
+        }
+        throw e;
       }
-      throw e;
-    }
+      return this.parsePayload(response.data, response.headers.get('content-type'));
+    };
 
-    return this.parsePayload(response.data, response.headers.get('content-type'));
+    const first = await send('detail');
+    // 老版 CMS 只认 `ac=videolist`：列表/搜索/详情返回空时回退一次。
+    // 自定义路径不参与回退（用户已显式指定 URL 模板）。
+    if (usesCustomPath) return first;
+    if ((first.list?.length ?? 0) > 0) return first;
+
+    const fallback = await send('videolist');
+    return (fallback.list?.length ?? 0) > 0 ? fallback : first;
   }
 
   /**

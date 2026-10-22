@@ -45,6 +45,8 @@ const TYPE_MAP: Record<string, SourceType> = {
   site: 'site',
   '0': 'site',
   '1': 'site',
+  // TVBox 里 2 也常指 CMS 站点；api 仍需是 http(s) 地址，非 URL 的条目会在下面按 URL_INVALID 跳过
+  '2': 'site',
 };
 
 function issue(
@@ -201,6 +203,57 @@ function emptyPreview(opts: ParseOptions, name: string | null, globalIssues: Imp
     total: 0,
     entries: [],
     globalIssues,
+    repos: [],
+  };
+}
+
+/**
+ * 多仓索引识别：顶层 `urls[]`（TVBox 多仓）或整份内容是逐行 URL 的文本。
+ * 只做识别与去重，不发起网络请求（展开由 `importService` 负责，保持解析器纯函数）。
+ */
+function reposOf(payload: unknown, rawText: string): string[] {
+  const urlOf = (item: unknown): string => {
+    if (typeof item === 'string') return item.trim();
+    if (isRecord(item) && typeof item['url'] === 'string') return item['url'].trim();
+    return '';
+  };
+  const collect = (value: unknown): string[] => {
+    if (!Array.isArray(value)) return [];
+    return value.map(urlOf).filter((item) => item.length > 0 && isValidHttpUrl(item));
+  };
+
+  const fromPayload = isRecord(payload) ? collect(payload['urls']) : [];
+  const fromText = fromPayload.length > 0 ? fromPayload : collect(rawText.split(/\r?\n/));
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const url of fromText) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push(url);
+  }
+  return out;
+}
+
+/** 多仓索引预览：`entries` 为空，仓库列表放 `repos` 交给 UI 选择 */
+function reposPreview(opts: ParseOptions, name: string | null, repos: string[]): ImportPreview {
+  return {
+    origin: opts.origin,
+    sourceUrl: opts.sourceUrl ?? null,
+    fileName: opts.fileName ?? null,
+    fetchedAt: Date.now(),
+    name,
+    total: 0,
+    entries: [],
+    globalIssues: [
+      issue(
+        'info',
+        'MULTI_REPO',
+        null,
+        `这是多仓索引，包含 ${repos.length} 个仓库，请选择其中一个展开`,
+      ),
+    ],
+    repos,
   };
 }
 
@@ -215,6 +268,9 @@ export const subscriptionParser: SubscriptionParser = {
     try {
       payload = JSON.parse(text);
     } catch {
+      // 逐行 URL 的多仓文本（dc.txt）：不是 JSON，但可以展开
+      const repos = reposOf(null, text);
+      if (repos.length > 0) return reposPreview(opts, null, repos);
       return emptyPreview(opts, null, [issue('error', 'PARSE_JSON', null, '内容不是合法 JSON')]);
     }
 
@@ -231,6 +287,8 @@ export const subscriptionParser: SubscriptionParser = {
     const name = typeof payload['name'] === 'string' && payload['name'].trim().length > 0 ? payload['name'].trim() : null;
 
     if (!rawList) {
+      const repos = reposOf(payload, text);
+      if (repos.length > 0) return reposPreview(opts, name, repos);
       return emptyPreview(opts, name, [issue('error', 'FORMAT_UNSUPPORTED', null, '订阅格式不支持')]);
     }
     if (rawList.length === 0) {
@@ -266,6 +324,7 @@ export const subscriptionParser: SubscriptionParser = {
       total: entries.length,
       entries,
       globalIssues,
+      repos: [],
     };
   },
 };

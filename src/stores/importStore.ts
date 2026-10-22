@@ -52,6 +52,11 @@ export const useImportStore = defineStore('import', () => {
     await runPreview(() => importService.previewFromUrl(url));
   }
 
+  /** 多仓索引展开：选中一个仓库地址后重新预览 */
+  async function previewFromRepo(repoUrl: string): Promise<void> {
+    await runPreview(() => importService.previewFromRepo(repoUrl));
+  }
+
   async function previewFromFile(file: File): Promise<void> {
     await runPreview(() => importService.previewFromFile(file));
   }
@@ -65,6 +70,11 @@ export const useImportStore = defineStore('import', () => {
     const current = preview.value;
     if (current === null) {
       const invalid = new AppError('E_INVALID_STATE', '请先解析订阅');
+      error.value = invalid.toShape();
+      throw invalid;
+    }
+    if (current.repos.length > 0) {
+      const invalid = new AppError('E_INVALID_STATE', '这是多仓索引，请先选择一个仓库展开');
       error.value = invalid.toShape();
       throw invalid;
     }
@@ -107,6 +117,7 @@ export const useImportStore = defineStore('import', () => {
     error,
     records,
     previewFromUrl,
+    previewFromRepo,
     previewFromFile,
     previewFromText,
     commit,

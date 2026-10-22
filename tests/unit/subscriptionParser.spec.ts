@@ -173,4 +173,64 @@ describe('订阅解析（AC-09 / AC-10 / AC-13 / AC-104）', () => {
     expect(mapSourceType('webdav')).toBe('webdav');
     expect(mapSourceType('nope')).toBe(null);
   });
+
+  it('数字 type=2 映射为 site（api 仍须是 http(s)）', () => {
+    expect(mapSourceType(2)).toBe('site');
+
+    const preview = parseJson({
+      sites: [
+        { key: 'cms', name: 'CMS 站点', type: 2, api: 'https://cms.example.com/api.php/provide/vod/' },
+        { key: 'spider', name: 'csp 站点', type: 2, api: 'csp_MySpider' },
+      ],
+    });
+    expect(preview.entries[0]?.type).toBe('site');
+    expect(preview.entries[0]?.valid).toBe(true);
+    expect(preview.entries[1]?.valid).toBe(false);
+    expect(preview.entries[1]?.issues.some((i) => i.code === 'URL_INVALID')).toBe(true);
+  });
+
+  it('顶层 urls[] 多仓索引 → repos 列表，entries 为空', () => {
+    const preview = parseJson({
+      name: '我的多仓',
+      urls: [
+        { url: 'https://a.example.com/box.json', name: 'A 仓' },
+        'https://b.example.com/box.json',
+        'https://a.example.com/box.json',
+        'not-a-url',
+      ],
+    });
+
+    expect(preview.name).toBe('我的多仓');
+    expect(preview.entries).toHaveLength(0);
+    expect(preview.total).toBe(0);
+    // 只收合法 URL，支持字符串与 { url } 对象，去重保序
+    expect(preview.repos).toEqual([
+      'https://a.example.com/box.json',
+      'https://b.example.com/box.json',
+    ]);
+    expect(preview.globalIssues[0]?.code).toBe('MULTI_REPO');
+    expect(preview.globalIssues[0]?.level).toBe('info');
+  });
+
+  it('逐行 URL 文本（dc.txt）也识别为多仓索引', () => {
+    const text = [
+      'https://a.example.com/box.json',
+      '',
+      'https://b.example.com/box.json',
+    ].join('\n');
+    const preview = subscriptionParser.parse(text, OPTS);
+
+    expect(preview.repos).toEqual([
+      'https://a.example.com/box.json',
+      'https://b.example.com/box.json',
+    ]);
+    expect(preview.globalIssues[0]?.code).toBe('MULTI_REPO');
+  });
+
+  it('普通订阅的 repos 为空', () => {
+    const preview = parseJson({
+      sources: [{ key: 'a', name: 'A', type: 'alist', api: 'https://a.com' }],
+    });
+    expect(preview.repos).toEqual([]);
+  });
 });
