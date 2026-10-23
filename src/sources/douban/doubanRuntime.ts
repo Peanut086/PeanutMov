@@ -14,15 +14,18 @@ import { pickPlayCandidate } from '@/sources/douban/playMatch';
 import { sourceRegistry } from '@/sources/registry';
 import { logger } from '@/shared/logger';
 
-/** 在「除豆瓣外的启用源」里按片名搜索，返回匹配的候选 */
+/** 在「自带片源的启用源」里按片名搜索，返回匹配的候选 */
 const resolvePlayFrom = async (params: {
   title: string;
   year: number | null;
   signal?: AbortSignal;
 }): ReturnType<NonNullable<typeof doubanRuntime.resolvePlayFrom>> => {
   const all = await sourceRepo.list();
-  // 只向自带片源的源借地址；同为发现源的其它豆瓣源没有播放能力
-  const providers = all.filter((source) => source.enabled && source.type !== 'douban');
+  // 只向自带片源的源借地址（与 playMatch.pickPlayCandidate 的口径一致）：
+  // 同为发现源的豆瓣源没有播放能力，jellyfin/alist/webdav 搜了也会在匹配时被丢弃
+  const providers = all.filter(
+    (source) => source.enabled && (source.type === 'site' || source.type === 'spider'),
+  );
   if (providers.length === 0) return null;
 
   const result = await libraryService.search({

@@ -43,6 +43,14 @@ export abstract class BaseAdapter implements SourceAdapter {
   /** 探活：成功返回条目数；失败 **抛 AppError**（由 testConnection 捕获并归类） */
   protected abstract probe(source: Source, signal?: AbortSignal): Promise<ProbeResult>;
 
+  /**
+   * 探活超时窗口。子类可覆盖：探活不走 httpClient、无法被
+   * `withProbeTimeout` 约束的适配器（如 spider 的原生 jar 下载）需要更长的窗口。
+   */
+  protected get probeTimeoutMs(): number {
+    return TIMEOUT_TEST_CONNECTION_MS;
+  }
+
   abstract listCategories(source: Source, signal?: AbortSignal): Promise<Category[]>;
   abstract browse(params: BrowseParams): Promise<PageResult<MediaItem>>;
   abstract search(params: SearchParams): Promise<MediaItem[]>;
@@ -67,12 +75,16 @@ export abstract class BaseAdapter implements SourceAdapter {
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, TIMEOUT_TEST_CONNECTION_MS);
+    }, this.probeTimeoutMs);
     const onAbort = (): void => controller.abort();
     signal?.addEventListener('abort', onAbort, { once: true });
 
     try {
       const result = await this.probe(source, controller.signal);
+      // 不响应 signal 的 probe（如原生调用）可能在超时后才成功，按超时处理
+      if (timedOut) {
+        throw new AppError('E_TIMEOUT');
+      }
       return {
         ok: true,
         latencyMs: Date.now() - startedAt,
@@ -84,7 +96,7 @@ export abstract class BaseAdapter implements SourceAdapter {
       const latencyMs = Date.now() - startedAt;
       const error: AppError =
         timedOut || (e instanceof AppError && e.code === 'E_ABORTED')
-          ? new AppError('E_TIMEOUT', undefined, { detail: `探测超过 ${TIMEOUT_TEST_CONNECTION_MS}ms` })
+          ? new AppError('E_TIMEOUT', undefined, { detail: `探测超过 ${this.probeTimeoutMs}ms` })
           : e instanceof AppError
             ? e
             : new AppError('E_SOURCE_UNAVAILABLE', undefined, { detail: String(e) });

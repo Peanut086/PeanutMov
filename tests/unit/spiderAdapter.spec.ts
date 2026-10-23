@@ -89,8 +89,11 @@ function makeSource(overrides: Partial<Source> = {}): Source {
   };
 }
 
-/** 按方法名回放录制的 JSON */
-function mockPlugin(responses: Record<string, string | null>) {
+/** 按方法名回放录制的 JSON；`proxyResult` 配置爬虫代理的返回 */
+function mockPlugin(
+  responses: Record<string, string | null>,
+  proxyResult?: { url: string | null; headers?: Record<string, string> } | Error,
+) {
   const load = vi.fn().mockResolvedValue({ handle: 'sp-1' });
   const invoke = vi.fn(async (opts: { method: string }) => {
     if (!(opts.method in responses)) {
@@ -98,12 +101,20 @@ function mockPlugin(responses: Record<string, string | null>) {
     }
     return { json: responses[opts.method], logs: [] };
   });
+  const proxy = vi.fn();
+  if (proxyResult instanceof Error) {
+    proxy.mockRejectedValue(proxyResult);
+  } else if (proxyResult) {
+    proxy.mockResolvedValue(proxyResult);
+  } else {
+    proxy.mockRejectedValue(new Error('unexpected proxy call'));
+  }
   vi.doMock('@/native/spiderPlugin', () => ({
-    Spider: { load, invoke, proxy: vi.fn(), unload: vi.fn(), isSupported: vi.fn() },
+    Spider: { load, invoke, proxy, unload: vi.fn(), isSupported: vi.fn() },
     isSpiderAvailable: vi.fn().mockResolvedValue(true),
     spiderInvoke: vi.fn(),
   }));
-  return { load, invoke };
+  return { load, invoke, proxy };
 }
 
 /** 取出某次 invoke 的调用参数（断言 List 形参走 arrayArgs） */
@@ -246,6 +257,114 @@ describe('SpiderAdapter', () => {
         episodeId: detail.episodes[0]!.id,
       }),
     ).rejects.toMatchObject({ code: 'E_NO_PLAY_URL' });
+  });
+
+  it('resolvePlayUrl：proxy=1 → 走爬虫代理换直链，headers 合并', async () => {
+    const { proxy } = mockPlugin(
+      {
+        ...ALL,
+        playerContent: JSON.stringify({
+          url: 'https://pan.example.com/raw?token=x',
+          parse: 0,
+          proxy: 1,
+        }),
+      },
+      { url: 'https://cdn.example.com/direct.m3u8', headers: { Referer: 'https://pan.example.com' } },
+    );
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource({ headers: { Referer: 'https://freeok.vip' } });
+
+    const detail = await adapter.getDetail({ source, sourceItemId: '102' });
+    const play = await adapter.resolvePlayUrl({
+      source,
+      mediaId: detail.item.id,
+      sourceItemId: '102',
+      lineId: detail.lines[0]!.id,
+      episodeId: detail.episodes[0]!.id,
+    });
+
+    expect(proxy).toHaveBeenCalledWith({
+      handle: 'sp-1',
+      url: 'https://pan.example.com/raw?token=x',
+    });
+    expect(play.url).toBe('https://cdn.example.com/direct.m3u8');
+    expect(play.format).toBe('hls');
+    // 代理返回的 header 覆盖源 header，爬虫 header 仍保留
+    expect(play.headers['Referer']).toBe('https://pan.example.com');
+  });
+
+  it('resolvePlayUrl：proxy:// 协议地址 → 走爬虫代理换直链', async () => {
+    const { proxy } = mockPlugin(
+      {
+        ...ALL,
+        playerContent: JSON.stringify({
+          url: 'proxy://do=push&url=https%3A%2F%2Fcdn.example.com%2Fb.m3u8',
+          parse: 0,
+        }),
+      },
+      { url: 'https://cdn.example.com/b.m3u8', headers: {} },
+    );
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource();
+
+    const detail = await adapter.getDetail({ source, sourceItemId: '102' });
+    const play = await adapter.resolvePlayUrl({
+      source,
+      mediaId: detail.item.id,
+      sourceItemId: '102',
+      lineId: detail.lines[0]!.id,
+      episodeId: detail.episodes[0]!.id,
+    });
+
+    expect(proxy).toHaveBeenCalledWith({
+      handle: 'sp-1',
+      url: 'proxy://do=push&url=https%3A%2F%2Fcdn.example.com%2Fb.m3u8',
+    });
+    expect(play.url).toBe('https://cdn.example.com/b.m3u8');
+  });
+
+  it('resolvePlayUrl：代理未返回直链 → E_NO_PLAY_URL', async () => {
+    mockPlugin(
+      { ...ALL, playerContent: JSON.stringify({ url: 'proxy://do=push', parse: 0, proxy: 1 }) },
+      { url: null, headers: {} },
+    );
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource();
+
+    const detail = await adapter.getDetail({ source, sourceItemId: '102' });
+    await expect(
+      adapter.resolvePlayUrl({
+        source,
+        mediaId: detail.item.id,
+        sourceItemId: '102',
+        lineId: detail.lines[0]!.id,
+        episodeId: detail.episodes[0]!.id,
+      }),
+    ).rejects.toMatchObject({ code: 'E_NO_PLAY_URL' });
+  });
+
+  it('resolvePlayUrl：代理调用失败 → E_SOURCE_UNAVAILABLE', async () => {
+    mockPlugin(
+      { ...ALL, playerContent: JSON.stringify({ url: 'proxy://do=push', parse: 0, proxy: 1 }) },
+      new Error('proxy failed'),
+    );
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource();
+
+    const detail = await adapter.getDetail({ source, sourceItemId: '102' });
+    await expect(
+      adapter.resolvePlayUrl({
+        source,
+        mediaId: detail.item.id,
+        sourceItemId: '102',
+        lineId: detail.lines[0]!.id,
+        episodeId: detail.episodes[0]!.id,
+      }),
+    ).rejects.toMatchObject({ code: 'E_SOURCE_UNAVAILABLE' });
   });
 
   it('爬虫返回非法 JSON → E_PARSE', async () => {

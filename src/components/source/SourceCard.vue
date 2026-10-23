@@ -10,6 +10,7 @@ import { computed } from 'vue';
 import type { Source, SourceType } from '@/types';
 import type { HealthTier } from '@/shared/healthTier';
 import { formatRelativeTime } from '@/shared/time';
+import { isNative } from '@/shared/platform';
 
 import HealthBadge from '@/components/source/HealthBadge.vue';
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
@@ -47,6 +48,9 @@ const TYPE_LABELS: Record<SourceType, string> = {
 
 const typeLabel = computed(() => TYPE_LABELS[props.source.type]);
 
+/** 爬虫源只在 App 内可用（dex 无法在浏览器执行） */
+const appOnly = computed(() => props.source.type === 'spider' && !isNative());
+
 const address = computed(() => {
   if (props.source.type === 'demo') return '内置公开版权样片，无需配置';
   return props.source.baseUrl || '未填写地址';
@@ -69,6 +73,7 @@ const checkedText = computed(() => {
         <span v-if="source.warning" class="source-card__flag source-card__flag--warning" :title="source.warning">
           ⚠
         </span>
+        <span v-if="appOnly" class="source-card__flag source-card__flag--brand">仅 App 可用</span>
       </div>
 
       <p class="source-card__url truncate-1">{{ address }}</p>

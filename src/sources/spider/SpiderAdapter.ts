@@ -16,7 +16,7 @@ import { mediaIdOf } from '@/shared/id';
 import { toAbsoluteUrl } from '@/shared/url';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
-import { Spider as SpiderNative, type SpiderMethod } from '@/native/spiderPlugin';
+import { Spider as SpiderNative, type SpiderMethod, type SpiderProxyResult } from '@/native/spiderPlugin';
 import { BaseAdapter, type ProbeResult } from '@/sources/base/BaseAdapter';
 import { inferMediaType, normalizeFormat, parseCategoryValue } from '@/sources/base/normalize';
 import { looksLikeResolverUrl, type TvboxListResponse, type TvboxVod } from '@/sources/site/tvboxTypes';
@@ -90,6 +90,8 @@ export interface SpiderPlayerResult {
   header?: Record<string, string> | null;
   /** 部分爬虫把地址放在子字段里 */
   playUrl?: string | null;
+  /** 1 = 地址需经爬虫的 proxy(Map) 换回直链（TVBox 约定） */
+  proxy?: number | boolean | string | null;
   flag?: string | null;
   msg?: string | null;
 }
@@ -106,6 +108,15 @@ export class SpiderAdapter extends BaseAdapter {
   private readonly handles = new Map<string, string>();
 
   /* ---------------- 探活与加载 ---------------- */
+
+  /**
+   * 首次探活包含 jar 下载（原生侧连接超时 20s、读取超时 30s），
+   * 基类的 3s 窗口会把慢网络下的正常加载误判成 timeout，故放宽到 35s。
+   * 句柄缓存后，后续探活只走一次 homeContent，远快于窗口上限。
+   */
+  protected override get probeTimeoutMs(): number {
+    return 35_000;
+  }
 
   protected async probe(source: Source): Promise<ProbeResult> {
     this.assertEnabled(source);
@@ -262,7 +273,6 @@ export class SpiderAdapter extends BaseAdapter {
     //    flag 用线路名，id 用剧集地址（TVBox 约定），vipFlags 传空数组
     const flag = line.name;
     const played = await this.invokePlayer(source, flag, picked.url);
-    const headers = this.headersWith(source, played.header ?? undefined);
 
     // parse=1 表示地址仍需解析接口；首版不做递归解包（与 SiteAdapter 一致）
     if (parseFlagIsEnabled(played.parse) || parseFlagIsEnabled(played.jx)) {
@@ -273,16 +283,33 @@ export class SpiderAdapter extends BaseAdapter {
     if (raw.length === 0) throw new AppError('E_NO_PLAY_URL', played.msg ?? '爬虫未返回播放地址');
 
     const absolute = toAbsoluteUrl(source.baseUrl, raw) ?? raw;
-    if (looksLikeResolverUrl(absolute)) {
+
+    // proxy=1 或 proxy:// 协议：地址需经爬虫的 proxy(Map) 换回直链
+    // （原生插件语义是「返回直链」，非 TVBox 原版的本地流式代理）
+    let direct = absolute;
+    let proxyHeaders: Record<string, string> | null = null;
+    if (parseFlagIsEnabled(played.proxy) || /^proxy:\/\//i.test(absolute)) {
+      const proxied = await this.invokeProxy(source, absolute);
+      if (!proxied.url) throw new AppError('E_NO_PLAY_URL', '爬虫代理未返回播放地址');
+      direct = proxied.url;
+      proxyHeaders = proxied.headers;
+    }
+
+    if (looksLikeResolverUrl(direct)) {
       throw new AppError('E_NO_PLAY_URL', '该源需要解析接口，暂不支持');
     }
-    if (!/^https?:\/\//i.test(absolute) && !absolute.startsWith('magnet:')) {
+    if (!/^https?:\/\//i.test(direct) && !direct.startsWith('magnet:')) {
       throw new AppError('E_UNSUPPORTED_FORMAT', '播放地址协议不受支持');
     }
 
-    const resolved = isPlayPageUrl(absolute)
-      ? await resolvePlayPage(absolute, { headers, signal: params.signal })
-      : absolute;
+    const headers = this.headersWith(
+      source,
+      proxyHeaders ? { ...played.header, ...proxyHeaders } : (played.header ?? undefined),
+    );
+
+    const resolved = isPlayPageUrl(direct)
+      ? await resolvePlayPage(direct, { headers, signal: params.signal })
+      : direct;
 
     return {
       url: resolved,
@@ -311,6 +338,21 @@ export class SpiderAdapter extends BaseAdapter {
     } catch (e) {
       if (e instanceof AppError) throw e;
       throw new AppError('E_SOURCE_UNAVAILABLE', '爬虫取播放地址失败', {
+        detail: e instanceof Error ? e.message : String(e),
+        cause: e,
+      });
+    }
+  }
+
+  /** 走爬虫代理换回直链（`proxy://` 地址或 playerContent 的 proxy=1） */
+  private async invokeProxy(source: Source, url: string): Promise<SpiderProxyResult> {
+    const handle = await this.ensureLoaded(source);
+    try {
+      const result = await SpiderNative.proxy({ handle, url });
+      return { url: result.url, headers: result.headers ?? {} };
+    } catch (e) {
+      logger.warn('爬虫代理失败', source.name, e);
+      throw new AppError('E_SOURCE_UNAVAILABLE', '爬虫代理失败', {
         detail: e instanceof Error ? e.message : String(e),
         cause: e,
       });
