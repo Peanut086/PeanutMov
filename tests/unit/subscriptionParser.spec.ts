@@ -181,12 +181,19 @@ describe('订阅解析（AC-09 / AC-10 / AC-13 / AC-104）', () => {
       sites: [
         { key: 'cms', name: 'CMS 站点', type: 2, api: 'https://cms.example.com/api.php/provide/vod/' },
         { key: 'spider', name: 'csp 站点', type: 2, api: 'csp_MySpider' },
+        { key: 'ftp', name: '非 http 站点', type: 2, api: 'ftp://a.com/x' },
       ],
     });
     expect(preview.entries[0]?.type).toBe('site');
     expect(preview.entries[0]?.valid).toBe(true);
+    // `csp_` 类名改判为爬虫源（jar 缺失时判错，不再是 URL_INVALID）
+    expect(preview.entries[1]?.type).toBe('spider');
     expect(preview.entries[1]?.valid).toBe(false);
-    expect(preview.entries[1]?.issues.some((i) => i.code === 'URL_INVALID')).toBe(true);
+    expect(preview.entries[1]?.issues.some((i) => i.code === 'MISSING_FIELD' && i.field === 'jar')).toBe(true);
+    // 既非爬虫类名又非 http(s) 地址 → 仍是 URL_INVALID
+    expect(preview.entries[2]?.type).toBe('site');
+    expect(preview.entries[2]?.valid).toBe(false);
+    expect(preview.entries[2]?.issues.some((i) => i.code === 'URL_INVALID')).toBe(true);
   });
 
   it('顶层 urls[] 多仓索引 → repos 列表，entries 为空', () => {
