@@ -271,9 +271,8 @@ export class SiteAdapter extends BaseAdapter {
     const withTypeHint = (detail: string): string =>
       contentTypeReadable ? detail : `${detail}；Content-Type 不可读`;
 
-    if (contentTypeReadable && normalizedType.includes('text/html')) {
-      throw formatError(UNSUPPORTED_FORMAT_MESSAGE, `响应为 HTML 页面（Content-Type: ${contentType}）`);
-    }
+    // CHG-06: 部分 CMS 采集站返回 text/html;charset=utf-8 但内容是 TVBox JSON（Cloudflare 代理特征），
+    // probe.cjs 已验证移除 Content-Type 检查不影响安全性，仍会拒绝非 JSON/错误结构。
     if (contentTypeReadable && normalizedType.includes('image/')) {
       throw formatError(UNSUPPORTED_FORMAT_MESSAGE, `响应为图片（Content-Type: ${contentType}）`);
     }

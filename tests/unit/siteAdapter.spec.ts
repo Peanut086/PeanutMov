@@ -60,7 +60,16 @@ describe('SiteAdapter 响应分类（AC-111）', () => {
     vi.restoreAllMocks();
   });
 
-  it('200 + text/html → E_UNSUPPORTED_FORMAT，health=bad_config，文案指明"不是订阅 JSON"', async () => {
+  it('200 + text/html + TVBox JSON → ok，接受 Cloudflare 代理的特征（CHG-06）', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(TVBOX_BODY, { contentType: 'text/html; charset=utf-8' }));
+    const result = await adapter.testConnection(makeSource());
+
+    expect(result.ok).toBe(true);
+    expect(result.health).toBe('ok');
+    expect(result.itemCount).toBe(1);
+  });
+
+  it('200 + 真正的 HTML 落地页 → 仍在 JSON 解析阶段被拒（文案"不是订阅 JSON"）', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(HTML_BODY, { contentType: 'text/html; charset=utf-8' }));
     const result = await adapter.testConnection(makeSource());
 
@@ -68,6 +77,7 @@ describe('SiteAdapter 响应分类（AC-111）', () => {
     expect(result.health).toBe('bad_config');
     expect(result.error?.code).toBe('E_UNSUPPORTED_FORMAT');
     expect(result.error?.message).toContain('不是订阅 JSON');
+    expect(result.error?.detail).toContain('不是合法 JSON');
   });
 
   it('200 + image/png → E_UNSUPPORTED_FORMAT（图片被当订阅的典型场景）', async () => {
@@ -151,12 +161,13 @@ describe('SiteAdapter 响应分类（AC-111）', () => {
   });
 
   it('非 JSON 类错误不会新增 ErrorCode（沿用既有枚举）', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(HTML_BODY, { contentType: 'text/html' }));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(PLAIN_BODY, { contentType: 'text/plain' }));
     const result = await adapter.testConnection(makeSource());
 
+    expect(result.error?.code).toBe('E_UNSUPPORTED_FORMAT');
+    expect(result.health).toBe('bad_config');
     const { ERROR_MESSAGES } = await import('@/shared/errors');
     expect(Object.keys(ERROR_MESSAGES)).toContain(result.error?.code);
-    expect(result.error?.message).not.toBe(ERROR_MESSAGES.E_UNSUPPORTED_FORMAT);
   });
 });
 
