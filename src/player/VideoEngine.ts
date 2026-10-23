@@ -47,7 +47,8 @@ export class VideoEngine implements PlayableEngine {
     this.video.setAttribute('webkit-playsinline', 'true');
     this.video.preload = 'metadata';
     this.video.controls = false;
-    this.video.crossOrigin = 'anonymous';
+    // 不设置 `crossOrigin`：项目内没有 canvas 抓帧需求，而设成 anonymous 会让
+    // 未返回 ACAO 头的源站直接加载失败（字节合法也播不了）。hls.js 走 MSE，无需该属性。
     this.bindNativeEvents();
   }
 

@@ -8,8 +8,8 @@
  * - 海报使用内联 SVG data URL，离线也能渲染，不依赖网络图片。
  *
  * 片源均为公开示例视频（Blender 开放影片 / Google Media Element / Mux 测试流），
- * 均为 CDN 且响应 `Access-Control-Allow-Origin: *`（播放器以 `crossOrigin=anonymous`
- * 加载，无 CORS 头会被浏览器拦截，无法出首帧）。
+ * 均为 CDN 且响应 `Access-Control-Allow-Origin: *`（播放器不设 `crossOrigin`，
+ * 但仍要求可跨域，便于将来接 canvas 抓帧）。
  */
 import type { MediaFormat, MediaType } from '@/types';
 

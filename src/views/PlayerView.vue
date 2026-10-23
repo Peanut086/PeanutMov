@@ -594,7 +594,17 @@ const downloadedIds = computed(() => {
 async function copyError(): Promise<void> {
   const err = player.error;
   if (!err) return;
-  const text = `code=${err.code}\nmessage=${err.message}\ndetail=${err.detail ?? ''}\nhttp=${err.httpStatus ?? ''}`;
+  // 带上解析出的地址与格式：区分"返回的是网页页/403 页面"还是"编码不受支持"全靠这两项
+  const playback = currentPlayback.value;
+  const lines = [
+    `code=${err.code}`,
+    `message=${err.message}`,
+    `detail=${err.detail ?? ''}`,
+    `http=${err.httpStatus ?? ''}`,
+    `format=${playback?.format ?? ''}`,
+    `url=${playback?.url ?? ''}`,
+  ];
+  const text = lines.join('\n');
   try {
     await navigator.clipboard?.writeText(text);
     toast.success('已复制错误信息');

@@ -301,3 +301,104 @@ describe('SiteAdapter ac=videolist 回退', () => {
     expect(urls[0]).toContain('ac=custom');
   });
 });
+
+describe('SiteAdapter 网页播放页 → 直链', () => {
+  const adapter = new SiteAdapter();
+  const source = makeSource();
+  const SHARE_URL = 'https://super.ffzy-online6.com/share/f9195e75b0784070189f10f3aa96e026';
+  const SHARE_HTML = `<script>
+    const url = "/20261003/42433_f9195e75/index.m3u8?sign=4a6a16a50fddffaa71ca9ddc3211fd3f";
+  </script>`;
+  const DETAIL_BODY = JSON.stringify({
+    code: 1,
+    list: [{ vod_id: 42, vod_name: '分享页影片', vod_play_from: '线路1', vod_play_url: `正片$${SHARE_URL}` }],
+  });
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** 走一次详情拿线路/剧集 id，避免手算 stableId */
+  async function idsOf(): Promise<{ lineId: string; episodeId: string }> {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(DETAIL_BODY, { contentType: 'application/json' }));
+    const detail = await adapter.getDetail({ source, sourceItemId: '42' });
+    vi.restoreAllMocks();
+    const line = detail.lines[0]!;
+    const episode = detail.episodes[0]!;
+    return { lineId: line.id, episodeId: episode.id };
+  }
+
+  it('分享页 → 取出页面内 m3u8，format 归一为 hls', async () => {
+    const { lineId, episodeId } = await idsOf();
+    const urls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.includes('ac=detail') || url.includes('ac=videolist')) {
+        return respond(DETAIL_BODY, { contentType: 'application/json' });
+      }
+      return respond(SHARE_HTML, { contentType: 'text/html' });
+    });
+
+    const play = await adapter.resolvePlayUrl({
+      source,
+      mediaId: 'ignored',
+      sourceItemId: '42',
+      episodeId,
+      lineId,
+    });
+
+    expect(play.url).toBe(
+      'https://super.ffzy-online6.com/20261003/42433_f9195e75/index.m3u8?sign=4a6a16a50fddffaa71ca9ddc3211fd3f',
+    );
+    expect(play.format).toBe('hls');
+    expect(urls.some((url) => url === SHARE_URL)).toBe(true);
+  });
+
+  it('页面内找不到地址 → E_NO_PLAY_URL（不再报「暂不支持该格式」）', async () => {
+    const { lineId, episodeId } = await idsOf();
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('ac=detail') || url.includes('ac=videolist')) {
+        return respond(DETAIL_BODY, { contentType: 'application/json' });
+      }
+      return respond('<html><body>该视频已下架</body></html>', { contentType: 'text/html' });
+    });
+
+    await expect(
+      adapter.resolvePlayUrl({ source, mediaId: 'ignored', sourceItemId: '42', episodeId, lineId }),
+    ).rejects.toMatchObject({ code: 'E_NO_PLAY_URL' });
+  });
+
+  it('直链 m3u8 不发额外请求（不误判为播放页）', async () => {
+    const directUrl = 'https://v14.rstu6.com/202610/22/L5nDV0feCd27/video/index.m3u8';
+    const directBody = JSON.stringify({
+      code: 1,
+      list: [{ vod_id: 43, vod_name: '直链影片', vod_play_from: '线路1', vod_play_url: `正片$${directUrl}` }],
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(respond(directBody, { contentType: 'application/json' }));
+    const detail = await adapter.getDetail({ source, sourceItemId: '43' });
+
+    const urls: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      urls.push(String(input));
+      return respond(directBody, { contentType: 'application/json' });
+    });
+
+    const play = await adapter.resolvePlayUrl({
+      source,
+      mediaId: 'ignored',
+      sourceItemId: '43',
+      episodeId: detail.episodes[0]!.id,
+      lineId: detail.lines[0]!.id,
+    });
+
+    expect(play.url).toBe(directUrl);
+    expect(play.format).toBe('hls');
+    expect(urls.some((url) => url === directUrl)).toBe(false);
+  });
+});

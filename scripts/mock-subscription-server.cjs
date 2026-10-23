@@ -122,6 +122,40 @@ const VODS = [
   },
 ];
 
+/**
+ * 网页播放页（/share/<id>）样片：`vod_play_url` 给的是 HTML 页面而非直链，
+ * 用于验证 SiteAdapter 的「播放页 → 直链」解析（真实 CMS 采集站的常见形态）。
+ * 页面里的地址写成**相对路径**，同时覆盖相对转绝对的分支。
+ */
+const SHARE_PAGE_ID = 'share-demo-1';
+VODS.push({
+  vod_id: 'demo-401',
+  vod_name: '分享页线路（网页播放页）',
+  type_id: 1,
+  type_name: '电影',
+  vod_year: '2026',
+  vod_area: '测试',
+  vod_score: '8.0',
+  vod_remarks: '网页播放页',
+  vod_content: '播放地址是 HTML 分享页，真实 m3u8 明文写在页面 script 里。',
+  vod_play_from: '分享页线路',
+  vod_play_url: `正片$/share/${SHARE_PAGE_ID}`,
+});
+
+/** 分享页 HTML：结构与真实采集站一致（相对路径 + 明文 m3u8） */
+function sharePageHtml() {
+  return `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>分享页样片</title></head>
+<body><div id="container"></div>
+<script>
+    const vid = "${SHARE_PAGE_ID}";
+    const url = "/hls/share-demo.m3u8";
+    const pic = "/poster.jpg";
+</script>
+<script src="/frontend/players/js/hls.js"></script>
+</body></html>`;
+}
+
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -246,6 +280,16 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === '/sub.json') return json(res, 200, subscriptionFor(req.headers.host));
   if (url.pathname === '/tvbox') return tvbox(req, res, url);
+  // 网页播放页（验证 SiteAdapter 的播放页 → 直链解析）
+  if (url.pathname === `/share/${SHARE_PAGE_ID}`) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Access-Control-Allow-Origin': '*' });
+    return res.end(sharePageHtml());
+  }
+  // 页面里引用的相对 m3u8：内容转发到公开 HLS 样片，保证真能播
+  if (url.pathname === '/hls/share-demo.m3u8') {
+    res.writeHead(302, { Location: V.hls, 'Access-Control-Allow-Origin': '*' });
+    return res.end();
+  }
   if (url.pathname.startsWith('/alist')) return alist(req, res, url);
   if (url.pathname === '/bulk') {
     // 虚拟滚动回归用：返回 400 条公开样片（地址复用内置样片）

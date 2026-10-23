@@ -32,6 +32,7 @@ import {
   type TvboxListResponse,
   type TvboxVod,
 } from '@/sources/site/tvboxTypes';
+import { isPlayPageUrl, resolvePlayPage } from '@/sources/site/playPageResolver';
 import type {
   BrowseParams,
   Category,
@@ -163,10 +164,17 @@ export class SiteAdapter extends BaseAdapter {
       throw new AppError('E_UNSUPPORTED_FORMAT', '播放地址协议不受支持');
     }
 
+    // 网页播放页（/share/<id>、/play/<id>、*.html）：真实 m3u8 明文写在页面里，
+    // 必须先取出直链，否则 ffmpeg 会把 HTML 当媒体解封装并报「暂不支持该格式」。
+    const headers = this.headersWith(source);
+    const resolved = isPlayPageUrl(absolute)
+      ? await resolvePlayPage(absolute, { headers, signal: params.signal })
+      : absolute;
+
     return {
-      url: absolute,
-      format: normalizeFormat(absolute, line.format),
-      headers: this.headersWith(source),
+      url: resolved,
+      format: normalizeFormat(resolved, line.format),
+      headers,
       subtitles: [],
       lineId: line.id,
       quality: line.quality,
