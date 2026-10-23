@@ -18,6 +18,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(CastSharePlugin.class);
+        registerPlugin(SpiderPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
