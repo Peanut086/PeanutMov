@@ -22,6 +22,8 @@ const TYPE_LABELS: Record<SourceType | 'unknown', string> = {
   webdav: 'WebDAV',
   jellyfin: 'Jellyfin',
   site: '站点',
+  spider: '爬虫',
+  douban: '豆瓣',
   unknown: '未知',
 };
 

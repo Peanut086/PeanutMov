@@ -41,6 +41,8 @@ const TYPE_LABELS: Record<SourceType, string> = {
   webdav: 'WebDAV',
   jellyfin: 'Jellyfin',
   site: '站点',
+  spider: '爬虫',
+  douban: '豆瓣',
 };
 
 const typeLabel = computed(() => TYPE_LABELS[props.source.type]);

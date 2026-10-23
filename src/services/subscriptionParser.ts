@@ -40,6 +40,10 @@ export interface SubscriptionParser {
 
 const SENSITIVE_WORDS = /破解|vip|付费|会员|盗版/i;
 const WARNING_TEXT = '该源名称包含敏感词，请确认内容来源合法';
+const JS_SPIDER_WARNING = '该源是 JS 爬虫（drpy），当前版本仅支持 jar 爬虫，导入后无法浏览';
+
+/** TVBox 爬虫标识：`csp_XBPQ` / `py_cctv_full` */
+const SPIDER_CLASS_PATTERN = /^(?:csp|py)_[A-Za-z0-9_]+$/i;
 
 const TYPE_MAP: Record<string, SourceType> = {
   alist: 'alist',
@@ -53,7 +57,59 @@ const TYPE_MAP: Record<string, SourceType> = {
   '1': 'site',
   // TVBox 里 2 也常指 CMS 站点；api 仍需是 http(s) 地址，非 URL 的条目会在下面按 URL_INVALID 跳过
   '2': 'site',
+  spider: 'spider',
 };
+
+/** 爬虫源的 ext 结构（`Source.ext` 里保存） */
+export interface SpiderExtRecord {
+  kind: 'jar' | 'js' | 'douban';
+  /** jar 爬虫的类名（`csp_XBPQ`）；JS/豆瓣爬虫为 null */
+  api: string | null;
+  /** jar 地址（含 `;md5;` 后缀时原样保留，由原生侧解析校验） */
+  jarUrl: string | null;
+  /** 传给 `Spider.init(context, ext)` 的原始 ext（对象已序列化） */
+  initExt: string;
+}
+
+function isSpiderApi(api: string): boolean {
+  return SPIDER_CLASS_PATTERN.test(api);
+}
+
+function isJsSpiderApi(api: string): boolean {
+  return /^https?:\/\//i.test(api) && /\.m?js(?:[?#]|$)/i.test(api);
+}
+
+/** 豆瓣源特征：drpy 规则且规则名/内容指向豆瓣 API */
+const DOUBAN_HOST_PATTERN = /douban/i;
+
+/**
+ * 判断 drpy 源是否为豆瓣类。
+ * 判定依据是 `ext`（drpy 规则地址）或规则文件名含 douban——
+ * 这类规则的 `host` 是 `frodo.douban.com`，只有元数据没有播放地址，
+ * 因此用 TS 原生客户端实现（`DoubanAdapter`），播放跨源借 CMS。
+ */
+function isDoubanSpider(api: string, ext: unknown): boolean {
+  if (!isJsSpiderApi(api)) return false;
+  if (typeof ext !== 'string') return false;
+  const trimmed = ext.trim();
+  if (trimmed.length === 0) return false;
+  // 只认 http(s) 的规则地址；`key:value` 纯文本配置交给 JS 爬虫
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  return DOUBAN_HOST_PATTERN.test(trimmed);
+}
+
+/** 把 `raw.ext` 统一成传给爬虫的字符串：对象序列化，字符串原样，其它置空 */
+function spiderInitExt(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (isRecord(value)) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
 
 function issue(
   level: ImportIssue['level'],
@@ -68,10 +124,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function parseExt(value: unknown): { ext: Record<string, unknown> | null; warning: string | null } {
+/**
+ * 解析 `ext`。
+ * `isSpider` 为 true 时不判非法 JSON：TVBox 爬虫的 ext 常是 `key:value` 纯文本
+ * （如 `分类url:...,分类:...`），原样交给爬虫解析，因此不产生 warning。
+ */
+function parseExt(
+  value: unknown,
+  isSpider = false,
+): { ext: Record<string, unknown> | null; warning: string | null } {
   if (value === null || value === undefined || value === '') return { ext: null, warning: null };
   if (isRecord(value)) return { ext: value, warning: null };
   if (typeof value === 'string') {
+    if (isSpider) return { ext: null, warning: null };
     try {
       const parsed: unknown = JSON.parse(value);
       if (isRecord(parsed)) return { ext: parsed, warning: null };
@@ -104,11 +169,22 @@ function flagToBool(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
+/** 去掉 `;md5;xxx` 后缀，得到纯 URL */
+function jarHttpUrl(raw: string): string {
+  return raw.split(';md5;')[0]!.trim();
+}
+
 /**
  * 解析单条 `sites[]` / `sources[]` 条目。
  * index 用于 message 中的"第 N 条"。
+ * `globalJar` 为订阅顶层 `spider` 字段，条目自身缺 `jar` 时作为默认值。
  */
-function parseEntry(raw: unknown, index: number, seenKeys: Set<string>): ImportPreviewEntry {
+function parseEntry(
+  raw: unknown,
+  index: number,
+  seenKeys: Set<string>,
+  globalJar: string | null = null,
+): ImportPreviewEntry {
   const issues: ImportIssue[] = [];
   const ordinal = `第 ${index + 1} 条`;
 
@@ -132,7 +208,23 @@ function parseEntry(raw: unknown, index: number, seenKeys: Set<string>): ImportP
   const rawKey = typeof raw['key'] === 'string' ? raw['key'].trim() : '';
   const rawName = typeof raw['name'] === 'string' ? raw['name'].trim() : '';
   const rawApi = typeof raw['api'] === 'string' ? raw['api'].trim() : '';
-  const type = mapType(raw['type']);
+  let type = mapType(raw['type']);
+
+  // TVBox 爬虫：`api` 是爬虫类名（csp_XBPQ）或 drpy 脚本地址，不是站点 URL。
+  // 三者都在 `type: 3` 下出现，按 api 形态改判：
+  //   csp_/py_ 类名          → spider（jar 引擎）
+  //   豆瓣类 drpy 规则        → douban（TS 原生实现，播放跨源借 CMS）
+  //   其它 .js 脚本           → spider（kind: 'js'，当前版本不执行）
+  const spiderKind: 'jar' | 'js' | 'douban' | null = isSpiderApi(rawApi)
+    ? 'jar'
+    : isDoubanSpider(rawApi, raw['ext'])
+      ? 'douban'
+      : isJsSpiderApi(rawApi)
+        ? 'js'
+        : null;
+  if (spiderKind !== null && (type === 'alist' || type === 'site' || type === null)) {
+    type = spiderKind === 'douban' ? 'douban' : 'spider';
+  }
 
   if (rawKey.length === 0) issues.push(issue('error', 'MISSING_FIELD', 'key', `${ordinal}缺少 key 字段`));
   if (rawName.length === 0) issues.push(issue('error', 'MISSING_FIELD', 'name', `${ordinal}缺少 name 字段`));
@@ -142,13 +234,27 @@ function parseEntry(raw: unknown, index: number, seenKeys: Set<string>): ImportP
       issue('error', 'TYPE_UNKNOWN', 'type', `${ordinal}源类型不支持（${String(raw['type'] ?? '未填写')}）`),
     );
   }
-  if (rawApi.length > 0 && !isValidHttpUrl(rawApi)) {
+  // 爬虫源的 api 是类名/脚本地址，只有非爬虫源才要求 http(s) 站点地址
+  if (spiderKind === null && rawApi.length > 0 && !isValidHttpUrl(rawApi)) {
     issues.push(issue('error', 'URL_INVALID', 'api', `${ordinal}地址不合法（需 http/https）`));
   }
   if (rawName.length > SOURCE_NAME_MAX_LENGTH) {
     issues.push(
       issue('error', 'MISSING_FIELD', 'name', `${ordinal}名称超过 ${SOURCE_NAME_MAX_LENGTH} 字`),
     );
+  }
+
+  // jar 爬虫必须有可下载的 jar：条目自带 `jar` 优先（含显式空串覆盖），
+  // 否则回落到订阅顶层 `spider`
+  const rawJar = typeof raw['jar'] === 'string' ? raw['jar'].trim() : null;
+  const jarUrl = spiderKind === 'jar' ? (rawJar !== null && rawJar.length > 0 ? rawJar : globalJar) : null;
+  if (spiderKind === 'jar' && jarUrl === null) {
+    issues.push(
+      issue('error', 'MISSING_FIELD', 'jar', `${ordinal}缺少 jar 地址（订阅未提供顶层 spider）`),
+    );
+  }
+  if (jarUrl !== null && !isValidHttpUrl(jarHttpUrl(jarUrl))) {
+    issues.push(issue('error', 'URL_INVALID', 'jar', `${ordinal}jar 地址不合法（需 http/https）`));
   }
 
   let duplicateKey = false;
@@ -161,11 +267,34 @@ function parseEntry(raw: unknown, index: number, seenKeys: Set<string>): ImportP
     }
   }
 
-  const extResult = parseExt(raw['ext']);
-  const warning = extResult.warning ?? (SENSITIVE_WORDS.test(`${rawName} ${rawKey}`) ? WARNING_TEXT : null);
+  const extResult = parseExt(raw['ext'], spiderKind !== null);
+  const warning =
+    extResult.warning ??
+    (SENSITIVE_WORDS.test(`${rawName} ${rawKey}`)
+      ? WARNING_TEXT
+      : spiderKind === 'js'
+        ? JS_SPIDER_WARNING
+        : null);
 
-  const baseUrl = rawApi.length > 0 && isValidHttpUrl(rawApi) ? normalizeBaseUrl(rawApi) : rawApi;
+  const baseUrl =
+    spiderKind === null
+      ? rawApi.length > 0 && isValidHttpUrl(rawApi)
+        ? normalizeBaseUrl(rawApi)
+        : rawApi
+      : // 爬虫源没有站点根地址：jar 爬虫用 jar 地址占位（原生侧据此定位/校验 jar），
+        // JS 爬虫用脚本地址；豆瓣源用规则地址
+        normalizeBaseUrl(spiderKind === 'jar' ? jarHttpUrl(jarUrl ?? '') : rawApi);
   const searchable = flagToBool(raw['searchable'] ?? raw['search'], true);
+
+  const spiderExt: SpiderExtRecord | null =
+    spiderKind === null
+      ? null
+      : {
+          kind: spiderKind,
+          api: spiderKind === 'jar' ? rawApi : null,
+          jarUrl: spiderKind === 'jar' ? jarUrl : null,
+          initExt: spiderInitExt(raw['ext']),
+        };
 
   const valid = issues.every((i) => i.level !== 'error') && !duplicateKey;
   const normalized: SourceInput | null =
@@ -179,7 +308,12 @@ function parseEntry(raw: unknown, index: number, seenKeys: Set<string>): ImportP
           auth: null,
           headers: parseHeaders(raw['headers']),
           // ext 解析失败时保持 null（技术方案 7.7）；成功时把 searchable 合入 ext 供适配器读取
-          ext: extResult.ext === null ? null : { ...extResult.ext, searchable },
+          ext:
+            spiderExt !== null
+              ? { ...spiderExt, searchable }
+              : extResult.ext === null
+                ? null
+                : { ...extResult.ext, searchable },
           enabled: true,
         }
       : null;
@@ -331,7 +465,11 @@ export const subscriptionParser: SubscriptionParser = {
     }
 
     const seenKeys = new Set<string>();
-    const entries = rawList.map((raw, index) => parseEntry(raw, index, seenKeys));
+    // TVBox 顶层 `spider`：全局爬虫 jar，条目未自带 `jar` 时作为默认值
+    const globalSpider = typeof payload['spider'] === 'string' ? payload['spider'].trim() : null;
+    const entries = rawList.map((raw, index) =>
+      parseEntry(raw, index, seenKeys, globalSpider !== null && globalSpider.length > 0 ? globalSpider : null),
+    );
     const globalIssues: ImportIssue[] = [];
     if (relaxed !== 'none') {
       const detail = {

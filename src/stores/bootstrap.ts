@@ -16,6 +16,7 @@ import { settingsService } from '@/services/settingsService';
 import { seedService } from '@/services/seedService';
 import { downloadService } from '@/services/downloadService';
 import { appEvents } from '@/services/events';
+import { configureDoubanRuntime } from '@/sources/douban/doubanRuntime';
 import { useUiStore } from '@/stores/uiStore';
 import { toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
@@ -66,6 +67,20 @@ export async function initDownloads(): Promise<void> {
 /** 恢复演示源（重新启用并补齐条目，不重复插入）；供源管理页「恢复演示源」使用 */
 export function restoreDemoSource(): Promise<Source> {
   return seedService.restoreDemo();
+}
+
+/**
+ * 豆瓣源跨源播放装配（幂等）。
+ *
+ * 豆瓣只有片单，播放地址要向 CMS 源借用；装配后 registry 里的
+ * `DoubanAdapter` 才能解析出真实播放地址。幂等，可重复调用。
+ */
+export function initDoubanRuntime(): void {
+  try {
+    configureDoubanRuntime();
+  } catch (e) {
+    logger.error('豆瓣跨源播放装配失败（不阻塞启动）', toAppError(e, 'E_UNKNOWN'));
+  }
 }
 
 let unbindToasts: (() => void) | null = null;

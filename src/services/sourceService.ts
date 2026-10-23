@@ -45,7 +45,15 @@ export interface TestConnectionInput {
   ext?: Record<string, unknown> | null;
 }
 
-const SUPPORTED_TYPES: readonly SourceType[] = ['demo', 'alist', 'webdav', 'jellyfin', 'site'];
+const SUPPORTED_TYPES: readonly SourceType[] = [
+  'demo',
+  'alist',
+  'webdav',
+  'jellyfin',
+  'site',
+  'spider',
+  'douban',
+];
 
 function normalizeAuth(input: Partial<SourceAuth> | null | undefined): SourceAuth {
   const mode = input?.mode ?? (input?.token ? 'token' : input?.username ? 'basic' : 'none');

@@ -4,8 +4,10 @@
 import { AppError } from '@/shared/errors';
 import { AlistAdapter } from '@/sources/alist/AlistAdapter';
 import { DemoAdapter } from '@/sources/demo/DemoAdapter';
+import { DoubanAdapter } from '@/sources/douban/DoubanAdapter';
 import { JellyfinAdapter } from '@/sources/jellyfin/JellyfinAdapter';
 import { SiteAdapter } from '@/sources/site/SiteAdapter';
+import { SpiderAdapter } from '@/sources/spider/SpiderAdapter';
 import { WebDavAdapter } from '@/sources/webdav/WebDavAdapter';
 import type { Source, SourceAdapter, SourceType } from '@/types';
 
@@ -58,6 +60,8 @@ sourceRegistry.register(new AlistAdapter());
 sourceRegistry.register(new WebDavAdapter());
 sourceRegistry.register(new JellyfinAdapter());
 sourceRegistry.register(new SiteAdapter());
+sourceRegistry.register(new SpiderAdapter());
+sourceRegistry.register(new DoubanAdapter());
 
 /** 测试辅助：重新注册内置适配器（不改变顺序） */
 export function resetRegistryToDefaults(): void {
@@ -66,4 +70,6 @@ export function resetRegistryToDefaults(): void {
   sourceRegistry.register(new WebDavAdapter());
   sourceRegistry.register(new JellyfinAdapter());
   sourceRegistry.register(new SiteAdapter());
+  sourceRegistry.register(new SpiderAdapter());
+  sourceRegistry.register(new DoubanAdapter());
 }

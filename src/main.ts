@@ -3,7 +3,7 @@ import { createPinia } from 'pinia';
 
 import App from '@/App.vue';
 import router, { setComplianceGate } from '@/router';
-import { bindAppToasts, complianceGate, ensureDemoData, initDownloads, initSettings } from '@/stores/bootstrap';
+import { bindAppToasts, complianceGate, ensureDemoData, initDoubanRuntime, initDownloads, initSettings } from '@/stores/bootstrap';
 
 import '@/styles/global.css';
 import '@/styles/player.css';
@@ -39,6 +39,9 @@ async function bootstrap(): Promise<void> {
 
   // 下载队列 + 前后台生命周期（AC-72 / REV-22）：切后台暂停、回前台按设置自动恢复
   await initDownloads();
+
+  // 豆瓣源跨源播放：让「仅片单」的豆瓣源能借 CMS 源的播放地址
+  initDoubanRuntime();
 
   app.use(router);
   await router.isReady();
