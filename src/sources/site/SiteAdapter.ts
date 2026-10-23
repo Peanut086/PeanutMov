@@ -5,45 +5,29 @@
  * 播放地址按 `线路$集数` 解析规则处理，不做解析接口的递归解包。
  */
 import { AppError } from '@/shared/errors';
-import { episodeIdOf, lineIdOf, mediaIdOf } from '@/shared/id';
+import { mediaIdOf } from '@/shared/id';
 import { joinUrl, toAbsoluteUrl, withQuery } from '@/shared/url';
 import { BaseAdapter, type ProbeResult } from '@/sources/base/BaseAdapter';
 import { crawl } from '@/sources/pipeline/scheduler';
 import { UNSUPPORTED_FORMAT_MESSAGE as UNSUPPORTED_FORMAT_MESSAGE_PIPELINE } from '@/sources/pipeline/messages';
+import { inferMediaType, normalizeFormat, parseCategoryValue } from '@/sources/base/normalize';
+import { looksLikeResolverUrl, type SiteExt, type TvboxListResponse, type TvboxVod } from '@/sources/site/tvboxTypes';
 import {
-  categoryIdFor,
-  fallbackPoster,
-  inferMediaType,
-  normalizeDurationSec,
-  normalizeEpisodeCount,
-  normalizeFormat,
-  normalizeRating,
-  normalizeStringList,
-  normalizeTitle,
-  normalizeYear,
-  parseCategoryValue,
-  stripHtml,
-} from '@/sources/base/normalize';
-import {
-  episodeTitleOf,
-  looksLikeResolverUrl,
-  parsePlayFromField,
-  parsePlayUrlField,
-  type SiteExt,
-  type TvboxListResponse,
-  type TvboxVod,
-} from '@/sources/site/tvboxTypes';
+  buildLinesWithRaw,
+  categoriesOf,
+  toItemFromVod,
+  toNumberOrNull,
+  vodIdOf,
+} from '@/sources/site/tvboxNormalize';
 import { isPlayPageUrl, resolvePlayPage } from '@/sources/site/playPageResolver';
 import type {
   BrowseParams,
   Category,
-  Episode,
   GetDetailParams,
   MediaDetail,
   MediaItem,
   PageResult,
   PlaybackSource,
-  PlayLine,
   ResolvePlayParams,
   SearchParams,
   Source,
@@ -60,22 +44,6 @@ const UNSUPPORTED_FORMAT_MESSAGE = UNSUPPORTED_FORMAT_MESSAGE_PIPELINE;
 /** 占位符替换：`{type}` / `{page}` / `{kw}` / `{id}` */
 function fillTemplate(template: string, values: Record<string, string | number>): string {
   return template.replace(/\{(type|page|kw|id)\}/g, (_, key: string) => String(values[key] ?? ''));
-}
-
-function toNumberOrNull(value: unknown): number | null {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim().length > 0) {
-    const num = Number.parseInt(value, 10);
-    return Number.isFinite(num) ? num : null;
-  }
-  return null;
-}
-
-function vodIdOf(vod: TvboxVod): string {
-  const raw = vod.vod_id;
-  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
-  if (typeof raw === 'string' && raw.trim().length > 0) return raw.trim();
-  return normalizeTitle(vod.vod_name) || 'unknown';
 }
 
 export class SiteAdapter extends BaseAdapter {
@@ -264,96 +232,15 @@ export class SiteAdapter extends BaseAdapter {
   /* ---------------- 内部 ---------------- */
 
   private categoriesOf(source: Source, response: TvboxListResponse): Category[] {
-    const classes = response.class ?? [];
-    return classes
-      .map((entry, index) => {
-        const value = entry.type_id ?? entry.id ?? null;
-        const name = normalizeTitle(entry.type_name ?? entry.name ?? '');
-        if (value === null || name.length === 0) return null;
-        return {
-          id: categoryIdFor(source.id, String(value)),
-          sourceId: source.id,
-          name,
-          value: String(value),
-          order: index,
-        };
-      })
-      .filter((entry): entry is Category => entry !== null);
+    return categoriesOf(source, response.class);
   }
 
   /** 同时产出 PlayLine / Episode / 原始地址（resolvePlayUrl 复用） */
-  private buildLinesWithRaw(
-    source: Source,
-    vod: TvboxVod,
-    mediaId: string,
-  ): {
-    lines: PlayLine[];
-    episodes: Episode[];
-    rawEpisodes: Array<Array<{ id: string; url: string; title: string; number: number }>>;
-  } {
-    const fromNames = parsePlayFromField(vod.vod_play_from);
-    const parsed = parsePlayUrlField(vod.vod_play_url, fromNames.length);
-    const now = Date.now();
-
-    const lines: PlayLine[] = [];
-    const episodes: Episode[] = [];
-    const rawEpisodes: Array<Array<{ id: string; url: string; title: string; number: number }>> = [];
-
-    parsed.forEach((segment, index) => {
-      if (segment.episodes.length === 0) return;
-      const lineId = lineIdOf(mediaId, index);
-      const lineName = fromNames[index] ?? `线路 ${index + 1}`;
-      const firstUrl = segment.episodes[0]?.url ?? '';
-      lines.push({
-        id: lineId,
-        mediaId,
-        sourceId: source.id,
-        name: lineName,
-        quality: null,
-        format: normalizeFormat(firstUrl, 'mp4'),
-        index,
-      });
-      const rawList: Array<{ id: string; url: string; title: string; number: number }> = [];
-      segment.episodes.forEach((entry, epIndex) => {
-        const number = epIndex + 1;
-        const title = episodeTitleOf(entry.name, epIndex);
-        const id = episodeIdOf(mediaId, lineId, number);
-        rawList.push({ id, url: entry.url, title, number });
-        episodes.push({
-          id,
-          mediaId,
-          sourceId: source.id,
-          lineId,
-          number,
-          title,
-          durationSec: null,
-          subtitles: [],
-          updatedAt: now,
-        });
-      });
-      rawEpisodes[index] = rawList;
-    });
-
-    return { lines, episodes, rawEpisodes };
+  private buildLinesWithRaw(source: Source, vod: TvboxVod, mediaId: string) {
+    return buildLinesWithRaw(source, vod, mediaId);
   }
 
   private toItem(source: Source, vod: TvboxVod): MediaItem {
-    const title = normalizeTitle(vod.vod_name);
-    const episodeCount = normalizeEpisodeCount(vod.vod_remarks);
-    return this.makeItem(source, {
-      sourceItemId: vodIdOf(vod),
-      title: title || '未命名',
-      type: inferMediaType(vod.type_name, vod.vod_name),
-      year: normalizeYear(vod.vod_year),
-      area: vod.vod_area ? normalizeTitle(vod.vod_area) : null,
-      genres: normalizeStringList(vod.type_name),
-      tags: normalizeStringList(vod.vod_remarks).slice(0, 3),
-      rating: normalizeRating(vod.vod_score),
-      posterUrl: toAbsoluteUrl(source.baseUrl, vod.vod_pic) ?? fallbackPoster(title),
-      description: stripHtml(vod.vod_content),
-      durationSec: normalizeDurationSec(vod.vod_remarks),
-      episodeCount,
-      now: Date.now(),
-    });
+    return toItemFromVod(source, vod, (input) => this.makeItem(source, input));
   }
 }

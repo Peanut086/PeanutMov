@@ -44,7 +44,7 @@ export interface AppErrorShape {
 }
 
 /* ---------- 源 ---------- */
-export type SourceType = 'demo' | 'alist' | 'webdav' | 'jellyfin' | 'site';
+export type SourceType = 'demo' | 'alist' | 'webdav' | 'jellyfin' | 'site' | 'spider' | 'douban';
 
 export type SourceHealth =
   | 'ok'
