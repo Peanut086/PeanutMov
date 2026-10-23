@@ -29,7 +29,8 @@ import {
 import { AppError, toAppError } from '@/shared/errors';
 import { newId, nextKey } from '@/shared/id';
 import { isValidHttpUrl } from '@/shared/url';
-import { httpClient } from '@/sources/base/httpClient';
+import { crawl } from '@/sources/pipeline/scheduler';
+import type { SubscriptionText } from '@/sources/pipeline/parsers';
 import { kvRepo } from '@/db/repositories/kvRepo';
 import type {
   ImportCommitOptions,
@@ -93,31 +94,31 @@ async function previewFromRaw(
   return annotateDuplicates(preview);
 }
 
-/** 拉取订阅文本（10s 超时 / 2MB 上限），URL 预览与多仓展开共用 */
+/**
+ * 拉取订阅文本（10s 超时 / 2MB 上限），URL 预览与多仓展开共用。
+ *
+ * 走爬虫管道：指纹 + 规则决定"这是 JSON / 纯文本 URL 列表 / 图片伪装"，
+ * 并按 BOM → header → 探测解码字符集（GBK 站点不再乱码）。
+ * 失败时抛出带用户文案的 `AppError`（文案由规则里的解析器决定）。
+ */
 async function fetchSubscriptionText(url: string, signal?: AbortSignal): Promise<string> {
   const trimmed = url.trim();
   if (!isValidHttpUrl(trimmed)) {
     throw new AppError('E_INVALID_INPUT', '订阅地址必须是 http(s):// 开头的合法地址');
   }
-  const response = await httpClient.requestWithMeta<string>(trimmed, {
-    method: 'GET',
-    responseType: 'text',
-    timeoutMs: TIMEOUT_SUBSCRIPTION_FETCH_MS,
-    retries: 0,
+
+  const result = await crawl<SubscriptionText>({
+    intent: 'subscription',
+    url: trimmed,
     signal,
+    budgetMs: TIMEOUT_SUBSCRIPTION_FETCH_MS,
     headers: { Accept: 'application/json, text/plain, */*' },
+    maxBytes: MAX_SUBSCRIPTION_BYTES,
   });
 
-  const lengthHeader = response.headers.get('content-length');
-  if (lengthHeader) {
-    const declared = Number.parseInt(lengthHeader, 10);
-    if (Number.isFinite(declared) && declared > MAX_SUBSCRIPTION_BYTES) {
-      throw new AppError('E_INVALID_INPUT', '订阅内容过大（上限 2MB）');
-    }
-  }
+  const text = result.value.text;
 
-  const text = response.data ?? '';
-  // 用 UTF-8 字节长度判断（中文按 3 字节）
+  // 兜底：管道按字节校验过，这里再按 UTF-8 编码长度确认一次（中文按 3 字节）
   const bytes = new TextEncoder().encode(text).byteLength;
   if (bytes > MAX_SUBSCRIPTION_BYTES) {
     throw new AppError('E_INVALID_INPUT', '订阅内容过大（上限 2MB）');

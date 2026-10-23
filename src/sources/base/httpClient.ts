@@ -21,6 +21,16 @@ export interface HttpRequestOptions {
   signal?: AbortSignal;
   /** 期望的响应体类型，默认 json */
   responseType?: 'json' | 'text' | 'blob' | 'arrayBuffer' | 'none';
+  /**
+   * 默认 true。false 时非 2xx 不抛错，由调用方按 `status` 决策（爬虫管道用）。
+   * 默认值保持既有行为，不影响任何现有调用点。
+   */
+  throwOnHttpError?: boolean;
+  /**
+   * 默认 'follow'。'error' 时遇到 3xx 抛错，供调用方识别重定向。
+   * 不提供 'manual'：跨域下只会拿到 opaqueredirect，读不到 body。
+   */
+  redirect?: RequestRedirect;
 }
 
 export const DEFAULT_HTTP_TIMEOUT_MS = 10_000;
@@ -148,7 +158,7 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
 
 /** 单次 fetch（带超时与外部取消） */
 async function fetchOnce(url: string, options: HttpRequestOptions): Promise<Response> {
-  const { method = 'GET', headers = {}, body = null, signal } = options;
+  const { method = 'GET', headers = {}, body = null, signal, redirect = 'follow', throwOnHttpError = true } = options;
   const timeoutMs = effectiveTimeoutMs(url, options);
 
   if (signal?.aborted) throw abortError();
@@ -168,10 +178,11 @@ async function fetchOnce(url: string, options: HttpRequestOptions): Promise<Resp
       headers,
       body: body ?? undefined,
       signal: controller.signal,
+      redirect,
       // 直链播放/下载与 XML 请求都不希望被浏览器缓存策略干扰
       cache: 'no-store',
     });
-    if (!response.ok) throw mapStatusError(response.status, response.statusText);
+    if (throwOnHttpError && !response.ok) throw mapStatusError(response.status, response.statusText);
     return response;
   } catch (e) {
     throw mapFetchError(e, timeoutMs, timedOut);

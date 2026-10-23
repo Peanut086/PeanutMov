@@ -15,13 +15,16 @@
  * `DEMUXER_ERROR_COULD_NOT_OPEN`，被误映射成「暂不支持该格式」。
  *
  * 边界：只做"从页面文本里取地址"，不执行页面 JS、不解密、不递归解析 `?url=` 包装。
+ *
+ * 提取逻辑已移到 `src/sources/pipeline/mediaExtract.ts`（避免模块环），
+ * 这里保留同名导出，外部调用点无需改动。
  */
-import { AppError } from '@/shared/errors';
-import { toAbsoluteUrl } from '@/shared/url';
-import { httpClient } from '@/sources/base/httpClient';
+import { crawl } from '@/sources/pipeline/scheduler';
+import { extractMediaFromPage, extractPlayUrlFromPage } from '@/sources/pipeline/mediaExtract';
+import { PLAY_PAGE_NOT_FOUND_MESSAGE } from '@/sources/pipeline/messages';
 
-/** 页面里没找到可播地址时的用户文案 */
-export const PLAY_PAGE_NOT_FOUND_MESSAGE = '该源返回的是网页播放页，未找到可播放地址';
+export { extractMediaFromPage, extractPlayUrlFromPage, PLAY_PAGE_NOT_FOUND_MESSAGE };
+export type { MediaCandidate } from '@/sources/pipeline/mediaExtract';
 
 /** 媒体后缀（命中即认为已是直链，不再当播放页） */
 const MEDIA_EXTENSION = /\.(m3u8|mp4|m4v|mov|webm|ts|mkv|flv)$/i;
@@ -31,12 +34,6 @@ const PLAY_PAGE_PATH = /\/(share|play|vodplay|player)\//i;
 
 /** 页面级扩展名 */
 const PAGE_EXTENSION = /\.(html?|shtml|php)$/i;
-
-/** 绝对媒体地址（协议相对也接受），排除引号/空白/反斜杠干扰 */
-const ABSOLUTE_MEDIA = /(?:https?:)?\/\/[^\s"'<>()\\]+?\.(m3u8|mp4|m4v|mov|webm)(?:\?[^\s"'<>()\\]*)?/gi;
-
-/** 引号包裹的相对媒体地址 */
-const QUOTED_MEDIA = /["']([^"'\s<>]*?\.(m3u8|mp4|m4v|mov|webm)(?:\?[^"'\s<>]*)?)["']/gi;
 
 /**
  * 是否为"网页播放页"（需要先取页面再取直链）。
@@ -58,75 +55,6 @@ export function isPlayPageUrl(url: string | null | undefined): boolean {
   return PLAY_PAGE_PATH.test(pathname) || PAGE_EXTENSION.test(pathname);
 }
 
-/** 页面文本里的转义还原（`\/`、`\u002F`、`&amp;`） */
-function unescapePageText(html: string): string {
-  return html
-    .replace(/\\u002[fF]/g, '/')
-    .replace(/\\\//g, '/')
-    .replace(/&amp;/gi, '&');
-}
-
-interface MediaCandidate {
-  url: string;
-  /** 优先级：m3u8 最高（同一页面常同时给出封面 mp4 预览） */
-  rank: number;
-}
-
-function rankOf(ext: string): number {
-  switch (ext.toLowerCase()) {
-    case 'm3u8':
-      return 0;
-    case 'mp4':
-    case 'm4v':
-    case 'mov':
-      return 1;
-    default:
-      return 2;
-  }
-}
-
-/**
- * 从页面文本提取媒体地址（已转绝对、去重、按优先级排序）。
- * 纯函数，不发请求。
- */
-export function extractMediaFromPage(
-  html: string | null | undefined,
-  pageUrl: string,
-): MediaCandidate[] {
-  if (typeof html !== 'string' || html.length === 0) return [];
-  const text = unescapePageText(html);
-  const out: MediaCandidate[] = [];
-  const seen = new Set<string>();
-
-  const push = (raw: string, ext: string): void => {
-    const absolute = toAbsoluteUrl(pageUrl, raw);
-    if (!absolute || seen.has(absolute)) return;
-    // 页面自身的地址不是媒体，防御性排除
-    if (absolute === pageUrl) return;
-    seen.add(absolute);
-    out.push({ url: absolute, rank: rankOf(ext) });
-  };
-
-  for (const match of text.matchAll(ABSOLUTE_MEDIA)) {
-    push(match[0], match[1] ?? '');
-  }
-  for (const match of text.matchAll(QUOTED_MEDIA)) {
-    const raw = match[1];
-    if (!raw) continue;
-    push(raw, match[2] ?? '');
-  }
-
-  return out.sort((a, b) => a.rank - b.rank);
-}
-
-/** 从页面文本取首选播放地址；取不到返回 `null`（纯函数） */
-export function extractPlayUrlFromPage(
-  html: string | null | undefined,
-  pageUrl: string,
-): string | null {
-  return extractMediaFromPage(html, pageUrl)[0]?.url ?? null;
-}
-
 export interface ResolvePlayPageOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
@@ -137,28 +65,19 @@ export interface ResolvePlayPageOptions {
  *
  * - 页面本身就是清单（首行 `#EXTM3U`）→ 原样返回该地址；
  * - 解析不到 → `E_NO_PLAY_URL`（不是"格式不支持"，避免误导用户）；
- * - 网络类失败由 `httpClient` 原样抛出，交由上层判定源健康度。
+ * - 网络类失败由管道原样抛出，交由上层判定源健康度。
+ *
+ * 解析逻辑由管道解析器 `html.media` 承担（复用同一份 `extractMediaFromPage`）。
  */
 export async function resolvePlayPage(
   pageUrl: string,
   options: ResolvePlayPageOptions = {},
 ): Promise<string> {
-  const text = await httpClient.request<string>(pageUrl, {
-    method: 'GET',
-    headers: options.headers && Object.keys(options.headers).length > 0 ? options.headers : undefined,
+  const result = await crawl<string>({
+    intent: 'playpage',
+    url: pageUrl,
+    headers: options.headers,
     signal: options.signal,
-    responseType: 'text',
   });
-
-  if (text.trimStart().startsWith('#EXTM3U')) return pageUrl;
-
-  const found = extractPlayUrlFromPage(text, pageUrl);
-  if (!found) {
-    const snippet = text.trim().replace(/\s+/g, ' ').slice(0, 80);
-    throw new AppError('E_NO_PLAY_URL', PLAY_PAGE_NOT_FOUND_MESSAGE, {
-      detail: `页面内未匹配到 m3u8/mp4 地址（前 80 字符：${snippet}）`,
-      retryable: false,
-    });
-  }
-  return found;
+  return result.value;
 }
