@@ -18,7 +18,7 @@
  * `skipped` 不包含"合法但用户未勾选"的条目——那是用户主动排除，不是跳过。
  */
 import { withTx } from '@/db/index';
-import { sourceRepo } from '@/db/repositories/sourceRepo';
+import { sourceRepo, toStorableSource } from '@/db/repositories/sourceRepo';
 import { appEvents } from '@/services/events';
 import { subscriptionParser } from '@/services/subscriptionParser';
 import {
@@ -311,7 +311,9 @@ export const importService: ImportService = {
     try {
       await withTx(['sources', 'media', 'lines', 'episodes', 'categories'], 'readwrite', async (tx) => {
         const sourceStore = tx.objectStore('sources');
-        for (const source of toWrite) await sourceStore.put(source);
+        // 预览对象来自 Vue 响应式状态，ext/headers 可能是 Proxy，
+        // 结构化克隆会抛 DataCloneError，写入前必须还原成纯值
+        for (const source of toWrite) await sourceStore.put(toStorableSource(source));
         for (const sourceId of overwrittenIds) {
           // overwrite：清空该源缓存（FR-04）
           const mediaKeys = await tx

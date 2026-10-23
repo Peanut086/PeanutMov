@@ -7,6 +7,18 @@ import type { Source } from '@/types';
 
 type SourceStore = CinemaDB['sources'];
 
+/**
+ * 写入前把 `Source` 还原成纯 JSON 值。
+ *
+ * `Source.ext` / `headers` 常来自订阅预览，而预览存在 Vue 的 `ref` 里，
+ * 深层字段会被包成响应式 Proxy；IndexedDB 的结构化克隆无法克隆 Proxy，
+ * 会抛 `DataCloneError`（表现为整批导入失败并报「本地数据读写失败」）。
+ * 用 JSON 往返去掉 Proxy，同时顺带保证存进库的只有可序列化数据。
+ */
+export function toStorableSource(source: Source): Source {
+  return JSON.parse(JSON.stringify(source)) as Source;
+}
+
 function compareSource(a: Source, b: Source): number {
   // 演示源恒排最后（FR-01 / AC-01）
   if (a.builtin !== b.builtin) return a.builtin ? 1 : -1;
@@ -53,7 +65,7 @@ export const sourceRepo = {
   /** 单条写入（新增或整体覆盖） */
   async save(source: Source): Promise<void> {
     await withTx(['sources'], 'readwrite', async (tx) => {
-      await tx.objectStore(STORE_NAMES.sources).put(source);
+      await tx.objectStore(STORE_NAMES.sources).put(toStorableSource(source));
     });
   },
 
@@ -61,7 +73,7 @@ export const sourceRepo = {
   async saveMany(sources: Source[]): Promise<void> {
     await withTx(['sources'], 'readwrite', async (tx) => {
       const store = tx.objectStore(STORE_NAMES.sources);
-      for (const source of sources) await store.put(source);
+      for (const source of sources) await store.put(toStorableSource(source));
     });
   },
 
