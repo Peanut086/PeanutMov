@@ -27,7 +27,7 @@ const emit = defineEmits<{
   <div class="next-prompt" role="dialog" aria-modal="false">
     <div class="next-prompt__card">
       <template v-if="mode === 'auto-next'">
-        <p class="next-prompt__title">
+        <p class="next-prompt__title" role="status" aria-live="polite">
           即将播放{{ nextLabel || '下一集' }}
           <span class="next-prompt__count">{{ countdown }}</span>
         </p>

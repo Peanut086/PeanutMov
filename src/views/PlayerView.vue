@@ -52,6 +52,7 @@ import { useBackButton } from '@/composables/useBackButton';
 import { usePlayerController } from '@/composables/usePlayerController';
 import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
 import { useToast } from '@/composables/useToast';
+import { useUiStore } from '@/stores/uiStore';
 import { DIM_MAX_OPACITY, QUALITY_AUTO } from '@/player/constants';
 
 const route = useRoute();
@@ -61,6 +62,7 @@ const history = useHistoryStore();
 const favorites = useFavoriteStore();
 const downloads = useDownloadStore();
 const settings = useSettingsStore();
+const ui = useUiStore();
 const toast = useToast();
 
 const mediaId = computed(() => (typeof route.params.mediaId === 'string' ? route.params.mediaId : ''));
@@ -545,11 +547,15 @@ async function onDownloadCurrent(): Promise<void> {
   downloading.value = true;
   try {
     const inputs = await library.toDownloadInputs(it.id, [ep.id]);
-    // REV-07 / AC-76：Web 端 >1GB 在下单前提示改用 App
+    // REV-07 / AC-76：Web 端 >1GB 在下单前提示改用 App；确认后仍可继续
     const largeFileHint = await downloads.checkLargeFile(inputs);
     if (largeFileHint !== null) {
-      toast.info(largeFileHint);
-      return;
+      const goOn = await ui.confirm({
+        title: '文件较大',
+        message: largeFileHint,
+        confirmText: '仍要下载',
+      });
+      if (!goOn) return;
     }
     // REV-15 / FR-30：重复下载给出明确提示，而不是静默忽略
     const { created, skipped } = await downloads.createMany(inputs);

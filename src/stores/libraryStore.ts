@@ -47,6 +47,8 @@ export const useLibraryStore = defineStore('library', () => {
   const isEmpty = computed(() => items.value.length === 0 && state.value === 'success');
 
   let requestSeq = 0;
+  /** 进行中的搜索控制器：新搜索前 abort 旧的，避免旧请求继续占用源（REV-06） */
+  let searchController: AbortController | null = null;
   const sourceStore = useSourceStore();
 
   /** 源侧故障码（17.6.2 条件 2）：只有这些错误才考虑自动换源 */
@@ -253,6 +255,8 @@ export const useLibraryStore = defineStore('library', () => {
   async function search(keyword: string): Promise<void> {
     const trimmed = keyword.trim();
     searchKeyword.value = keyword;
+    searchController?.abort();
+    searchController = null;
     if (trimmed.length === 0) {
       searchResults.value = [];
       searchFailed.value = [];
@@ -260,21 +264,28 @@ export const useLibraryStore = defineStore('library', () => {
       return;
     }
     searchState.value = 'loading';
+    const controller = new AbortController();
+    searchController = controller;
     try {
-      const result = await libraryService.search({ keyword: trimmed });
+      const result = await libraryService.search({ keyword: trimmed, signal: controller.signal });
+      if (controller.signal.aborted) return;
       searchResults.value = result.items;
       searchFailed.value = result.failed;
       searchState.value = result.items.length === 0 ? 'empty' : 'success';
     } catch (e) {
-      if (isCanceled(e)) return;
+      if (isCanceled(e) || controller.signal.aborted) return;
       searchResults.value = [];
       searchFailed.value = [];
       searchState.value = 'error';
       error.value = toErrorShape(e);
+    } finally {
+      if (searchController === controller) searchController = null;
     }
   }
 
   function clearSearch(): void {
+    searchController?.abort();
+    searchController = null;
     searchKeyword.value = '';
     searchResults.value = [];
     searchFailed.value = [];

@@ -68,4 +68,15 @@ describe('shouldIgnoreShortcut（REV-18）', () => {
     wrap.append(btn);
     expect(shouldIgnoreShortcut(btn)).toBe(false);
   });
+
+  it('焦点在 body 但页面里有打开的模态弹层 → 忽略（残项：弹层未捕获焦点）', () => {
+    const sheet = makeDialog([]);
+    document.body.append(sheet);
+    try {
+      expect(shouldIgnoreShortcut(document.body)).toBe(true);
+    } finally {
+      sheet.remove();
+    }
+    expect(shouldIgnoreShortcut(document.body)).toBe(false);
+  });
 });

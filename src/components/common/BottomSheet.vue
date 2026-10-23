@@ -4,7 +4,7 @@
  *
  * - 最大高 80vh，顶部圆角 20，elevated 底 + shadow-4
  * - 遮罩点击关闭；Esc 关闭；向下拖拽 > 96px 关闭
- * - role="dialog" aria-modal，打开时焦点移入
+ * - role="dialog" aria-modal，打开时焦点移入、Tab 循环困在弹层内，关闭后还原焦点（REV-10）
  */
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
@@ -27,6 +27,8 @@ const dragOffset = ref(0);
 let startY = 0;
 let startAt = 0;
 let dragging = false;
+/** 打开前持有焦点的元素，关闭时还原 */
+let lastFocused: HTMLElement | null = null;
 
 function close(): void {
   emit('update:modelValue', false);
@@ -36,10 +38,41 @@ function onScrim(): void {
   close();
 }
 
+function focusableIn(panel: HTMLElement): HTMLElement[] {
+  return Array.from(
+    panel.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+}
+
 function onKeydown(ev: KeyboardEvent): void {
   if (ev.key === 'Escape' && props.modelValue) {
     ev.stopPropagation();
     close();
+    return;
+  }
+  if (ev.key !== 'Tab' || !panelRef.value) return;
+  // 焦点陷阱：Tab 在弹层内循环，不落到背景内容（REV-10）
+  const panel = panelRef.value;
+  const items = focusableIn(panel);
+  const active = document.activeElement as HTMLElement | null;
+  if (items.length === 0) {
+    ev.preventDefault();
+    panel.focus();
+    return;
+  }
+  const first = items[0]!;
+  const last = items[items.length - 1]!;
+  const inside = active !== null && panel.contains(active);
+  if (ev.shiftKey) {
+    if (!inside || active === first) {
+      ev.preventDefault();
+      last.focus();
+    }
+  } else if (!inside || active === last) {
+    ev.preventDefault();
+    first.focus();
   }
 }
 
@@ -72,17 +105,22 @@ watch(
   () => props.modelValue,
   async (open) => {
     if (open) {
+      lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       document.addEventListener('keydown', onKeydown, true);
       await nextTick();
       panelRef.value?.focus();
     } else {
       document.removeEventListener('keydown', onKeydown, true);
+      lastFocused?.focus();
+      lastFocused = null;
     }
   },
 );
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown, true);
+  lastFocused?.focus();
+  lastFocused = null;
 });
 </script>
 
