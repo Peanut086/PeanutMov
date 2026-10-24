@@ -299,9 +299,12 @@ export const useLibraryStore = defineStore('library', () => {
       });
       if (seq !== requestSeq) return;
       const seen = new Set(items.value.map((item) => item.id));
-      items.value = [...items.value, ...result.items.filter((item) => !seen.has(item.id))];
+      const fresh = result.items.filter((item) => !seen.has(item.id));
+      items.value = [...items.value, ...fresh];
       page.value = nextPage;
-      hasMore.value = result.hasMore;
+      // CHG-14：去重后新增 0 条（服务端忽略 pg 重复返回/已到底）→ 强制停止，
+      // 防止无限滚动对同一页反复请求
+      hasMore.value = result.hasMore && fresh.length > 0;
       state.value = items.value.length === 0 ? 'empty' : 'success';
     } catch (e) {
       if (seq !== requestSeq) return;

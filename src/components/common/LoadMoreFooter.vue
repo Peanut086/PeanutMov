@@ -62,7 +62,10 @@ onBeforeUnmount(() => {
     >
       加载失败，点击重试
     </button>
-    <span v-else-if="hasMore" class="load-more__text">上滑加载更多</span>
+    <!-- CHG-14：哨兵在视口内不再产生新的交集回调时，点击是手动兜底 -->
+    <button v-else-if="hasMore" class="load-more__more" type="button" @click="emit('load-more')">
+      上滑加载更多
+    </button>
     <span v-else class="load-more__text">{{ noMoreText }}</span>
   </div>
 </template>
@@ -80,6 +83,13 @@ onBeforeUnmount(() => {
 .load-more__text {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+.load-more__more {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  min-height: 44px;
+  padding: 0 var(--space-3);
 }
 
 .load-more__retry {

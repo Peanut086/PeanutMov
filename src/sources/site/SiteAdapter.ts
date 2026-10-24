@@ -8,6 +8,7 @@ import { AppError } from '@/shared/errors';
 import { mediaIdOf } from '@/shared/id';
 import { joinUrl, toAbsoluteUrl, withQuery } from '@/shared/url';
 import { BaseAdapter, type ProbeResult } from '@/sources/base/BaseAdapter';
+import { deriveHasMore } from '@/sources/base/pagination';
 import { crawl } from '@/sources/pipeline/scheduler';
 import { UNSUPPORTED_FORMAT_MESSAGE as UNSUPPORTED_FORMAT_MESSAGE_PIPELINE } from '@/sources/pipeline/messages';
 import { inferMediaType, normalizeFormat, parseCategoryValue } from '@/sources/base/normalize';
@@ -72,19 +73,15 @@ export class SiteAdapter extends BaseAdapter {
       page,
       signal: params.signal,
     });
-    const rows = (response.list ?? []).filter((vod) => {
+    const allRows = response.list ?? [];
+    const rows = allRows.filter((vod) => {
       if (filters.type === null) return true;
       return inferMediaType(vod.type_name, vod.vod_name) === filters.type;
     });
     const total = toNumberOrNull(response.total);
     const pageCount = toNumberOrNull(response.pagecount);
     const items = rows.map((vod) => this.toItem(source, vod));
-    const hasMore =
-      total !== null
-        ? page * pageSize < total
-        : pageCount !== null
-          ? page < pageCount
-          : items.length >= pageSize;
+    const hasMore = deriveHasMore({ page, rawCount: allRows.length, total, pageCount });
     return { items, page, pageSize, total: total ?? (pageCount !== null ? pageCount * pageSize : null), hasMore };
   }
 

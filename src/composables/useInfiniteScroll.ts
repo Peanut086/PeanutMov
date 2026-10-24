@@ -30,15 +30,21 @@ export function useInfiniteScroll(options: InfiniteScrollOptions): {
   const sentinelRef = ref<HTMLElement | null>(null);
   const isTriggered = ref(false);
   let observer: IntersectionObserver | null = null;
+  /** 哨兵当前是否在视口内（含 rootMargin）——加载结束后补触发用（CHG-14） */
+  let sentinelVisible = false;
 
   const tryLoad = (): void => {
     if (!options.hasMore() || options.loading()) return;
     isTriggered.value = true;
-    void options.onLoadMore();
-    // 下一帧复位，允许重复触发（observer 会在滚动中再次回调）
-    setTimeout(() => {
-      isTriggered.value = false;
-    }, 400);
+    void Promise.resolve(options.onLoadMore()).finally(() => {
+      setTimeout(() => {
+        isTriggered.value = false;
+        // 加载结束后哨兵仍在视口内（大屏/短页/新增条目不足以推出视口）时，
+        // IntersectionObserver 不会产生新的状态转换回调，需主动补触发下一页。
+        // 终止条件：哨兵滚出视口 / hasMore 变 false / loading 中。
+        if (sentinelVisible && options.hasMore() && !options.loading()) tryLoad();
+      }, 400);
+    });
   };
 
   const connect = (el: HTMLElement | null): void => {
@@ -48,8 +54,8 @@ export function useInfiniteScroll(options: InfiniteScrollOptions): {
     const margin = options.rootMarginPx ?? INFINITE_SCROLL_THRESHOLD_PX;
     observer = new IntersectionObserver(
       (entries) => {
-        const hit = entries.some((e) => e.isIntersecting);
-        if (hit) tryLoad();
+        sentinelVisible = entries.some((e) => e.isIntersecting);
+        if (sentinelVisible) tryLoad();
       },
       { rootMargin: `0px 0px ${margin}px 0px`, threshold: 0 },
     );

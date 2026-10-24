@@ -22,6 +22,7 @@ import { httpClient } from '@/sources/base/httpClient';
 import { Spider as SpiderNative, type SpiderMethod, type SpiderProxyResult } from '@/native/spiderPlugin';
 import { sniffPlayUrl } from '@/native/snifferPlugin';
 import { BaseAdapter, type ProbeResult } from '@/sources/base/BaseAdapter';
+import { deriveHasMore } from '@/sources/base/pagination';
 import { inferMediaType, normalizeFormat, parseCategoryValue } from '@/sources/base/normalize';
 import { looksLikeResolverUrl, type TvboxListResponse, type TvboxVod } from '@/sources/site/tvboxTypes';
 import {
@@ -338,19 +339,15 @@ export class SpiderAdapter extends BaseAdapter {
       undefined,
       params.signal,
     );
-    const rows = (response.list ?? []).filter((vod) => {
+    const allRows = response.list ?? [];
+    const rows = allRows.filter((vod) => {
       if (filters.type === null) return true;
       return inferMediaType(vod.type_name, vod.vod_name) === filters.type;
     });
     const total = toNumberOrNull(response.total);
     const pageCount = toNumberOrNull(response.pagecount);
     const items = rows.map((vod) => this.toItem(source, vod));
-    const hasMore =
-      total !== null
-        ? page * pageSize < total
-        : pageCount !== null
-          ? page < pageCount
-          : items.length >= pageSize;
+    const hasMore = deriveHasMore({ page, rawCount: allRows.length, total, pageCount });
     return {
       items,
       page,

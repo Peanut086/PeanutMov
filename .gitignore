@@ -59,3 +59,6 @@ scripts/fixtures/
 
 # drpy 源扫描产物（含第三方订阅地址，同上不入库）
 .drpy-scan/
+
+# ZCode session artifacts
+.zcode/
