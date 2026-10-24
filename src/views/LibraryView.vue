@@ -23,6 +23,7 @@ import CategoryTabs from '@/components/media/CategoryTabs.vue';
 import FilterSheet from '@/components/media/FilterSheet.vue';
 import IconRefresh from '@/components/icons/IconRefresh.vue';
 import IconChevron from '@/components/icons/IconChevron.vue';
+import IconClose from '@/components/icons/IconClose.vue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useLibraryStore } from '@/stores/libraryStore';
@@ -53,14 +54,74 @@ const activeFilterCount = computed(() => {
   if (filters.value.type) n += 1;
   if (filters.value.area) n += 1;
   if (filters.value.yearFrom !== null || filters.value.yearTo !== null) n += 1;
+  if (filters.value.ext) n += Object.keys(filters.value.ext).length;
   return n;
 });
 
+/** 当前分类的服务端筛选维度（无配置 → null，FilterSheet 回退本地模式） */
+const currentDimensions = computed(() => {
+  if (!library.currentCategoryId) return null;
+  return library.categories.find((c) => c.id === library.currentCategoryId)?.filters ?? null;
+});
+
+/** 地区候选：源缓存推导优先，并并入当前页新出现的地区 */
 const areas = computed(() => {
-  const set = new Set<string>();
+  const set = new Set<string>(library.areaOptions);
   for (const item of library.items) if (item.area) set.add(item.area);
   return [...set];
 });
+
+const TYPE_LABELS: Record<string, string> = {
+  movie: '电影',
+  series: '剧集',
+  anime: '动漫',
+  variety: '综艺',
+  other: '其它',
+};
+
+/** 已选条件 chips：点击 × 即时清除该维度并重新加载 */
+const activeChips = computed(() => {
+  const chips: Array<{ label: string; remove: () => void }> = [];
+  const f = filters.value;
+  if (f.type) {
+    chips.push({ label: `类型：${TYPE_LABELS[f.type] ?? f.type}`, remove: () => removeFilter({ type: null }) });
+  }
+  if (f.yearFrom !== null || f.yearTo !== null) {
+    const label =
+      f.yearFrom !== null && f.yearTo !== null
+        ? `${f.yearFrom}–${f.yearTo}`
+        : f.yearFrom !== null
+          ? `${f.yearFrom} 年后`
+          : `${f.yearTo} 年前`;
+    chips.push({ label: `年代：${label}`, remove: () => removeFilter({ yearFrom: null, yearTo: null }) });
+  }
+  if (f.area) {
+    chips.push({ label: `地区：${f.area}`, remove: () => removeFilter({ area: null }) });
+  }
+  if (f.ext) {
+    for (const [key, value] of Object.entries(f.ext)) {
+      const dim = currentDimensions.value?.find((d) => d.key === key);
+      const optLabel = dim?.options.find((o) => o.value === value)?.label ?? value;
+      chips.push({
+        label: `${dim?.name ?? key}：${optLabel}`,
+        remove: () => {
+          const ext = { ...f.ext };
+          delete ext[key];
+          removeFilter({ ext: Object.keys(ext).length > 0 ? ext : null });
+        },
+      });
+    }
+  }
+  return chips;
+});
+
+async function removeFilter(patch: Partial<LibraryFilters>): Promise<void> {
+  try {
+    await library.setFilters(patch);
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
+}
 
 const downloadedIds = computed(() =>
   downloads.tasks.filter((t) => t.status === 'completed').map((t) => t.mediaId),
@@ -273,6 +334,22 @@ function openSettings(): void {
       </div>
     </div>
 
+    <!-- 已选条件：点 × 即时清除（不必进筛选弹层） -->
+    <div v-if="activeChips.length > 0" class="library-active-filters" role="list">
+      <button
+        v-for="chip in activeChips"
+        :key="chip.label"
+        class="library-active-filters__chip"
+        type="button"
+        role="listitem"
+        :aria-label="`清除筛选 ${chip.label}`"
+        @click="chip.remove"
+      >
+        <span class="truncate-1">{{ chip.label }}</span>
+        <IconClose :size="12" />
+      </button>
+    </div>
+
     <div class="library-body">
       <!-- loading -->
       <template v-if="showSkeleton">
@@ -395,6 +472,7 @@ function openSettings(): void {
     <FilterSheet
       v-model="filterOpen"
       :filters="filters"
+      :dimensions="currentDimensions"
       :areas="areas"
       @apply="applyFilters"
       @reset="resetFilters"
@@ -423,6 +501,31 @@ function openSettings(): void {
 .library-toolbar-wrap {
   flex: 0 0 auto;
   border-bottom: var(--border-default);
+}
+
+.library-active-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--layout-page-padding-x) 0;
+}
+
+.library-active-filters__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  min-height: 28px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  background-color: var(--color-brand-soft);
+  border: 1px solid var(--color-brand);
+  color: var(--color-brand-text);
+  font: var(--text-caption);
+}
+
+.library-active-filters__chip span {
+  min-width: 0;
 }
 
 .library-toolbar {

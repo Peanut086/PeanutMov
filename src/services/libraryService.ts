@@ -87,6 +87,8 @@ export interface LibraryService {
   getItem(mediaId: string): Promise<MediaItem | null>;
   listCached(sourceId?: string | null, limit?: number): Promise<MediaItem[]>;
   listRecent(limit?: number): Promise<MediaItem[]>;
+  /** 该源缓存中出现过的地区（筛选面板地区选项推导用） */
+  listAreas(sourceId: string): Promise<string[]>;
   resolvePlay(params: { mediaId: string; episodeId: string; lineId?: string | null }): Promise<PlaybackSource>;
   ensureEpisodes(mediaId: string, lineId?: string | null): Promise<Episode[]>;
   toDownloadInputs(params: {
@@ -100,14 +102,25 @@ export interface LibraryService {
 /** 首屏缓存有效期（技术方案 6 章：cachedAt < 5min） */
 const BROWSE_CACHE_TTL_MS = 5 * 60 * 1000;
 
-const EMPTY_FILTERS: LibraryFilters = { type: null, yearFrom: null, yearTo: null, area: null };
+const EMPTY_FILTERS: LibraryFilters = { type: null, yearFrom: null, yearTo: null, area: null, ext: null };
 
 function filtersAreEmpty(filters: LibraryFilters): boolean {
   return (
     filters.type === null &&
     filters.yearFrom === null &&
     filters.yearTo === null &&
-    filters.area === null
+    filters.area === null &&
+    (filters.ext === null || filters.ext === undefined || Object.keys(filters.ext).length === 0)
+  );
+}
+
+/** 是否带本地筛选维度（需要在服务层聚合凑页的类型/年代/地区） */
+function hasLocalFilters(filters: LibraryFilters): boolean {
+  return (
+    filters.type !== null ||
+    filters.yearFrom !== null ||
+    filters.yearTo !== null ||
+    filters.area !== null
   );
 }
 
@@ -119,6 +132,79 @@ function applyFiltersLocally(items: MediaItem[], filters: LibraryFilters): Media
     if (filters.area !== null && item.area !== filters.area) return false;
     return true;
   });
+}
+
+/* ---------- 本地筛选的聚合分页（P0-筛选优化） ----------
+ *
+ * 本地维度（类型/年代/地区）只能过滤已取回的行；单页过滤会让一页剩几条甚至 0 条，
+ * 且 hasMore 仍按原始页推进（CHG-14 同类问题）。这里按「聚合游标」连续拉原始页、
+ * 本地过滤后凑满一页返回：游标记录该 (源|分类|筛选) 组合已消费到的原始页，
+ * 溢出的过滤结果缓存在 buffer，下一页（page=2,3…）先吃 buffer 再回源，
+ * 保证翻页不重复不丢条。均为会话内存态，不落库。
+ */
+const AGGREGATE_MAX_RAW_PAGES = 10;
+const aggregateCursor = new Map<string, number>();
+const aggregateBuffer = new Map<string, MediaItem[]>();
+
+function aggregateKey(query: BrowseQuery): string {
+  return `${query.sourceId}|${query.categoryId ?? ''}|${JSON.stringify(query.filters)}`;
+}
+
+async function aggregateBrowse(
+  adapter: { browse(params: BrowseParams): Promise<PageResult<MediaItem>> },
+  params: BrowseParams,
+  query: BrowseQuery,
+): Promise<PageResult<MediaItem>> {
+  const key = aggregateKey(query);
+  const pageSize = params.pageSize;
+  if (query.page <= 1) {
+    aggregateCursor.set(key, 0);
+    aggregateBuffer.set(key, []);
+  }
+
+  const collected: MediaItem[] = [];
+  const seen = new Set<string>();
+  const takeFrom = (rows: MediaItem[]): void => {
+    for (const item of rows) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      collected.push(item);
+    }
+  };
+
+  // 先吃上次溢出的过滤结果
+  const buffered = aggregateBuffer.get(key) ?? [];
+  takeFrom(buffered);
+
+  let rawPage = aggregateCursor.get(key) ?? 0;
+  let rawHasMore = true;
+  for (let i = 0; i < AGGREGATE_MAX_RAW_PAGES && collected.length < pageSize; i++) {
+    rawPage += 1;
+    const res = await adapter.browse({ ...params, page: rawPage });
+    rawHasMore = res.hasMore;
+    aggregateCursor.set(key, rawPage);
+    takeFrom(applyFiltersLocally(res.items, query.filters));
+    if (!res.hasMore) break;
+  }
+
+  aggregateBuffer.set(key, collected.slice(pageSize));
+  return {
+    items: collected.slice(0, pageSize),
+    page: query.page,
+    pageSize,
+    total: null,
+    // 原始页未拉尽、或凑满一页后仍有剩余/原始还有更多 → 允许继续翻页
+    hasMore:
+      collected.length > pageSize ||
+      (rawHasMore && collected.length >= pageSize) ||
+      (aggregateBuffer.get(key)?.length ?? 0) > 0,
+  };
+}
+
+/** 清空聚合分页的会话态（测试用） */
+export function resetAggregateState(): void {
+  aggregateCursor.clear();
+  aggregateBuffer.clear();
 }
 
 /**
@@ -264,7 +350,10 @@ export const libraryService: LibraryService = {
 
     let result: PageResult<MediaItem>;
     try {
-      result = await adapter.browse(params);
+      // 本地筛选维度走聚合分页（凑满一页 + 游标续拉）；纯服务端筛选（ext）分页天然对齐
+      result = hasLocalFilters(query.filters)
+        ? await aggregateBrowse(adapter, params, query)
+        : await adapter.browse(params);
     } catch (e) {
       if (query.page === 1 && isNetworkError(e)) {
         // AC-28：刷新失败保留旧数据；指定分类时缓存无法还原分类维度，不返回全量
@@ -466,6 +555,15 @@ export const libraryService: LibraryService = {
     const hideDemo = await hideDemoEnabled();
     const rows = await mediaRepo.listRecent(limit);
     return hideDemo ? rows.filter((item) => !item.isDemo) : rows;
+  },
+
+  async listAreas(sourceId: string): Promise<string[]> {
+    const rows = await mediaRepo.listBySource(sourceId, { limit: 2000, offset: 0 });
+    const areas = new Set<string>();
+    for (const row of rows) {
+      if (row.area && row.area.trim().length > 0) areas.add(row.area.trim());
+    }
+    return [...areas];
   },
 
   async resolvePlay(params): Promise<PlaybackSource> {

@@ -35,6 +35,9 @@ export const useLibraryStore = defineStore('library', () => {
   const state = ref<LoadState>('idle');
   const error = ref<AppErrorShape | null>(null);
 
+  /** 当前源缓存推导的地区选项（筛选面板用；源侧 filter 配置优先，此处兜底） */
+  const areaOptions = ref<string[]>([]);
+
   const searchKeyword = ref('');
   const searchResults = ref<MediaItem[]>([]);
   const searchState = ref<LoadState>('idle');
@@ -161,8 +164,21 @@ export const useLibraryStore = defineStore('library', () => {
     page.value = 0;
     hasMore.value = false;
     categories.value = [];
+    areaOptions.value = [];
     await loadCategories(false);
+    void loadAreaOptions();
     await loadFirstPage(false);
+  }
+
+  /** 从同源缓存收集地区选项；失败静默（筛选面板回退到当前页数据推导） */
+  async function loadAreaOptions(): Promise<void> {
+    const sourceId = activeSourceId();
+    if (!sourceId) return;
+    try {
+      areaOptions.value = await libraryService.listAreas(sourceId);
+    } catch {
+      areaOptions.value = [];
+    }
   }
 
   async function loadCategories(refresh = false): Promise<void> {
@@ -185,6 +201,8 @@ export const useLibraryStore = defineStore('library', () => {
 
   async function setCategory(id: string | null): Promise<void> {
     currentCategoryId.value = id;
+    // 服务端筛选维度按分类不同而不同，选中值不能跨分类保留
+    if (filters.value.ext) filters.value = { ...filters.value, ext: null };
     await loadFirstPage(false);
   }
 
@@ -460,6 +478,7 @@ export const useLibraryStore = defineStore('library', () => {
     detailState,
     posterItems,
     isEmpty,
+    areaOptions,
     homeRecent,
     homeState,
     homeError,

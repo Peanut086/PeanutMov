@@ -496,18 +496,21 @@ export class SpiderAdapter extends BaseAdapter {
   async listCategories(source: Source, signal?: AbortSignal): Promise<Category[]> {
     this.assertEnabled(source);
     const response = await this.invoke(source, 'homeContent', [true], undefined, signal);
-    return categoriesOf(source, response.class);
+    return categoriesOf(source, response.class, response);
   }
 
   async browse(params: BrowseParams): Promise<PageResult<MediaItem>> {
     const { source, categoryId, page, pageSize, filters } = params;
     this.assertEnabled(source);
     const typeId = parseCategoryValue(source.id, categoryId) ?? '';
-    // categoryContent(tid, pg, filter, hashmap)：第 4 参是 HashMap，不能传字符串
+    // categoryContent(tid, pg, filter, hashmap)：第 4 参是 HashMap，不能传字符串。
+    // 服务端筛选选中值（UI 由 homeContent 的 filters 配置生成）放 HashMap 透传给爬虫。
+    const filterExt =
+      filters.ext && Object.keys(filters.ext).length > 0 ? { ...filters.ext } : {};
     const response = await this.invoke(
       source,
       'categoryContent',
-      [typeId, page, true, {}],
+      [typeId, page, true, filterExt],
       undefined,
       params.signal,
     );

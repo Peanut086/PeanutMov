@@ -25,9 +25,10 @@ import {
   parsePlayFromField,
   parsePlayUrlField,
   type TvboxClass,
+  type TvboxListResponse,
   type TvboxVod,
 } from '@/sources/site/tvboxTypes';
-import type { Category, Episode, MediaItem, MediaType, PlayLine, Source } from '@/types';
+import type { Category, Episode, FilterDimension, MediaItem, MediaType, PlayLine, Source } from '@/types';
 
 /** 生成基础 MediaItem 所需的最小字段集（由适配器的 `makeItem` 提供） */
 export interface ItemFactory {
@@ -67,9 +68,13 @@ export function vodIdOf(vod: TvboxVod): string {
 }
 
 /** `class` 数组 → 分类；缺 `type_id`/`type_name` 的条目丢弃 */
-export function categoriesOf(source: Source, classes: TvboxClass[] | null | undefined): Category[] {
+export function categoriesOf(
+  source: Source,
+  classes: TvboxClass[] | null | undefined,
+  response?: TvboxListResponse | null,
+): Category[] {
   return (classes ?? [])
-    .map((entry, index) => {
+    .map((entry, index): Category | null => {
       const value = entry.type_id ?? entry.id ?? null;
       const name = normalizeTitle(entry.type_name ?? entry.name ?? '');
       if (value === null || name.length === 0) return null;
@@ -79,9 +84,37 @@ export function categoriesOf(source: Source, classes: TvboxClass[] | null | unde
         name,
         value: String(value),
         order: index,
+        filters: filterDimensionsOf(response, String(value)),
       };
     })
     .filter((entry): entry is Category => entry !== null);
+}
+
+/**
+ * TVBox `filters` → 指定分类的服务端筛选维度。
+ * 响应无配置 / 分类未命中 / 维度缺 key 时返回 null（UI 回退通用本地筛选）。
+ */
+export function filterDimensionsOf(
+  response: TvboxListResponse | null | undefined,
+  categoryValue: string,
+): FilterDimension[] | null {
+  const dims = response?.filters?.[categoryValue];
+  if (!Array.isArray(dims) || dims.length === 0) return null;
+  const parsed: FilterDimension[] = [];
+  for (const dim of dims) {
+    const key = typeof dim.key === 'string' ? dim.key.trim() : '';
+    const name = typeof dim.name === 'string' && dim.name.trim().length > 0 ? dim.name.trim() : key;
+    if (key.length === 0) continue;
+    const options = (dim.value ?? [])
+      .map((opt) => ({
+        value: typeof opt.v === 'string' ? opt.v : String(opt.v ?? ''),
+        label: typeof opt.n === 'string' && opt.n.trim().length > 0 ? opt.n.trim() : String(opt.v ?? ''),
+      }))
+      .filter((opt) => opt.value.length > 0 && opt.label.length > 0);
+    if (options.length === 0) continue;
+    parsed.push({ key, name, options });
+  }
+  return parsed.length > 0 ? parsed : null;
 }
 
 /** TVBox `vod_*` → 统一 MediaItem */

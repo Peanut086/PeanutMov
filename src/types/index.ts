@@ -164,6 +164,20 @@ export interface Category {
   /** 适配器内部值，如 'movie'、'/movies/动作' */
   value: string;
   order: number;
+  /**
+   * 该分类支持的服务端筛选维度（TVBox `filters` 字段解析结果）。
+   * 无配置的源为 null/undefined，UI 回退到通用本地筛选（类型/年代/地区）。
+   */
+  filters?: FilterDimension[] | null;
+}
+
+/** 服务端筛选维度（TVBox `filters` 中一个分类的一组选项） */
+export interface FilterDimension {
+  /** 请求参数名，如 class / area / year / by */
+  key: string;
+  /** 显示名，如 类型 / 地区 / 年份 / 排序 */
+  name: string;
+  options: Array<{ value: string; label: string }>;
 }
 
 export interface PlayLine {
@@ -228,6 +242,11 @@ export interface LibraryFilters {
   yearFrom: number | null;
   yearTo: number | null;
   area: string | null;
+  /**
+   * 服务端筛选选中值（维度 key → 选项 value），仅在当前分类带 `Category.filters`
+   * 配置时由 UI 生成，site/spider 适配器透传给源；其余维度为本地筛选。
+   */
+  ext?: Record<string, string> | null;
 }
 
 export interface PageQuery {

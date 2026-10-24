@@ -12,6 +12,15 @@ export interface TvboxListResponse {
   total?: number | string;
   list?: TvboxVod[] | null;
   class?: TvboxClass[] | null;
+  /** TVBox 筛选配置：分类 type_id → 维度列表（homeContent / ac=detail 响应携带） */
+  filters?: Record<string, TvboxFilterDimension[]> | null;
+}
+
+/** TVBox 筛选维度：`{ key, name, value: [{ n, v }] }` */
+export interface TvboxFilterDimension {
+  key?: string | null;
+  name?: string | null;
+  value?: Array<{ n?: string | null; v?: string | null }> | null;
 }
 
 export interface TvboxClass {

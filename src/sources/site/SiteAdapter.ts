@@ -72,9 +72,11 @@ export class SiteAdapter extends BaseAdapter {
     const { source, categoryId, page, pageSize, filters } = params;
     this.assertEnabled(source);
     const typeId = parseCategoryValue(source.id, categoryId);
+    const extFilters = filters.ext && Object.keys(filters.ext).length > 0 ? filters.ext : null;
     const response = await this.request(source, 'list', {
       typeId: typeId ?? '',
       page,
+      filter: extFilters,
       signal: params.signal,
     });
     const allRows = response.list ?? [];
@@ -175,7 +177,15 @@ export class SiteAdapter extends BaseAdapter {
   private async request(
     source: Source,
     action: 'list' | 'detail' | 'search',
-    opts: { typeId?: string; page?: number; keyword?: string; ids?: string; signal?: AbortSignal },
+    opts: {
+      typeId?: string;
+      page?: number;
+      keyword?: string;
+      ids?: string;
+      /** 服务端筛选选中值（key→value），仅 list 动作使用 */
+      filter?: Record<string, string> | null;
+      signal?: AbortSignal;
+    },
   ): Promise<TvboxListResponse> {
     const ext = extOf(source);
     const base = source.baseUrl;
@@ -214,8 +224,17 @@ export class SiteAdapter extends BaseAdapter {
       });
     };
 
+    /**
+     * 服务端筛选附加到列表 URL：维度键各自成参（MacCMS 通用），
+     * 同时带 `f={json}` 兼容按 f 解析的实现；未知参数服务端会忽略。
+     */
+    const withFilterParams = (url: string): string => {
+      if (action !== 'list' || !opts.filter) return url;
+      return withQuery(url, { ...opts.filter, f: JSON.stringify(opts.filter) });
+    };
+
     const send = async (ac: 'detail' | 'videolist'): Promise<TvboxListResponse> => {
-      const url = buildUrl(ac);
+      const url = withFilterParams(buildUrl(ac));
       try {
         // 格式判定与解析统一交给爬虫管道（指纹 → 规则 → 解析器），
         // 这里只负责拼 URL 与 `ac=videolist` 业务回退。
@@ -251,7 +270,7 @@ export class SiteAdapter extends BaseAdapter {
   /* ---------------- 内部 ---------------- */
 
   private categoriesOf(source: Source, response: TvboxListResponse): Category[] {
-    return categoriesOf(source, response.class);
+    return categoriesOf(source, response.class, response);
   }
 
   /** 同时产出 PlayLine / Episode / 原始地址（resolvePlayUrl 复用） */
