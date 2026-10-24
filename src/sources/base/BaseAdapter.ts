@@ -8,7 +8,7 @@
  *
  * 子类需实现 `probe`（探活）与全部数据方法；`probe` 返回条目数时填入 `itemCount`。
  */
-import { TIMEOUT_TEST_CONNECTION_MS } from '@/shared/constants';
+import { TIMEOUT_SEARCH_MS, TIMEOUT_TEST_CONNECTION_MS } from '@/shared/constants';
 import { AppError, toErrorShape } from '@/shared/errors';
 import { mediaIdOf } from '@/shared/id';
 import type {
@@ -39,6 +39,14 @@ export interface ProbeResult {
 
 export abstract class BaseAdapter implements SourceAdapter {
   abstract readonly type: SourceType;
+
+  /** 单源搜索超时（CHG-15）；需更长链路的子类覆盖 */
+  readonly searchTimeoutMs: number = TIMEOUT_SEARCH_MS;
+
+  /** CHG-15：默认无预热；需预热的子类（spider/drpy）覆盖为加载句柄 */
+  async warmup(_source: Source): Promise<void> {
+    /* 无需预热 */
+  }
 
   /** 探活：成功返回条目数；失败 **抛 AppError**（由 testConnection 捕获并归类） */
   protected abstract probe(source: Source, signal?: AbortSignal): Promise<ProbeResult>;

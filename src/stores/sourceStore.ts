@@ -9,6 +9,7 @@ import { computed, ref } from 'vue';
 import { sourceService } from '@/services/sourceService';
 import { healthService } from '@/services/healthService';
 import { appEvents } from '@/services/events';
+import { sourceRegistry } from '@/sources/registry';
 import { logger } from '@/shared/logger';
 import { toAppError, toErrorShape } from '@/shared/errors';
 import type { AppErrorShape, Source, SourceInput } from '@/types';
@@ -81,6 +82,7 @@ export const useSourceStore = defineStore('source', () => {
     } finally {
       loading.value = false;
     }
+    warmupSpiderSources();
   }
 
   /** 静默重载（不发 loading，供事件驱动） */
@@ -93,6 +95,33 @@ export const useSourceStore = defineStore('source', () => {
     } catch (e) {
       error.value = toErrorShape(e, 'E_DB');
     }
+    warmupSpiderSources();
+  }
+
+  /**
+   * CHG-15：爬虫源后台预热（低并发 2，fire-and-forget）。
+   * 冷启动就加载 jar 拿句柄，搜索/浏览才不至于被 jar 下载拖到超时。
+   * 适配器内部对句柄/预热中去重，load 与 reload 双入口重复调用无副作用。
+   */
+  function warmupSpiderSources(): void {
+    const candidates = sources.value.filter(
+      (source) => source.enabled && source.type === 'spider' && source.health !== 'unreachable',
+    );
+    if (candidates.length === 0) return;
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      while (cursor < candidates.length) {
+        const source = candidates[cursor];
+        cursor += 1;
+        if (!source) continue;
+        try {
+          await sourceRegistry.forSource(source).warmup?.(source);
+        } catch {
+          /* 预热失败静默：真实调用时再报错 */
+        }
+      }
+    };
+    for (let i = 0; i < Math.min(2, candidates.length); i += 1) void worker();
   }
 
   async function select(sourceId: string | null): Promise<void> {

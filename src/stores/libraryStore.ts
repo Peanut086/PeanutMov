@@ -39,6 +39,9 @@ export const useLibraryStore = defineStore('library', () => {
   const searchResults = ref<MediaItem[]>([]);
   const searchState = ref<LoadState>('idle');
   const searchFailed = ref<Array<{ sourceId: string; error: AppErrorShape }>>([]);
+  /** CHG-15：最近一次搜索实际参与的源数 / 被过滤掉的启用源数（空态诊断用） */
+  const searchCandidates = ref(0);
+  const searchFilteredOut = ref(0);
 
   const detail = ref<MediaDetail | null>(null);
   const detailState = ref<LoadState>('idle');
@@ -317,7 +320,7 @@ export const useLibraryStore = defineStore('library', () => {
     await loadFirstPage(false);
   }
 
-  async function search(keyword: string): Promise<void> {
+  async function search(keyword: string, opts?: { forceAll?: boolean }): Promise<void> {
     const trimmed = keyword.trim();
     searchKeyword.value = keyword;
     searchController?.abort();
@@ -339,6 +342,8 @@ export const useLibraryStore = defineStore('library', () => {
       const result = await libraryService.search({
         keyword: trimmed,
         signal: controller.signal,
+        // CHG-15：空态"仍要搜索全部源"重试时跳过体检结论过滤
+        forceAll: opts?.forceAll === true,
         // CHG-12 渐进搜索：单源完成即上屏，先到先显示
         onPartial: ({ sourceId, items, error: sourceError, done, total }) => {
           if (controller.signal.aborted) return;
@@ -374,6 +379,9 @@ export const useLibraryStore = defineStore('library', () => {
         return true;
       });
       searchFailed.value = result.failed;
+      // CHG-15：诊断信息——0 源参与时 UI 给出原因与行动项，而不是"没搜到"
+      searchCandidates.value = result.candidates;
+      searchFilteredOut.value = result.filteredOut;
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
     } catch (e) {
       if (isCanceled(e) || controller.signal.aborted) return;
@@ -446,6 +454,8 @@ export const useLibraryStore = defineStore('library', () => {
     searchState,
     searchFailed,
     searchProgress,
+    searchCandidates,
+    searchFilteredOut,
     detail,
     detailState,
     posterItems,

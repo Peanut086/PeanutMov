@@ -15,6 +15,7 @@ import { AppError } from '@/shared/errors';
 import { mediaIdOf } from '@/shared/id';
 import { toAbsoluteUrl } from '@/shared/url';
 import { mirrorVariants } from '@/shared/githubMirror';
+import { TIMEOUT_SEARCH_SPIDER_MS } from '@/shared/constants';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
@@ -194,10 +195,16 @@ function nativeErrorOf(e: unknown, fallback: AppError): AppError {
 export class SpiderAdapter extends BaseAdapter {
   readonly type: SourceType = 'spider';
 
+  /** CHG-15：冷启动搜索需 jar 下载+dex+init（5s 必超时）；warmup 后热句柄 <1s，
+   * 20s 只兜未预热场景 */
+  override readonly searchTimeoutMs: number = TIMEOUT_SEARCH_SPIDER_MS;
+
   /** sourceId → 原生插件返回的实例句柄 */
   private readonly handles = new Map<string, string>();
   /** sourceId → 实际可下载的 jar 变体地址（探活/加载命中的镜像，CHG-11 回退） */
   private readonly jarVariants = new Map<string, string>();
+  /** CHG-15：正在预热中的 sourceId，防重复加载 */
+  private readonly warmingUp = new Set<string>();
 
   /* ---------------- 探活与加载 ---------------- */
 
@@ -252,6 +259,31 @@ export class SpiderAdapter extends BaseAdapter {
     const existing = this.handles.get(source.id);
     if (existing) return existing;
     return this.load(source);
+  }
+
+  /**
+   * CHG-15：后台预热——只加载 jar 拿句柄，不发 homeContent。
+   * 让后续搜索/浏览命中热句柄（否则 5s/20s 搜索预算扛不住冷启动）。
+   * 失败静默：预热不打扰用户，真实调用时再报错。
+   */
+  override async warmup(source: Source): Promise<void> {
+    if (!isNative()) return;
+    const ext = extOf(source);
+    // kind:'js'（drpy）由 CHG-16 的引擎接管后再纳入预热
+    if (ext.kind !== 'jar' || ext.api === null || ext.jarUrl === null) return;
+    if (source.health === 'unreachable' || source.health === 'bad_config' || source.health === 'auth_failed') {
+      return;
+    }
+    if (this.handles.has(source.id) || this.warmingUp.has(source.id)) return;
+    this.warmingUp.add(source.id);
+    try {
+      await this.load(source);
+      logger.debug('爬虫源预热完成', source.name);
+    } catch (e) {
+      logger.debug('爬虫源预热失败（静默）', source.name, e);
+    } finally {
+      this.warmingUp.delete(source.id);
+    }
   }
 
   private async load(source: Source): Promise<string> {

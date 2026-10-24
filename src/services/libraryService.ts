@@ -69,6 +69,8 @@ export interface LibraryService {
     page?: number;
     pageSize?: number;
     signal?: AbortSignal;
+    /** CHG-15：跳过体检结论过滤（unreachable/bad_config/auth_failed），用户在空态显式要求重试时用 */
+    forceAll?: boolean;
     /**
      * 单源完成即回调（CHG-12 渐进搜索）：先到先显示，不必等全部源结束。
      * `error` 非 null 表示该源失败；`done/total` 供进度展示。取消后不再回调。
@@ -147,7 +149,7 @@ function isNetworkError(e: unknown): boolean {
   return e.code === 'E_NETWORK' || e.code === 'E_TIMEOUT' || e.code === 'E_SOURCE_UNAVAILABLE';
 }
 
-/** 单源远程搜索，超时 5s（AC-24） */
+/** 单源远程搜索，超时按适配器区分（CHG-15）：site 8s / spider 20s，缺省 5s（AC-24） */
 async function searchOneSource(
   source: Source,
   keyword: string,
@@ -156,7 +158,7 @@ async function searchOneSource(
 ): Promise<MediaItem[]> {
   const adapter = await adapterFor(source);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_SEARCH_MS);
+  const timer = setTimeout(() => controller.abort(), adapter.searchTimeoutMs ?? TIMEOUT_SEARCH_MS);
   const onAbort = (): void => controller.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
@@ -336,7 +338,7 @@ export const libraryService: LibraryService = {
 
   async search(params): Promise<SearchResult> {
     const keyword = params.keyword.trim();
-    if (keyword.length === 0) return { items: [], sourceIds: [], failed: [] };
+    if (keyword.length === 0) return { items: [], sourceIds: [], failed: [], candidates: 0, filteredOut: 0 };
     const pageSize = params.pageSize ?? SEARCH_LOCAL_LIMIT;
     const hideDemo = await hideDemoEnabled();
 
@@ -344,12 +346,17 @@ export const libraryService: LibraryService = {
     const local = hideDemo ? localRaw.filter((item) => !item.isDemo) : localRaw;
 
     const allSources = await sourceRepo.list();
-    const enabled = allSources.filter(
+    const eligible = allSources.filter(
       (source) =>
         source.enabled &&
-        (params.sourceIds === undefined || params.sourceIds.includes(source.id)) &&
-        searchCandidate(source),
+        (params.sourceIds === undefined || params.sourceIds.includes(source.id)),
     );
+    // CHG-15：被过滤的数量透出给 UI（candidates=0 时给诊断而不是"没搜到"）；
+    // forceAll 跳过体检结论过滤（用户显式重试），js 爬虫/关闭搜索仍排除
+    const enabled = params.forceAll
+      ? eligible
+      : eligible.filter((source) => searchCandidate(source));
+    const filteredOut = eligible.length - enabled.length;
 
     const failed: Array<{ sourceId: string; error: AppErrorShape }> = [];
     const remoteResults: Array<MediaItem[] | null> = [];
@@ -407,7 +414,7 @@ export const libraryService: LibraryService = {
     }
 
     const sourceIds = [...new Set(merged.map((item) => item.sourceId))];
-    return { items: merged.slice(0, pageSize), sourceIds, failed };
+    return { items: merged.slice(0, pageSize), sourceIds, failed, candidates: enabled.length, filteredOut };
   },
 
   async getDetail(mediaId, opts): Promise<MediaDetail> {

@@ -228,3 +228,48 @@ describe('pickFallbackSource（CHG-08：失效跳过排除演示源）', () => {
     expect(picked?.id).not.toBe(failed);
   });
 });
+
+describe('search 空结果诊断（CHG-15）', () => {
+  beforeEach(async () => {
+    await resetAll();
+    await seedDemoData();
+  });
+
+  /** 建一个 site 源并按 health 落库 */
+  async function makeSource(name: string, health: 'ok' | 'unreachable'): Promise<string> {
+    const source = await sourceService.create({
+      name,
+      type: 'site',
+      baseUrl: `https://${name}.example.com`,
+    });
+    await sourceService.markHealth(source.id, health);
+    return source.id;
+  }
+
+  it('启用源全被体检过滤 → candidates=0 且 filteredOut 透出（不再伪装成"没搜到"）', async () => {
+    const a = await makeSource('坏源A', 'unreachable');
+    const b = await makeSource('坏源B', 'unreachable');
+    // sourceIds 限定被测源（内置演示源恒健康，不参与本断言）
+    const result = await libraryService.search({ keyword: '战狼', sourceIds: [a, b] });
+    expect(result.items).toHaveLength(0);
+    expect(result.candidates).toBe(0);
+    expect(result.filteredOut).toBe(2);
+  });
+
+  it('forceAll 跳过体检过滤：candidates 恢复；全失败时明确抛错', async () => {
+    const a = await makeSource('坏源A', 'unreachable');
+    const b = await makeSource('坏源B', 'unreachable');
+    // 演示源恒健康（搜索 0 结果算成功），保证调用不因全失败而抛错，能观察到计数
+    const result = await libraryService.search({
+      keyword: '战狼',
+      sourceIds: [a, b, DEMO_SOURCE_ID],
+      forceAll: true,
+    });
+    expect(result.candidates).toBe(3);
+    expect(result.filteredOut).toBe(0);
+    // 全部参与的源都失败 → 抛第一个错误（而不是静默空结果）
+    await expect(
+      libraryService.search({ keyword: '战狼', sourceIds: [a, b], forceAll: true }),
+    ).rejects.toBeDefined();
+  });
+});

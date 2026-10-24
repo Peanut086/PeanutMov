@@ -23,6 +23,7 @@ import {
 import { isPlayPageUrl, resolvePlayPage } from '@/sources/site/playPageResolver';
 import { sniffPlayUrl } from '@/native/snifferPlugin';
 import { isNative } from '@/shared/platform';
+import { TIMEOUT_SEARCH_SITE_MS } from '@/shared/constants';
 import type {
   BrowseParams,
   Category,
@@ -51,6 +52,9 @@ function fillTemplate(template: string, values: Record<string, string | number>)
 
 export class SiteAdapter extends BaseAdapter {
   readonly type: SourceType = 'site';
+
+  /** CHG-15：CMS 搜索是单次模板请求，5s 在慢网下偏紧，放宽到 8s */
+  override readonly searchTimeoutMs: number = TIMEOUT_SEARCH_SITE_MS;
 
   protected async probe(source: Source): Promise<ProbeResult> {
     this.assertEnabled(source);

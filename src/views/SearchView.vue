@@ -51,6 +51,15 @@ const showInitial = computed(() => keyword.value.trim().length === 0);
 const showEmpty = computed(
   () => !showInitial.value && library.searchState === 'empty' && !isSearching.value,
 );
+/** CHG-15：0 个源实际参与搜索（启用源全被体检结论/类型支持性过滤）→ 结果不可信，给诊断 */
+const zeroCandidates = computed(
+  () => showEmpty.value && library.searchCandidates === 0 && library.searchFilteredOut > 0,
+);
+const emptyDescription = computed(() =>
+  zeroCandidates.value
+    ? `${library.searchFilteredOut} 个启用源因体检失效或类型不支持被跳过，可强制重试或检查源`
+    : '换个关键词，或检查源是否启用',
+);
 const showError = computed(
   () =>
     !showInitial.value &&
@@ -160,6 +169,19 @@ function goBack(): void {
 function retry(): void {
   void runSearch(keyword.value, false);
 }
+
+/** CHG-15：跳过体检结论过滤重搜（用户在空态显式要求） */
+async function forceSearch(): Promise<void> {
+  try {
+    await library.search(keyword.value, { forceAll: true });
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
+}
+
+function openSourceManage(): void {
+  void router.push({ name: 'sources' });
+}
 </script>
 
 <template>
@@ -237,14 +259,32 @@ function retry(): void {
       />
 
       <!-- 空结果 -->
-      <EmptyState
-        v-else-if="showEmpty"
-        variant="search"
-        title="没有找到相关内容"
-        description="换个关键词，或检查源是否启用"
-        action-text="返回"
-        @action="goBack"
-      />
+      <template v-else-if="showEmpty">
+        <EmptyState
+          variant="search"
+          :title="zeroCandidates ? '没有源参与搜索' : '没有找到相关内容'"
+          :description="emptyDescription"
+          :action-text="zeroCandidates ? '仍要搜索全部源' : '返回'"
+          @action="zeroCandidates ? forceSearch() : goBack()"
+        />
+        <!-- CHG-15：0 源参与时给出诊断与去路；失败明细在空结果下也要可查 -->
+        <button
+          v-if="zeroCandidates"
+          class="search-failed"
+          type="button"
+          @click="openSourceManage"
+        >
+          被跳过的源有 {{ library.searchFilteredOut }} 个，打开源管理检查
+        </button>
+        <button
+          v-else-if="library.searchFailed.length > 0"
+          class="search-failed"
+          type="button"
+          @click="failedDetailOpen = true"
+        >
+          部分源搜索失败（{{ library.searchFailed.length }}），查看明细
+        </button>
+      </template>
 
       <!-- 结果 -->
       <template v-else-if="hasResults">

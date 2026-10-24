@@ -57,8 +57,13 @@ export const TIMEOUT_TEST_CONNECTION_MS = 3000;
 export const HEALTH_CHECK_CONCURRENCY = 6;
 /** 订阅拉取 */
 export const TIMEOUT_SUBSCRIPTION_FETCH_MS = 10000;
-/** 远程搜索单源超时（AC-24） */
+/** 远程搜索单源超时（AC-24）；CHG-15 起按源类型区分，此为缺省值 */
 export const TIMEOUT_SEARCH_MS = 5000;
+/** 站点源（CMS JSON）搜索超时（CHG-15）：模板请求较轻，略放宽 */
+export const TIMEOUT_SEARCH_SITE_MS = 8000;
+/** 爬虫源搜索超时（CHG-15）：冷启动需 jar 下载+dex+init，5s 必超时；
+ * 预热（warmup）命中热句柄后多数 <1s 返回，20s 只兜冷路径 */
+export const TIMEOUT_SEARCH_SPIDER_MS = 20000;
 /** 播放器 loadedmetadata 等待（9.7） */
 export const TIMEOUT_LOAD_METADATA_MS = 15000;
 /** 播放网络错误自动重试间隔（FR-25） */

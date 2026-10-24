@@ -275,6 +275,10 @@ export interface SearchResult {
   /** 返回结果的源 ID 列表 */
   sourceIds: string[];
   failed: Array<{ sourceId: string; error: AppErrorShape }>;
+  /** CHG-15：实际参与远程搜索的源数量；0 时结果不可信，UI 需给出诊断 */
+  candidates: number;
+  /** 因体检失效/类型不支持/关闭搜索被过滤掉的启用源数量 */
+  filteredOut: number;
 }
 
 /* ---------- 历史 / 收藏 ---------- */
@@ -590,7 +594,11 @@ export interface ConfirmState {
 /* ---------- 适配器 ---------- */
 export interface SourceAdapter {
   readonly type: SourceType;
+  /** 单源搜索超时（CHG-15）。缺省 5s；需预热或链路更长的源（jar/drpy）应更长 */
+  readonly searchTimeoutMs?: number;
   testConnection(source: Source, signal?: AbortSignal): Promise<ConnectionResult>;
+  /** CHG-15：后台预热（加载 jar/规则拿句柄），实现方自行吞错、失败静默 */
+  warmup?(source: Source): Promise<void>;
   listCategories(source: Source, signal?: AbortSignal): Promise<Category[]>;
   browse(params: BrowseParams): Promise<PageResult<MediaItem>>;
   search(params: SearchParams): Promise<MediaItem[]>;
