@@ -81,7 +81,11 @@ function recover(): void {
       <!-- 底部 TabBar 为 fixed，由外壳统一预留空间，页面无需各自处理 -->
       <div class="app-content" :class="{ 'app-content--tabbar': showTabBar }">
         <RouterView v-slot="{ Component, route: current }">
-          <component :is="Component" :key="current.fullPath" class="route-view" />
+          <!-- 首页 KeepAlive（P0-4）：回 tab 不重闪骨架、不重新全量拉取；
+               其余页面进出 Player/Detail 等重资源页，保持即用即毁 -->
+          <KeepAlive include="HomeView">
+            <component :is="Component" :key="current.fullPath" class="route-view" />
+          </KeepAlive>
         </RouterView>
       </div>
 

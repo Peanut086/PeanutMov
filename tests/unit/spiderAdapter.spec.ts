@@ -456,7 +456,7 @@ describe('SpiderAdapter', () => {
     });
   });
 
-  it('加载失败 → E_SOURCE_UNAVAILABLE（不抛原始异常）', async () => {
+  it('加载失败 → 错误原因透传（HTTP 404 → E_HTTP_404，健康态 unreachable）', async () => {
     vi.resetModules();
     vi.doMock('@/shared/platform', () => ({ isNative: () => true }));
     vi.doMock('@/native/spiderPlugin', () => ({
@@ -473,7 +473,7 @@ describe('SpiderAdapter', () => {
     const adapter = new Adapter();
     const result = await adapter.testConnection(makeSource());
     expect(result.ok).toBe(false);
-    expect(result.error?.code).toBe('E_SOURCE_UNAVAILABLE');
+    expect(result.error?.code).toBe('E_HTTP_404');
     expect(result.health).toBe('unreachable');
   });
 });

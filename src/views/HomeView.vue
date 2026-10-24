@@ -5,8 +5,11 @@
  * 信息层级：继续观看（横滑，无数据整块不渲染）→ 最近添加（2 列网格）。
  * 不做运营位/Banner/推荐算法——本产品是工具。
  * 四态：loading 骨架 / empty 引导 / error 顶部错误卡（缓存内容仍展示）/ offline 横幅。
+ *
+ * P0-4：「最近添加」读跨源缓存（library.homeRecent，毫秒级、离线可用），
+ * 当前源首页由 store 后台预热；本页被 KeepAlive 缓存，回 tab 静默刷新不重闪骨架。
  */
-import { computed, onMounted, ref } from 'vue';
+import { computed, onActivated, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import type { HistoryRecord, MediaItem } from '@/types';
@@ -26,6 +29,8 @@ import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { toErrorShape } from '@/shared/errors';
 
+defineOptions({ name: 'HomeView' });
+
 const router = useRouter();
 const history = useHistoryStore();
 const library = useLibraryStore();
@@ -34,11 +39,14 @@ const favorites = useFavoriteStore();
 const toast = useToast();
 const { isOffline } = useOnlineStatus();
 
-const errorMessage = ref<string | null>(null);
-const initialLoading = computed(() => library.state === 'idle' || library.state === 'loading');
+const localError = ref<string | null>(null);
+const initialLoading = computed(
+  () => library.homeState === 'idle' || library.homeState === 'loading',
+);
+const errorMessage = computed(() => localError.value ?? library.homeError?.message ?? null);
 
 const continueItems = computed(() => history.continueWatching.slice(0, 10));
-const recentItems = computed(() => library.items.slice(0, 20));
+const recentItems = computed(() => library.homeRecent);
 
 const downloadedIds = computed(() =>
   downloads.tasks.filter((t) => t.status === 'completed').map((t) => t.mediaId),
@@ -49,17 +57,17 @@ const isEmpty = computed(
 );
 
 async function load(): Promise<void> {
-  errorMessage.value = null;
+  localError.value = null;
   try {
     await Promise.all([history.load(), downloads.load(), favorites.load()]);
-    await library.openSource(null);
-    if (library.error) throw new Error(library.error.message);
+    await library.loadHome();
   } catch (e) {
-    errorMessage.value = toErrorShape(e).message;
+    localError.value = toErrorShape(e).message;
   }
 }
 
-onMounted(() => {
+// KeepAlive 下 onActivated 首次进入也会触发（替代 onMounted），回 tab 时静默刷新
+onActivated(() => {
   void load();
 });
 
@@ -163,7 +171,7 @@ async function retry(): Promise<void> {
             :progress-map="{}"
             @select="openDetail"
           />
-          <p v-if="library.state === 'refreshing'" class="home-refreshing">
+          <p v-if="library.homeState === 'refreshing'" class="home-refreshing">
             <LoadingSpinner :size="16" />
             正在刷新…
           </p>

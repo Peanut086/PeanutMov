@@ -22,6 +22,9 @@
 import { crawl } from '@/sources/pipeline/scheduler';
 import { extractMediaFromPage, extractPlayUrlFromPage } from '@/sources/pipeline/mediaExtract';
 import { PLAY_PAGE_NOT_FOUND_MESSAGE } from '@/sources/pipeline/messages';
+import { sniffPlayUrl } from '@/native/snifferPlugin';
+import { isNative } from '@/shared/platform';
+import { AppError } from '@/shared/errors';
 
 export { extractMediaFromPage, extractPlayUrlFromPage, PLAY_PAGE_NOT_FOUND_MESSAGE };
 export type { MediaCandidate } from '@/sources/pipeline/mediaExtract';
@@ -65,7 +68,8 @@ export interface ResolvePlayPageOptions {
  *
  * - 页面本身就是清单（首行 `#EXTM3U`）→ 原样返回该地址；
  * - 解析不到 → `E_NO_PLAY_URL`（不是"格式不支持"，避免误导用户）；
- * - 网络类失败由管道原样抛出，交由上层判定源健康度。
+ * - 网络类失败由管道原样抛出，交由上层判定源健康度；
+ * - 静态提取失败且在 App 内 → WebView 嗅探兜底（页面靠 JS 才发起媒体请求的场景）。
  *
  * 解析逻辑由管道解析器 `html.media` 承担（复用同一份 `extractMediaFromPage`）。
  */
@@ -73,11 +77,19 @@ export async function resolvePlayPage(
   pageUrl: string,
   options: ResolvePlayPageOptions = {},
 ): Promise<string> {
-  const result = await crawl<string>({
-    intent: 'playpage',
-    url: pageUrl,
-    headers: options.headers,
-    signal: options.signal,
-  });
-  return result.value;
+  try {
+    const result = await crawl<string>({
+      intent: 'playpage',
+      url: pageUrl,
+      headers: options.headers,
+      signal: options.signal,
+    });
+    return result.value;
+  } catch (e) {
+    if (isNative() && !(e instanceof AppError && e.code === 'E_ABORTED')) {
+      const sniffed = await sniffPlayUrl(pageUrl, options.headers).catch(() => null);
+      if (sniffed) return sniffed;
+    }
+    throw e;
+  }
 }

@@ -173,6 +173,25 @@ async function hideDemoEnabled(): Promise<boolean> {
   return settings.hideDemoContent;
 }
 
+/**
+ * 搜索扇出前过滤：跳过「确定失效」的源（体检结论；timeout 保留——可能是瞬时网络慢）、
+ * 关闭搜索的源（`ext.searchable === false`）与当前版本不支持的 JS 爬虫（drpy）。
+ * 订阅导入动辄上百源、大半已死，全部扇出是「搜索特别慢」的主因之一。
+ */
+function searchCandidate(source: Source): boolean {
+  if (
+    source.health === 'unreachable' ||
+    source.health === 'bad_config' ||
+    source.health === 'auth_failed'
+  ) {
+    return false;
+  }
+  const ext = (source.ext ?? {}) as { kind?: string; searchable?: boolean };
+  if (source.type === 'spider' && ext.kind === 'js') return false;
+  if (ext.searchable === false) return false;
+  return true;
+}
+
 export const libraryService: LibraryService = {
   async listCategories(sourceId, opts): Promise<Category[]> {
     const source = await requireSource(sourceId);
@@ -326,7 +345,10 @@ export const libraryService: LibraryService = {
 
     const allSources = await sourceRepo.list();
     const enabled = allSources.filter(
-      (source) => source.enabled && (params.sourceIds === undefined || params.sourceIds.includes(source.id)),
+      (source) =>
+        source.enabled &&
+        (params.sourceIds === undefined || params.sourceIds.includes(source.id)) &&
+        searchCandidate(source),
     );
 
     const failed: Array<{ sourceId: string; error: AppErrorShape }> = [];

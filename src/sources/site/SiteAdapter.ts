@@ -20,6 +20,8 @@ import {
   vodIdOf,
 } from '@/sources/site/tvboxNormalize';
 import { isPlayPageUrl, resolvePlayPage } from '@/sources/site/playPageResolver';
+import { sniffPlayUrl } from '@/native/snifferPlugin';
+import { isNative } from '@/shared/platform';
 import type {
   BrowseParams,
   Category,
@@ -125,6 +127,22 @@ export class SiteAdapter extends BaseAdapter {
 
     const absolute = toAbsoluteUrl(source.baseUrl, picked.url) ?? picked.url;
     if (looksLikeResolverUrl(absolute)) {
+      // 解析器地址（jx 页面）：App 内走 WebView 嗅探取真实直链
+      if (isNative() && !(params.signal?.aborted ?? false)) {
+        const sniffed = await sniffPlayUrl(absolute, this.headersWith(source)).catch(() => null);
+        if (sniffed) {
+          return {
+            url: sniffed,
+            format: normalizeFormat(sniffed, line.format),
+            headers: this.headersWith(source),
+            subtitles: [],
+            lineId: line.id,
+            quality: line.quality,
+            expiresAt: null,
+            isLocal: false,
+          };
+        }
+      }
       throw new AppError('E_NO_PLAY_URL', '该源需要解析接口，暂不支持');
     }
     if (!/^https?:\/\//i.test(absolute) && !absolute.startsWith('magnet:')) {

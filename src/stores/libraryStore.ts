@@ -46,6 +46,66 @@ export const useLibraryStore = defineStore('library', () => {
   const posterItems = computed(() => items.value);
   const isEmpty = computed(() => items.value.length === 0 && state.value === 'success');
 
+  /* ---------- 首页（P0-4 跨源聚合） ---------- */
+
+  /** 首页「最近添加」条数 */
+  const HOME_RECENT_LIMIT = 20;
+
+  const homeRecent = ref<MediaItem[]>([]);
+  const homeState = ref<LoadState>('idle');
+  const homeError = ref<AppErrorShape | null>(null);
+
+  /**
+   * 首页加载：直接读跨源缓存（毫秒级上屏，离线也能出内容）；有缓存时后台预热
+   * 当前源首页并静默刷新（stale-while-revalidate）。无缓存才回源当前源首屏——
+   * 适配层有超时兜底，失败进错误态而非永远骨架屏。
+   */
+  async function loadHome(): Promise<void> {
+    homeError.value = null;
+    homeState.value = homeRecent.value.length > 0 ? 'refreshing' : 'loading';
+    try {
+      homeRecent.value = await libraryService.listRecent(HOME_RECENT_LIMIT);
+      if (homeRecent.value.length > 0) {
+        homeState.value = 'success';
+        void warmCurrentSource();
+      } else {
+        await openSource(null);
+        homeRecent.value = await libraryService.listRecent(HOME_RECENT_LIMIT);
+        if (homeRecent.value.length > 0) {
+          homeState.value = 'success';
+        } else if (error.value) {
+          // 无缓存且回源失败：错误态（而非「还没有内容」，避免掩盖源故障）
+          homeError.value = error.value;
+          homeState.value = 'error';
+        } else {
+          homeState.value = 'empty';
+        }
+      }
+    } catch (e) {
+      homeError.value = toErrorShape(e);
+      homeState.value = homeRecent.value.length > 0 ? 'success' : 'error';
+    }
+  }
+
+  /** 后台预热当前源首页（只写 mediaRepo 缓存，不触碰媒体库页状态），完成后刷新最近列表 */
+  async function warmCurrentSource(): Promise<void> {
+    try {
+      await sourceStore.load();
+      const sourceId = sourceStore.currentSource?.id ?? null;
+      if (!sourceId || !isOnline()) return;
+      await libraryService.browse({
+        sourceId,
+        categoryId: null,
+        filters: { ...EMPTY_LIBRARY_FILTERS },
+        page: 1,
+        pageSize: PAGE_SIZE,
+      });
+      homeRecent.value = await libraryService.listRecent(HOME_RECENT_LIMIT);
+    } catch {
+      /* 预热失败静默：首页继续展示缓存 */
+    }
+  }
+
   let requestSeq = 0;
   /** 进行中的搜索控制器：新搜索前 abort 旧的，避免旧请求继续占用源（REV-06） */
   let searchController: AbortController | null = null;
@@ -270,6 +330,8 @@ export const useLibraryStore = defineStore('library', () => {
     searchController = controller;
     searchResults.value = [];
     searchFailed.value = [];
+    /** 本次搜索已上屏的片名（P1-8 聚合去重：不同源的同名条目只显示一条） */
+    const titleSeen = new Set<string>();
     try {
       const result = await libraryService.search({
         keyword: trimmed,
@@ -283,15 +345,33 @@ export const useLibraryStore = defineStore('library', () => {
             return;
           }
           if (items.length > 0) {
-            const seen = new Set(searchResults.value.map((item) => item.id));
-            searchResults.value = [...searchResults.value, ...items.filter((item) => !seen.has(item.id))];
+            const seenIds = new Set(searchResults.value.map((item) => item.id));
+            const fresh = items.filter((item) => {
+              const titleKey = titleKeyOf(item.title);
+              if (seenIds.has(item.id) || titleSeen.has(titleKey)) return false;
+              seenIds.add(item.id);
+              titleSeen.add(titleKey);
+              return true;
+            });
+            if (fresh.length > 0) {
+              searchResults.value = [...searchResults.value, ...fresh];
+            }
           }
         },
       });
       if (controller.signal.aborted) return;
-      searchResults.value = result.items;
+      // 终态列表同样按 id + 片名去重（保持与渐进上屏一致的展示口径）
+      const seenIds = new Set<string>();
+      const seenTitles = new Set<string>();
+      searchResults.value = result.items.filter((item) => {
+        const titleKey = titleKeyOf(item.title);
+        if (seenIds.has(item.id) || seenTitles.has(titleKey)) return false;
+        seenIds.add(item.id);
+        seenTitles.add(titleKey);
+        return true;
+      });
       searchFailed.value = result.failed;
-      searchState.value = result.items.length === 0 ? 'empty' : 'success';
+      searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
     } catch (e) {
       if (isCanceled(e) || controller.signal.aborted) return;
       searchResults.value = [];
@@ -367,6 +447,9 @@ export const useLibraryStore = defineStore('library', () => {
     detailState,
     posterItems,
     isEmpty,
+    homeRecent,
+    homeState,
+    homeError,
     openSource,
     loadCategories,
     setCategory,
@@ -380,7 +463,13 @@ export const useLibraryStore = defineStore('library', () => {
     loadDetail,
     resolvePlay,
     toDownloadInputs,
+    loadHome,
   };
 });
 
 export type LibraryStore = ReturnType<typeof useLibraryStore>;
+
+/** 片名聚合键：去空白、小写（P1-8 多源同名条目归并） */
+function titleKeyOf(title: string): string {
+  return title.trim().toLowerCase().replace(/\s+/g, '');
+}

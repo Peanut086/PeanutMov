@@ -1,6 +1,8 @@
 package com.qoder.cinema;
 
 import android.content.Context;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import com.getcapacitor.JSArray;
@@ -27,6 +29,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Spider —— TVBox jar 爬虫运行时
@@ -52,6 +57,54 @@ public class SpiderPlugin extends Plugin {
     private static final int CONNECT_TIMEOUT_MS = 20000;
     private static final int READ_TIMEOUT_MS = 30000;
     private static final long MAX_JAR_BYTES = 8L * 1024 * 1024;
+
+    /**
+     * 爬虫调用（下载 jar / DexClassLoader / 爬虫内部 HTTP）必须跑在独立线程池：
+     * Capacitor 的插件方法全部走 bridge 的单一 taskHandler 线程（Bridge.java post 到
+     * 同一个 Handler），同步执行会串行阻塞所有 JS→原生调用（搜索、播放、网络派发
+     * 全部排队），表现为「搜索极慢 / 播放超时 / 首页永远骨架屏」。
+     */
+    private final ExecutorService spiderExecutor = Executors.newCachedThreadPool();
+    /** 看门狗：超时后先给 JS 侧回错，避免调用方无限等待（任务线程本身无法强中断） */
+    private final Handler watchdog = new Handler(Looper.getMainLooper());
+    private static final long LOAD_TIMEOUT_MS = 75_000;
+    private static final long INVOKE_TIMEOUT_MS = 30_000;
+    private static final long PROXY_TIMEOUT_MS = 25_000;
+
+    /** 后台任务接口（允许抛异常，统一转 call.reject） */
+    private interface SpiderTask {
+        void run() throws Exception;
+    }
+
+    /**
+     * 把爬虫任务提交到线程池执行，带看门狗超时。
+     * 成功路径在任务内部 resolve；失败或超时由这里统一 reject（二选一，不重复回调）。
+     */
+    private void runSpider(PluginCall call, String op, long timeoutMs, SpiderTask task) {
+        final AtomicBoolean settled = new AtomicBoolean(false);
+        final String label = "爬虫" + op;
+        final Runnable timeoutTask = () -> {
+            if (settled.compareAndSet(false, true)) {
+                Log.w(TAG, op + " timeout after " + timeoutMs + "ms");
+                call.reject(label + "超时（" + (timeoutMs / 1000) + " 秒），请重试或更换源");
+            }
+        };
+        watchdog.postDelayed(timeoutTask, timeoutMs);
+        spiderExecutor.execute(() -> {
+            try {
+                task.run();
+                if (settled.compareAndSet(false, true)) {
+                    watchdog.removeCallbacks(timeoutTask);
+                }
+            } catch (Exception e) {
+                if (settled.compareAndSet(false, true)) {
+                    watchdog.removeCallbacks(timeoutTask);
+                    Log.w(TAG, op + " failed", e);
+                    call.reject(label + "失败: " + e.getMessage());
+                }
+            }
+        });
+    }
 
     /** 已加载实例：handle → 实例上下文 */
     private final Map<String, LoadedSpider> loaded = new ConcurrentHashMap<>();
@@ -120,17 +173,14 @@ public class SpiderPlugin extends Plugin {
             return;
         }
 
-        try {
+        runSpider(call, "加载", LOAD_TIMEOUT_MS, () -> {
             LoadedSpider result = loadSpider(getContext(), jarUrl, api, initExt, userAgent);
             String handle = "sp-" + (++handleSeq);
             loaded.put(handle, result);
             JSObject ret = new JSObject();
             ret.put("handle", handle);
             call.resolve(ret);
-        } catch (Exception e) {
-            Log.w(TAG, "load failed: " + jarUrl, e);
-            call.reject("爬虫加载失败: " + e.getMessage());
-        }
+        });
     }
 
     @PluginMethod
@@ -146,16 +196,15 @@ public class SpiderPlugin extends Plugin {
             return;
         }
 
-        try {
-            String json = invokeSpider(target, method, toJavaArgs(args, arrayArgs));
+        // 参数转换较轻量，先在桥接线程做完，重活（爬虫执行）进线程池
+        Object[] javaArgs = toJavaArgs(args, arrayArgs);
+        runSpider(call, "调用", INVOKE_TIMEOUT_MS, () -> {
+            String json = invokeSpider(target, method, javaArgs);
             JSObject ret = new JSObject();
             ret.put("json", json);
             ret.put("logs", new JSArray(Arrays.asList(targetLogs())));
             call.resolve(ret);
-        } catch (Exception e) {
-            Log.w(TAG, "invoke failed: " + method, e);
-            call.reject("爬虫执行失败: " + e.getMessage());
-        }
+        });
     }
 
     @PluginMethod
@@ -169,7 +218,7 @@ public class SpiderPlugin extends Plugin {
             return;
         }
 
-        try {
+        runSpider(call, "代理", PROXY_TIMEOUT_MS, () -> {
             Object[] result = callProxy(target, url);
             JSObject ret = new JSObject();
             ret.put("url", result.length > 0 && result[0] != null ? String.valueOf(result[0]) : null);
@@ -184,10 +233,7 @@ public class SpiderPlugin extends Plugin {
             }
             ret.put("headers", headerObj);
             call.resolve(ret);
-        } catch (Exception e) {
-            Log.w(TAG, "proxy failed", e);
-            call.reject("proxy failed: " + e.getMessage());
-        }
+        });
     }
 
     @PluginMethod
@@ -201,6 +247,8 @@ public class SpiderPlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
+        watchdog.removeCallbacksAndMessages(null);
+        spiderExecutor.shutdownNow();
         loaded.clear();
         jarCache.clear();
         dexCache.clear();

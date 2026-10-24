@@ -54,6 +54,7 @@ import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFal
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
 import { DIM_MAX_OPACITY, QUALITY_AUTO } from '@/player/constants';
+import { localProxyUrl } from '@/native/localProxy';
 
 const route = useRoute();
 const router = useRouter();
@@ -299,6 +300,39 @@ async function onRedownload(): Promise<void> {
 
 /* ---------- 加载播放源 ---------- */
 /**
+ * 起播等待分级提示（P1-9）：resolvePlay + 引擎加载超过 6s 时升级文案，
+ * 让用户知道是「源慢」而不是 App 卡死。
+ */
+const loadingHint = ref('正在加载…');
+let loadingHintTimer: ReturnType<typeof setTimeout> | null = null;
+
+function startLoadingHint(): void {
+  clearLoadingHint();
+  loadingHint.value = '正在加载…';
+  loadingHintTimer = setTimeout(() => {
+    loadingHint.value = '源响应较慢，仍在连接…可稍候，或返回后换线路';
+  }, 6000);
+}
+
+function clearLoadingHint(): void {
+  if (loadingHintTimer !== null) {
+    clearTimeout(loadingHintTimer);
+    loadingHintTimer = null;
+  }
+}
+
+onBeforeUnmount(clearLoadingHint);
+
+/**
+ * 直链带防盗链头时经本机回环代理注入（P1-6）。
+ * HLS 由 hls.js 的 xhrSetup 注入头，不需要；代理失败沿用原地址（与旧行为一致）。
+ */
+async function preparePlayback(playback: PlaybackSource): Promise<PlaybackSource> {
+  const proxied = await localProxyUrl(playback);
+  return proxied ? { ...playback, url: proxied } : playback;
+}
+
+/**
  * 解析并加载当前集/线路。
  * 返回是否成功：`resolvePlay` 抛错 → `loadError`；引擎加载失败 → `player.error`。
  * 线路切换需要据此判断是否回退原线路（AC-55 / REV-05）。
@@ -313,9 +347,11 @@ async function resolveAndLoad(): Promise<boolean> {
   }
   pageLoading.value = true;
   loadError.value = null;
+  startLoadingHint();
   try {
     const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
-    currentPlayback.value = playback;
+    const prepared = await preparePlayback(playback);
+    currentPlayback.value = prepared;
     const rec = history.progressOf(it.sourceId, it.id);
     let start = 0;
     if (!restart.value && rec && rec.episodeId === ep.id) {
@@ -333,29 +369,30 @@ async function resolveAndLoad(): Promise<boolean> {
     const opts: PlayerLoadOptions = {
       mediaId: it.id,
       episodeId: ep.id,
-      lineId: playback.lineId,
+      lineId: prepared.lineId,
       title: it.title,
       posterUrl: it.posterUrl,
-      playback,
+      playback: prepared,
       startPositionSec: start,
       totalEpisodes: episodes.value.length > 0 ? episodes.value.length : null,
       episodes: episodeRefs,
-      preferLocal: playback.isLocal,
+      preferLocal: prepared.isLocal,
       resolveEpisode: async (targetEpisodeId) => {
         const target = episodes.value.find((e) => e.id === targetEpisodeId);
         if (!target) throw new Error('剧集不存在');
         const nextPlayback = await library.resolvePlay(it.id, target.id, currentLineId.value);
+        const nextPrepared = await preparePlayback(nextPlayback);
         return {
           mediaId: it.id,
           episodeId: target.id,
-          lineId: nextPlayback.lineId,
+          lineId: nextPrepared.lineId,
           title: it.title,
           posterUrl: it.posterUrl,
-          playback: nextPlayback,
+          playback: nextPrepared,
           startPositionSec: 0,
           totalEpisodes: episodes.value.length,
           episodes: episodeRefs,
-          preferLocal: nextPlayback.isLocal,
+          preferLocal: nextPrepared.isLocal,
         };
       },
     };
@@ -370,6 +407,7 @@ async function resolveAndLoad(): Promise<boolean> {
     return false;
   } finally {
     pageLoading.value = false;
+    clearLoadingHint();
   }
 }
 
@@ -783,7 +821,7 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
           <!-- loading -->
           <div v-if="pageLoading && !loadError" class="player-loading" role="status" aria-live="polite">
             <LoadingSpinner :size="32" />
-            <p class="player-loading__text">正在加载…</p>
+            <p class="player-loading__text">{{ loadingHint }}</p>
             <button class="btn btn--ghost btn--sm" type="button" @click="goBack">取消</button>
           </div>
 
