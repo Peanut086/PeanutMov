@@ -150,6 +150,8 @@ async function removeRecord(record: LiveRecord): Promise<void> {
         variant="source"
         title="还没有直播源"
         description="添加 m3u / TVBox txt 直播列表地址，或导入含 lives 字段的 TVBox 订阅（会自动识别）。"
+        action-text="添加直播源"
+        @action="addOpen = true"
       />
 
       <template v-else>
