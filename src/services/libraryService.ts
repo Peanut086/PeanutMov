@@ -177,8 +177,9 @@ async function hideDemoEnabled(): Promise<boolean> {
 
 /**
  * 搜索扇出前过滤：跳过「确定失效」的源（体检结论；timeout 保留——可能是瞬时网络慢）、
- * 关闭搜索的源（`ext.searchable === false`）与当前版本不支持的 JS 爬虫（drpy）。
+ * 关闭搜索的源（`ext.searchable === false`）。
  * 订阅导入动辄上百源、大半已死，全部扇出是「搜索特别慢」的主因之一。
+ * （CHG-16：drpy JS 爬虫已由内置引擎执行，不再排除）
  */
 function searchCandidate(source: Source): boolean {
   if (
@@ -189,7 +190,6 @@ function searchCandidate(source: Source): boolean {
     return false;
   }
   const ext = (source.ext ?? {}) as { kind?: string; searchable?: boolean };
-  if (source.type === 'spider' && ext.kind === 'js') return false;
   if (ext.searchable === false) return false;
   return true;
 }

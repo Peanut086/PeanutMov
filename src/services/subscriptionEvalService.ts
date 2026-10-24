@@ -32,7 +32,7 @@ export interface SubscriptionEvalResult {
   total: number | null;
   siteCount: number;
   spiderCount: number;
-  /** JS 爬虫（drpy，当前不执行） */
+  /** JS 爬虫（drpy，由内置引擎执行） */
   jsCount: number;
   doubanCount: number;
   unknownCount: number;

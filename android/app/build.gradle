@@ -40,6 +40,9 @@ dependencies {
     implementation "com.squareup.okhttp3:okhttp:4.9.3"
     implementation "com.google.code.gson:gson:2.8.6"
     implementation "org.slf4j:slf4j-android:1.7.36"
+    // CHG-16 drpy 运行时：QuickJS 引擎（纯 Java 绑定，同步 API，支持 ES2020/async）+ jsoup（pdfh/pdfa 选择器）
+    implementation "wang.harlon.quickjs:wrapper-android:3.2.3"
+    implementation "org.jsoup:jsoup:1.18.3"
     testImplementation "junit:junit:$junitVersion"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"

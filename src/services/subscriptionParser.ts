@@ -40,7 +40,7 @@ export interface SubscriptionParser {
 
 const SENSITIVE_WORDS = /破解|vip|付费|会员|盗版/i;
 const WARNING_TEXT = '该源名称包含敏感词，请确认内容来源合法';
-const JS_SPIDER_WARNING = '该源是 JS 爬虫（drpy），当前版本仅支持 jar 爬虫，导入后无法浏览';
+const JS_SPIDER_WARNING = '该源是 JS 爬虫（drpy），由内置引擎执行；规则兼容性问题可能导致部分功能不可用';
 
 /** TVBox 爬虫标识：`csp_XBPQ` / `py_cctv_full` */
 const SPIDER_CLASS_PATTERN = /^(?:csp|py)_[A-Za-z0-9_]+$/i;

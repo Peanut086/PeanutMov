@@ -21,6 +21,7 @@ import { isNative } from '@/shared/platform';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { httpClient } from '@/sources/base/httpClient';
 import { Spider as SpiderNative, type SpiderMethod, type SpiderProxyResult } from '@/native/spiderPlugin';
+import { Drpy as DrpyNative, type DrpyMethod } from '@/native/drpyPlugin';
 import { sniffPlayUrl } from '@/native/snifferPlugin';
 import { BaseAdapter, type ProbeResult } from '@/sources/base/BaseAdapter';
 import { deriveHasMore } from '@/sources/base/pagination';
@@ -105,6 +106,43 @@ export interface SpiderPlayerResult {
 function parsePlayerJson(json: string | null | undefined): SpiderPlayerResult {
   const base = parseSpiderJson(json) as SpiderPlayerResult;
   return base;
+}
+
+/* ---------- CHG-16：drpy（kind:'js'）路由 ---------- */
+
+/** TVBox 方法名 → drpy 编排方法（drpy_host.js 的 __drpyCall 分支） */
+function drpyMethodOf(method: SpiderMethod): DrpyMethod {
+  switch (method) {
+    case 'homeContent':
+      return 'home';
+    case 'categoryContent':
+      return 'category';
+    case 'detailContent':
+      return 'detail';
+    case 'searchContent':
+      return 'search';
+    case 'playerContent':
+      return 'play';
+  }
+}
+
+/** TVBox 位置参数 → drpy 单参 JSON（字段名与 drpy_host.js 的编排约定一致） */
+function drpyArgOf(
+  method: SpiderMethod,
+  args: Array<string | number | boolean | Record<string, string> | string[]>,
+): Record<string, unknown> {
+  switch (method) {
+    case 'homeContent':
+      return {};
+    case 'categoryContent':
+      return { tid: String(args[0] ?? ''), pg: Number(args[1] ?? 1) };
+    case 'detailContent':
+      return { id: String(args[0] ?? '') };
+    case 'searchContent':
+      return { wd: String(args[0] ?? ''), quick: args[1] === true };
+    case 'playerContent':
+      return { flag: String(args[0] ?? ''), id: String(args[1] ?? '') };
+  }
 }
 
 /* ---------- 调用护栏：超时 + 取消（原生调用不可中断，只能竞速放弃） ---------- */
@@ -220,11 +258,34 @@ export class SpiderAdapter extends BaseAdapter {
   protected async probe(source: Source): Promise<ProbeResult> {
     this.assertEnabled(source);
     const ext = extOf(source);
-    if (ext.kind !== 'jar' || ext.jarUrl === null || ext.api === null) {
-      throw new AppError('E_UNSUPPORTED_FORMAT', '该爬虫源缺少 jar 或爬虫类名');
-    }
     if (!isNative()) {
       throw new AppError('E_NOT_IMPLEMENTED', '爬虫源仅支持在 App 内使用');
+    }
+    if (ext.kind === 'js') {
+      // CHG-16：drpy 规则源——A 段 HEAD 规则地址，B 段加载规则 + home
+      const candidates = this.ruleUrlCandidates(source, ext);
+      const reachable = await withGithubMirrorFallback(
+        candidates[0] ?? '',
+        (variantUrl) =>
+          httpClient.request(variantUrl, {
+            method: 'HEAD',
+            responseType: 'none',
+            timeoutMs: 3000,
+            retries: 0,
+          }),
+      ).catch((e: unknown) => {
+        if (headInconclusive(e)) return { value: undefined, viaMirror: null };
+        throw e;
+      });
+      if (reachable.viaMirror) this.jarVariants.set(source.id, reachable.viaMirror);
+      await this.load(source);
+      const response = await this.invoke(source, 'homeContent', [true], undefined, undefined);
+      return {
+        itemCount: response.class?.length ?? response.list?.length ?? 0,
+      };
+    }
+    if (ext.kind !== 'jar' || ext.jarUrl === null || ext.api === null) {
+      throw new AppError('E_UNSUPPORTED_FORMAT', '该爬虫源缺少 jar 或爬虫类名');
     }
     // A 段：HEAD jar 快速判死（CHG-09），失败直接归类（403 → auth_failed 等），
     // 不再走 20~30s 的原生 jar 下载；结论不确定时继续 B 段
@@ -253,6 +314,24 @@ export class SpiderAdapter extends BaseAdapter {
     };
   }
 
+  /**
+   * CHG-16：drpy 规则地址候选（按序尝试）。
+   * TVBox 生态两种写法：`ext` 是规则 URL（优先），或 `api`/baseUrl 直接指向规则 .js。
+   */
+  private ruleUrlCandidates(source: Source, ext: SpiderSourceExt): string[] {
+    const out: string[] = [];
+    const push = (value: string | null | undefined): void => {
+      const trimmed = (value ?? '').trim().split(';')[0]?.trim() ?? '';
+      if (/^https?:\/\//i.test(trimmed) && !out.includes(trimmed)) out.push(trimmed);
+    };
+    push(ext.initExt);
+    push(source.baseUrl);
+    // 命中的变体（探活/上次加载的镜像）排最前
+    const hit = this.jarVariants.get(source.id);
+    if (hit) out.unshift(hit);
+    return out;
+  }
+
   /** 确保该源已加载，返回实例句柄 */
   private async ensureLoaded(source: Source): Promise<string> {
     this.assertEnabled(source);
@@ -269,8 +348,12 @@ export class SpiderAdapter extends BaseAdapter {
   override async warmup(source: Source): Promise<void> {
     if (!isNative()) return;
     const ext = extOf(source);
-    // kind:'js'（drpy）由 CHG-16 的引擎接管后再纳入预热
-    if (ext.kind !== 'jar' || ext.api === null || ext.jarUrl === null) return;
+    if (ext.kind === 'js') {
+      // drpy：规则地址缺失就不预热（加载时会报更明确的错）
+      if (this.ruleUrlCandidates(source, ext).length === 0) return;
+    } else if (ext.kind !== 'jar' || ext.api === null || ext.jarUrl === null) {
+      return;
+    }
     if (source.health === 'unreachable' || source.health === 'bad_config' || source.health === 'auth_failed') {
       return;
     }
@@ -288,11 +371,14 @@ export class SpiderAdapter extends BaseAdapter {
 
   private async load(source: Source): Promise<string> {
     const ext = extOf(source);
-    if (ext.kind !== 'jar' || ext.jarUrl === null || ext.api === null) {
-      throw new AppError('E_UNSUPPORTED_FORMAT', '该爬虫源缺少 jar 或爬虫类名');
-    }
     if (!isNative()) {
       throw new AppError('E_NOT_IMPLEMENTED', '爬虫源仅支持在 App 内使用');
+    }
+    if (ext.kind === 'js') {
+      return this.loadJs(source, ext);
+    }
+    if (ext.kind !== 'jar' || ext.jarUrl === null || ext.api === null) {
+      throw new AppError('E_UNSUPPORTED_FORMAT', '该爬虫源缺少 jar 或爬虫类名');
     }
     const cleanJarUrl = ext.jarUrl.split(';')[0] ?? ext.jarUrl;
     const md5Suffix = ext.jarUrl.slice(cleanJarUrl.length);
@@ -327,6 +413,45 @@ export class SpiderAdapter extends BaseAdapter {
     throw nativeErrorOf(lastError, new AppError('E_SOURCE_UNAVAILABLE', '爬虫加载失败，请检查网络或更换源'));
   }
 
+  /**
+   * CHG-16：加载 drpy 规则到原生 QuickJS 引擎。
+   * 候选地址按序尝试（GitHub 地址自动带镜像变体，与 jar 加载同口径）；
+   * 命中的变体记入 jarVariants（js 源复用该映射存规则变体）。
+   */
+  private async loadJs(source: Source, ext: SpiderSourceExt): Promise<string> {
+    const candidates = this.ruleUrlCandidates(source, ext);
+    if (candidates.length === 0) {
+      throw new AppError('E_UNSUPPORTED_FORMAT', '该 drpy 源缺少规则地址');
+    }
+    let lastError: unknown = null;
+    const tried = new Set<string>();
+    for (const candidate of candidates) {
+      for (const variant of [candidate, ...mirrorVariants(candidate)]) {
+        if (tried.has(variant)) continue;
+        tried.add(variant);
+        try {
+          const result = await raceNative(
+            () =>
+              DrpyNative.load({
+                ruleUrl: variant,
+                initExt: ext.initExt,
+              }),
+            undefined,
+            NATIVE_LOAD_TIMEOUT_MS,
+          );
+          this.jarVariants.set(source.id, variant);
+          this.handles.set(source.id, result.handle);
+          return result.handle;
+        } catch (e) {
+          if (e instanceof AppError && e.code === 'E_ABORTED') throw e;
+          lastError = e;
+          logger.warn('drpy 规则加载失败（本次变体）', source.name, variant, e);
+        }
+      }
+    }
+    throw nativeErrorOf(lastError, new AppError('E_SOURCE_UNAVAILABLE', 'drpy 规则加载失败，请检查网络或更换源'));
+  }
+
   private async invoke(
     source: Source,
     method: SpiderMethod,
@@ -338,11 +463,26 @@ export class SpiderAdapter extends BaseAdapter {
     signal?.throwIfAborted();
     const handle = await this.ensureLoaded(source);
     try {
-      const result = await raceNative(
-        () => SpiderNative.invoke({ handle, method, args, arrayArgs }),
-        signal,
-        NATIVE_INVOKE_TIMEOUT_MS,
-      );
+      let result: { json: string | null; logs?: string[] };
+      if (extOf(source).kind === 'js') {
+        // CHG-16：drpy 路由——TVBox 方法名映射为编排方法，位置参数拼成单参 JSON
+        result = await raceNative(
+          () =>
+            DrpyNative.invoke({
+              handle,
+              method: drpyMethodOf(method),
+              arg: JSON.stringify(drpyArgOf(method, args)),
+            }),
+          signal,
+          NATIVE_INVOKE_TIMEOUT_MS,
+        );
+      } else {
+        result = await raceNative(
+          () => SpiderNative.invoke({ handle, method, args, arrayArgs }),
+          signal,
+          NATIVE_INVOKE_TIMEOUT_MS,
+        );
+      }
       return parseSpiderJson(result.json);
     } catch (e) {
       if (e instanceof AppError) throw e;
@@ -528,18 +668,33 @@ export class SpiderAdapter extends BaseAdapter {
     signal?.throwIfAborted();
     const handle = await this.ensureLoaded(source);
     try {
-      const result = await raceNative(
-        () =>
-          SpiderNative.invoke({
-            handle,
-            method: 'playerContent',
-            args: [flag, id, ''],
-            // vipFlags 是 List 形参，走 arrayArgs 避免被桥接展平
-            arrayArgs: { 2: [] },
-          }),
-        signal,
-        NATIVE_INVOKE_TIMEOUT_MS,
-      );
+      let result: { json: string | null; logs?: string[] };
+      if (extOf(source).kind === 'js') {
+        // CHG-16：drpy 的 play 编排，返回结构与 playerContent 同构
+        result = await raceNative(
+          () =>
+            DrpyNative.invoke({
+              handle,
+              method: 'play',
+              arg: JSON.stringify({ flag, id }),
+            }),
+          signal,
+          NATIVE_INVOKE_TIMEOUT_MS,
+        );
+      } else {
+        result = await raceNative(
+          () =>
+            SpiderNative.invoke({
+              handle,
+              method: 'playerContent',
+              args: [flag, id, ''],
+              // vipFlags 是 List 形参，走 arrayArgs 避免被桥接展平
+              arrayArgs: { 2: [] },
+            }),
+          signal,
+          NATIVE_INVOKE_TIMEOUT_MS,
+        );
+      }
       return parsePlayerJson(result.json);
     } catch (e) {
       if (e instanceof AppError) throw e;
@@ -555,6 +710,10 @@ export class SpiderAdapter extends BaseAdapter {
   ): Promise<SpiderProxyResult> {
     signal?.throwIfAborted();
     const handle = await this.ensureLoaded(source);
+    if (extOf(source).kind === 'js') {
+      // drpy 规则没有 TVBox 的 proxy(Map) 契约；parse=1 的场景走 resolveViaParse
+      throw new AppError('E_NO_PLAY_URL', 'drpy 源不支持爬虫代理地址');
+    }
     try {
       const result = await raceNative(
         () => SpiderNative.proxy({ handle, url }),

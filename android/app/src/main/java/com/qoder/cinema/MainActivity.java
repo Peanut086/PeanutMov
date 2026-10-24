@@ -19,6 +19,7 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(CastSharePlugin.class);
         registerPlugin(SpiderPlugin.class);
+        registerPlugin(DrpyPlugin.class);
         registerPlugin(SnifferPlugin.class);
         registerPlugin(LocalProxyPlugin.class);
         super.onCreate(savedInstanceState);
