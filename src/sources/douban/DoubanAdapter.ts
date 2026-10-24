@@ -40,12 +40,12 @@ import type {
   SourceType,
 } from '@/types';
 
-/** 跨源播放解析器：由装配方注入，返回可播的候选源与条目 */
+/** 跨源播放解析器：由装配方注入，返回按质量排序的可播候选（首个优先，失败顺延） */
 export type DoubanPlayResolver = (params: {
   title: string;
   year: number | null;
   signal?: AbortSignal;
-}) => Promise<PlayCandidate | null>;
+}) => Promise<PlayCandidate[]>;
 
 /** 取候选源适配器（装配方注入，便于测试替身） */
 export type DoubanAdapterGetter = (source: Source) => {
@@ -184,18 +184,30 @@ export class DoubanAdapter extends BaseAdapter {
       throw new AppError('E_NO_PLAY_URL', '缺少影片信息，无法匹配播放来源');
     }
 
-    const candidate = await resolvePlayFrom({ title, year: item?.year ?? null, signal: params.signal });
-    if (candidate === null) {
+    const candidates = await resolvePlayFrom({ title, year: item?.year ?? null, signal: params.signal });
+    if (candidates.length === 0) {
       throw new AppError('E_NO_PLAY_URL', '已启用的源里没有找到这部影片的可播放地址');
     }
 
-    // 借来的地址按候选源自己的口径解析（它的 baseUrl 决定相对地址如何补全）
-    return adapterGetter(candidate.source).resolvePlayUrl({
-      source: candidate.source,
-      mediaId: params.mediaId,
-      sourceItemId: candidate.item.sourceItemId,
-      episodeId: params.episodeId,
-      lineId: params.lineId,
+    // 借来的地址按候选源自己的口径解析（它的 baseUrl 决定相对地址如何补全）；
+    // 高质量候选失败（线路需要解析接口、源站瞬时故障等）时顺延下一个（CHG-12）
+    const failures: string[] = [];
+    for (const candidate of candidates) {
+      try {
+        return await adapterGetter(candidate.source).resolvePlayUrl({
+          source: candidate.source,
+          mediaId: params.mediaId,
+          sourceItemId: candidate.item.sourceItemId,
+          episodeId: params.episodeId,
+          lineId: params.lineId,
+        });
+      } catch (e) {
+        if (params.signal?.aborted) throw e;
+        failures.push(`${candidate.source.name}：${e instanceof AppError ? e.message : String(e)}`);
+      }
+    }
+    throw new AppError('E_NO_PLAY_URL', `${candidates.length} 个候选源均无法解析播放地址`, {
+      detail: failures.join('；'),
     });
   }
 

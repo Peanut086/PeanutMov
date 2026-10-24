@@ -10,7 +10,7 @@ import { computed, ref, shallowRef } from 'vue';
 import type { ConfirmState, LoadState, ToastMessage } from '@/types';
 import { newId } from '@/shared/id';
 
-export type TabKey = 'home' | 'library' | 'downloads' | 'me';
+export type TabKey = 'home' | 'library' | 'live' | 'downloads' | 'me';
 
 const TOAST_MAX = 3;
 const TOAST_DURATION = { info: 2400, error: 2400, success: 1800 } as const;

@@ -152,6 +152,28 @@ export const useSourceStore = defineStore('source', () => {
     return disabled;
   }
 
+  /** 按订阅来源删除全部源（CHG-12 订阅管理）；返回删除数量 */
+  async function removeBySubscription(subscriptionId: string): Promise<number> {
+    const latest = await sourceService.list();
+    const targets = latest.filter((source) => source.subscriptionId === subscriptionId);
+    let removed = 0;
+    for (const source of targets) {
+      try {
+        await sourceService.remove(source.id);
+        removed += 1;
+      } catch (e) {
+        logger.warn('按订阅删除源失败', source.name, e);
+      }
+    }
+    if (removed > 0) {
+      if (currentSourceId.value !== null && targets.some((s) => s.id === currentSourceId.value)) {
+        currentSourceId.value = null;
+      }
+      await reload();
+    }
+    return removed;
+  }
+
   async function reorder(ids: string[]): Promise<void> {
     error.value = null;
     try {
@@ -266,6 +288,7 @@ export const useSourceStore = defineStore('source', () => {
     select,
     setEnabled,
     disableUnhealthy,
+    removeBySubscription,
     reorder,
     refreshHealth,
     create,

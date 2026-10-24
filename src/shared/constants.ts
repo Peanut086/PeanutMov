@@ -20,7 +20,8 @@ export const BUILD_TIME: number | null =
 
 /* ---------- IndexedDB ---------- */
 export const DB_NAME = 'cinema-db';
-export const DB_VERSION = 1;
+/** v2（CHG-13）：新增 lives store（直播播放列表） */
+export const DB_VERSION = 2;
 
 /** kv 表中存放应用设置的 key */
 export const KV_KEY_SETTINGS = 'app-settings';
@@ -62,6 +63,13 @@ export const TIMEOUT_SEARCH_MS = 5000;
 export const TIMEOUT_LOAD_METADATA_MS = 15000;
 /** 播放网络错误自动重试间隔（FR-25） */
 export const PLAYER_RETRY_DELAY_MS = 1000;
+
+/* ---------- GitHub raw 镜像（CHG-11） ---------- */
+/** 直连 raw.githubusercontent.com 在部分网络不可达，按序尝试的镜像前缀（清单实测在用） */
+export const GITHUB_MIRROR_HOSTS = ['gh-proxy.org', 'ghfast.top', 'gh-proxy.com'] as const;
+/** 批量订阅评测：并发与单订阅预算 */
+export const SUBSCRIPTION_EVAL_CONCURRENCY = 4;
+export const TIMEOUT_SUBSCRIPTION_EVAL_MS = 15000;
 
 /* ---------- 播放 ---------- */
 export const PLAYBACK_RATES: readonly PlaybackRate[] = [0.5, 0.75, 1, 1.25, 1.5, 2];

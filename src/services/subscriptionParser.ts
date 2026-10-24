@@ -344,6 +344,7 @@ function emptyPreview(opts: ParseOptions, name: string | null, globalIssues: Imp
     entries: [],
     globalIssues,
     repos: [],
+    lives: [],
   };
 }
 
@@ -383,6 +384,7 @@ function reposPreview(opts: ParseOptions, name: string | null, repos: string[]):
     fileName: opts.fileName ?? null,
     fetchedAt: Date.now(),
     name,
+    lives: [],
     total: 0,
     entries: [],
     globalIssues: [
@@ -496,6 +498,7 @@ export const subscriptionParser: SubscriptionParser = {
       entries,
       globalIssues,
       repos: [],
+      lives: [],
     };
   },
 };

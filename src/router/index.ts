@@ -73,6 +73,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresLayout: false, title: '搜索' },
   },
   {
+    path: '/live',
+    name: 'live',
+    component: () => import('@/views/LiveView.vue'),
+    meta: { requiresLayout: true, tab: 'live', title: '直播' },
+  },
+  {
     path: '/detail/:mediaId',
     name: 'detail',
     component: () => import('@/views/DetailView.vue'),
@@ -125,6 +131,18 @@ const routes: RouteRecordRaw[] = [
     name: 'source-import',
     component: () => import('@/views/ImportSubscriptionView.vue'),
     meta: { requiresLayout: false, title: '导入订阅' },
+  },
+  {
+    path: '/settings/subscriptions',
+    name: 'subscriptions',
+    component: () => import('@/views/SubscriptionListView.vue'),
+    meta: { requiresLayout: false, title: '订阅管理' },
+  },
+  {
+    path: '/settings/subscriptions/eval',
+    name: 'subscription-eval',
+    component: () => import('@/views/EvalSubscriptionView.vue'),
+    meta: { requiresLayout: false, title: '批量订阅评测' },
   },
   {
     path: '/settings/sources/:id/edit',

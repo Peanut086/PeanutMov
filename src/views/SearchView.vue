@@ -271,9 +271,13 @@ function retry(): void {
           </ul>
         </section>
 
-        <div v-if="isSearching" class="search-progress">
+        <div v-if="isSearching" class="search-progress" role="status">
           <LoadingSpinner :size="16" />
-          <span>仍在搜索其它源…</span>
+          <span>
+            仍在搜索其它源{{
+              library.searchProgress ? `（${library.searchProgress.done}/${library.searchProgress.total}）` : '…'
+            }}
+          </span>
         </div>
 
         <button

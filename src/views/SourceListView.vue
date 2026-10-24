@@ -271,6 +271,10 @@ function goImport(): void {
   void router.push('/settings/sources/import');
 }
 
+function goSubscriptions(): void {
+  void router.push('/settings/subscriptions');
+}
+
 /**
  * 恢复演示源（AC-97 后半段）：`seedService.restoreDemo()` 经 `@/stores/bootstrap` 调用，
  * 内部强制启用 + 幂等补齐条目（不重复插入），成功后 `sources:changed` 触发 Store 重载。
@@ -331,6 +335,9 @@ async function retry(): Promise<void> {
         </button>
         <button class="btn btn--secondary btn--md sources-actions__btn" type="button" @click="goImport">
           导入订阅
+        </button>
+        <button class="btn btn--ghost btn--md sources-actions__more" type="button" @click="goSubscriptions">
+          订阅管理
         </button>
         <button
           class="btn btn--ghost btn--md sources-actions__refresh"

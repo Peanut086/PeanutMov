@@ -499,6 +499,8 @@ export interface ImportPreview {
   globalIssues: ImportIssue[];
   /** 多仓索引（顶层 `urls[]` 或逐行 URL 文本）：待用户选择后展开，非空时 `entries` 为空 */
   repos: string[];
+  /** TVBox `lives[]` 直播源（CHG-13）：导入成功后由 UI 征询/自动添加到直播页 */
+  lives: Array<{ name: string; url: string }>;
 }
 
 export interface ImportCommitOptions {
@@ -513,6 +515,30 @@ export interface ImportResult {
   sourceIds: string[];
   issues: ImportIssue[];
 }
+
+/* ---------- 直播（CHG-13） ---------- */
+export type LiveListFormat = 'm3u' | 'txt' | 'auto';
+
+/** 直播播放列表记录（频道本身不落库：直播源更新频繁，按需拉取解析） */
+export interface LiveRecord {
+  id: string;
+  name: string;
+  /** 播放列表地址（m3u / txt / 单频道 m3u8） */
+  url: string;
+  format: LiveListFormat;
+  /** 最近一次成功拉取的频道数；从未成功为 null */
+  channelCount: number | null;
+  subscriptionId: string | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+/** 频道分组（解析层聚合结果，不落库） */
+export interface LiveGroup {
+  name: string;
+  channels: Array<{ name: string; url: string; logo: string | null }>;
+}
+
 
 /* ---------- 备份 ---------- */
 export type BackupMode = 'merge' | 'overwrite';

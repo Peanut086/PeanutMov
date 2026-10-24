@@ -138,7 +138,7 @@ describe('DoubanAdapter', () => {
   });
 
   it('resolvePlayUrl（装配 + 无候选）：报「没有找到可播放的源」', async () => {
-    doubanRuntime.resolvePlayFrom = async () => null;
+    doubanRuntime.resolvePlayFrom = async () => [];
     doubanRuntime.adapterGetter = () => ({
       resolvePlayUrl: async () => ({ url: 'x', format: 'mp4', headers: {}, subtitles: [], lineId: '', quality: null, expiresAt: null, isLocal: false }),
     });
@@ -152,5 +152,59 @@ describe('DoubanAdapter', () => {
         lineId: 'douban-100',
       }),
     ).rejects.toMatchObject({ code: 'E_NO_PLAY_URL', message: expect.stringContaining('没有找到') });
+  });
+
+  it('resolvePlayUrl（CHG-12 回退）：首候选失败顺延次候选成功', async () => {
+    const good = makeSource({ id: 'src-good', name: '好源', type: 'site' });
+    const bad = makeSource({ id: 'src-bad', name: '坏源', type: 'site' });
+    doubanRuntime.resolvePlayFrom = async () => [
+      { source: bad, item: { id: 'x', sourceId: bad.id, sourceItemId: '100', originalTitle: null, title: '希望', type: 'movie', year: 2026, area: null, genres: [], tags: [], rating: null, posterUrl: null, backdropUrl: null, description: null, durationSec: null, episodeCount: null, titleLower: '希望', isDemo: false, cachedAt: 1, updatedAt: 1 } },
+      { source: good, item: { id: 'y', sourceId: good.id, sourceItemId: '200', originalTitle: null, title: '希望', type: 'movie', year: 2026, area: null, genres: [], tags: [], rating: null, posterUrl: null, backdropUrl: null, description: null, durationSec: null, episodeCount: null, titleLower: '希望', isDemo: false, cachedAt: 1, updatedAt: 1 } },
+    ];
+    const attempted: string[] = [];
+    doubanRuntime.adapterGetter = (source) => ({
+      resolvePlayUrl: async () => {
+        attempted.push(source.id);
+        if (source.id === 'src-bad') throw new (await import('@/shared/errors')).AppError('E_NO_PLAY_URL', '该线路需要解析接口');
+        return { url: 'https://cdn/x.m3u8', format: 'hls', headers: {}, subtitles: [], lineId: '', quality: null, expiresAt: null, isLocal: false };
+      },
+    });
+    const adapter = new DoubanAdapter();
+    const play = await adapter.resolvePlayUrl({
+      source: makeSource(),
+      mediaId: 'douban-src-douban:100~x',
+      sourceItemId: '100',
+      episodeId: 'douban-100-1',
+      lineId: 'douban-100',
+    });
+    expect(attempted).toEqual(['src-bad', 'src-good']);
+    expect(play.url).toBe('https://cdn/x.m3u8');
+  });
+
+  it('resolvePlayUrl（CHG-12 回退）：全部候选失败 → 聚合报错并带明细', async () => {
+    const a = makeSource({ id: 'src-a', name: 'A 源', type: 'site' });
+    const b = makeSource({ id: 'src-b', name: 'B 源', type: 'site' });
+    doubanRuntime.resolvePlayFrom = async () => [
+      { source: a, item: { id: 'x', sourceId: a.id, sourceItemId: '1', originalTitle: null, title: '希望', type: 'movie', year: 2026, area: null, genres: [], tags: [], rating: null, posterUrl: null, backdropUrl: null, description: null, durationSec: null, episodeCount: null, titleLower: '希望', isDemo: false, cachedAt: 1, updatedAt: 1 } },
+      { source: b, item: { id: 'y', sourceId: b.id, sourceItemId: '2', originalTitle: null, title: '希望', type: 'movie', year: 2026, area: null, genres: [], tags: [], rating: null, posterUrl: null, backdropUrl: null, description: null, durationSec: null, episodeCount: null, titleLower: '希望', isDemo: false, cachedAt: 1, updatedAt: 1 } },
+    ];
+    doubanRuntime.adapterGetter = (source) => ({
+      resolvePlayUrl: async () => {
+        throw new (await import('@/shared/errors')).AppError('E_NO_PLAY_URL', `${source.name} 无地址`);
+      },
+    });
+    const adapter = new DoubanAdapter();
+    await expect(
+      adapter.resolvePlayUrl({
+        source: makeSource(),
+        mediaId: 'douban-src-douban:100~x',
+        sourceItemId: '100',
+        episodeId: 'douban-100-1',
+        lineId: 'douban-100',
+      }),
+    ).rejects.toMatchObject({
+      code: 'E_NO_PLAY_URL',
+      message: expect.stringContaining('2 个候选源均无法解析'),
+    });
   });
 });

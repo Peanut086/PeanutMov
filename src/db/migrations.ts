@@ -9,6 +9,8 @@
  * 变更登记：
  * - v1（2026-10-20）：创建 sources/media/lines/episodes/categories/history/favorites/
  *   downloads/blobs/kv 共 10 个 store 及技术方案 5.1 列出的全部索引。回滚方式：无（首版）。
+ * - v2（2026-10-24，CHG-13）：新增 lives store（直播播放列表，直播源 ≠ 影片源，独立管理）。
+ *   回滚方式：删除该 store 即回到 v1 数据形态（v1 客户端忽略多出的 store）。
  */
 import type { IDBPDatabase } from 'idb';
 
@@ -70,5 +72,9 @@ export function upgrade(db: IDBPDatabase<CinemaDB>, oldVersion: number, _newVers
     db.createObjectStore('blobs', { keyPath: 'key' });
     db.createObjectStore('kv', { keyPath: 'key' });
   }
-  // 未来：if (oldVersion < 2) { db.createObjectStore('xxx', ...) }
+  if (oldVersion < 2) {
+    const lives = db.createObjectStore('lives', { keyPath: 'id' });
+    lives.createIndex('by-created', 'createdAt');
+  }
+  // 未来：if (oldVersion < 3) { db.createObjectStore('xxx', ...) }
 }

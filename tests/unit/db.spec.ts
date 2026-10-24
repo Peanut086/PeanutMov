@@ -41,7 +41,7 @@ describe('DB 表结构与事务（AC-14）', () => {
     await resetAll();
   });
 
-  it('v1 建表：10 个 store 与全部索引均存在', async () => {
+  it('v2 建表：11 个 store（含 lives）与全部索引均存在', async () => {
     const db = await getDb();
     const stores = [...db.objectStoreNames].sort();
     expect(stores).toEqual(
@@ -53,13 +53,14 @@ describe('DB 表结构与事务（AC-14）', () => {
         'favorites',
         'history',
         'kv',
+        'lives',
         'lines',
         'media',
         'sources',
       ].sort(),
     );
 
-    const tx = db.transaction(['sources', 'media', 'episodes', 'downloads'], 'readonly');
+    const tx = db.transaction(['sources', 'media', 'episodes', 'downloads', 'lives'], 'readonly');
     expect([...tx.objectStore('sources').indexNames].sort()).toEqual(
       ['by-enabled', 'by-key', 'by-sort', 'by-type'].sort(),
     );
@@ -72,6 +73,7 @@ describe('DB 表结构与事务（AC-14）', () => {
     expect([...tx.objectStore('downloads').indexNames].sort()).toEqual(
       ['by-created', 'by-media', 'by-priority', 'by-status'].sort(),
     );
+    expect([...tx.objectStore('lives').indexNames].sort()).toEqual(['by-created']);
     await tx.done;
   });
 
@@ -111,7 +113,7 @@ describe('DB 表结构与事务（AC-14）', () => {
     await deleteDatabase();
     resetDbConnection();
     const db = await getDb();
-    expect([...db.objectStoreNames].length).toBe(10);
+    expect([...db.objectStoreNames].length).toBe(11);
     expect(await sourceRepo.count()).toBe(0);
   });
 

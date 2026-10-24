@@ -18,12 +18,13 @@ describe('SCF 脚手架自检', () => {
     setComplianceGate(mockSettingsService);
   });
 
-  it('路由表含 18 条记录（17 条业务路由 + 404）', () => {
+  it('路由表含 21 条记录（20 条业务路由 + 404；CHG-13 新增 live/订阅两条）', () => {
     expect(routes.map((r) => r.name)).toEqual([
       'welcome',
       'home',
       'library',
       'search',
+      'live',
       'detail',
       'player',
       'downloads',
@@ -33,6 +34,8 @@ describe('SCF 脚手架自检', () => {
       'sources',
       'source-new',
       'source-import',
+      'subscriptions',
+      'subscription-eval',
       'source-edit',
       'backup',
       'about',
@@ -62,6 +65,7 @@ describe('SCF 脚手架自检', () => {
       ['/', 'home'],
       ['/library', 'library'],
       ['/search', 'search'],
+      ['/live', 'live'],
       ['/detail/abc', 'detail'],
       ['/player/abc/ep1', 'player'],
       ['/downloads', 'downloads'],
@@ -71,6 +75,8 @@ describe('SCF 脚手架自检', () => {
       ['/settings/sources', 'sources'],
       ['/settings/sources/new', 'source-new'],
       ['/settings/sources/import', 'source-import'],
+      ['/settings/subscriptions', 'subscriptions'],
+      ['/settings/subscriptions/eval', 'subscription-eval'],
       ['/settings/sources/s1/edit', 'source-edit'],
       ['/settings/backup', 'backup'],
       ['/settings/about', 'about'],
@@ -83,10 +89,10 @@ describe('SCF 脚手架自检', () => {
     // 未匹配的路径落到 404
     await router.push('/definitely-not-a-page');
     expect(router.currentRoute.value.name).toBe('not-found');
-    expect(targets.length + 2).toBe(18); // 16 + welcome + not-found
+    expect(targets.length + 2).toBe(21); // 19 + welcome + not-found
   });
 
-  it('一级页面挂载：渲染内容 + 4 项 TabBar + 预留底部留白', async () => {
+  it('一级页面挂载：渲染内容 + 5 项 TabBar + 预留底部留白（CHG-13 起 5 Tab）', async () => {
     await mockSettingsService.acceptCompliance(COMPLIANCE_VERSION);
     const wrapper = mount(App, { global: { plugins: [createPinia(), router] } });
     await router.push('/library');
@@ -94,7 +100,7 @@ describe('SCF 脚手架自检', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(wrapper.find('[data-route="library"]').exists()).toBe(true);
     expect(wrapper.find('.app-content--tabbar').exists()).toBe(true);
-    expect(wrapper.find('nav[aria-label="主导航"]').findAll('button').length).toBe(4);
+    expect(wrapper.find('nav[aria-label="主导航"]').findAll('button').length).toBe(5);
     wrapper.unmount();
   });
 

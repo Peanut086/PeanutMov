@@ -49,6 +49,8 @@ export const useLibraryStore = defineStore('library', () => {
   let requestSeq = 0;
   /** 进行中的搜索控制器：新搜索前 abort 旧的，避免旧请求继续占用源（REV-06） */
   let searchController: AbortController | null = null;
+  /** 渐进搜索进度（CHG-12）：已完成的源 / 总源数，结束为 null */
+  const searchProgress = ref<{ done: number; total: number } | null>(null);
   const sourceStore = useSourceStore();
 
   /** 源侧故障码（17.6.2 条件 2）：只有这些错误才考虑自动换源 */
@@ -266,8 +268,26 @@ export const useLibraryStore = defineStore('library', () => {
     searchState.value = 'loading';
     const controller = new AbortController();
     searchController = controller;
+    searchResults.value = [];
+    searchFailed.value = [];
     try {
-      const result = await libraryService.search({ keyword: trimmed, signal: controller.signal });
+      const result = await libraryService.search({
+        keyword: trimmed,
+        signal: controller.signal,
+        // CHG-12 渐进搜索：单源完成即上屏，先到先显示
+        onPartial: ({ sourceId, items, error: sourceError, done, total }) => {
+          if (controller.signal.aborted) return;
+          searchProgress.value = { done, total };
+          if (sourceError) {
+            searchFailed.value = [...searchFailed.value, { sourceId, error: sourceError }];
+            return;
+          }
+          if (items.length > 0) {
+            const seen = new Set(searchResults.value.map((item) => item.id));
+            searchResults.value = [...searchResults.value, ...items.filter((item) => !seen.has(item.id))];
+          }
+        },
+      });
       if (controller.signal.aborted) return;
       searchResults.value = result.items;
       searchFailed.value = result.failed;
@@ -280,12 +300,14 @@ export const useLibraryStore = defineStore('library', () => {
       error.value = toErrorShape(e);
     } finally {
       if (searchController === controller) searchController = null;
+      searchProgress.value = null;
     }
   }
 
   function clearSearch(): void {
     searchController?.abort();
     searchController = null;
+    searchProgress.value = null;
     searchKeyword.value = '';
     searchResults.value = [];
     searchFailed.value = [];
@@ -340,6 +362,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchResults,
     searchState,
     searchFailed,
+    searchProgress,
     detail,
     detailState,
     posterItems,

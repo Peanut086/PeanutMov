@@ -69,6 +69,17 @@ export interface LibraryService {
     page?: number;
     pageSize?: number;
     signal?: AbortSignal;
+    /**
+     * 单源完成即回调（CHG-12 渐进搜索）：先到先显示，不必等全部源结束。
+     * `error` 非 null 表示该源失败；`done/total` 供进度展示。取消后不再回调。
+     */
+    onPartial?: (event: {
+      sourceId: string;
+      items: MediaItem[];
+      error: AppErrorShape | null;
+      done: number;
+      total: number;
+    }) => void;
   }): Promise<SearchResult>;
   getDetail(mediaId: string, opts?: { refresh?: boolean }): Promise<MediaDetail>;
   getItem(mediaId: string): Promise<MediaItem | null>;
@@ -319,29 +330,38 @@ export const libraryService: LibraryService = {
     );
 
     const failed: Array<{ sourceId: string; error: AppErrorShape }> = [];
-    const remoteResults: MediaItem[][] = [];
+    const remoteResults: Array<MediaItem[] | null> = [];
 
     if (isOnline()) {
-      const settled = await Promise.allSettled(
-        enabled.map((source) => searchOneSource(source, keyword, params.signal, pageSize)),
-      );
-      settled.forEach((outcome, index) => {
-        const source = enabled[index];
-        if (!source) return;
-        if (outcome.status === 'fulfilled') {
-          remoteResults.push(outcome.value);
-          return;
+      const total = enabled.length;
+      let done = 0;
+      /** 单源完成即通知（CHG-12 渐进搜索）；取消的源不计入失败、不回调 */
+      const settleOne = async (source: Source, index: number): Promise<void> => {
+        try {
+          const items = await searchOneSource(source, keyword, params.signal, pageSize);
+          const visible = hideDemo ? items.filter((item) => !item.isDemo) : items;
+          remoteResults[index] = visible;
+          done += 1;
+          params.onPartial?.({ sourceId: source.id, items: visible, error: null, done, total });
+        } catch (e) {
+          done += 1;
+          if (isCanceled(e)) return;
+          const shape = toErrorShape(e);
+          failed.push({ sourceId: source.id, error: shape });
+          params.onPartial?.({ sourceId: source.id, items: [], error: shape, done, total });
         }
-        if (isCanceled(outcome.reason)) return;
-        failed.push({ sourceId: source.id, error: toErrorShape(outcome.reason) });
-      });
+      };
+      await Promise.all(enabled.map((source, index) => settleOne(source, index)));
     } else {
       for (const source of enabled) {
         failed.push({ sourceId: source.id, error: toErrorShape(new AppError('E_NETWORK')) });
       }
     }
 
-    const remote = remoteResults.flat().filter((item) => (hideDemo ? !item.isDemo : true));
+    const remote = remoteResults
+      .filter((rows): rows is MediaItem[] => Array.isArray(rows))
+      .flat()
+      .filter((item) => (hideDemo ? !item.isDemo : true));
     if (remote.length > 0) {
       await mediaRepo.upsertMany(remote);
     }

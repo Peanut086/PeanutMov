@@ -7,12 +7,13 @@
  * 串片是这个方案的主要风险，因此匹配分三层：
  * 1. 片名归一化后**必须**完全相等（去掉年份、季、集数、标点）；
  * 2. 年份必须一致（任一缺年份时跳过该校验）；
- * 3. 取上述条件下的**第一个**候选。
+ * 3. 满足条件的候选按源质量排序（CHG-12），播放时首个失败顺延下一个。
  *
- * 无法归一化或任一条件不满足时返回 null，由上层明确告知「没找到可播放的源」，
+ * 无法归一化或任一条件不满足时返回空，由上层明确告知「没找到可播放的源」，
  * 不猜测、不降级——串一部片比播不出来更糟。
  */
 import type { MediaItem, Source } from '@/types';
+import { HEALTH_TIER_ORDER, healthTierOf, type HealthTier } from '@/shared/healthTier';
 
 /** 归一化片名：去空白、全角转半角、只保留中日韩文字/字母/数字 */
 export function normalizeTitleForMatch(title: string): string {
@@ -58,13 +59,19 @@ export function isTitleMatch(targetTitle: string, targetYear: number | null, can
   return true;
 }
 
-/** 从一堆源的搜索结果里挑出能播的条目；都不匹配返回 null */
-export function pickPlayCandidate(
+/**
+ * 从一堆源的搜索结果里挑出全部能播的条目，按源质量排序（CHG-12）：
+ * 健康档位 → 探测延迟（null 最后）→ 保持搜索结果的原始顺序。
+ * 不传 `latencyOf` 时不排序（按原始顺序），供无健康快照的测试与旧调用方使用。
+ */
+export function pickPlayCandidates(
   targetTitle: string,
   targetYear: number | null,
   results: MediaItem[],
   sourceById: ReadonlyMap<string, Source>,
-): PlayCandidate | null {
+  latencyOf?: (sourceId: string) => number | null,
+): PlayCandidate[] {
+  const matched: PlayCandidate[] = [];
   for (const item of results) {
     const source = sourceById.get(item.sourceId);
     if (source === undefined) continue;
@@ -72,8 +79,31 @@ export function pickPlayCandidate(
     if (source.type !== 'site' && source.type !== 'spider') continue;
     if (!source.enabled) continue;
     if (isTitleMatch(targetTitle, targetYear, item)) {
-      return { source, item };
+      matched.push({ source, item });
     }
   }
-  return null;
+  if (matched.length === 0 || latencyOf === undefined) return matched;
+
+  const tierOf = (candidate: PlayCandidate): HealthTier =>
+    healthTierOf(candidate.source.health, latencyOf(candidate.source.id));
+  return matched.sort((a, b) => {
+    const tierDiff = HEALTH_TIER_ORDER[tierOf(a)] - HEALTH_TIER_ORDER[tierOf(b)];
+    if (tierDiff !== 0) return tierDiff;
+    const latencyA = latencyOf(a.source.id);
+    const latencyB = latencyOf(b.source.id);
+    const rankA = latencyA === null || !Number.isFinite(latencyA) ? Number.POSITIVE_INFINITY : latencyA;
+    const rankB = latencyB === null || !Number.isFinite(latencyB) ? Number.POSITIVE_INFINITY : latencyB;
+    return rankA - rankB;
+  });
+}
+
+/** 从一堆源的搜索结果里挑出能播的条目（质量最优的一个）；都不匹配返回 null */
+export function pickPlayCandidate(
+  targetTitle: string,
+  targetYear: number | null,
+  results: MediaItem[],
+  sourceById: ReadonlyMap<string, Source>,
+  latencyOf?: (sourceId: string) => number | null,
+): PlayCandidate | null {
+  return pickPlayCandidates(targetTitle, targetYear, results, sourceById, latencyOf)[0] ?? null;
 }

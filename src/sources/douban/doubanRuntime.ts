@@ -9,34 +9,37 @@
  */
 import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { libraryService } from '@/services/libraryService';
+import { healthService } from '@/services/healthService';
 import { doubanRuntime } from '@/sources/douban/DoubanAdapter';
-import { pickPlayCandidate } from '@/sources/douban/playMatch';
+import { pickPlayCandidates } from '@/sources/douban/playMatch';
 import { sourceRegistry } from '@/sources/registry';
 import { logger } from '@/shared/logger';
 
-/** 在「自带片源的启用源」里按片名搜索，返回匹配的候选 */
+/** 在「自带片源的启用源」里按片名搜索，返回按质量排序的可播候选（CHG-12） */
 const resolvePlayFrom = async (params: {
   title: string;
   year: number | null;
   signal?: AbortSignal;
 }): ReturnType<NonNullable<typeof doubanRuntime.resolvePlayFrom>> => {
   const all = await sourceRepo.list();
-  // 只向自带片源的源借地址（与 playMatch.pickPlayCandidate 的口径一致）：
+  // 只向自带片源的源借地址（与 playMatch.pickPlayCandidates 的口径一致）：
   // 同为发现源的豆瓣源没有播放能力，jellyfin/alist/webdav 搜了也会在匹配时被丢弃
   const providers = all.filter(
     (source) => source.enabled && (source.type === 'site' || source.type === 'spider'),
   );
-  if (providers.length === 0) return null;
+  if (providers.length === 0) return [];
 
   const result = await libraryService.search({
     keyword: params.title,
     sourceIds: providers.map((source) => source.id),
     signal: params.signal,
   });
-  if (result.items.length === 0) return null;
+  if (result.items.length === 0) return [];
 
   const byId = new Map(providers.map((source) => [source.id, source]));
-  return pickPlayCandidate(params.title, params.year, result.items, byId);
+  return pickPlayCandidates(params.title, params.year, result.items, byId, (id) =>
+    healthService.latencyOf(id),
+  );
 };
 
 const adapterGetter = (source: Parameters<typeof sourceRegistry.forSource>[0]) =>

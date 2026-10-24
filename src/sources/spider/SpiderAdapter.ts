@@ -16,6 +16,7 @@ import { mediaIdOf } from '@/shared/id';
 import { toAbsoluteUrl } from '@/shared/url';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
+import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { httpClient } from '@/sources/base/httpClient';
 import { Spider as SpiderNative, type SpiderMethod, type SpiderProxyResult } from '@/native/spiderPlugin';
 import { BaseAdapter, type ProbeResult } from '@/sources/base/BaseAdapter';
@@ -146,7 +147,17 @@ export class SpiderAdapter extends BaseAdapter {
   private async probeJarReachable(jarUrl: string): Promise<void> {
     const url = jarUrl.split(';')[0] ?? jarUrl;
     try {
-      await httpClient.request(url, { method: 'HEAD', responseType: 'none', timeoutMs: 3000, retries: 0 });
+      // GitHub raw 形态的 jar 直连不可达时按序换镜像（CHG-11）
+      await withGithubMirrorFallback(
+        url,
+        (variantUrl) =>
+          httpClient.request(variantUrl, {
+            method: 'HEAD',
+            responseType: 'none',
+            timeoutMs: 3000,
+            retries: 0,
+          }),
+      );
     } catch (e) {
       // 结论不确定（超时可能是慢网络下的活源；405/501 是服务端不支持 HEAD）→ 交给 B 段
       if (headInconclusive(e)) return;

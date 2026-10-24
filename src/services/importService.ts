@@ -20,17 +20,18 @@
 import { withTx } from '@/db/index';
 import { sourceRepo, toStorableSource } from '@/db/repositories/sourceRepo';
 import { appEvents } from '@/services/events';
+import { probeJarUrls } from '@/services/jarProbe';
 import { subscriptionParser } from '@/services/subscriptionParser';
+import { extractTvboxLives } from '@/sources/live/liveParsers';
 import {
   KV_KEY_IMPORT_RECORDS,
   MAX_SUBSCRIPTION_BYTES,
   TIMEOUT_SUBSCRIPTION_FETCH_MS,
 } from '@/shared/constants';
 import { AppError, toAppError } from '@/shared/errors';
+import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { newId, nextKey } from '@/shared/id';
-import { isNative } from '@/shared/platform';
 import { isValidHttpUrl } from '@/shared/url';
-import { httpClient } from '@/sources/base/httpClient';
 import { crawl } from '@/sources/pipeline/scheduler';
 import type { SubscriptionText } from '@/sources/pipeline/parsers';
 import { kvRepo } from '@/db/repositories/kvRepo';
@@ -44,12 +45,17 @@ import type {
 } from '@/types';
 
 export interface ImportService {
-  previewFromUrl(url: string, signal?: AbortSignal): Promise<ImportPreview>;
+  previewFromUrl(
+    url: string,
+    signal?: AbortSignal,
+    opts?: { jarPrecheck?: boolean },
+  ): Promise<ImportPreview>;
   /** 多仓索引展开：拉取其中一个仓库地址的源列表 */
   previewFromRepo(repoUrl: string, signal?: AbortSignal): Promise<ImportPreview>;
   previewFromText(text: string, fileName: string): Promise<ImportPreview>;
   previewFromFile(file: File): Promise<ImportPreview>;
   commit(preview: ImportPreview, options: ImportCommitOptions): Promise<ImportResult>;
+  refreshSubscription: typeof refreshSubscriptionImpl;
 }
 
 export interface ImportRecord {
@@ -92,16 +98,17 @@ async function previewFromRaw(
   text: string,
   opts: { origin: 'url' | 'file'; sourceUrl?: string | null; fileName?: string | null },
   signal?: AbortSignal,
+  precheckOpts?: { jarPrecheck?: boolean },
 ): Promise<ImportPreview> {
-  const preview = subscriptionParser.parse(text, opts);
+  const parsed = subscriptionParser.parse(text, opts);
+  // CHG-13：顺带提取 TVBox lives[] 直播源（导入成功后由 UI 添加到直播页）
+  const preview: ImportPreview = { ...parsed, lives: extractTvboxLives(text) };
   const annotated = await annotateDuplicates(preview);
+  if (precheckOpts?.jarPrecheck === false) return annotated;
   return precheckSpiderJars(annotated, signal);
 }
 
-/* ---------- 爬虫 jar 预检（CHG-10）：导入前筛掉死源 ---------- */
-
-const JAR_CHECK_CONCURRENCY = 6;
-const JAR_CHECK_TIMEOUT_MS = 3000;
+/* ---------- 爬虫 jar 预检（CHG-10；探测逻辑抽取至 jarProbe 供评测复用） ---------- */
 
 /** 提取爬虫条目的 jar 地址；非爬虫 jar 条目返回 null */
 function spiderJarUrlOf(entry: ImportPreviewEntry): string | null {
@@ -113,13 +120,6 @@ function spiderJarUrlOf(entry: ImportPreviewEntry): string | null {
   return ext.jarUrl;
 }
 
-/** HEAD 结论不确定（不据此判死）：超时可能是慢网络；Web 端网络错可能是 CORS 假阳性；405/501 不支持 HEAD */
-function jarCheckInconclusive(e: AppError): boolean {
-  if (e.code === 'E_TIMEOUT') return true;
-  if (!isNative() && (e.code === 'E_NETWORK' || e.httpStatus === null)) return true;
-  return e.httpStatus === 405 || e.httpStatus === 501;
-}
-
 /**
  * 并发 HEAD jar（同一 jar 地址共享结果），判死的条目取消默认勾选并追加警示。
  * 实测 4k.json 类订阅大半 jar 已 403 / 域名失效，预览时可见，导入后不再反复失败。
@@ -128,34 +128,9 @@ async function precheckSpiderJars(preview: ImportPreview, signal?: AbortSignal):
   const targets = preview.entries.filter((entry) => spiderJarUrlOf(entry) !== null);
   if (targets.length === 0) return preview;
 
-  /** jar 地址 → 判定 + 失败原因（dead 时用于警示文案） */
-  const verdicts = new Map<string, { verdict: 'ok' | 'dead' | 'unknown'; detail?: string }>();
-  const uniqueUrls = [...new Set(targets.map((entry) => spiderJarUrlOf(entry) as string))];
-  let cursor = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(JAR_CHECK_CONCURRENCY, uniqueUrls.length) }, async () => {
-      while (cursor < uniqueUrls.length) {
-        const jarUrl = uniqueUrls[cursor++]!;
-        const url = jarUrl.split(';')[0] ?? jarUrl; // `;md5;hash` 后缀由原生侧解析，HTTP 须剥掉
-        try {
-          await httpClient.request(url, {
-            method: 'HEAD',
-            responseType: 'none',
-            timeoutMs: JAR_CHECK_TIMEOUT_MS,
-            retries: 0,
-            signal,
-          });
-          verdicts.set(jarUrl, { verdict: 'ok' });
-        } catch (e) {
-          const err = toAppError(e, 'E_NETWORK');
-          if (jarCheckInconclusive(err)) {
-            verdicts.set(jarUrl, { verdict: 'unknown' });
-          } else {
-            verdicts.set(jarUrl, { verdict: 'dead', detail: err.detail ?? err.message });
-          }
-        }
-      }
-    }),
+  const verdicts = await probeJarUrls(
+    targets.map((entry) => spiderJarUrlOf(entry) as string),
+    signal,
   );
 
   const entries = preview.entries.map((entry) => {
@@ -187,14 +162,21 @@ async function fetchSubscriptionText(url: string, signal?: AbortSignal): Promise
     throw new AppError('E_INVALID_INPUT', '订阅地址必须是 http(s):// 开头的合法地址');
   }
 
-  const result = await crawl<SubscriptionText>({
-    intent: 'subscription',
-    url: trimmed,
+  // 镜像回退共享拉取预算：直连失败换镜像时用剩余时间，不为镜像额外加时（CHG-11）
+  const deadline = Date.now() + TIMEOUT_SUBSCRIPTION_FETCH_MS;
+  const { value: result } = await withGithubMirrorFallback(
+    trimmed,
+    (variantUrl) =>
+      crawl<SubscriptionText>({
+        intent: 'subscription',
+        url: variantUrl,
+        signal,
+        budgetMs: Math.max(2000, deadline - Date.now()),
+        headers: { Accept: 'application/json, text/plain, */*' },
+        maxBytes: MAX_SUBSCRIPTION_BYTES,
+      }),
     signal,
-    budgetMs: TIMEOUT_SUBSCRIPTION_FETCH_MS,
-    headers: { Accept: 'application/json, text/plain, */*' },
-    maxBytes: MAX_SUBSCRIPTION_BYTES,
-  });
+  );
 
   const text = result.value.text;
 
@@ -207,9 +189,13 @@ async function fetchSubscriptionText(url: string, signal?: AbortSignal): Promise
 }
 
 export const importService: ImportService = {
-  async previewFromUrl(url: string, signal?: AbortSignal): Promise<ImportPreview> {
+  async previewFromUrl(
+    url: string,
+    signal?: AbortSignal,
+    opts?: { jarPrecheck?: boolean },
+  ): Promise<ImportPreview> {
     const text = await fetchSubscriptionText(url, signal);
-    return previewFromRaw(text, { origin: 'url', sourceUrl: url.trim() }, signal);
+    return previewFromRaw(text, { origin: 'url', sourceUrl: url.trim() }, signal, opts);
   },
 
   /** 展开多仓索引中的一个仓库地址，返回该仓库的源预览 */
@@ -242,6 +228,8 @@ export const importService: ImportService = {
     return previewFromRaw(text, { origin: 'file', fileName: file.name });
   },
 
+  refreshSubscription: refreshSubscriptionImpl,
+
   /**
    * 提交导入（单事务）。
    *
@@ -262,6 +250,8 @@ export const importService: ImportService = {
     if (preview.globalIssues.some((item) => item.level === 'error')) {
       throw new AppError('E_INVALID_INPUT', '订阅存在全局错误，无法导入');
     }
+    // CHG-11：新建源也归一到「订阅来源标识」（URL / 文件名）
+    const subscriptionId = preview.sourceUrl ?? preview.fileName ?? null;
 
     const issues: ImportIssue[] = [];
     let skipped = 0;
@@ -316,12 +306,12 @@ export const importService: ImportService = {
             }
             const key = nextKey(baseKey, existingKeys);
             existingKeys.add(key);
-            const created = buildSource(entry, key, now);
+            const created = buildSource(entry, key, now, subscriptionId);
             toWrite.push(created);
             sourceIds.push(created.id);
             continue;
           }
-          const created = buildSource(entry, baseKey, now);
+          const created = buildSource(entry, baseKey, now, subscriptionId);
           toWrite.push(created);
           sourceIds.push(created.id);
           existingKeys.add(created.key);
@@ -345,7 +335,7 @@ export const importService: ImportService = {
         // keep-both
         const key = nextKey(baseKey, existingKeys);
         existingKeys.add(key);
-        const created = buildSource(entry, key, now);
+        const created = buildSource(entry, key, now, subscriptionId);
         toWrite.push(created);
         sourceIds.push(created.id);
         continue;
@@ -378,7 +368,7 @@ export const importService: ImportService = {
         }
       }
       existingKeys.add(key);
-      const created = buildSource(entry, key, now);
+      const created = buildSource(entry, key, now, subscriptionId);
       toWrite.push(created);
       sourceIds.push(created.id);
     }
@@ -469,7 +459,12 @@ function mergeIntoExisting(
   };
 }
 
-function buildSource(entry: ImportPreviewEntry, key: string, now: number): Source {
+function buildSource(
+  entry: ImportPreviewEntry,
+  key: string,
+  now: number,
+  subscriptionId: string | null,
+): Source {
   const normalized = entry.normalized;
   if (!normalized) throw new AppError('E_INVALID_INPUT');
   return {
@@ -490,7 +485,9 @@ function buildSource(entry: ImportPreviewEntry, key: string, now: number): Sourc
     },
     headers: normalized.headers ?? {},
     ext: normalized.ext ?? null,
-    subscriptionId: entry.key,
+    // CHG-11：subscriptionId 统一为「订阅来源标识」（URL / 文件名），
+    // 与 mergeIntoExisting 口径一致，供订阅管理按来源聚合（此前误写 entry.key）
+    subscriptionId,
     warning: entry.warning,
     health: 'unknown',
     healthCheckedAt: null,
@@ -503,4 +500,19 @@ function buildSource(entry: ImportPreviewEntry, key: string, now: number): Sourc
 /** 读取历史导入记录（"检查更新"入口使用） */
 export async function listImportRecords(): Promise<ImportRecord[]> {
   return readImportRecords();
+}
+
+/** 刷新订阅实现（挂在 importService 上，见对象字面量） */
+async function refreshSubscriptionImpl(
+  url: string,
+  signal?: AbortSignal,
+): Promise<{ updated: number; newCount: number; jarDead: number }> {
+  const preview = await importService.previewFromUrl(url, signal);
+  const valid = preview.entries.filter((entry) => entry.valid && entry.normalized !== null);
+  const jarDead = valid.filter((entry) => (entry.warning ?? '').includes('jar 不可达')).length;
+  // 只覆盖已有源：勾选 = 有效 && 预检未判死 && 已存在（duplicateOf 指向现有源 id）
+  const updateKeys = valid.filter((entry) => entry.selected && entry.duplicateOf).map((entry) => entry.key);
+  const result = await importService.commit(preview, { selectedKeys: updateKeys, onDuplicate: 'overwrite' });
+  const newCount = valid.filter((entry) => entry.selected && !entry.duplicateOf).length;
+  return { updated: result.success, newCount, jarDead };
 }

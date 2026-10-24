@@ -14,6 +14,7 @@ import type {
   Episode,
   FavoriteRecord,
   HistoryRecord,
+  LiveRecord,
   MediaItem,
   PlayLine,
   Source,
@@ -32,6 +33,7 @@ export const STORE_NAMES = {
   downloads: 'downloads',
   blobs: 'blobs',
   kv: 'kv',
+  lives: 'lives',
 } as const;
 
 /** Web 端下载内容（技术方案 5.1） */
@@ -122,6 +124,11 @@ export interface CinemaDB extends DBSchema {
   kv: {
     key: string;
     value: KvRecord;
+  };
+  lives: {
+    key: string;
+    value: LiveRecord;
+    indexes: { 'by-created': number };
   };
 }
 

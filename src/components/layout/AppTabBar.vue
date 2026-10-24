@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * 底部 Tab 栏（设计规范 8.15）
+ * 底部 Tab 栏（设计规范 8.15；CHG-13 起为 5 Tab）
  *
- * 高度 56 + safe-bottom；4 个 Tab 等分；选中态品牌色；下载 Tab 带未完成数角标。
+ * 高度 56 + safe-bottom；5 个 Tab 等分；选中态品牌色；下载 Tab 带未完成数角标。
  * 图标内联 SVG 组件（统一 24 线性风格），不使用图标字体。
  */
 import { computed, onMounted } from 'vue';
@@ -20,6 +20,7 @@ interface TabItem {
 const tabs: TabItem[] = [
   { key: 'home', label: '首页', to: '/' },
   { key: 'library', label: '媒体库', to: '/library' },
+  { key: 'live', label: '直播', to: '/live' },
   { key: 'downloads', label: '下载', to: '/downloads' },
   { key: 'me', label: '我的', to: '/settings' },
 ];
@@ -105,6 +106,21 @@ function go(tab: TabItem): void {
           <rect x="13.4" y="13.4" width="7" height="7" rx="1.6" />
         </svg>
         <svg
+          v-else-if="tab.key === 'live'"
+          class="tabbar__icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.6"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <rect x="3.2" y="6.4" width="17.6" height="13" rx="2" />
+          <path d="m8.4 3.2 3.6 3.2 3.6-3.2" />
+          <path d="m10.4 10.6 4.4 2.3-4.4 2.3Z" />
+        </svg>
+        <svg
           v-else-if="tab.key === 'downloads'"
           class="tabbar__icon"
           viewBox="0 0 24 24"
@@ -152,7 +168,7 @@ function go(tab: TabItem): void {
   bottom: 0;
   z-index: var(--z-tabbar);
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   height: calc(var(--layout-tabbar-height) + var(--safe-bottom));
   padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
   background-color: var(--color-bg-surface);

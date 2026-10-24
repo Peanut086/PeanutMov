@@ -10,7 +10,7 @@
  * 导入成功后源列表刷新由 `importService` 发出的 `sources:changed` 驱动，UI 不双写。
  */
 import { computed, onMounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 import type { ImportPreviewEntry, ImportResult } from '@/types';
 
@@ -22,6 +22,7 @@ import EmptyState from '@/components/common/EmptyState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import ImportPreviewList from '@/components/source/ImportPreviewList.vue';
 import { useImportStore } from '@/stores/importStore';
+import { liveService } from '@/services/liveService';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
@@ -29,6 +30,7 @@ import { toErrorShape } from '@/shared/errors';
 import { isValidHttpUrl } from '@/shared/url';
 
 const router = useRouter();
+const route = useRoute();
 const importer = useImportStore();
 const toast = useToast();
 const ui = useUiStore();
@@ -77,7 +79,18 @@ const isMultiRepo = computed(() => repoList.value.length > 0);
 onMounted(() => {
   // 进入页面清空上一次会话的预览（保留历史导入记录）
   importer.reset();
+  // 批量评测页「导入」跳转预填（CHG-12）：支持 ?url= 自动获取预览
+  const prefill = route.query.url;
+  if (typeof prefill === 'string' && isValidHttpUrl(prefill.trim())) {
+    url.value = prefill.trim();
+    void fetchPreview();
+  }
 });
+
+/** 跳批量评测页（CHG-12） */
+function goEval(): void {
+  void router.push('/settings/subscriptions/eval');
+}
 
 /** 预览变化 → 默认全选有效条目（AC-08） */
 watch(preview, (next) => {
@@ -162,6 +175,14 @@ async function commit(): Promise<void> {
     });
     result.value = next;
     resultOpen.value = true;
+    // CHG-13：订阅带 lives[] 直播源时自动添加到直播页（幂等，同 URL 跳过）
+    const lives = preview.value?.lives ?? [];
+    if (lives.length > 0 && next.success > 0) {
+      const added = await liveService.addTvboxLives(lives, url.value.trim() || fileName.value);
+      if (added > 0) {
+        toast.info(`识别到 ${added} 个直播源，已添加到「直播」页`);
+      }
+    }
     const skippedTotal = next.skipped;
     if (next.failed > 0) {
       toast.error(`导入完成：成功 ${next.success}，跳过 ${skippedTotal}，失败 ${next.failed}`);
@@ -237,6 +258,9 @@ function leave(): void {
           block
           @update:model-value="mode = $event === 'file' ? 'file' : 'url'"
         />
+        <button class="import-eval-link" type="button" @click="goEval">
+          手里有一批订阅？→ 批量评测排行
+        </button>
       </div>
 
       <section v-if="mode === 'url'" class="import-input-block">
@@ -444,7 +468,17 @@ function leave(): void {
 
 .import-mode {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* 批量评测入口（CHG-12）：弱化的文字按钮 */
+.import-eval-link {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .import-input-block {
