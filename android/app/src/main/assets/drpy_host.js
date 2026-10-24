@@ -3,22 +3,22 @@
  *
  * 职责：
  * 1. 基于原生同步绑定（__req/__domSelect/__log/__localGet/__localSet/__b64e/__b64d/__md5）
- *    实现 drpy 规则依赖的全局 API：req/pdfa/pdfh/pd/local/log 等；
- * 2. 编排规则对象 `rule`（drpy2 ES6 函数式为主，字符串式尽力兼容），
- *    对外只暴露 `__drpyCall(method, argJson)` 一个同步入口；
- * 3. 异步规则函数（async/await）通过"结果槽 + 微任务泵"桥接：
- *    evaluate() 返回前 QuickJS 会泵完 pending job（testPromise2 已验证），
- *    因此同步返回 '__DRPY_ASYNC__' 后再读 __drpyOutJson() 即拿到终值。
+ *    实现 drpy 规则依赖的全局 API；
+ * 2. 编排规则对象 `rule`，对外只暴露 `__drpyCall(method, argJson)` 一个同步入口；
+ * 3. 兼容两种规则形态：
+ *    a. drpy2 ES6 函数式（class_parse/一级/二级/搜索/lazy 为函数，可 async/await）；
+ *    b. drpy2 代码串式（`js:` 前缀字符串 + request/setResult/VODS 约定、
+ *       `{{fl.x}}` 模板 URL、fypage/fyclass/fyfilter、UA 常量），
+ *       语义对齐官方 drpy2.min.js 3.9.x 的 categoryParse/searchParse/
+ *       detailParse/playParse（extracted 2026-10-24）。
+ * 4. 异步统一走"结果槽 + 微任务泵"桥接：evaluate() 返回前 QuickJS 泵完
+ *    pending job，同步返回 '__DRPY_ASYNC__' 后再读 __drpyOutJson() 即终值。
  *
  * 输出统一为 TVBox JSON（class/list/vod_*），前端复用同一套解析。
  */
 'use strict';
 
 /* ---------------- 工具 ---------------- */
-
-function __drpyTypeOf(v) {
-  return v === null ? 'null' : typeof v;
-}
 
 function __drpyStr(v) {
   if (v === null || v === undefined) return '';
@@ -59,15 +59,63 @@ function __drpyResolveUrl(base, rel) {
   return origin + out;
 }
 
-/* ---------------- req（同步 HTTP，桥接 okhttp） ---------------- */
+/** 极简 jinja2：{{ a.b.c }} 点路径取值（drpy2 的 filter_url 模板） */
+function __drpyJinja2(tpl, ctx) {
+  return String(tpl).replace(/\{\{([^}]+)\}\}/g, function (_, expr) {
+    var v = ctx;
+    var parts = expr.trim().split('.');
+    for (var i = 0; i < parts.length; i++) {
+      if (v === null || v === undefined) return '';
+      v = v[parts[i]];
+    }
+    return v === null || v === undefined ? '' : String(v);
+  });
+}
 
+/** fypage 处理：`(2*fypage - 1)` 一类表达式按 drpy2 约定求值 */
+function __drpyApplyFypage(url, pg) {
+  if (!/fypage/.test(url)) return url;
+  if (url.indexOf('(') >= 0 && url.indexOf(')') >= 0) {
+    var m = url.match(/.*?\((.*)\)/);
+    if (m) {
+      var rep = m[1].replace(/fypage/g, String(pg));
+      var val;
+      try { val = eval(rep); } catch (e) { val = pg; }
+      url = url.replace(m[1], String(val)).replace(/\(/g, '').replace(/\)/g, '');
+      return url;
+    }
+  }
+  return url.replace(/fypage/g, String(pg));
+}
+
+/* ---------------- UA 常量与 request（对齐 drpy2 全局） ---------------- */
+
+var MOBILE_UA = 'Mozilla/5.0 (Linux; Android 11; M2007J3SC) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.120 Mobile Safari/537.36';
+var PC_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.54 Safari/537.36';
+var UA = MOBILE_UA;
+
+function __drpyResolveHeaders(headers) {
+  var out = {};
+  var src = headers || {};
+  for (var k in src) {
+    if (!Object.prototype.hasOwnProperty.call(src, k)) continue;
+    var v = src[k];
+    if (v === 'MOBILE_UA') v = MOBILE_UA;
+    else if (v === 'PC_UA') v = PC_UA;
+    else if (v === 'UA') v = UA;
+    out[k] = __drpyStr(v);
+  }
+  return out;
+}
+
+/** req(url, options) → {ok, code, headers, content, json()}：底层 HTTP（桥接 __req） */
 function req(url, options) {
   options = options || {};
   if (typeof url !== 'string' || url.length === 0) throw new Error('req: url 必须是非空字符串');
   var spec = {
     url: url,
     method: (options.method || (options.body !== undefined && options.body !== null ? 'POST' : 'GET') || 'GET'),
-    headers: options.headers || options.header || {},
+    headers: options.headers || {},
     body: options.body !== undefined && options.body !== null ? __drpyStr(options.body) : null,
     timeout: options.timeout || 15000,
   };
@@ -94,9 +142,27 @@ function req(url, options) {
   };
 }
 
-/** 常见便捷写法：post(url, body, headers) */
-function post(url, body, headers) {
-  return req(url, { method: 'POST', body: body, headers: headers || {} });
+/** request(url, obj) → 响应体字符串（合并 rule.headers，UA 别名替换） */
+function request(url, obj) {
+  obj = obj || {};
+  var headers = __drpyResolveHeaders(typeof rule !== 'undefined' ? rule.headers : null);
+  if (obj.headers) {
+    var extra = __drpyResolveHeaders(obj.headers);
+    for (var k in extra) headers[k] = extra[k];
+  }
+  var res = req(url, {
+    method: obj.method || (obj.body !== undefined && obj.body !== null ? 'POST' : 'GET'),
+    headers: headers,
+    body: obj.body,
+    timeout: obj.timeout || 15000,
+  });
+  return res.content;
+}
+
+/** post(url, obj) → drpy2 约定：obj={body, headers?}，返回响应体字符串 */
+function post(url, obj) {
+  obj = obj || {};
+  return request(url, { method: 'POST', body: obj.body, headers: obj.headers });
 }
 
 /* ---------------- pdfa / pdfh / pd（桥接 jsoup） ---------------- */
@@ -157,12 +223,12 @@ function pdfh(html, parse, baseUrl) {
   return v;
 }
 
-/** pd = pdfh + 相对地址补全（默认以 rule.host 为 base） */
+/** pd = pdfh + 相对地址补全（默认以 MY_URL/rule.host 为 base） */
 function pd(html, parse, baseUrl) {
-  return pdfh(html, parse, baseUrl || (typeof rule !== 'undefined' && rule.host) || '');
+  return pdfh(html, parse, baseUrl || (typeof MY_URL === 'string' && MY_URL) || (typeof rule !== 'undefined' && rule.host) || '');
 }
 
-/* ---------------- local / log / 编码 ---------------- */
+/* ---------------- local / log / 编码（drpy2 别名一并提供） ---------------- */
 
 var local = {
   get: function (key, def) {
@@ -174,17 +240,66 @@ var local = {
     __localSet(String(key), __drpyStr(value));
   },
 };
+function getItem(key, def) { return local.get(key, def); }
+function setItem(key, val) { local.set(key, val); }
 
 function log() {
   var parts = [];
   for (var i = 0; i < arguments.length; i++) parts.push(__drpyStr(arguments[i]));
   __log(parts.join(' '));
 }
+var print = log;
 
-/* ---------------- 规则编排 ---------------- */
+function base64Encode(s) { return __b64e(__drpyStr(s)); }
+function base64Decode(s) { return __b64d(__drpyStr(s)); }
+function md5(s) { return __md5(__drpyStr(s)); }
+
+/* ---------------- drpy2 结果归一（setResult/VODS 约定） ---------------- */
+
+var VODS = [];
+var VOD = null;
+
+/** {url,title,desc,content,pic_url,img,...} → TVBox vod_* 字段，写入全局 VODS */
+function setResult(d) {
+  if (!Array.isArray(d)) return [];
+  VODS = [];
+  d.forEach(function (it) {
+    if (!it || typeof it !== 'object') return;
+    var obj = {
+      vod_id: it.url !== undefined && it.url !== null ? __drpyStr(it.url) : __drpyStr(it.vod_id),
+      vod_name: __drpyStr(it.title !== undefined ? it.title : it.vod_name),
+      vod_remarks: __drpyStr(it.desc !== undefined ? it.desc : it.vod_remarks),
+      vod_content: __drpyStr(it.content !== undefined ? it.content : it.vod_content),
+      vod_pic: __drpyStr(it.pic_url !== undefined ? it.pic_url : (it.img !== undefined ? it.img : it.vod_pic)),
+    };
+    if (it.tname !== undefined) obj.type_name = __drpyStr(it.tname);
+    if (it.tid !== undefined) obj.type_id = __drpyStr(it.tid);
+    if (it.year !== undefined) obj.vod_year = __drpyStr(it.year);
+    if (it.actor !== undefined) obj.vod_actor = __drpyStr(it.actor);
+    if (it.director !== undefined) obj.vod_director = __drpyStr(it.director);
+    if (it.area !== undefined) obj.vod_area = __drpyStr(it.area);
+    VODS.push(obj);
+  });
+  return VODS;
+}
+function setResult2(res) { VODS = (res && res.list) || []; return VODS; }
+function setHomeResult(res) { return setResult(res && res.list); }
+
+/** 简化版 jx 判定：不维护解析站清单，一律返回 0（parse 仍由前端嗅探兜底） */
+function tellIsJx() { return 0; }
+
+/* ---------------- 引擎状态 ---------------- */
 
 var __drpyInited = false;
 var __drpyOut = null;
+var MY_URL = '';
+var input = '';
+var MY_PAGE = 1;
+var MY_FL = {};
+var MY_CATE = '';
+var TYPE = '';
+var KEY = '';
+var detailUrl = '';
 
 async function __ensureInit() {
   if (__drpyInited) return;
@@ -194,7 +309,7 @@ async function __ensureInit() {
   if (typeof pre === 'function') {
     try { await pre(__drpyExt); } catch (e) { __log('预处理失败(忽略): ' + (e && e.message ? e.message : e)); }
   } else if (typeof pre === 'string' && pre.trim()) {
-    try { eval(pre); } catch (e) { __log('预处理失败(忽略): ' + (e && e.message ? e.message : e)); }
+    try { eval(pre.trim().replace('js:', '')); } catch (e) { __log('预处理失败(忽略): ' + (e && e.message ? e.message : e)); }
   }
 }
 
@@ -213,6 +328,40 @@ function __normalizeClass(c) {
   return { type_id: __drpyStr(id), type_name: String(name) };
 }
 
+function __normalizeVodList(list) {
+  var out = [];
+  if (Array.isArray(list)) {
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i];
+      if (!it || typeof it !== 'object') continue;
+      // 函数式规则可能已给 vod_* 字段；代码串式给 url/title
+      if (it.vod_id !== undefined || it.vod_name !== undefined) {
+        out.push({
+          vod_id: __drpyStr(it.vod_id),
+          vod_name: __drpyStr(it.vod_name),
+          vod_pic: __drpyStr(it.vod_pic),
+          vod_remarks: __drpyStr(it.vod_remarks),
+          vod_content: __drpyStr(it.vod_content),
+          vod_year: __drpyStr(it.vod_year),
+          vod_area: __drpyStr(it.vod_area),
+        });
+      } else {
+        out.push({
+          vod_id: __drpyStr(it.url),
+          vod_name: __drpyStr(it.title),
+          vod_pic: __drpyStr(it.pic_url || it.img),
+          vod_remarks: __drpyStr(it.desc),
+          vod_content: __drpyStr(it.content),
+          vod_year: __drpyStr(it.year),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/* ---------------- home ---------------- */
+
 async function __drpyHome() {
   await __ensureInit();
   var classes = [];
@@ -228,87 +377,184 @@ async function __drpyHome() {
       filters = r.filters || r.filter || {};
     }
   } else if (typeof cp === 'string' && cp.trim()) {
-    // 老式规则：代码字符串在全局作用域 eval，产出 classes / filter_obj
-    globalThis.classes = [];
-    globalThis.filter_obj = {};
-    try { eval(cp); } catch (e) { __log('class_parse 执行失败: ' + (e && e.message ? e.message : e)); }
-    classes = globalThis.classes || [];
-    filters = globalThis.filter_obj || {};
+    // drpy2 解析串：'列表选择器;片名;链接[;第4段处理]'，分号分隔
+    var p = cp.split(';');
+    var host2 = __drpyResolveUrl(__drpyStr(rule.host), __drpyStr(rule.url || ''));
+    try {
+      var html = request(host2);
+      if (html && p.length >= 3) {
+        var list = pdfa(html, p[0]);
+        for (var i = 0; i < list.length; i++) {
+          var it = list[i];
+          var name = pdfh(it, p[1]).replace(/\n|\t/g, '').trim();
+          var url = pd(it, p[2], host2);
+          if (name) classes.push({ type_id: url, type_name: name });
+        }
+      }
+    } catch (e) { __log('class_parse 执行失败: ' + (e && e.message ? e.message : e)); }
+  } else if (rule.class_name && rule.class_url) {
+    // 静态分类串：'名称1&名称2' + '链接1&链接2'
+    var names = String(rule.class_name).split('&');
+    var urls = String(rule.class_url).split('&');
+    var cnt = Math.min(names.length, urls.length);
+    for (var j = 0; j < cnt; j++) classes.push({ type_id: urls[j], type_name: names[j] });
+  }
+  if (rule.cate_exclude) {
+    var re = new RegExp(rule.cate_exclude);
+    classes = classes.filter(function (c) { return !re.test(c.type_name); });
   }
   var out = [];
-  if (Array.isArray(classes)) {
-    for (var i = 0; i < classes.length; i++) {
-      var c = __normalizeClass(classes[i]);
-      if (c) out.push(c);
-    }
+  for (var k = 0; k < classes.length; k++) {
+    var c = __normalizeClass(classes[k]);
+    if (c) out.push(c);
   }
+  if (rule.filter) filters = rule.filter;
   return { class: out, filters: filters || {} };
 }
 
-function __drpyList(v) {
-  if (Array.isArray(v)) return v;
-  if (v && typeof v === 'object' && Array.isArray(v.list)) return v.list;
-  return [];
+/* ---------------- 分类 url 组装（drpy2 fyclass/fyfilter/filter_def 约定） ---------------- */
+
+function __drpyBuildCateUrl(tid, pg, extend, useFilter) {
+  var url = __drpyStr(rule.url || '');
+  url = url.replace(/fyclass/g, tid);
+  if (pg === 1 && url.indexOf('[') >= 0 && url.indexOf(']') >= 0) {
+    url = url.split('[')[1].split(']')[0];
+  } else if (pg > 1 && url.indexOf('[') >= 0 && url.indexOf(']') >= 0) {
+    url = url.split('[')[0];
+  }
+  if (useFilter && rule.filter_url) {
+    if (!/fyfilter/.test(url)) {
+      if (!url.slice(-1) === '&') { /* noop */ }
+      if (url.charAt(url.length - 1) !== '&' && rule.filter_url.charAt(0) !== '&') url += '&';
+      url += rule.filter_url;
+    } else {
+      url = url.replace('fyfilter', rule.filter_url);
+    }
+    var fl = extend || {};
+    if (rule.filter_def && typeof rule.filter_def === 'object' && rule.filter_def[tid]) {
+      var merged = {};
+      for (var dk in rule.filter_def[tid]) merged[dk] = rule.filter_def[tid][dk];
+      for (var ek in fl) merged[ek] = fl[ek];
+      fl = merged;
+    }
+    url = __drpyJinja2(url, { fl: fl });
+  }
+  url = __drpyApplyFypage(url, pg);
+  return __drpyResolveUrl(__drpyStr(rule.host || ''), url);
 }
+
+/* ---------------- category ---------------- */
 
 async function __drpyCategory(arg) {
   await __ensureInit();
   var fn = rule['一级'] || rule.category || null;
   if (typeof fn === 'function') {
     var r = await fn(arg.tid, arg.pg, arg.filter === true, arg.extend || {});
-    return { list: __drpyList(r), page: arg.pg };
+    return { list: __normalizeVodList(__drpyList(r)), page: arg.pg };
   }
   if (typeof fn === 'string' && fn.trim()) {
-    // 老式规则：引擎按 url 模板取页 → eval 一级代码 → 读全局 d
-    var urlT = typeof rule.url === 'string' ? rule.url : '';
-    var url = urlT.replace(/\{cateId\}/g, encodeURIComponent(arg.tid || ''))
-      .replace(/\{catePg\}/g, String(arg.pg || 1))
-      .replace(/\{class\}/g, encodeURIComponent(arg.tid || ''))
-      .replace(/\{pg\}/g, String(arg.pg || 1));
-    var abs = __drpyResolveUrl(typeof rule.host === 'string' ? rule.host : '', url);
-    globalThis.html = req(abs).content;
-    globalThis.input = globalThis.html;
-    globalThis.d = [];
-    try { eval(fn); } catch (e) { throw new Error('一级(字符串式)执行失败: ' + (e && e.message ? e.message : e)); }
-    return { list: __drpyList(globalThis.d), page: arg.pg };
+    // drpy2 categoryParse：js: 代码串约定（input=MY_URL, MY_PAGE, MY_FL → VODS）
+    var url = __drpyBuildCateUrl(arg.tid, arg.pg, arg.extend, true);
+    MY_URL = url;
+    MY_CATE = arg.tid;
+    MY_PAGE = arg.pg;
+    MY_FL = arg.extend || {};
+    TYPE = 'cate';
+    input = MY_URL;
+    VODS = [];
+    try { eval(fn.trim().replace('js:', '')); } catch (e) { throw new Error('一级执行失败: ' + (e && e.message ? e.message : e)); }
+    var d = VODS;
+    if (rule.图片来源 && Array.isArray(d)) {
+      d.forEach(function (it) {
+        if (it.vod_pic && /^http/.test(it.vod_pic)) it.vod_pic += rule.图片来源;
+      });
+    }
+    return { list: d, page: arg.pg };
   }
   throw new Error('规则缺少 一级(category) 定义');
 }
 
+/* ---------------- detail ---------------- */
+
 async function __drpyDetail(arg) {
   await __ensureInit();
   var fn = rule['二级'] || rule.detail || null;
-  if (typeof fn !== 'function') throw new Error('规则缺少 二级(detail) 定义（字符串式不支持）');
-  var r = await fn(arg.id, arg.vodFlags || {});
-  var vod = __firstOf(r);
-  if (!vod || typeof vod !== 'object') throw new Error('二级未返回影片详情');
-  return { list: [vod] };
+  var vod;
+  if (fn === '*') {
+    // drpy2 约定：一级直出链接，无二级
+    var orId = __drpyStr(arg.id);
+    var extra = orId.split('@@');
+    vod = {
+      vod_id: extra[0] || orId,
+      vod_name: extra.length > 1 ? extra[1] : '片名',
+      vod_pic: extra.length > 2 ? extra[2] : '',
+      vod_remarks: orId,
+      vod_content: extra[0] || orId,
+      vod_play_from: '道长在线',
+      vod_play_url: '嗅探播放$' + (extra[0] || orId),
+    };
+    return { list: [vod] };
+  }
+  if (typeof fn === 'function') {
+    var r = await fn(arg.id, arg.vodFlags || {});
+    vod = __firstOf(r);
+    if (!vod || typeof vod !== 'object') throw new Error('二级未返回影片详情');
+    return { list: [vod] };
+  }
+  if (typeof fn === 'string' && fn.trim().indexOf('js:') === 0) {
+    // drpy2 detailParse：TYPE='detail', input=MY_URL → 全局 VOD
+    MY_URL = __drpyStr(arg.id);
+    TYPE = 'detail';
+    input = MY_URL;
+    var play_url = '';
+    VOD = null;
+    try { eval(fn.trim().replace('js:', '')); } catch (e) { throw new Error('二级执行失败: ' + (e && e.message ? e.message : e)); }
+    vod = VOD;
+    if (!vod || typeof vod !== 'object') throw new Error('二级未产出 VOD');
+    return { list: [vod] };
+  }
+  throw new Error('规则缺少 二级(detail) 定义（选择器对象式不支持）');
 }
+
+/* ---------------- search ---------------- */
 
 async function __drpySearch(arg) {
   await __ensureInit();
   var fn = rule['搜索'] || rule.search || null;
+  if (fn === '*' && (typeof rule['一级'] === 'string' || typeof rule['一级'] === 'function')) {
+    fn = rule['一级'];
+  }
   if (typeof fn === 'function') {
     var r = await fn(arg.wd, arg.quick === true);
-    return { list: __drpyList(r) };
+    return { list: __normalizeVodList(__drpyList(r)) };
   }
   if (typeof fn === 'string' && fn.trim()) {
-    var urlT = typeof rule.searchUrl === 'string' ? rule.searchUrl : '';
-    var url = urlT.replace(/\{wd\}/g, encodeURIComponent(arg.wd || ''))
-      .replace(/\{pg\}/g, String(arg.pg || 1));
-    var abs = __drpyResolveUrl(typeof rule.host === 'string' ? rule.host : '', url);
-    globalThis.html = req(abs).content;
-    globalThis.input = arg.wd || '';
-    globalThis.d = [];
-    try { eval(fn); } catch (e) { throw new Error('搜索(字符串式)执行失败: ' + (e && e.message ? e.message : e)); }
-    return { list: __drpyList(globalThis.d) };
+    var searchUrl = __drpyStr(rule.searchUrl || '');
+    if (!searchUrl) throw new Error('规则缺少 searchUrl');
+    var url = searchUrl.replace(/\*\*/g, arg.wd || '');
+    if (arg.pg === 1 && url.indexOf('[') >= 0 && url.indexOf(']') >= 0 && url.indexOf('#') < 0) {
+      url = url.split('[')[1].split(']')[0];
+    } else if (arg.pg > 1 && url.indexOf('[') >= 0 && url.indexOf(']') >= 0 && url.indexOf('#') < 0) {
+      url = url.split('[')[0];
+    }
+    url = __drpyApplyFypage(url, arg.pg);
+    MY_URL = __drpyResolveUrl(__drpyStr(rule.host || ''), url);
+    TYPE = 'search';
+    MY_PAGE = arg.pg;
+    KEY = arg.wd || '';
+    input = MY_URL;
+    detailUrl = __drpyStr(rule.detailUrl || '');
+    VODS = [];
+    try { eval(fn.trim().replace('js:', '')); } catch (e) { throw new Error('搜索执行失败: ' + (e && e.message ? e.message : e)); }
+    return { list: VODS };
   }
   throw new Error('规则缺少 搜索(search) 定义');
 }
 
+/* ---------------- play ---------------- */
+
 async function __drpyPlay(arg) {
   await __ensureInit();
-  // 优先 lazy；无 lazy 且 play_parse=false 时 id 即直链
   var fn = rule['lazy'] || rule.lazy || null;
   if (typeof fn === 'function') {
     var r = await fn(arg.flag, arg.id);
@@ -325,17 +571,37 @@ async function __drpyPlay(arg) {
     throw new Error('lazy 未返回播放地址');
   }
   if (typeof fn === 'string' && fn.trim()) {
-    // 老式 lazy：代码字符串操作全局 input，产出直链
-    globalThis.flag = arg.flag || '';
-    globalThis.input = arg.id || '';
-    try { eval(fn); } catch (e) { throw new Error('lazy(字符串式)执行失败: ' + (e && e.message ? e.message : e)); }
-    var out = __drpyStr(globalThis.input);
-    if (!out) throw new Error('lazy(字符串式)未产出播放地址');
-    return { parse: 0, url: out };
+    // drpy2 playParse：input=播放页地址 → eval 后 input 可能被改写为直链或 {parse,url} 对象
+    var playUrl = __drpyStr(arg.id);
+    if (!/http/.test(playUrl)) {
+      try { playUrl = base64Decode(playUrl); } catch (e) { /* 非编码地址原样用 */ }
+    }
+    try { playUrl = decodeURIComponent(playUrl); } catch (e) { /* 保留原文 */ }
+    MY_URL = playUrl;
+    input = playUrl;
+    try { eval(fn.replace('js:', '').trim()); } catch (e) { throw new Error('lazy 执行失败: ' + (e && e.message ? e.message : e)); }
+    if (input && typeof input === 'object') {
+      return {
+        parse: input.parse ? 1 : 0,
+        url: __drpyStr(input.url !== undefined ? input.url : input.playUrl),
+        jx: input.jx ? __drpyStr(input.jx) : '',
+        playUrl: input.playUrl ? __drpyStr(input.playUrl) : '',
+        header: input.header || input.headers || {},
+      };
+    }
+    var out = __drpyStr(input);
+    if (!out) throw new Error('lazy 未产出播放地址');
+    return { parse: 1, url: out, jx: String(tellIsJx(out)), header: {} };
   }
   var playParse = rule['play_parse'] === true || rule.play_parse === true;
   if (!playParse) return { parse: 0, url: __drpyStr(arg.id), header: {} };
   throw new Error('规则开启了 play_parse 但缺少 lazy 定义');
+}
+
+function __drpyList(v) {
+  if (Array.isArray(v)) return v;
+  if (v && typeof v === 'object' && Array.isArray(v.list)) return v.list;
+  return [];
 }
 
 /* ---------------- 同步桥接入口 ---------------- */

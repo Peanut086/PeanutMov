@@ -90,6 +90,11 @@ public class DrpyRuntime implements AutoCloseable {
                 installBindings(ctx, handle);
                 ctx.evaluate(readHostScript(appContext), "drpy_host.js");
                 ctx.getGlobalObject().setProperty("__drpyExt", initExt == null ? "" : initExt);
+                // catvod JS 模块规则（assets:// 导入）不是 drpy，给出明确错误而不是语法错
+                if (java.util.regex.Pattern.compile("^\\s*import\\s", java.util.regex.Pattern.MULTILINE)
+                        .matcher(ruleCode).find()) {
+                    throw new IllegalStateException("该规则是 catvod JS 模块规则（assets:// 导入），暂不支持");
+                }
                 ctx.evaluate(ruleCode, "rule.js");
                 // 规则里常见的 `var rule = {...}` 与 `globalThis.rule = {...}` 都覆盖
                 Object ruleObj = ctx.getGlobalObject().getProperty("rule");
@@ -108,14 +113,25 @@ public class DrpyRuntime implements AutoCloseable {
     /** 调用规则的某个编排方法，返回 TVBox JSON 字符串（含 __error 时抛出） */
     public String invoke(String method, String argJson) throws Exception {
         if (closed) throw new IllegalStateException("runtime closed");
-        Object first = onEngine(() ->
-                context.evaluate("__drpyCall(" + jsStr(method) + "," + jsStr(argJson == null ? "{}" : argJson) + ")"));
+        Log.d(TAG, "invoke " + method + " begin");
+        Object first = onEngine(() -> {
+            Log.d(TAG, "evaluate #1 submit");
+            Object r = context.evaluate("__drpyCall(" + jsStr(method) + "," + jsStr(argJson == null ? "{}" : argJson) + ")");
+            Log.d(TAG, "evaluate #1 done: " + (r == null ? "null" : String.valueOf(r)));
+            return r;
+        });
         String result = first == null ? "null" : String.valueOf(first);
         if ("__DRPY_ASYNC__".equals(result)) {
             // evaluate 返回前微任务已泵完（Promise 在同一次 evaluate 内执行），正常应拿到终值
-            Object out = onEngine(() -> context.evaluate("__drpyOutJson()"));
+            Object out = onEngine(() -> {
+                Log.d(TAG, "evaluate #2 submit");
+                Object r = context.evaluate("__drpyOutJson()");
+                Log.d(TAG, "evaluate #2 done: " + (r == null ? "null" : String.valueOf(r)));
+                return r;
+            });
             result = out == null ? "null" : String.valueOf(out);
         }
+        Log.d(TAG, "invoke " + method + " end");
         JSONObject parsed = new JSONObject(result);
         if (parsed.optBoolean("__error")) {
             throw new IllegalStateException(parsed.optString("__error", "规则执行失败"));

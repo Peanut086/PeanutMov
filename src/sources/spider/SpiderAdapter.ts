@@ -135,7 +135,12 @@ function drpyArgOf(
     case 'homeContent':
       return {};
     case 'categoryContent':
-      return { tid: String(args[0] ?? ''), pg: Number(args[1] ?? 1) };
+      return {
+        tid: String(args[0] ?? ''),
+        pg: Number(args[1] ?? 1),
+        // 第 4 参 HashMap 是服务端筛选选中值，drpy 侧作为 extend 参与模板渲染
+        extend: args[3] && typeof args[3] === 'object' ? args[3] : {},
+      };
     case 'detailContent':
       return { id: String(args[0] ?? '') };
     case 'searchContent':
