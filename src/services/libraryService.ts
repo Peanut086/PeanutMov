@@ -271,26 +271,31 @@ export const libraryService: LibraryService = {
 
   async pickFallbackSource(failedSourceId: string): Promise<Source | null> {
     const sources = await sourceRepo.list();
+    // CHG-08：排除内置演示源——它对「找片看」没有替代价值，且其它源全挂时
+    // 它会成为唯一候选，把用户反复切进演示片单掩盖失效。无健康候选时返回
+    // null，由调用方就地抛出原始错误（显示「该源暂不可用」）。
     const candidates = sources.filter(
-      (source) => source.enabled && source.health === 'ok' && source.id !== failedSourceId,
+      (source) =>
+        source.enabled &&
+        source.health === 'ok' &&
+        source.type !== 'demo' &&
+        source.id !== failedSourceId,
     );
     if (candidates.length === 0) return null;
 
     const latencyOf = (sourceId: string): number | null => healthService.latencyOf(sourceId);
     const ranked = [...candidates].sort((a, b) => {
-      // ① builtin 升序（演示源排最后，与 getDefault 口径一致）
-      if (a.builtin !== b.builtin) return a.builtin ? 1 : -1;
-      // ② 质量档位升序
+      // ① 质量档位升序
       const tierA = healthTierOf(a.health, latencyOf(a.id));
       const tierB = healthTierOf(b.health, latencyOf(b.id));
       if (tierA !== tierB) return HEALTH_TIER_ORDER[tierA] - HEALTH_TIER_ORDER[tierB];
-      // ③ 延迟升序（null 最后）
+      // ② 延迟升序（null 最后）
       const latencyA = latencyOf(a.id);
       const latencyB = latencyOf(b.id);
       const rankA = latencyA === null || !Number.isFinite(latencyA) ? Number.POSITIVE_INFINITY : latencyA;
       const rankB = latencyB === null || !Number.isFinite(latencyB) ? Number.POSITIVE_INFINITY : latencyB;
       if (rankA !== rankB) return rankA - rankB;
-      // ④ 手动顺序 → ⑤ id（确定性兜底）
+      // ③ 手动顺序 → ④ id（确定性兜底）
       if (a.sort !== b.sort) return a.sort - b.sort;
       if (a.id === b.id) return 0;
       return a.id < b.id ? -1 : 1;

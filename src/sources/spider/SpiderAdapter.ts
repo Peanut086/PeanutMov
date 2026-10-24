@@ -16,6 +16,7 @@ import { mediaIdOf } from '@/shared/id';
 import { toAbsoluteUrl } from '@/shared/url';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
+import { httpClient } from '@/sources/base/httpClient';
 import { Spider as SpiderNative, type SpiderMethod, type SpiderProxyResult } from '@/native/spiderPlugin';
 import { BaseAdapter, type ProbeResult } from '@/sources/base/BaseAdapter';
 import { inferMediaType, normalizeFormat, parseCategoryValue } from '@/sources/base/normalize';
@@ -127,11 +128,30 @@ export class SpiderAdapter extends BaseAdapter {
     if (!isNative()) {
       throw new AppError('E_NOT_IMPLEMENTED', '爬虫源仅支持在 App 内使用');
     }
+    // A 段：HEAD jar 快速判死（CHG-09），失败直接归类（403 → auth_failed 等），
+    // 不再走 20~30s 的原生 jar 下载；结论不确定时继续 B 段
+    await this.probeJarReachable(ext.jarUrl);
+    // B 段：完整加载 + homeContent，测「jar 活着但源站死了」
     await this.load(source);
     const response = await this.invoke(source, 'homeContent', [true]);
     return {
       itemCount: response.list?.length ?? response.class?.length ?? 0,
     };
+  }
+
+  /**
+   * 两段式探活 A 段：HEAD jar（3s、不重试）。实测订阅里大半死源是
+   * jar 被 403 / 域名失效，这一段秒级出结果。`;md5;` 后缀由原生侧解析，HTTP 请求须剥掉。
+   */
+  private async probeJarReachable(jarUrl: string): Promise<void> {
+    const url = jarUrl.split(';')[0] ?? jarUrl;
+    try {
+      await httpClient.request(url, { method: 'HEAD', responseType: 'none', timeoutMs: 3000, retries: 0 });
+    } catch (e) {
+      // 结论不确定（超时可能是慢网络下的活源；405/501 是服务端不支持 HEAD）→ 交给 B 段
+      if (headInconclusive(e)) return;
+      throw e;
+    }
   }
 
   /** 确保该源已加载，返回实例句柄 */
@@ -369,5 +389,14 @@ function parseFlagIsEnabled(value: SpiderPlayerResult['parse']): boolean {
   if (typeof value === 'number') return value !== 0;
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') return value.trim() === '1' || value.trim().toLowerCase() === 'true';
+  return false;
+}
+
+/** HEAD 结论不确定：超时（慢网络活源）或服务端不支持 HEAD（405/501），应继续 B 段 */
+function headInconclusive(e: unknown): boolean {
+  if (e instanceof AppError) {
+    if (e.code === 'E_TIMEOUT') return true;
+    return e.httpStatus === 405 || e.httpStatus === 501;
+  }
   return false;
 }

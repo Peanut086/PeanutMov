@@ -247,4 +247,62 @@ describe('sourceStore（API-14 v1.1 / CHG-01）', () => {
     expect(events).toBe(1);
     expect(store.sources.some((s) => s.name === '外部源')).toBe(true);
   });
+
+  describe('disableUnhealthy（一键禁用失效源）', () => {
+    async function makeSource(name: string): Promise<string> {
+      const created = await store.create({ name, type: 'site', baseUrl: `https://${name}.example.com` });
+      return created.id;
+    }
+
+    let store: ReturnType<typeof useSourceStore>;
+
+    beforeEach(async () => {
+      store = useSourceStore();
+      await store.load();
+    });
+
+    it('只禁用检测失效且启用的源，返回数量并刷新内存', async () => {
+      const dead1 = await makeSource('死源1');
+      const dead2 = await makeSource('死源2');
+      const alive = await makeSource('活源');
+      await sourceService.markHealth(dead1, 'unreachable');
+      await sourceService.markHealth(dead2, 'auth_failed');
+      await sourceService.markHealth(alive, 'ok');
+
+      const disabled = await store.disableUnhealthy();
+
+      expect(disabled).toBe(2);
+      const byId = new Map(store.sources.map((s) => [s.id, s]));
+      expect(byId.get(dead1)?.enabled).toBe(false);
+      expect(byId.get(dead2)?.enabled).toBe(false);
+      expect(byId.get(alive)?.enabled).toBe(true);
+    });
+
+    it('timeout / 未检测的源不动', async () => {
+      const slow = await makeSource('慢源');
+      const unchecked = await makeSource('未检源');
+      await sourceService.markHealth(slow, 'timeout');
+
+      const disabled = await store.disableUnhealthy();
+
+      expect(disabled).toBe(0);
+      const byId = new Map(store.sources.map((s) => [s.id, s]));
+      expect(byId.get(slow)?.enabled).toBe(true);
+      expect(byId.get(unchecked)?.enabled).toBe(true);
+    });
+
+    it('已禁用的失效源不重复处理，当前选中源被禁用时选中态归零', async () => {
+      const dead = await makeSource('死源');
+      await sourceService.markHealth(dead, 'bad_config');
+      const dead2 = await makeSource('死源2');
+      await sourceService.markHealth(dead2, 'unreachable');
+      await store.setEnabled(dead2, false); // 已禁用，不应计入
+      await store.select(dead);
+
+      const disabled = await store.disableUnhealthy();
+
+      expect(disabled).toBe(1);
+      expect(store.currentSourceId).toBeNull();
+    });
+  });
 });

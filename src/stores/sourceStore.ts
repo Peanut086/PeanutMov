@@ -9,6 +9,7 @@ import { computed, ref } from 'vue';
 import { sourceService } from '@/services/sourceService';
 import { healthService } from '@/services/healthService';
 import { appEvents } from '@/services/events';
+import { logger } from '@/shared/logger';
 import { toAppError, toErrorShape } from '@/shared/errors';
 import type { AppErrorShape, Source, SourceInput } from '@/types';
 
@@ -114,6 +115,41 @@ export const useSourceStore = defineStore('source', () => {
       error.value = toErrorShape(e, 'E_DB');
       throw e;
     }
+  }
+
+  /**
+   * 一键禁用全部失效源（爬虫订阅场景：体检后隔离死源）。
+   * 只处理「检测过且确定失效」的源：unreachable / bad_config / auth_failed；
+   * timeout 可能是瞬时网络慢，保留不自动禁用。返回禁用数量。
+   * 注意：markHealth 不发 sources:changed，内存快照可能滞后，必须从仓储读最新状态。
+   */
+  async function disableUnhealthy(): Promise<number> {
+    const latest = await sourceService.list();
+    const targets = latest.filter(
+      (source) =>
+        source.enabled &&
+        source.healthCheckedAt !== null &&
+        (source.health === 'unreachable' ||
+          source.health === 'bad_config' ||
+          source.health === 'auth_failed'),
+    );
+    let disabled = 0;
+    for (const source of targets) {
+      try {
+        await sourceService.setEnabled(source.id, false);
+        disabled += 1;
+      } catch (e) {
+        // 单个失败不中断批量，最终数量如实上报
+        logger.warn('批量禁用失效源失败', source.name, e);
+      }
+    }
+    if (disabled > 0) {
+      if (currentSourceId.value !== null && targets.some((s) => s.id === currentSourceId.value)) {
+        currentSourceId.value = null;
+      }
+      await reload();
+    }
+    return disabled;
   }
 
   async function reorder(ids: string[]): Promise<void> {
@@ -229,6 +265,7 @@ export const useSourceStore = defineStore('source', () => {
     load,
     select,
     setEnabled,
+    disableUnhealthy,
     reorder,
     refreshHealth,
     create,

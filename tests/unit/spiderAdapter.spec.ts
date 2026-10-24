@@ -117,6 +117,23 @@ function mockPlugin(
   return { load, invoke, proxy };
 }
 
+/**
+ * mock 两段式探活 A 段（HEAD jar）。
+ * `error` 用 {code, httpStatus} 描述而非 AppError 实例：`vi.resetModules()` 会重建
+ * 模块注册表，spec 顶层 import 的 AppError 是旧实例，adapter 里 `instanceof` 不成立；
+ * 因此在工厂运行时动态 import，拿到与 adapter 同实例的 AppError 再抛出。
+ */
+function mockHttpHead(error: { code: string; httpStatus?: number | null } | null = null) {
+  const request = vi.fn(async (_url: string, _options?: unknown) => {
+    if (error) {
+      const { AppError: FreshAppError } = await import('@/shared/errors');
+      throw new FreshAppError(error.code as never, undefined, { httpStatus: error.httpStatus ?? null });
+    }
+  });
+  vi.doMock('@/sources/base/httpClient', () => ({ httpClient: { request } }));
+  return { request };
+}
+
 /** 取出某次 invoke 的调用参数（断言 List 形参走 arrayArgs） */
 function callArgsOf(invoke: ReturnType<typeof vi.fn>, index: number) {
   return invoke.mock.calls[index]?.[0] as {
@@ -139,6 +156,7 @@ describe('SpiderAdapter', () => {
     vi.resetModules();
     vi.restoreAllMocks();
     vi.doMock('@/shared/platform', () => ({ isNative: () => true }));
+    mockHttpHead();
     mockPlugin(ALL);
   });
 
@@ -164,6 +182,51 @@ describe('SpiderAdapter', () => {
     expect(result.ok).toBe(true);
     expect(result.health).toBe('ok');
     expect(result.itemCount).toBe(1);
+  });
+
+  it('探活 A 段：HEAD jar 403 → 直接判 auth_failed，不做原生加载', async () => {
+    const { request } = mockHttpHead({ code: 'E_HTTP_403', httpStatus: 403 });
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+
+    const result = await adapter.testConnection(makeSource());
+    expect(result.ok).toBe(false);
+    expect(result.health).toBe('auth_failed');
+    // A 段已判死，B 段（原生 jar 下载 + homeContent）不得执行
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      'https://jihulab.com/xiaohutx/meisha/-/raw/main/1.jar',
+      { method: 'HEAD', responseType: 'none', timeoutMs: 3000, retries: 0 },
+    );
+  });
+
+  it('探活 A 段：HEAD 超时 → 结论不确定，继续 B 段完整加载', async () => {
+    mockHttpHead({ code: 'E_TIMEOUT' });
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+
+    const result = await adapter.testConnection(makeSource());
+    expect(result.ok).toBe(true);
+    expect(result.itemCount).toBe(1);
+  });
+
+  it('探活 A 段：服务端不支持 HEAD（405）→ 继续 B 段', async () => {
+    mockHttpHead({ code: 'E_HTTP_400', httpStatus: 405 });
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+
+    const result = await adapter.testConnection(makeSource());
+    expect(result.ok).toBe(true);
+  });
+
+  it('探活 A 段：剥掉 jar 地址的 ;md5; 后缀再 HEAD', async () => {
+    const { request } = mockHttpHead();
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+
+    await adapter.testConnection(makeSource());
+    const calledUrl = request.mock.calls[0]?.[0] as string;
+    expect(calledUrl).not.toContain(';md5;');
   });
 
   it('listCategories：从 homeContent 的 class 映射', async () => {

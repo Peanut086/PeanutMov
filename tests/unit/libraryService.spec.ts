@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_CATEGORIES, DEMO_ITEMS } from '@/data/demo/demoCatalog';
 import { DEMO_SOURCE_ID, seedDemoData } from '@/data/demo/demoSeed';
 import { libraryService } from '@/services/libraryService';
+import { sourceService } from '@/services/sourceService';
 import { sourceRegistry } from '@/sources/registry';
 import { categoryIdFor } from '@/sources/base/normalize';
 import { PAGE_SIZE } from '@/shared/constants';
@@ -184,5 +185,46 @@ describe('媒体库服务 browse（BUG-01 分类过滤）', () => {
         pageSize: PAGE_SIZE,
       }),
     ).rejects.toMatchObject({ code: 'E_NETWORK' });
+  });
+});
+
+describe('pickFallbackSource（CHG-08：失效跳过排除演示源）', () => {
+  beforeEach(async () => {
+    await resetAll();
+    await seedDemoData();
+  });
+
+  /** 建一个 site 源并按 health 落库 */
+  async function makeSource(name: string, health: 'ok' | 'unreachable'): Promise<string> {
+    const source = await sourceService.create({
+      name,
+      type: 'site',
+      baseUrl: `https://${name}.example.com`,
+    });
+    await sourceService.markHealth(source.id, health);
+    return source.id;
+  }
+
+  it('其它源全失效时返回 null，不再回落到内置演示源', async () => {
+    const failed = await makeSource('坏源', 'unreachable');
+    await makeSource('另一坏源', 'unreachable');
+    // 演示源（builtin）健康且启用，但按 CHG-08 不得作为替代候选
+    await expect(libraryService.pickFallbackSource(failed)).resolves.toBeNull();
+  });
+
+  it('存在健康的非演示源时正常返回（演示源被排除不参与排序）', async () => {
+    const failed = await makeSource('坏源', 'unreachable');
+    const good = await makeSource('好源', 'ok');
+    const picked = await libraryService.pickFallbackSource(failed);
+    expect(picked?.id).toBe(good);
+  });
+
+  it('失败源自身不进入候选', async () => {
+    const failed = await makeSource('坏源', 'unreachable');
+    await makeSource('好源', 'ok');
+    await sourceService.markHealth(failed, 'ok'); // 失效标记晚于健康快照的场景
+    const picked = await libraryService.pickFallbackSource(failed);
+    expect(picked).not.toBeNull();
+    expect(picked?.id).not.toBe(failed);
   });
 });

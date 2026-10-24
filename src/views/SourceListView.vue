@@ -92,6 +92,46 @@ const tierSummary = computed(() => {
 /** 至少有一个源检测过（非 unknown）才展示总览，避免首屏出现"全部未检测 0"的噪音 */
 const showTierSummary = computed(() => sources.sources.some((source) => source.health !== 'unknown'));
 
+/** 确定失效且仍启用的源（一键禁用目标；「连接超时」可能是瞬时网络慢，保留） */
+const unhealthyEnabled = computed(() =>
+  sources.sources.filter(
+    (source) =>
+      source.enabled &&
+      source.healthCheckedAt !== null &&
+      (source.health === 'unreachable' ||
+        source.health === 'bad_config' ||
+        source.health === 'auth_failed'),
+  ),
+);
+const disablingUnhealthy = ref(false);
+
+/** 一键禁用失效源（爬虫订阅场景：体检后隔离死源），确认后批量执行 */
+async function disableUnhealthy(): Promise<void> {
+  const targets = unhealthyEnabled.value;
+  if (targets.length === 0 || disablingUnhealthy.value) return;
+  const names = targets.slice(0, 3).map((s) => `「${s.name}」`).join('、');
+  const ok = await ui.confirm({
+    title: '禁用全部失效源？',
+    message: `将禁用 ${targets.length} 个检测失效的源：${names}${targets.length > 3 ? ' 等' : ''}。「连接超时」的源可能是临时网络慢，不会被禁用；被禁用的源可随时重新启用。`,
+    confirmText: '禁用',
+  });
+  if (!ok) return;
+  disablingUnhealthy.value = true;
+  try {
+    const disabled = await sources.disableUnhealthy();
+    // 默认源被批量禁用时，切到第一个可用源（与单源禁用同口径）
+    if (defaultSourceId.value !== null && !sources.enabledSources.some((s) => s.id === defaultSourceId.value)) {
+      const next = sources.enabledSources.find((s) => !s.builtin) ?? sources.enabledSources[0] ?? null;
+      await settings.update({ defaultSourceId: next?.id ?? null });
+    }
+    toast.success(`已禁用 ${disabled} 个失效源`);
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    disablingUnhealthy.value = false;
+  }
+}
+
 /** 进度文案（AC-107 / 17.5.2）：`检测中 12/49`，无进度时回落到 `检测中…` */
 const progressText = computed(() => {
   const progress = sources.healthProgress;
@@ -323,6 +363,17 @@ async function retry(): Promise<void> {
             <span class="sources-overview__item" :data-tier="item.tier">{{ item.label }} {{ item.count }}</span>
           </template>
         </p>
+        <!-- 一键隔离失效源：仅存在确定失效且仍启用的源时出现 -->
+        <button
+          v-if="unhealthyEnabled.length > 0"
+          class="btn btn--secondary btn--sm sources-overview__disable"
+          type="button"
+          :disabled="disablingUnhealthy || healthChecking"
+          @click="disableUnhealthy"
+        >
+          <LoadingSpinner v-if="disablingUnhealthy" :size="14" />
+          禁用 {{ unhealthyEnabled.length }} 个失效源
+        </button>
       </div>
 
       <div v-if="loading" class="sources-loading" role="status">
@@ -478,6 +529,14 @@ async function retry(): Promise<void> {
   font: var(--text-caption);
   line-height: 1.6;
   color: var(--color-text-secondary);
+}
+
+/* 一键禁用失效源：窄条对齐总览文字 */
+.sources-overview__disable {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .sources-overview__sep {

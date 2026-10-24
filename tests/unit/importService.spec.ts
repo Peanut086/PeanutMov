@@ -1,9 +1,15 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { importService } from '@/services/importService';
 import { sourceService } from '@/services/sourceService';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { resetAll } from './helpers';
+
+/** 爬虫 jar 预检的 HEAD mock（CHG-10）；仅预检使用 httpClient，commit 链路不受影响 */
+const { httpHead } = vi.hoisted(() => ({
+  httpHead: vi.fn(async (_url: string, _options?: unknown) => {}),
+}));
+vi.mock('@/sources/base/httpClient', () => ({ httpClient: { request: httpHead } }));
 
 /**
  * `ImportResult` 口径（CHG-03 / AC-13）
@@ -185,5 +191,75 @@ describe('importService.commit 的 selectedKeys 语义（CHG-03）', () => {
     expect(result.skipped).toBe(0); // 未勾选 ≠ 跳过
     expect(result.sourceIds).toEqual([]);
     expect(await sourceRepo.list()).toHaveLength(0);
+  });
+});
+
+describe('importService 爬虫 jar 预检（CHG-10）', () => {
+  /** 两个条目共享同一 jar（共享结果只 HEAD 一次），另有一个独立 jar 的条目 */
+  const SUB = JSON.stringify({
+    name: '爬虫订阅',
+    spider: 'https://cdn.example.com/shared.jar',
+    sites: [
+      { key: 's-shared-1', name: '共享爬虫 1', type: 3, api: 'csp_A' },
+      { key: 's-shared-2', name: '共享爬虫 2', type: 3, api: 'csp_B' },
+      { key: 's-own', name: '独立爬虫', type: 3, api: 'csp_C', jar: 'https://cdn.example.com/own.jar' },
+      { key: 'site-x', name: '站点源', type: 0, api: 'https://cms.example.com/api.php/provide/vod' },
+    ],
+  });
+
+  beforeEach(async () => {
+    await resetAll();
+    httpHead.mockReset();
+    httpHead.mockResolvedValue(undefined);
+  });
+
+  it('jar 可达：条目默认勾选且无 jar 警示', async () => {
+    const preview = await importService.previewFromText(SUB, 's.json');
+    const spiders = preview.entries.filter((e) => e.type === 'spider');
+    expect(spiders).toHaveLength(3);
+    for (const entry of spiders) {
+      expect(entry.selected).toBe(true);
+      expect(entry.warning ?? '').not.toContain('jar');
+    }
+  });
+
+  it('jar 403：判死条目取消默认勾选并追加警示，其余不受影响', async () => {
+    const { AppError } = await import('@/shared/errors');
+    httpHead.mockImplementation(async (url: string) => {
+      if (String(url).includes('own.jar')) {
+        throw new AppError('E_HTTP_403', undefined, { httpStatus: 403 });
+      }
+    });
+    const preview = await importService.previewFromText(SUB, 's.json');
+
+    const own = preview.entries.find((e) => e.key === 's-own');
+    expect(own?.selected).toBe(false);
+    expect(own?.warning).toContain('jar 不可达');
+    expect(own?.warning).toContain('403');
+
+    const shared = preview.entries.filter((e) => e.key.startsWith('s-shared'));
+    for (const entry of shared) {
+      expect(entry.selected).toBe(true);
+      expect(entry.warning ?? '').not.toContain('jar 不可达');
+    }
+  });
+
+  it('共享 jar 只 HEAD 一次（结果复用）', async () => {
+    await importService.previewFromText(SUB, 's.json');
+    const urls = httpHead.mock.calls.map((call) => String(call[0]));
+    expect(urls.filter((u) => u.includes('shared.jar'))).toHaveLength(1);
+    expect(urls.filter((u) => u.includes('own.jar'))).toHaveLength(1);
+    // 非 spider 条目（站点源）不预检
+    expect(urls.some((u) => u.includes('cms.example.com'))).toBe(false);
+  });
+
+  it('HEAD 超时：结论不确定，不判死', async () => {
+    const { AppError } = await import('@/shared/errors');
+    httpHead.mockRejectedValue(new AppError('E_TIMEOUT'));
+    const preview = await importService.previewFromText(SUB, 's.json');
+    for (const entry of preview.entries.filter((e) => e.type === 'spider')) {
+      expect(entry.selected).toBe(true);
+      expect(entry.warning ?? '').not.toContain('jar 不可达');
+    }
   });
 });

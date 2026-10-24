@@ -28,7 +28,9 @@ import {
 } from '@/shared/constants';
 import { AppError, toAppError } from '@/shared/errors';
 import { newId, nextKey } from '@/shared/id';
+import { isNative } from '@/shared/platform';
 import { isValidHttpUrl } from '@/shared/url';
+import { httpClient } from '@/sources/base/httpClient';
 import { crawl } from '@/sources/pipeline/scheduler';
 import type { SubscriptionText } from '@/sources/pipeline/parsers';
 import { kvRepo } from '@/db/repositories/kvRepo';
@@ -89,9 +91,87 @@ async function annotateDuplicates(preview: ImportPreview): Promise<ImportPreview
 async function previewFromRaw(
   text: string,
   opts: { origin: 'url' | 'file'; sourceUrl?: string | null; fileName?: string | null },
+  signal?: AbortSignal,
 ): Promise<ImportPreview> {
   const preview = subscriptionParser.parse(text, opts);
-  return annotateDuplicates(preview);
+  const annotated = await annotateDuplicates(preview);
+  return precheckSpiderJars(annotated, signal);
+}
+
+/* ---------- 爬虫 jar 预检（CHG-10）：导入前筛掉死源 ---------- */
+
+const JAR_CHECK_CONCURRENCY = 6;
+const JAR_CHECK_TIMEOUT_MS = 3000;
+
+/** 提取爬虫条目的 jar 地址；非爬虫 jar 条目返回 null */
+function spiderJarUrlOf(entry: ImportPreviewEntry): string | null {
+  if (entry.type !== 'spider' || !entry.valid || !entry.normalized) return null;
+  const ext = entry.normalized.ext as { kind?: unknown; jarUrl?: unknown } | null;
+  if (!ext || ext.kind !== 'jar' || typeof ext.jarUrl !== 'string' || ext.jarUrl.length === 0) {
+    return null;
+  }
+  return ext.jarUrl;
+}
+
+/** HEAD 结论不确定（不据此判死）：超时可能是慢网络；Web 端网络错可能是 CORS 假阳性；405/501 不支持 HEAD */
+function jarCheckInconclusive(e: AppError): boolean {
+  if (e.code === 'E_TIMEOUT') return true;
+  if (!isNative() && (e.code === 'E_NETWORK' || e.httpStatus === null)) return true;
+  return e.httpStatus === 405 || e.httpStatus === 501;
+}
+
+/**
+ * 并发 HEAD jar（同一 jar 地址共享结果），判死的条目取消默认勾选并追加警示。
+ * 实测 4k.json 类订阅大半 jar 已 403 / 域名失效，预览时可见，导入后不再反复失败。
+ */
+async function precheckSpiderJars(preview: ImportPreview, signal?: AbortSignal): Promise<ImportPreview> {
+  const targets = preview.entries.filter((entry) => spiderJarUrlOf(entry) !== null);
+  if (targets.length === 0) return preview;
+
+  /** jar 地址 → 判定 + 失败原因（dead 时用于警示文案） */
+  const verdicts = new Map<string, { verdict: 'ok' | 'dead' | 'unknown'; detail?: string }>();
+  const uniqueUrls = [...new Set(targets.map((entry) => spiderJarUrlOf(entry) as string))];
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(JAR_CHECK_CONCURRENCY, uniqueUrls.length) }, async () => {
+      while (cursor < uniqueUrls.length) {
+        const jarUrl = uniqueUrls[cursor++]!;
+        const url = jarUrl.split(';')[0] ?? jarUrl; // `;md5;hash` 后缀由原生侧解析，HTTP 须剥掉
+        try {
+          await httpClient.request(url, {
+            method: 'HEAD',
+            responseType: 'none',
+            timeoutMs: JAR_CHECK_TIMEOUT_MS,
+            retries: 0,
+            signal,
+          });
+          verdicts.set(jarUrl, { verdict: 'ok' });
+        } catch (e) {
+          const err = toAppError(e, 'E_NETWORK');
+          if (jarCheckInconclusive(err)) {
+            verdicts.set(jarUrl, { verdict: 'unknown' });
+          } else {
+            verdicts.set(jarUrl, { verdict: 'dead', detail: err.detail ?? err.message });
+          }
+        }
+      }
+    }),
+  );
+
+  const entries = preview.entries.map((entry) => {
+    const jarUrl = spiderJarUrlOf(entry);
+    if (!jarUrl) return entry;
+    const result = verdicts.get(jarUrl);
+    if (!result || result.verdict !== 'dead') return entry;
+    return {
+      ...entry,
+      selected: false,
+      warning: [entry.warning, `jar 不可达（${result.detail ?? '请求失败'}），导入后无法浏览`]
+        .filter(Boolean)
+        .join('；'),
+    };
+  });
+  return { ...preview, entries };
 }
 
 /**
@@ -129,13 +209,13 @@ async function fetchSubscriptionText(url: string, signal?: AbortSignal): Promise
 export const importService: ImportService = {
   async previewFromUrl(url: string, signal?: AbortSignal): Promise<ImportPreview> {
     const text = await fetchSubscriptionText(url, signal);
-    return previewFromRaw(text, { origin: 'url', sourceUrl: url.trim() });
+    return previewFromRaw(text, { origin: 'url', sourceUrl: url.trim() }, signal);
   },
 
   /** 展开多仓索引中的一个仓库地址，返回该仓库的源预览 */
   async previewFromRepo(repoUrl: string, signal?: AbortSignal): Promise<ImportPreview> {
     const text = await fetchSubscriptionText(repoUrl, signal);
-    return previewFromRaw(text, { origin: 'url', sourceUrl: repoUrl.trim() });
+    return previewFromRaw(text, { origin: 'url', sourceUrl: repoUrl.trim() }, signal);
   },
 
   async previewFromText(text: string, fileName: string): Promise<ImportPreview> {
