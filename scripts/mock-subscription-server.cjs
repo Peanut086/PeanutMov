@@ -317,6 +317,21 @@ const SERIES_VOD = {
   vod_play_url: `第1集$${V.flower}#第2集$${V.rabbit}`,
 };
 
+/** 全坏验证片：唯一线路死链且片名无同名候选 → 自动链耗尽落错误面板（AC-123 第三链 / AC-134） */
+const ALLBAD_VOD = {
+  vod_id: 'allbad-001',
+  vod_name: '全坏验证片',
+  type_id: 1,
+  type_name: '电影',
+  vod_year: '2026',
+  vod_area: '测试',
+  vod_score: '5.0',
+  vod_remarks: '全坏',
+  vod_content: '唯一线路死链且无同名候选，用于确定性触发兜底错误面板。',
+  vod_play_from: '唯一线路',
+  vod_play_url: `正片$/broken.mp4`,
+};
+
 /** 换链验证订阅：一次导入三个 fixture 源（AC-123 e2e 用） */
 function failoverSubscriptionFor(host) {
   const base = `http://${host}`;
@@ -328,6 +343,7 @@ function failoverSubscriptionFor(host) {
       { key: 'twin-a', name: '换源A（全线路坏）', type: 'site', api: `${base}/twin-a` },
       { key: 'twin-b', name: '换源B（可播）', type: 'site', api: `${base}/twin-b` },
       { key: 'series-site', name: '连播验证源（preloadNext）', type: 'site', api: `${base}/series` },
+      { key: 'allbad-site', name: '全坏源（兜底面板）', type: 'site', api: `${base}/allbad` },
     ],
   };
 }
@@ -433,6 +449,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/twin-a') return tvbox(req, res, url, [TWIN_A_VOD]);
   if (url.pathname === '/twin-b') return tvbox(req, res, url, [TWIN_B_VOD]);
   if (url.pathname === '/series') return tvbox(req, res, url, [SERIES_VOD]);
+  if (url.pathname === '/allbad') return tvbox(req, res, url, [ALLBAD_VOD]);
   // 死链直链：引擎加载即失败（404 → E_UNSUPPORTED_FORMAT/E_NETWORK → 自动兜底链）
   if (url.pathname === '/broken.mp4') return text(res, 404, 'gone');
   if (url.pathname === '/dc.json') {

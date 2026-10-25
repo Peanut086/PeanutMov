@@ -22,6 +22,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(DrpyPlugin.class);
         registerPlugin(SnifferPlugin.class);
         registerPlugin(LocalProxyPlugin.class);
+        // v1.8/CHG-25：ExoPlayer PoC 类自 v1.7 就存在但漏注册，接线后才暴露（插件桥 404）
+        registerPlugin(ExoPlayerPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }
