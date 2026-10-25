@@ -31,6 +31,7 @@ import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
 import { getHost, isValidHttpUrl } from '@/shared/url';
+import { normalizeImportUrl } from '@/shared/urlNormalize';
 
 const router = useRouter();
 const route = useRoute();
@@ -142,6 +143,68 @@ onMounted(async () => {
 /** 跳批量评测页（CHG-12） */
 function goEval(): void {
   void router.push('/settings/subscriptions/eval');
+}
+
+/* ---------- v1.8/CHG-26：解析失败可操作化（原因之外给下一步动作） ---------- */
+
+/** 归一化结果：修正地址（blob→raw 等）与镜像变体（剥代理前缀/镜像站） */
+const urlFix = computed(() => {
+  const target = url.value.trim();
+  if (!isValidHttpUrl(target)) return null;
+  try {
+    const n = normalizeImportUrl(target);
+    return {
+      corrected: n.url !== target ? n.url : null,
+      mirror: n.variants.find((v) => v !== n.url) ?? null,
+      notes: n.notes,
+    };
+  } catch {
+    return null;
+  }
+});
+
+function retryFetch(): void {
+  void fetchPreview();
+}
+
+/** 用归一化修正地址重试（如 GitHub blob 页 → raw） */
+function retryWithFixed(): void {
+  const fixed = urlFix.value?.corrected;
+  if (!fixed) return;
+  url.value = fixed;
+  void fetchPreview();
+}
+
+/** 换镜像变体重试（剥 gh-proxy 前缀直连 / 镜像站） */
+function retryWithMirror(): void {
+  const mirror = urlFix.value?.mirror;
+  if (!mirror) return;
+  url.value = mirror;
+  void fetchPreview();
+}
+
+/** 复制诊断：地址 + 错误 + 归一化提示，便于反馈或换工具排查 */
+async function copyDiagnostic(): Promise<void> {
+  const lines = [
+    `地址：${url.value.trim()}`,
+    `错误：${parseError.value ?? '未知错误'}`,
+    ...(urlFix.value?.notes ?? []).map((n) => `提示：${n}`),
+  ];
+  try {
+    await navigator.clipboard.writeText(lines.join('\n'));
+    toast.success('诊断信息已复制');
+  } catch {
+    toast.error('复制失败，请长按地址栏手动复制');
+  }
+}
+
+/** 带当前地址跳批量评测（粘贴侧已有 URL，评测排行判断订阅死活） */
+function goEvalWithUrl(): void {
+  const target = url.value.trim();
+  void router.push({
+    path: '/settings/subscriptions/eval',
+    query: isValidHttpUrl(target) ? { url: target } : undefined,
+  });
 }
 
 /** 预览变化 → 默认全选有效条目（AC-08） */
@@ -367,6 +430,32 @@ function leave(): void {
       </section>
 
       <p v-if="parseError" class="import-error" role="alert">{{ parseError }}</p>
+
+      <!-- v1.8/CHG-26：解析失败可操作化——重试/修正地址/换镜像/复制诊断/去批量评测 -->
+      <div v-if="parseError" class="import-error__actions">
+        <button class="btn btn--secondary btn--sm" type="button" @click="retryFetch">重试</button>
+        <button
+          v-if="urlFix?.corrected"
+          class="btn btn--secondary btn--sm"
+          type="button"
+          @click="retryWithFixed"
+        >
+          用修正地址重试
+        </button>
+        <button
+          v-if="urlFix?.mirror"
+          class="btn btn--secondary btn--sm"
+          type="button"
+          @click="retryWithMirror"
+        >
+          换镜像重试
+        </button>
+        <button class="btn btn--ghost btn--sm" type="button" @click="copyDiagnostic">复制诊断</button>
+        <button class="btn btn--ghost btn--sm" type="button" @click="goEvalWithUrl">去批量评测</button>
+      </div>
+      <p v-if="parseError && urlFix?.notes?.length" class="field__hint">
+        {{ urlFix.notes.join('；') }}
+      </p>
 
       <!-- v1.7/CHG-18：内容不是普通订阅，但可以一键落地 -->
       <section v-if="hasPreview && suggestions.length > 0" class="import-summary">
@@ -635,6 +724,15 @@ function leave(): void {
   background-color: var(--color-danger-soft);
   color: var(--color-danger);
   font: var(--text-label);
+}
+
+/* v1.8/CHG-26：解析失败动作条 */
+.import-error__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: calc(-1 * var(--space-1));
+  margin-bottom: var(--space-2);
 }
 
 .import-summary {

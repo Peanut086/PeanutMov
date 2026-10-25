@@ -167,6 +167,15 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
         scheduleHide();
       }
     });
+
+    // v1.8/CHG-25：引擎变化（含原生→WebView 回退）与非致命提示
+    c.on('enginechange', ({ kind }) => {
+      player.patch({ engineKind: kind });
+    });
+
+    c.on('notice', ({ message }) => {
+      ui.toast(message, 'info');
+    });
   }
 
   /** 创建并挂载控制器 */

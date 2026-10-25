@@ -21,7 +21,8 @@ export interface ExoRect {
 
 export interface ExoPrepareOptions {
   url: string;
-  headers?: Record<string, string>;
+  /** 头数组形态（Java 侧 `call.getArray("headers")` 逐项还原；用 exoHeadersOf 转换） */
+  headers?: Array<{ key: string; value: string }>;
   rect?: ExoRect;
   autoPlay?: boolean;
 }
@@ -34,10 +35,16 @@ export interface ExoPlayerPlugin {
   pause(): Promise<void>;
   seek(options: { positionMs: number }): Promise<void>;
   setRate(options: { rate: number }): Promise<void>;
-  progress(): Promise<{ positionMs: number; durationMs: number }>;
+  /** v1.8/CHG-25：音量 0~100（Java 侧映射 0~1） */
+  setVolume(options: { volume: number }): Promise<void>;
+  /** v1.8/CHG-25：droppedFrames 为本次会话累计丢帧（AC-125 帧率采样） */
+  progress(): Promise<{ positionMs: number; durationMs: number; droppedFrames?: number }>;
   release(): Promise<void>;
-  /** 状态监听（ready / error）；返回解绑函数 */
-  addListener(eventName: 'exostate', cb: (data: { state: string; message?: string; duration?: number }) => void): Promise<() => void>;
+  /** 状态监听（ready / buffering / ended / error）；返回解绑函数 */
+  addListener(
+    eventName: 'exostate',
+    cb: (data: { state: string; message?: string; duration?: number }) => void,
+  ): Promise<() => void>;
 }
 
 export const ExoPlayer = registerPlugin<ExoPlayerPlugin>('ExoPlayer');

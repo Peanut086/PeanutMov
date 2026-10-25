@@ -4,6 +4,7 @@
  *
  * 覆盖画面：错误标题（ERROR_MESSAGES）+ 可能原因 + 重试/切换线路/返回/复制错误信息。
  * `retryable === false` 时隐藏"重试"，保留"切换线路/返回"。
+ * v1.8/CHG-26：新增「换源重播」（同名同年跨源手动兜底）与「源体检」（源疑似失效时跳源管理）。
  */
 import { computed } from 'vue';
 
@@ -15,15 +16,21 @@ const props = withDefaults(
     error: AppErrorShape | null;
     /** 是否可切换线路 */
     canSwitchLine?: boolean;
+    /** v1.8/CHG-26：是否显示「换源重播」（同名同年跨源） */
+    canSwitchSource?: boolean;
+    /** v1.8/CHG-26：是否显示「源体检」入口（错误码指向源健康问题时为真） */
+    canHealthCheck?: boolean;
     /** 复制错误信息回调 */
     copyText?: string;
   }>(),
-  { canSwitchLine: true, copyText: '' },
+  { canSwitchLine: true, canSwitchSource: false, canHealthCheck: false, copyText: '' },
 );
 
 const emit = defineEmits<{
   (e: 'retry'): void;
   (e: 'switch-line'): void;
+  (e: 'switch-source'): void;
+  (e: 'health-check'): void;
   (e: 'back'): void;
   (e: 'copy'): void;
 }>();
@@ -99,8 +106,27 @@ const showRetry = computed(() => props.error?.retryable !== false);
         >
           切换线路
         </button>
+        <!-- v1.8/CHG-26：自动兜底只各试一次，手动换源让用户再推一把 -->
+        <button
+          v-if="canSwitchSource"
+          class="btn btn--secondary btn--md"
+          type="button"
+          @click="emit('switch-source')"
+        >
+          换源重播
+        </button>
         <button class="btn btn--ghost btn--md" type="button" @click="emit('back')">返回</button>
       </div>
+
+      <!-- v1.8/CHG-26：错误码指向源健康问题时给去体检的路径 -->
+      <button
+        v-if="canHealthCheck"
+        class="player-error__copy"
+        type="button"
+        @click="emit('health-check')"
+      >
+        去源体检
+      </button>
 
       <button class="player-error__copy" type="button" @click="emit('copy')">
         复制错误信息

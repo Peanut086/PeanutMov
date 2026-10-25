@@ -50,7 +50,7 @@ public class DrpyPlugin extends Plugin {
     /** 同 SpiderPlugin：Capacitor 桥接是单线程，重活必须进独立线程池 */
     private final ExecutorService drpyExecutor = Executors.newCachedThreadPool();
     private final Handler watchdog = new Handler(Looper.getMainLooper());
-    private static final long LOAD_TIMEOUT_MS = 40_000;
+    private static final long LOAD_TIMEOUT_MS = 75_000;
     private static final long INVOKE_TIMEOUT_MS = 30_000;
 
     private interface DrpyTask {
@@ -113,7 +113,8 @@ public class DrpyPlugin extends Plugin {
                     ? ruleText
                     : loadRuleCode(getContext(), ruleUrl);
             String handle = "dp-" + (++handleSeq);
-            DrpyRuntime runtime = new DrpyRuntime(getContext(), code, initExt, handle);
+            // v1.8/CHG-27：ruleUrl 传入运行时——catvod 模块规则的相对 import 需要基地址
+            DrpyRuntime runtime = new DrpyRuntime(getContext(), code, initExt, handle, ruleUrl);
             loaded.put(handle, runtime);
             JSObject ret = new JSObject();
             ret.put("handle", handle);

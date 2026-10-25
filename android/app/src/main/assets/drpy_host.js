@@ -604,6 +604,42 @@ function __drpyList(v) {
   return [];
 }
 
+/* ---------------- catvod 模块规则（v1.8/CHG-27） ---------------- */
+
+/**
+ * catvod 规则经 CatvodLoader 拼接评估后，DrpyRuntime 把 __jsEvalReturn() 的返回
+ * 挂到 globalThis.__catvod（{init, home, homeVod, category, detail, play, search, proxy}）。
+ * 方法签名与 drpy 不同（TVBox quickjs 约定），这里做参数适配；返回结构同为 TVBox JSON。
+ */
+var __catvodInited = false;
+
+async function __catvodEnsureInit() {
+  if (__catvodInited) return;
+  var cfg = {};
+  try { cfg = JSON.parse(__drpyExt || '{}'); } catch (e) { /* 空扩展保持空对象 */ }
+  if (typeof globalThis.__catvod.init === 'function') await globalThis.__catvod.init(cfg);
+  __catvodInited = true;
+}
+
+async function __catvodDispatch(method, arg) {
+  await __catvodEnsureInit();
+  var sp = globalThis.__catvod;
+  switch (method) {
+    case 'home':
+      return await sp.home(true);
+    case 'category':
+      return await sp.category(String(arg.tid || ''), Number(arg.pg || 1), true, arg.extend || {});
+    case 'detail':
+      return await sp.detail([String(arg.id || '')]);
+    case 'search':
+      return await sp.search(String(arg.wd || ''), arg.quick === true);
+    case 'play':
+      return await sp.play(String(arg.flag || ''), String(arg.id || ''), []);
+    default:
+      throw new Error('未知的 catvod 方法: ' + method);
+  }
+}
+
 /* ---------------- 同步桥接入口 ---------------- */
 
 /**
@@ -616,17 +652,24 @@ function __drpyList(v) {
 function __drpyCall(method, argJson) {
   var arg = {};
   try { arg = JSON.parse(argJson || '{}'); } catch (e) { /* 保持空参数 */ }
+  var dispatch = typeof globalThis.__catvod !== 'undefined' && globalThis.__catvod
+    ? __catvodDispatch
+    : null;
   __drpyOut = { state: 'pending' };
   (async function () {
     try {
       var r;
-      switch (method) {
-        case 'home': r = await __drpyHome(); break;
-        case 'category': r = await __drpyCategory(arg); break;
-        case 'detail': r = await __drpyDetail(arg); break;
-        case 'search': r = await __drpySearch(arg); break;
-        case 'play': r = await __drpyPlay(arg); break;
-        default: throw new Error('未知的 drpy 方法: ' + method);
+      if (dispatch) {
+        r = await dispatch(method, arg);
+      } else {
+        switch (method) {
+          case 'home': r = await __drpyHome(); break;
+          case 'category': r = await __drpyCategory(arg); break;
+          case 'detail': r = await __drpyDetail(arg); break;
+          case 'search': r = await __drpySearch(arg); break;
+          case 'play': r = await __drpyPlay(arg); break;
+          default: throw new Error('未知的 drpy 方法: ' + method);
+        }
       }
       __drpyOut = { state: 'done', value: JSON.stringify(r === undefined ? null : r) };
     } catch (e) {

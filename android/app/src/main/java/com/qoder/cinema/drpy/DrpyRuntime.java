@@ -53,6 +53,9 @@ public class DrpyRuntime implements AutoCloseable {
     private static final String TAG = "DrpyRuntime";
     /** DOM 片段上限：超大页面（几 MB 的 HTML）解析成本高，超出直接截断 */
     private static final int MAX_HTML_LENGTH = 2_000_000;
+    /** catvod JS 模块规则识别：行首 import（v1.8/CHG-27 起走 CatvodLoader 而非报错） */
+    private static final java.util.regex.Pattern CATVOD_IMPORT_RE =
+            java.util.regex.Pattern.compile("^\\s*import\\s", java.util.regex.Pattern.MULTILINE);
 
     private static final ExecutorService ENGINE_INIT = Executors.newSingleThreadExecutor();
 
@@ -77,6 +80,15 @@ public class DrpyRuntime implements AutoCloseable {
 
     /** 规则源码 → 运行时。抛出的异常信息直接面向用户（规则哪一步失败一目了然） */
     public DrpyRuntime(Context appContext, String ruleCode, String initExt, String handle) throws Exception {
+        this(appContext, ruleCode, initExt, handle, null);
+    }
+
+    /**
+     * v1.8/CHG-27：ruleUrl 用于 catvod 模块规则的相对 import 解析（null = ruleText 加载，
+     * 此时 catvod 规则会因缺少基地址而明确报错）。
+     */
+    public DrpyRuntime(Context appContext, String ruleCode, String initExt, String handle, String ruleUrl)
+            throws Exception {
         engineThread = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "drpy-" + handle);
             t.setDaemon(true);
@@ -90,16 +102,33 @@ public class DrpyRuntime implements AutoCloseable {
                 installBindings(ctx, handle);
                 ctx.evaluate(readHostScript(appContext), "drpy_host.js");
                 ctx.getGlobalObject().setProperty("__drpyExt", initExt == null ? "" : initExt);
-                // catvod JS 模块规则（assets:// 导入）不是 drpy，给出明确错误而不是语法错
-                if (java.util.regex.Pattern.compile("^\\s*import\\s", java.util.regex.Pattern.MULTILINE)
-                        .matcher(ruleCode).find()) {
-                    throw new IllegalStateException("该规则是 catvod JS 模块规则（assets:// 导入），暂不支持");
+                // v1.8/CHG-27：catvod JS 模块规则（import 形态）→ CatvodLoader 拉取依赖模块、
+                // import/export 改写拼接后按 __jsEvalReturn 契约接入；原生面复用本宿主
+                boolean catvod = CATVOD_IMPORT_RE.matcher(ruleCode).find();
+                String code = ruleCode;
+                if (catvod) {
+                    if (ruleUrl == null || ruleUrl.isEmpty()) {
+                        throw new IllegalStateException(
+                                "catvod 模块规则必须通过规则 URL 加载（相对 import 需要基地址）");
+                    }
+                    code = CatvodLoader.build(appContext, ruleUrl, ruleCode);
                 }
-                ctx.evaluate(ruleCode, "rule.js");
-                // 规则里常见的 `var rule = {...}` 与 `globalThis.rule = {...}` 都覆盖
-                Object ruleObj = ctx.getGlobalObject().getProperty("rule");
-                if (ruleObj == null) {
-                    throw new IllegalStateException("规则未定义 rule 对象");
+                ctx.evaluate(code, catvod ? "catvod_bundle.js" : "rule.js");
+                if (catvod) {
+                    ctx.evaluate(
+                            "(function(){ var o = (typeof __jsEvalReturn === 'function')"
+                                    + " ? __jsEvalReturn()"
+                                    + " : (typeof __catDefault_entry !== 'undefined' ? __catDefault_entry : null);"
+                                    + " if (!o || typeof o !== 'object') {"
+                                    + " throw new Error('catvod 规则未导出可用的 __jsEvalReturn'); }"
+                                    + " globalThis.__catvod = o; })()",
+                            "catvod_bind.js");
+                } else {
+                    // 规则里常见的 `var rule = {...}` 与 `globalThis.rule = {...}` 都覆盖
+                    Object ruleObj = ctx.getGlobalObject().getProperty("rule");
+                    if (ruleObj == null) {
+                        throw new IllegalStateException("规则未定义 rule 对象");
+                    }
                 }
                 return ctx;
             } catch (Exception e) {

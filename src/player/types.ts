@@ -31,6 +31,10 @@ export type PlayerEventMap = {
   loaded: void;
   /** 全屏状态变化 */
   fullscreenchange: { fullscreen: boolean };
+  /** v1.8/CHG-25：当前引擎变化（首次接入与原生→WebView 回退都会触发） */
+  enginechange: { kind: 'native' | 'hls' | 'video' };
+  /** v1.8/CHG-25：非致命提示（如原生引擎回退），由 View 转 Toast */
+  notice: { message: string };
 };
 
 export type PlayerEventName = keyof PlayerEventMap;
@@ -70,6 +74,12 @@ export interface PlayerLoadOptions {
   preferLocal: boolean;
   /** 切集时由 View 提供，返回新一集的完整加载参数 */
   resolveEpisode?: (episodeId: string) => Promise<PlayerLoadOptions>;
+  /**
+   * v1.8/CHG-25：优先使用实验性原生引擎（ExoPlayer surface 模式）。
+   * 由 View 读 `experimentalNativePlayer` 设置注入——控制器保持「不调用任何 Service」
+   * 的分层约束；不可用/失败时控制器静默回退 WebView 引擎并发 `notice` 事件。
+   */
+  preferNativeEngine?: boolean;
 }
 
 /* ---------- 引擎接口 ---------- */

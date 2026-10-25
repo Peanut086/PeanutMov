@@ -37,6 +37,8 @@ export const usePlayerStore = defineStore('player', () => {
   const qualities = ref<string[]>([]);
   const error = ref<AppErrorShape | null>(null);
   const loading = ref(false);
+  /** v1.8/CHG-25：当前引擎类型（native/hls/video）；null = 尚未加载 */
+  const engineKind = ref<'native' | 'hls' | 'video' | null>(null);
 
   const progress = computed(() => (duration.value > 0 ? currentTime.value / duration.value : 0));
 
@@ -62,6 +64,7 @@ export const usePlayerStore = defineStore('player', () => {
     qualities.value = [];
     error.value = null;
     loading.value = false;
+    engineKind.value = null;
   }
 
   /** 批量补丁：只更新传入的字段（避免整对象替换导致响应式抖动） */
@@ -87,6 +90,7 @@ export const usePlayerStore = defineStore('player', () => {
     qualities: string[];
     error: AppErrorShape | null;
     loading: boolean;
+    engineKind: 'native' | 'hls' | 'video' | null;
   }>): void {
     if (p.mediaId !== undefined) mediaId.value = p.mediaId;
     if (p.episodeId !== undefined) episodeId.value = p.episodeId;
@@ -109,6 +113,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (p.qualities !== undefined) qualities.value = p.qualities;
     if (p.error !== undefined) error.value = p.error;
     if (p.loading !== undefined) loading.value = p.loading;
+    if (p.engineKind !== undefined) engineKind.value = p.engineKind;
   }
 
   return {
@@ -133,6 +138,7 @@ export const usePlayerStore = defineStore('player', () => {
     qualities,
     error,
     loading,
+    engineKind,
     progress,
     reset,
     patch,

@@ -2,7 +2,6 @@ package com.qoder.cinema;
 
 import android.view.View;
 import android.widget.FrameLayout;
-import android.widget.Toast;
 
 import androidx.annotation.OptIn;
 import androidx.media3.common.MediaItem;
@@ -10,6 +9,7 @@ import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
@@ -46,6 +46,8 @@ public class ExoPlayerPlugin extends Plugin {
     private ExoPlayer player;
     private PlayerView playerView;
     private FrameLayout overlay;
+    /** v1.8/CHG-25：本次会话累计丢帧（AnalyticsListener 累加，progress() 上报 AC-125 采样） */
+    private long droppedFrames = 0;
 
     @PluginMethod
     public void isSupported(PluginCall call) {
@@ -66,6 +68,9 @@ public class ExoPlayerPlugin extends Plugin {
         getBridge().executeOnMainThread(() -> {
             try {
                 ensureOverlay();
+                // v1.8/CHG-25：切集会再次 prepare——先释放旧实例，避免播放器泄漏
+                releasePlayerQuietly();
+                droppedFrames = 0;
 
                 Map<String, String> headers = new HashMap<>();
                 JSArray headerList = call.getArray("headers");
@@ -95,10 +100,18 @@ public class ExoPlayerPlugin extends Plugin {
                 player.addListener(new Player.Listener() {
                     @Override
                     public void onPlaybackStateChanged(int playbackState) {
+                        JSObject data = new JSObject();
                         if (playbackState == Player.STATE_READY) {
-                            JSObject data = new JSObject();
                             data.put("state", "ready");
                             data.put("duration", player.getDuration());
+                            notifyListeners("exostate", data);
+                        } else if (playbackState == Player.STATE_BUFFERING) {
+                            // v1.8/CHG-25：等待态（JS 侧 HUD loading）
+                            data.put("state", "buffering");
+                            notifyListeners("exostate", data);
+                        } else if (playbackState == Player.STATE_ENDED) {
+                            // v1.8/CHG-25：播完事件（JS 侧自动连播依赖）
+                            data.put("state", "ended");
                             notifyListeners("exostate", data);
                         }
                     }
@@ -109,6 +122,13 @@ public class ExoPlayerPlugin extends Plugin {
                         data.put("state", "error");
                         data.put("message", error.getMessage());
                         notifyListeners("exostate", data);
+                    }
+                });
+                // v1.8/CHG-25：丢帧计数（AC-125 转正门槛的量化指标）
+                player.addAnalyticsListener(new AnalyticsListener() {
+                    @Override
+                    public void onDroppedVideoFrames(AnalyticsListener.EventTime eventTime, int droppedFrames, long droppedToKeyframes) {
+                        ExoPlayerPlugin.this.droppedFrames += droppedFrames;
                     }
                 });
 
@@ -179,23 +199,37 @@ public class ExoPlayerPlugin extends Plugin {
         });
     }
 
+    /** v1.8/CHG-25：音量 0~100（映射 ExoPlayer 0~1） */
+    @PluginMethod
+    public void setVolume(PluginCall call) {
+        Double volume = call.getDouble("volume");
+        getBridge().executeOnMainThread(() -> {
+            if (player != null && volume != null) {
+                float v = (float) Math.min(100, Math.max(0, volume)) / 100f;
+                player.setVolume(v);
+            }
+            call.resolve();
+        });
+    }
+
     @PluginMethod
     public void progress(PluginCall call) {
         JSObject result = new JSObject();
         if (player != null) {
             result.put("positionMs", player.getCurrentPosition());
             result.put("durationMs", player.getDuration());
+        } else {
+            result.put("positionMs", 0);
+            result.put("durationMs", 0);
         }
+        result.put("droppedFrames", droppedFrames);
         call.resolve(result);
     }
 
     @PluginMethod
     public void release(PluginCall call) {
         getBridge().executeOnMainThread(() -> {
-            if (player != null) {
-                player.release();
-                player = null;
-            }
+            releasePlayerQuietly();
             if (playerView != null) playerView.setPlayer(null);
             if (overlay != null) overlay.setVisibility(View.GONE);
             call.resolve();
@@ -204,11 +238,18 @@ public class ExoPlayerPlugin extends Plugin {
 
     @Override
     protected void handleOnDestroy() {
+        releasePlayerQuietly();
+        super.handleOnDestroy();
+    }
+
+    private void releasePlayerQuietly() {
         if (player != null) {
-            player.release();
+            try {
+                player.release();
+            } catch (Exception ignored) {
+            }
             player = null;
         }
-        super.handleOnDestroy();
     }
 
     private void ensureOverlay() {
@@ -219,10 +260,15 @@ public class ExoPlayerPlugin extends Plugin {
         overlay = new FrameLayout(getContext());
         PlayerView view = new PlayerView(getContext());
         view.setUseController(false);
+        // v1.8/CHG-25：不消费触摸——事件回落到下层 WebView（手势/HUD 由 JS 层处理）
+        view.setClickable(false);
+        view.setLongClickable(false);
+        view.setFocusable(false);
+        overlay.setClickable(false);
+        overlay.setFocusable(false);
         overlay.addView(view);
         playerView = view;
         // 盖在 WebView 之上；Activity 内容视图根为 CoordinatorLayout（Capacitor 默认）
         ((android.view.ViewGroup) getBridge().getWebView().getParent()).addView(overlay);
-        Toast.makeText(getContext(), "ExoPlayer PoC 已启用", Toast.LENGTH_SHORT).show();
     }
 }

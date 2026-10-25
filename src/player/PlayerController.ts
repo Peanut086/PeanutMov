@@ -35,6 +35,8 @@ import {
 } from '@/player/constants';
 import { canPlayNativeHls, VideoEngine } from '@/player/VideoEngine';
 import { HlsEngine, isHlsSupported } from '@/player/HlsEngine';
+import { NativeEngine } from '@/player/NativeEngine';
+import { isExoPlayerAvailable } from '@/native/exoPlayerPlugin';
 import { SubtitleManager } from '@/player/SubtitleManager';
 import { GestureRecognizer, type GestureIntent } from '@/player/GestureRecognizer';
 import { ProgressReporter, type ProgressSnapshot } from '@/player/ProgressReporter';
@@ -57,6 +59,8 @@ export interface PlayerControllerDeps {
 export class PlayerController {
   private container: HTMLElement | null = null;
   private engine: PlayableEngine | null = null;
+  /** v1.8/CHG-25：当前引擎类型（native/hls/video），供 View 做能力互斥（弹幕/字幕） */
+  private engineKind: 'native' | 'hls' | 'video' | null = null;
   private videoHost: HTMLDivElement | null = null;
 
   private listeners = new Map<PlayerEventName, Set<(payload: never) => void>>();
@@ -199,7 +203,6 @@ export class PlayerController {
     const host = this.videoHost ?? this.container;
     if (!host) throw new AppError('E_INVALID_STATE', '播放器容器未挂载');
 
-    const useHls = format === 'hls' && !canPlayNativeHls();
     if (format === 'hls') {
       // AC-40：m3u8 清单 DRM 预检——可取消、失败即放行（不把网络抖动当 DRM）。
       // 原生 HLS 与 hls.js 两条路径共用同一判定，行为一致。
@@ -209,6 +212,45 @@ export class PlayerController {
       });
       assertSourceSupported(playback.url, manifest);
     }
+
+    /*
+     * v1.8/CHG-25：实验性原生引擎（ExoPlayer surface 模式）。
+     * 开关由 View 经 PlayerLoadOptions 注入（本层不读 Service/设置，保持分层约束）；
+     * 不可用或加载失败时**静默回退**下方 WebView 分支并发 notice——
+     * 不计为播放失败，避免误触发 PlayerView 的换线/换源兜底（FR-53）。
+     */
+    if (this.options?.preferNativeEngine === true && await isExoPlayerAvailable()) {
+      const nativeEngine = new NativeEngine({
+        onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
+        onTimeUpdate: (currentTime, duration, buffered) =>
+          this.handleTimeUpdate(currentTime, duration, buffered),
+        onWaiting: () => this.emit('statechange', { playing: true, waiting: true }),
+        onEnded: () => this.handleEnded(),
+        onError: (error) => this.handleEngineError(error),
+      });
+      nativeEngine.attach(host);
+      try {
+        await this.withMetadataTimeout(nativeEngine.load(playback));
+        this.engine = nativeEngine;
+        this.setEngineKind('native');
+        this.quality = QUALITY_AUTO;
+        this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
+        this.progress.update(0, nativeEngine.getDuration());
+        return;
+      } catch {
+        try {
+          nativeEngine.destroy();
+        } catch {
+          /* 回退路径上的清理失败可忽略 */
+        }
+        this.emit('notice', { message: '原生引擎不可用，已切回内置引擎' });
+        // 落入下方 WebView 分支继续加载
+      }
+    } else if (this.options?.preferNativeEngine === true) {
+      this.emit('notice', { message: '原生引擎不可用，已切回内置引擎' });
+    }
+
+    const useHls = format === 'hls' && !canPlayNativeHls();
     if (useHls) {
       const supported = await isHlsSupported();
       if (!supported) {
@@ -234,6 +276,7 @@ export class PlayerController {
       });
       hlsEngine.attach(host);
       this.engine = hlsEngine;
+      this.setEngineKind('hls');
       await hlsEngine.load(playback);
       this.progress.update(0, hlsEngine.getDuration());
       return;
@@ -255,6 +298,7 @@ export class PlayerController {
     });
     videoEngine.attach(host);
     this.engine = videoEngine;
+    this.setEngineKind('video');
     this.quality = QUALITY_AUTO;
     this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
 
@@ -606,6 +650,17 @@ export class PlayerController {
     return this.state;
   }
 
+  /** v1.8/CHG-25：当前引擎类型；null = 尚未加载 */
+  getEngineKind(): 'native' | 'hls' | 'video' | null {
+    return this.engineKind;
+  }
+
+  private setEngineKind(kind: 'native' | 'hls' | 'video'): void {
+    if (this.engineKind === kind) return;
+    this.engineKind = kind;
+    this.emit('enginechange', { kind });
+  }
+
   getCurrentOptions(): PlayerLoadOptions | null {
     return this.options;
   }
@@ -662,6 +717,7 @@ export class PlayerController {
     this.recognizer = null;
     this.subtitles.clear();
     this.destroyEngine();
+    this.engineKind = null;
     this.fullscreen.destroy();
     this.orientation.destroy();
     if (this.videoHost?.parentElement) this.videoHost.parentElement.removeChild(this.videoHost);

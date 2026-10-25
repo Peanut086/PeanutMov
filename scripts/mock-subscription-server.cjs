@@ -192,22 +192,22 @@ function subscriptionFor(host) {
   };
 }
 
-/** TVBox 接口：ac=list / ac=detail / wd=关键词 */
-function tvbox(req, res, url) {
+/** TVBox 接口：ac=list / ac=detail / wd=关键词（vods 可注入子集——换源 fixtures 用） */
+function tvbox(req, res, url, vods = VODS) {
   const ac = url.searchParams.get('ac') || 'list';
   const typeId = url.searchParams.get('t');
   const ids = url.searchParams.get('ids');
   const wd = url.searchParams.get('wd');
   const page = Number(url.searchParams.get('pg') || 1);
 
-  let list = VODS;
+  let list = vods;
   if (ac === 'detail' && ids) {
-    list = VODS.filter((v) => v.vod_id === ids);
+    list = vods.filter((v) => v.vod_id === ids);
   } else if (wd) {
     const kw = wd.toLowerCase();
-    list = VODS.filter((v) => v.vod_name.toLowerCase().includes(kw));
+    list = vods.filter((v) => v.vod_name.toLowerCase().includes(kw));
   } else if (typeId) {
-    list = VODS.filter((v) => String(v.type_id) === String(typeId));
+    list = vods.filter((v) => String(v.type_id) === String(typeId));
   }
 
   return json(res, 200, {
@@ -248,6 +248,88 @@ function alist(req, res, url) {
     });
   }
   return json(res, 404, { code: 404, message: 'not found', data: null });
+}
+
+/* ---------- v1.8/CHG-21 验收补课（AC-123）：换线 → 换源 → 兜底链 fixtures ---------- */
+
+/**
+ * 换线验证片：线路 1 指向 404 直链（引擎加载失败 → 自动换线路 2）。
+ * 线路 2 用真实可播样片，换线成功后应正常起播。
+ */
+const BADLINE_VOD = {
+  vod_id: 'bad-001',
+  vod_name: '坏线路验证片',
+  type_id: 1,
+  type_name: '电影',
+  vod_year: '2026',
+  vod_area: '测试',
+  vod_score: '7.0',
+  vod_remarks: '双线路',
+  vod_content: '线路 1 是死链（/broken.mp4 404），用于确定性地触发「起播失败自动换线」。',
+  vod_play_from: '坏线路$$$好线路',
+  vod_play_url: `正片$/broken.mp4$$$正片$${V.bbb}`,
+};
+
+/**
+ * 同名同年双源（跨源换源链）：twin-a 全线路死链、twin-b 可播。
+ * 两者片名与年份完全一致——pickPlayCandidates 按片名+年份归组命中后应切到 twin-b。
+ */
+const TWIN_TITLE = '换源验证片';
+const TWIN_A_VOD = {
+  vod_id: 'twin-a-001',
+  vod_name: TWIN_TITLE,
+  type_id: 1,
+  type_name: '电影',
+  vod_year: '2026',
+  vod_area: '测试',
+  vod_score: '6.0',
+  vod_remarks: '全线路坏',
+  vod_content: '唯一线路是死链，用于触发「自动换源」到同名同年的可播源。',
+  vod_play_from: '唯一线路',
+  vod_play_url: `正片$/broken.mp4`,
+};
+const TWIN_B_VOD = {
+  vod_id: 'twin-b-001',
+  vod_name: TWIN_TITLE,
+  type_id: 1,
+  type_name: '电影',
+  vod_year: '2026',
+  vod_area: '测试',
+  vod_score: '8.0',
+  vod_remarks: '可播',
+  vod_content: '换源链的落点：同名同年可播源。',
+  vod_play_from: '主线路',
+  vod_play_url: `正片$${V.sintel}`,
+};
+
+/** 连播验证剧：两集都是短视频（<90s），起播即满足 preloadNext 的「剩 90s」条件 */
+const SERIES_VOD = {
+  vod_id: 'series-001',
+  vod_name: '连播验证剧',
+  type_id: 2,
+  type_name: '电视剧',
+  vod_year: '2026',
+  vod_area: '测试',
+  vod_score: '8.5',
+  vod_remarks: '全2集',
+  vod_content: '两集短视频，用于验证 preloadNext 预载与连播零等待。',
+  vod_play_from: '主线',
+  vod_play_url: `第1集$${V.flower}#第2集$${V.rabbit}`,
+};
+
+/** 换链验证订阅：一次导入三个 fixture 源（AC-123 e2e 用） */
+function failoverSubscriptionFor(host) {
+  const base = `http://${host}`;
+  return {
+    name: '本地换链验证订阅',
+    version: 1,
+    sources: [
+      { key: 'badline-site', name: '坏线路源（AC-123 换线）', type: 'site', api: `${base}/badline` },
+      { key: 'twin-a', name: '换源A（全线路坏）', type: 'site', api: `${base}/twin-a` },
+      { key: 'twin-b', name: '换源B（可播）', type: 'site', api: `${base}/twin-b` },
+      { key: 'series-site', name: '连播验证源（preloadNext）', type: 'site', api: `${base}/series` },
+    ],
+  };
 }
 
 const server = http.createServer((req, res) => {
@@ -345,6 +427,14 @@ const server = http.createServer((req, res) => {
   }
 
   if (url.pathname === '/dead') return text(res, 503, 'service unavailable');
+  /* ---------- v1.8/CHG-21 验收补课（AC-123）：换线/换源/连播 fixtures ---------- */
+  if (url.pathname === '/failover.json') return json(res, 200, failoverSubscriptionFor(req.headers.host));
+  if (url.pathname === '/badline') return tvbox(req, res, url, [BADLINE_VOD]);
+  if (url.pathname === '/twin-a') return tvbox(req, res, url, [TWIN_A_VOD]);
+  if (url.pathname === '/twin-b') return tvbox(req, res, url, [TWIN_B_VOD]);
+  if (url.pathname === '/series') return tvbox(req, res, url, [SERIES_VOD]);
+  // 死链直链：引擎加载即失败（404 → E_UNSUPPORTED_FORMAT/E_NETWORK → 自动兜底链）
+  if (url.pathname === '/broken.mp4') return text(res, 404, 'gone');
   if (url.pathname === '/dc.json') {
     const host = req.headers.host;
     return json(res, 200, { name: '本地多仓索引', urls: [{ url: `http://${host}/sub.json`, name: '本地测试订阅' }] });

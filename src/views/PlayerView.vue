@@ -166,6 +166,9 @@ const GESTURE_FALLBACK: GestureSettings = { sensitivity: 'medium', seekMaxSec: 9
 const playerSettings = computed<PlayerSettings>(() => settings.player ?? PLAYER_FALLBACK);
 const gestureSettings = computed<GestureSettings>(() => settings.gesture ?? GESTURE_FALLBACK);
 
+/** v1.8/CHG-25：实验性原生引擎（ExoPlayer）开关——注入 PlayerLoadOptions，控制器不读设置 */
+const nativeEngineEnabled = computed(() => settings.settings?.experimentalNativePlayer === true);
+
 const defaultRate = computed<PlaybackRate>(() => playerSettings.value.defaultRate ?? 1);
 const autoPlayNext = computed(() => playerSettings.value.autoPlayNext);
 const subtitleSettings = computed<SubtitleSettings>(
@@ -387,6 +390,7 @@ async function resolveAndLoad(): Promise<boolean> {
       totalEpisodes: episodes.value.length > 0 ? episodes.value.length : null,
       episodes: episodeRefs,
       preferLocal: prepared.isLocal,
+      preferNativeEngine: nativeEngineEnabled.value,
       resolveEpisode: async (targetEpisodeId) => {
         const target = episodes.value.find((e) => e.id === targetEpisodeId);
         if (!target) throw new Error('剧集不存在');
@@ -403,6 +407,7 @@ async function resolveAndLoad(): Promise<boolean> {
           totalEpisodes: episodes.value.length,
           episodes: episodeRefs,
           preferLocal: nextPrepared.isLocal,
+          preferNativeEngine: nativeEngineEnabled.value,
         };
       },
     };
@@ -577,6 +582,25 @@ const FAILOVER_ERROR_CODES = new Set([
   'E_PARSE',
 ]);
 
+/** v1.8/CHG-26：错误码指向「源健康问题」时，错误面板给出去体检的入口 */
+const HEALTH_CHECK_CODES = new Set([
+  'E_SOURCE_UNAVAILABLE',
+  'E_NETWORK',
+  'E_TIMEOUT',
+  'E_HTTP_401',
+  'E_HTTP_403',
+  'E_HTTP_429',
+  'E_HTTP_5XX',
+]);
+
+const canHealthCheck = computed(() => {
+  const err = player.error ?? null;
+  return err !== null && HEALTH_CHECK_CODES.has(err.code);
+});
+
+/** v1.8/CHG-26：手动换源可用性——有详情且在线（跨源候选搜索需要网络） */
+const canSwitchSourceManual = computed(() => item.value !== null && isOnlineNow());
+
 function withinFailoverWindow(): boolean {
   return failoverStartedAt.value > 0 && Date.now() - failoverStartedAt.value <= PLAYER_FAILOVER_WINDOW_MS;
 }
@@ -660,6 +684,39 @@ watch(
 /** LineSelector 选择线路：保持当前集号（AC-31） */
 async function onSwitchLineById(id: string): Promise<void> {
   await switchLine(id);
+}
+
+/**
+ * v1.8/CHG-26：手动换源——复用自动链的 findAlternateSource（同名同年跨源）。
+ * 自动兜底只各试一次；用户手动触发时复位标志，成功后 resolveAndLoad 会再次复位。
+ */
+async function onSwitchSource(): Promise<void> {
+  if (failoverRunning.value) return;
+  const lastError = player.error;
+  failoverRunning.value = true;
+  failoverLineTried.value = false;
+  failoverSourceTried.value = false;
+  player.patch({ error: null });
+  try {
+    toast.info('正在尝试其它来源…');
+    const target = await findAlternateSource();
+    if (target) {
+      toast.info(`已切换到「${target.sourceName}」继续播放`);
+      await resolveAndLoad();
+      if (player.error === null && loadError.value === null) return;
+    }
+  } finally {
+    failoverRunning.value = false;
+  }
+  // 手动也失败：恢复错误面板（清掉的错误重新呈现）
+  if (player.error === null && loadError.value === null && lastError) {
+    player.patch({ error: lastError });
+  }
+}
+
+/** v1.8/CHG-26：跳源管理页体检（一键禁用失效源入口所在页） */
+function goHealthCheck(): void {
+  void router.push('/settings/sources');
 }
 
 async function onCast(): Promise<void> {
@@ -844,11 +901,38 @@ async function loadDanmaku(): Promise<void> {
 }
 
 function toggleDanmaku(): void {
+  // v1.8/CHG-25：原生引擎 surface 覆盖 WebView，弹幕层不可见——PoC 期互斥
+  if (player.engineKind === 'native') {
+    toast.info('实验引擎暂不支持弹幕', 2400);
+    return;
+  }
   const next = !danmakuSettings.value.enabled;
   void settings.update({ danmaku: { ...danmakuSettings.value, enabled: next } });
   if (!next) danmakuOverlay.value?.clear();
   else void loadDanmaku();
   toast.info(next ? '弹幕已开启' : '弹幕已关闭');
+}
+
+/** v1.8/CHG-25：进入原生引擎时关闭弹幕/外挂字幕（surface 覆盖 WebView，DOM 层不可见） */
+watch(
+  () => player.engineKind,
+  (kind) => {
+    if (kind !== 'native') return;
+    if (danmakuSettings.value.enabled) {
+      void settings.update({ danmaku: { ...danmakuSettings.value, enabled: false } });
+      toast.info('实验引擎暂不支持弹幕，已自动关闭', 2400);
+    }
+    if (player.activeSubtitleId !== null) void selectSubtitle(null);
+  },
+);
+
+/** v1.8/CHG-25：字幕面板入口——原生引擎下外挂字幕 DOM 被 surface 遮挡，互斥 */
+function openSubtitlePanel(): void {
+  if (player.engineKind === 'native') {
+    toast.info('实验引擎暂不支持外挂字幕', 2400);
+    return;
+  }
+  subtitleOpen.value = true;
 }
 
 /** 设置开启/关闭 → 挂载或卸载渲染层 */
@@ -1029,7 +1113,7 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             @seek="seek"
             @seeking="player.patch({ currentTime: $event })"
             @open-speed="speedOpen = true"
-            @open-subtitle="subtitleOpen = true"
+            @open-subtitle="openSubtitlePanel"
             @open-quality="qualityOpen = true"
             @toggle-fullscreen="toggleFullscreen"
             @download="onDownloadCurrent"
@@ -1048,8 +1132,12 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             v-if="player.error && !pageLoading"
             :error="player.error"
             :can-switch-line="lines.length > 1"
+            :can-switch-source="canSwitchSourceManual"
+            :can-health-check="canHealthCheck"
             @retry="retryPanel"
             @switch-line="onSwitchLine"
+            @switch-source="onSwitchSource"
+            @health-check="goHealthCheck"
             @back="openDetail"
             @copy="copyError"
           />
@@ -1059,6 +1147,15 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             <p class="player-loading__text">{{ loadError }}</p>
             <div class="player-loading__actions">
               <button class="btn btn--primary btn--sm" type="button" @click="resolveAndLoad">重试</button>
+              <!-- v1.8/CHG-26：解析失败常是源坏了，直接给换源路径 -->
+              <button
+                v-if="canSwitchSourceManual"
+                class="btn btn--secondary btn--sm"
+                type="button"
+                @click="onSwitchSource"
+              >
+                换源重播
+              </button>
               <button class="btn btn--ghost btn--sm" type="button" @click="openDetail">返回详情</button>
             </div>
           </div>
