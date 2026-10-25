@@ -1,6 +1,9 @@
 package com.qoder.cinema;
 
 import android.content.Context;
+import android.content.ContextWrapper;
+import android.content.Intent;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -420,7 +423,7 @@ public class SpiderPlugin extends Plugin {
         }
         Spider spider = (Spider) instance;
 
-        invokeInit(spider, context, initExt);
+        invokeInit(spider, new GuardedSpiderContext(context), initExt);
         // 同样按实例类型调用，确保爬虫拿到 SpiderApi（基类 stub 是空实现）
         try {
             Method initApi = spider.getClass().getMethod("initApi", SpiderApi.class);
@@ -454,6 +457,47 @@ public class SpiderPlugin extends Plugin {
             }
         } catch (Exception e) {
             Log.w(TAG, "init(Context, String) failed", e);
+        }
+    }
+
+    /**
+     * 传给 jar 爬虫的 Context 守卫：吞掉爬虫代码发起的系统设置页跳转。
+     * 部分 TVBox jar（如 ftyguard 系列）在 init/调用期会自行申请「所有文件访问」等
+     * 特殊权限并 startActivity 到 Settings；本应用不需要也不声明这些权限（开关必然置灰），
+     * 放行只会打断用户。守卫只拦 `android.settings.*`，其余调用原样透传。
+     */
+    static final class GuardedSpiderContext extends ContextWrapper {
+        private static final String SETTINGS_ACTION_PREFIX = "android.settings.";
+
+        GuardedSpiderContext(Context base) {
+            super(base);
+        }
+
+        @Override
+        public void startActivity(Intent intent) {
+            if (blockSettingsJump(intent)) return;
+            super.startActivity(intent);
+        }
+
+        @Override
+        public void startActivity(Intent intent, Bundle options) {
+            if (blockSettingsJump(intent)) return;
+            super.startActivity(intent, options);
+        }
+
+        @Override
+        public Context getApplicationContext() {
+            // 爬虫常经 getApplicationContext() 再 startActivity；保持守卫链
+            return this;
+        }
+
+        private boolean blockSettingsJump(Intent intent) {
+            String action = intent == null ? null : intent.getAction();
+            if (action != null && action.startsWith(SETTINGS_ACTION_PREFIX)) {
+                Log.w(TAG, "spider blocked settings jump: " + action);
+                return true;
+            }
+            return false;
         }
     }
 
