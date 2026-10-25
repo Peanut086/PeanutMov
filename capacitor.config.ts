@@ -6,6 +6,11 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   android: {
     allowMixedContent: true,
+    // CHG-28：targetSdk 35 在 Android 15+ 被系统强制 edge-to-edge（WebView 铺到
+    // 状态栏下），而 Android WebView 的 env(safe-area-inset-top) 恒为 0，
+    // CSS --safe-top 兜不住。auto 让 Capacitor 按系统栏 insets 给 WebView 加边距，
+    // 顶（状态栏）/底（手势条）一次解决
+    adjustMarginsForEdgeToEdge: 'auto',
   },
   server: {
     androidScheme: 'https',
@@ -21,6 +26,7 @@ const config: CapacitorConfig = {
     },
     StatusBar: {
       style: 'DARK',
+      backgroundColor: '#0b0b0f',
     },
   },
 };

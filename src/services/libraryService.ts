@@ -83,7 +83,12 @@ export interface LibraryService {
       total: number;
     }) => void;
   }): Promise<SearchResult>;
-  getDetail(mediaId: string, opts?: { refresh?: boolean }): Promise<MediaDetail>;
+  /**
+   * CHG-28：`item` 为调用方已持有的条目（如渐进搜索结果）。条目尚未落库时
+   * 以它兜底直接回源刷新，而不是立刻抛 E_NOT_FOUND——修复「渐进搜索期间
+   * 点击结果 → 详情加载失败」的竞态（落库原本要等全部源 settle）。
+   */
+  getDetail(mediaId: string, opts?: { refresh?: boolean; item?: MediaItem }): Promise<MediaDetail>;
   getItem(mediaId: string): Promise<MediaItem | null>;
   listCached(sourceId?: string | null, limit?: number): Promise<MediaItem[]>;
   listRecent(limit?: number): Promise<MediaItem[]>;
@@ -460,6 +465,13 @@ export const libraryService: LibraryService = {
           const visible = hideDemo ? items.filter((item) => !item.isDemo) : items;
           remoteResults[index] = visible;
           done += 1;
+          // CHG-28：单源结果先落库再上屏——渐进结果立即可点，详情不再因
+          // 「等全部源 settle 才批量落库」的窗口报 E_NOT_FOUND（真机 P1）
+          if (visible.length > 0) {
+            await mediaRepo.upsertMany(visible).catch((e: unknown) => {
+              logger.warn('搜索结果即时落库失败（不影响上屏）', { sourceId: source.id, error: toErrorShape(e) });
+            });
+          }
           params.onPartial?.({ sourceId: source.id, items: visible, error: null, done, total });
         } catch (e) {
           done += 1;
@@ -480,9 +492,7 @@ export const libraryService: LibraryService = {
       .filter((rows): rows is MediaItem[] => Array.isArray(rows))
       .flat()
       .filter((item) => (hideDemo ? !item.isDemo : true));
-    if (remote.length > 0) {
-      await mediaRepo.upsertMany(remote);
-    }
+    // 落库已在 settleOne 单源完成时即时执行（CHG-28），此处不再批量重写
 
     const seen = new Set<string>();
     const merged: MediaItem[] = [];
@@ -519,18 +529,21 @@ export const libraryService: LibraryService = {
       }
     }
 
-    if (!cachedItem) throw new AppError('E_NOT_FOUND');
+    // CHG-28：条目未落库时用调用方持有的条目兜底（渐进搜索结果即时点击场景），
+    // 直接回源刷新；两者都没有才是真正的「不存在」
+    const item = cachedItem ?? opts?.item ?? null;
+    if (!item) throw new AppError('E_NOT_FOUND');
 
     if (!isOnline()) {
-      const cached = await loadCachedDetail(cachedItem);
+      const cached = await loadCachedDetail(item);
       if (cached) return cached;
       throw new AppError('E_NETWORK');
     }
 
     try {
-      return await refreshDetail(cachedItem);
+      return await refreshDetail(item);
     } catch (e) {
-      const cached = await loadCachedDetail(cachedItem);
+      const cached = await loadCachedDetail(item);
       if (cached) {
         logger.warn('详情刷新失败，使用缓存', { mediaId, error: toErrorShape(e) });
         return cached;

@@ -82,8 +82,10 @@ function recover(): void {
       <div class="app-content" :class="{ 'app-content--tabbar': showTabBar }">
         <RouterView v-slot="{ Component, route: current }">
           <!-- 首页 KeepAlive（P0-4）：回 tab 不重闪骨架、不重新全量拉取；
+               搜索页 KeepAlive（CHG-28）：从详情/播放返回时保留关键词与结果，
+               不再因组件重建退回历史页（store 数据本身一直在，缺的是视图状态）；
                其余页面进出 Player/Detail 等重资源页，保持即用即毁 -->
-          <KeepAlive include="HomeView">
+          <KeepAlive :include="['HomeView', 'SearchView']">
             <component :is="Component" :key="current.fullPath" class="route-view" />
           </KeepAlive>
         </RouterView>

@@ -45,6 +45,22 @@ describe('decodeBody', () => {
     expect(decoded.charset).toBe('gbk');
   });
 
+  it('CHG-28：ASCII 头 + 4KB 之后才出现 GBK 中文 → 全量探测为 GBK（不再误判 UTF-8）', () => {
+    // 真实形态：列表 JSON 前几 KB 是 ASCII 字段，中文标题在后面。
+    // "坏" 的 GBK 字节 0xBB 0xB5 单独出现不是合法 UTF-8 序列
+    const asciiHead = ENCODER.encode('{"code":1,"msg":"ok","padding":"').subarray(0);
+    const gbkTail = new Uint8Array(4200).fill(0x20); // 超过旧探测窗口的 4KB
+    const gbkChinese = new Uint8Array([0xbb, 0xb5, 0xcf, 0xdf]); // "坏线"（GBK）
+    const bytes = new Uint8Array(asciiHead.length + gbkTail.length + gbkChinese.length);
+    bytes.set(asciiHead, 0);
+    bytes.set(gbkTail, asciiHead.length);
+    bytes.set(gbkChinese, asciiHead.length + gbkTail.length);
+    const decoded = decodeBody({ bytes, contentType: 'application/json' });
+    expect(decoded.charset).toBe('gbk');
+    expect(decoded.text.endsWith('坏线')).toBe(true);
+    expect(decoded.text.includes('\uFFFD')).toBe(false);
+  });
+
   it('GB2312 / GB18030 归一为 GBK', () => {
     const gbkBytes = new Uint8Array([0xd6, 0xd0, 0xce, 0xc4]);
     expect(decodeBody({ bytes: gbkBytes, contentType: 'text/html; charset=gb2312' }).charset).toBe('gbk');

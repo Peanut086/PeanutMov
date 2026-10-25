@@ -238,6 +238,27 @@ function goBack(): void {
   else void router.replace('/');
 }
 
+/** CHG-28：源侧故障码时给「去源管理」行动入口（v1.8 只动作化了播放面板，详情错误态补齐） */
+const SOURCE_FAULT_CODES = new Set([
+  'E_SOURCE_DISABLED',
+  'E_SOURCE_UNAVAILABLE',
+  'E_AUTH',
+  'E_HTTP_401',
+  'E_HTTP_403',
+  'E_HTTP_404',
+  'E_HTTP_5XX',
+  'E_PARSE',
+]);
+
+function isSourceFault(): boolean {
+  const code = library.error?.code;
+  return code !== undefined && code !== null && SOURCE_FAULT_CODES.has(code);
+}
+
+function openSourceManage(): void {
+  void router.push({ name: 'sources' });
+}
+
 async function playEpisode(ep: Episode | null, restart = false): Promise<void> {
   const it = item.value;
   if (!it || !ep) return;
@@ -497,7 +518,13 @@ function openCompliance(): void {
         back-text="返回"
         @retry="load(true)"
         @back="goBack"
-      />
+      >
+        <template #extra>
+          <button v-if="isSourceFault()" class="btn btn--ghost btn--md" type="button" @click="openSourceManage">
+            去源管理
+          </button>
+        </template>
+      </ErrorState>
 
       <!-- success -->
       <template v-else-if="item">

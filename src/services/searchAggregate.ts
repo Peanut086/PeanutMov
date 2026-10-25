@@ -122,3 +122,13 @@ export function sortByRelevance(items: MediaItem[], keyword: string): MediaItem[
     .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.index - b.index))
     .map((entry) => entry.item);
 }
+
+/**
+ * 平铺视图的去重键：片名（去空白、小写）+ 年份（CHG-28 修订）。
+ * 原实现只按片名，同名不同年的片（如《三体》2008 / 2023 剧集版）会被误并成一条，
+ * 与聚合视图的 `groupKeyOf`（片名+年份）口径不一致。
+ */
+export function titleDedupKey(title: string, year: number | null): string {
+  const normalized = title.trim().toLowerCase().replace(/\s+/g, '');
+  return `${normalized}:${year ?? 'unknown'}`;
+}

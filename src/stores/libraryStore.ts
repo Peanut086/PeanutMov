@@ -8,7 +8,7 @@ import { computed, ref } from 'vue';
 
 import { libraryService } from '@/services/libraryService';
 import { EMPTY_LIBRARY_FILTERS, markSourceFailedByError } from '@/services/libraryService';
-import { groupSearchResults, sortByRelevance } from '@/services/searchAggregate';
+import { groupSearchResults, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
 import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
 import { PAGE_SIZE } from '@/shared/constants';
@@ -408,7 +408,7 @@ export const useLibraryStore = defineStore('library', () => {
             firstBatchSeen = true;
             const seenIds = new Set(searchResults.value.map((item) => item.id));
             const fresh = items.filter((item) => {
-              const titleKey = titleKeyOf(item.title);
+              const titleKey = titleDedupKey(item.title, item.year);
               if (seenIds.has(item.id) || titleSeen.has(titleKey)) return false;
               seenIds.add(item.id);
               titleSeen.add(titleKey);
@@ -423,12 +423,12 @@ export const useLibraryStore = defineStore('library', () => {
         },
       });
       if (controller.signal.aborted) return;
-      // 终态列表同样按 id + 片名去重（保持与渐进上屏一致的展示口径），并按相关度排序
+      // 终态列表同样按 id + 片名(含年份)去重（保持与渐进上屏一致的展示口径），并按相关度排序
       const seenIds = new Set<string>();
       const seenTitles = new Set<string>();
       searchResults.value = sortByRelevance(
         result.items.filter((item) => {
-          const titleKey = titleKeyOf(item.title);
+          const titleKey = titleDedupKey(item.title, item.year);
           if (seenIds.has(item.id) || seenTitles.has(titleKey)) return false;
           seenIds.add(item.id);
           seenTitles.add(titleKey);
@@ -518,7 +518,10 @@ export const useLibraryStore = defineStore('library', () => {
     detailState.value = refresh ? 'refreshing' : 'loading';
     error.value = null;
     try {
-      const result = await libraryService.getDetail(mediaId, { refresh });
+      // CHG-28：渐进搜索结果可能尚未落库，把本会话已有的条目作为兜底传入，
+      // 避免「点进详情 → E_NOT_FOUND」的竞态（见 libraryService.getDetail）
+      const hint = searchResultsAll.value.find((item) => item.id === mediaId) ?? undefined;
+      const result = await libraryService.getDetail(mediaId, { refresh, item: hint });
       detail.value = result;
       detailState.value = 'success';
     } catch (e) {
@@ -599,8 +602,3 @@ export const useLibraryStore = defineStore('library', () => {
 });
 
 export type LibraryStore = ReturnType<typeof useLibraryStore>;
-
-/** 片名聚合键：去空白、小写（P1-8 多源同名条目归并） */
-function titleKeyOf(title: string): string {
-  return title.trim().toLowerCase().replace(/\s+/g, '');
-}

@@ -3,19 +3,19 @@
  *
  * 为什么不直接 `response.text()`：
  * - Web 端 `response.text()` 按 header charset 解码，缺失时按 UTF-8；
- * - CapacitorHttp 原生补丁把 body 读成**字符串**再塞回 `new Response(data)`，
- *   Android 侧已按 GBK 解过一遍，再 UTF-8 解码会得到乱码；
  * - 有些源声明 `text/html` 但正文是 GBK，声明 charset 反而不可信。
  *
- * 策略：`arrayBuffer` 取原始字节，按 BOM → header charset → 探测试
- * （UTF-8 严格解码失败则换 GBK），只在该次序全部失败时兜底 UTF-8 非严格解码。
+ * 策略：`arrayBuffer` 取原始字节，按 BOM → header charset → 探测
+ * （**全量** UTF-8 严格解码失败则换 GBK），全部失败时兜底 UTF-8 非严格解码。
  * 任意路径都不抛异常：解码失败必然产出一个可交给规则判定的字符串。
+ *
+ * CHG-28：探测从「只看前 4KB」改为全量——ASCII 头 + 中文在 4KB 之后的 GBK
+ * 页面（列表 JSON 里很常见）会被前缀探测误判为 UTF-8，产出不可逆乱码。
+ * TextDecoder 全量校验为原生实现，2MB 级响应体也在毫秒位。
  */
 import { AppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 
-/** 探测阶段只读这么多字节：GBK/UTF-8 判定 4KB 足够，避免整读大文件 */
-const SNIFF_BYTES = 4096;
 export interface DecodeOptions {
   /** 响应头 Content-Type（可能为 null） */
   contentType: string | null;
@@ -47,16 +47,12 @@ function hasUtf16BeBom(bytes: Uint8Array): boolean {
   return bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff;
 }
 
-/** 前若干字节能否按 UTF-8 严格解码（不产生替换字符） */
-function isValidUtf8Prefix(bytes: Uint8Array): boolean {
-  if (bytes.length === 0) return true;
+/** 按 charset 严格解码（fatal）：任一字节非法返回 null（CHG-28：全量校验） */
+function tryStrictDecode(bytes: Uint8Array, charset: string): string | null {
   try {
-    // 只解码到最后一个完整字符边界：末字节可能是被截断的多字节序列
-    const decoder = new TextDecoder('utf-8', { fatal: true });
-    decoder.decode(bytes.subarray(0, Math.min(SNIFF_BYTES, bytes.length)), { stream: false });
-    return true;
+    return new TextDecoder(charset, { fatal: true }).decode(bytes);
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -102,14 +98,14 @@ export function decodeBody(options: DecodeOptions): { text: string; charset: str
     }
   }
 
-  // 探测：UTF-8 严格解码成功就用 UTF-8；失败（中文 GBK 常见）换 GBK
-  if (isValidUtf8Prefix(bytes)) return { text: decodeWith(bytes, 'utf-8'), charset: 'utf-8' };
-  try {
-    return { text: decodeWith(bytes, 'gbk'), charset: 'gbk' };
-  } catch {
-    // 极端情况：GBK 也不支持，兜底 UTF-8 非严格（产生替换字符，交给规则判定）
-    return { text: decodeWith(bytes, 'utf-8'), charset: 'utf-8' };
-  }
+  // 探测（CHG-28 全量严格解码）：UTF-8 严格成功就用 UTF-8；
+  // 失败（中文 GBK 常见，包括 ASCII 头 + 4KB 后才出现中文的场景）换 GBK 严格，
+  // 仍失败兜底 UTF-8 非严格（产生替换字符，交给规则判定）
+  const utf8 = tryStrictDecode(bytes, 'utf-8');
+  if (utf8 !== null) return { text: utf8, charset: 'utf-8' };
+  const gbk = tryStrictDecode(bytes, 'gbk');
+  if (gbk !== null) return { text: gbk, charset: 'gbk' };
+  return { text: decodeWith(bytes, 'utf-8'), charset: 'utf-8' };
 }
 
 /** 把 fetch 响应读成字节（统一整读，不在 Web/原生间维护两套流式路径） */

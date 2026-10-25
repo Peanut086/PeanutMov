@@ -15,8 +15,10 @@ import { libraryService } from '@/services/libraryService';
 import { sourceService } from '@/services/sourceService';
 import { sourceRegistry } from '@/sources/registry';
 import { categoryIdFor } from '@/sources/base/normalize';
+import { mediaRepo } from '@/db/repositories/mediaRepo';
+import { mediaIdOf } from '@/shared/id';
 import { PAGE_SIZE } from '@/shared/constants';
-import type { LibraryFilters, MediaType } from '@/types';
+import type { Episode, LibraryFilters, MediaItem, MediaType, PlayLine } from '@/types';
 
 import { resetAll } from './helpers';
 
@@ -271,5 +273,102 @@ describe('search 空结果诊断（CHG-15）', () => {
     await expect(
       libraryService.search({ keyword: '战狼', sourceIds: [a, b], forceAll: true }),
     ).rejects.toBeDefined();
+  });
+});
+
+describe('渐进搜索即时落库与详情兜底（CHG-28）', () => {
+  beforeEach(async () => {
+    await resetAll();
+    await seedDemoData();
+  });
+
+  /** 构造一个不在库里的搜索结果条目 */
+  function makeFreshItem(sourceId: string, itemId: string, title: string): MediaItem {
+    const now = Date.now();
+    return {
+      id: mediaIdOf(sourceId, itemId),
+      sourceId,
+      sourceItemId: itemId,
+      title,
+      originalTitle: null,
+      type: 'movie',
+      year: 2026,
+      area: null,
+      genres: [],
+      tags: [],
+      rating: null,
+      posterUrl: null,
+      backdropUrl: null,
+      description: null,
+      durationSec: null,
+      episodeCount: null,
+      titleLower: title.toLowerCase(),
+      isDemo: false,
+      cachedAt: now,
+      updatedAt: now,
+    };
+  }
+
+  it('单源结果在 onPartial 上屏时已可从 mediaRepo 读到（渐进期间点击不再 E_NOT_FOUND）', async () => {
+    const fresh = makeFreshItem(DEMO_SOURCE_ID, 'fresh-race-001', '渐进搜索验证片');
+    const searchSpy = vi.spyOn(sourceRegistry.get('demo'), 'search').mockResolvedValue([fresh]);
+
+    let durableAtPaint: Promise<boolean> | null = null;
+    const result = await libraryService.search({
+      keyword: '渐进搜索验证片',
+      sourceIds: [DEMO_SOURCE_ID],
+      onPartial: (event) => {
+        // 上屏瞬间（用户可点击的最早时刻）条目必须已经落库
+        if (event.items.length > 0 && durableAtPaint === null) {
+          durableAtPaint = mediaRepo.get(event.items[0]!.id).then((row) => row !== null);
+        }
+      },
+    });
+
+    expect(searchSpy).toHaveBeenCalledTimes(1);
+    expect(result.items.map((item) => item.id)).toContain(fresh.id);
+    expect(durableAtPaint).not.toBeNull();
+    await expect(durableAtPaint).resolves.toBe(true);
+  });
+
+  it('getDetail：条目未落库且无 hint → E_NOT_FOUND；带 hint → 直接回源并落库', async () => {
+    const source = await sourceService.create({
+      name: '详情兜底源',
+      type: 'site',
+      baseUrl: 'https://hint.example.com',
+    });
+    const mediaId = mediaIdOf(source.id, 'x-1');
+    const hint = makeFreshItem(source.id, 'x-1', '兜底验证片');
+    const line: PlayLine = {
+      id: `${mediaId}~l0`,
+      mediaId,
+      sourceId: source.id,
+      name: '主线',
+      quality: null,
+      format: 'mp4',
+      index: 0,
+    };
+    const episode: Episode = {
+      id: `${mediaId}~e1`,
+      mediaId,
+      sourceId: source.id,
+      lineId: line.id,
+      number: 1,
+      title: '第 1 集',
+      durationSec: null,
+      subtitles: [],
+      updatedAt: Date.now(),
+    };
+    const detailSpy = vi
+      .spyOn(sourceRegistry.get('site'), 'getDetail')
+      .mockResolvedValue({ item: hint, lines: [line], episodes: [episode] });
+
+    await expect(libraryService.getDetail(mediaId)).rejects.toMatchObject({ code: 'E_NOT_FOUND' });
+    expect(detailSpy).not.toHaveBeenCalled();
+
+    const detail = await libraryService.getDetail(mediaId, { item: hint });
+    expect(detailSpy).toHaveBeenCalledTimes(1);
+    expect(detail.item.id).toBe(mediaId);
+    expect(await mediaRepo.get(mediaId)).not.toBeNull();
   });
 });

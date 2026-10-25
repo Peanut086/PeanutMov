@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { groupSearchResults, scoreRelevance, sortByRelevance } from '@/services/searchAggregate';
+import { groupSearchResults, scoreRelevance, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
 import type { MediaItem } from '@/types';
 
 function makeItem(overrides: Partial<MediaItem> & { sourceId: string; title: string }): MediaItem {
@@ -140,5 +140,18 @@ describe('groupSearchResults 组间排序（v1.8 修订：相关度第一优先�
     const groups = groupSearchResults(items, '找不到的片', () => 'unknown', () => null);
     // 关键词都不命中（同 0 分）→ 不并组（年份不同）→ 健康与延迟决定顺序
     expect(groups.map((g) => g.year)).toEqual([2019, 2020]);
+  });
+});
+
+describe('titleDedupKey（CHG-28：平铺去重含年份）', () => {
+  it('同名同年 → 同键；同名不同年 → 不同键（同名异年版不再互相挤掉）', () => {
+    expect(titleDedupKey('三体', 2023)).toBe(titleDedupKey(' 三体 ', 2023));
+    expect(titleDedupKey('三体', 2023)).not.toBe(titleDedupKey('三体', 2008));
+  });
+
+  it('大小写与空白归一；年份缺失落到 unknown 桶', () => {
+    expect(titleDedupKey('Big Buck', 2020)).toBe(titleDedupKey('bigbuck', 2020));
+    expect(titleDedupKey('未知片', null)).toBe(titleDedupKey('未知片', null));
+    expect(titleDedupKey('未知片', null)).not.toBe(titleDedupKey('未知片', 2020));
   });
 });

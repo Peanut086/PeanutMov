@@ -31,6 +31,8 @@ import { useToast } from '@/composables/useToast';
 import { mediaSubtitle } from '@/components/common/format';
 import { toErrorShape } from '@/shared/errors';
 
+defineOptions({ name: 'SearchView' });
+
 const router = useRouter();
 const route = useRoute();
 const library = useLibraryStore();
@@ -40,7 +42,10 @@ const ui = useUiStore();
 const toast = useToast();
 const { isOffline } = useOnlineStatus();
 
-const keyword = ref(typeof route.query.q === 'string' ? route.query.q : '');
+// CHG-28：URL 带 q 用 q（入口搜索），否则回退 store 里上次搜索的关键词——
+// 从详情返回重建时（无 KeepAlive 命中的场景，如进程被杀后恢复）不丢搜索状态
+const queryKeyword = typeof route.query.q === 'string' && route.query.q.trim().length > 0 ? route.query.q : '';
+const keyword = ref(queryKeyword || library.searchKeyword);
 const failedDetailOpen = ref(false);
 const searchBarRef = ref<{ focus: () => void } | null>(null);
 
@@ -83,7 +88,11 @@ onMounted(async () => {
   try {
     await sources.load();
     if (!settings.settings) await settings.load();
-    if (keyword.value.trim().length > 0) await runSearch(keyword.value, false);
+    // CHG-28：store 已持有本次关键词的结果（进程恢复/非缓存重建）时直接复用，不重搜
+    const keywordRestored = queryKeyword === '' && keyword.value.trim().length > 0;
+    const hasSessionResults =
+      keywordRestored && library.searchKeyword === keyword.value.trim() && library.searchResultsAll.length > 0;
+    if (keyword.value.trim().length > 0 && !hasSessionResults) await runSearch(keyword.value, false);
   } catch (e) {
     toast.error(toErrorShape(e).message);
   } finally {
@@ -157,11 +166,8 @@ function sourceName(sourceId: string): string {
 }
 
 function goBack(): void {
-  if (keyword.value.length > 0) {
-    keyword.value = '';
-    library.clearSearch();
-    return;
-  }
+  // CHG-28：直接退出，不再「先清结果再退」——返回详情/上一层是用户预期，
+  // 清空关键词交给输入框的清除按钮（watcher 会同步清 store）
   if (globalThis.history.length > 1) router.back();
   else void router.replace('/');
 }
