@@ -249,3 +249,109 @@ describe('订阅解析：爬虫源（type 3 改判 spider）', () => {
     expect(preview.entries[0]?.issues.some((i) => i.code === 'MISSING_FIELD' && i.field === 'jar')).toBe(true);
   });
 });
+
+/**
+ * TVBox 相对路径补全（以订阅 URL 为基准）：
+ * fty.json 式订阅的 spider/jar/api/ext 大量使用 `./` 相对引用，
+ * 不补全会误报「jar 地址不合法」「ext 不是合法 JSON」。
+ */
+describe('订阅解析：相对路径按订阅 URL 补全', () => {
+  it('顶层 spider 相对路径 → 补全为绝对地址，;md5; 后缀原样保留', () => {
+    const preview = subscriptionParser.parse(
+      JSON.stringify({
+        spider: './jar/fan.txt;md5;b55978c4fe6d12e2fea9075f17c8a67a',
+        sites: [{ key: 'dukou', name: '毒口', type: 3, api: 'csp_DukouGuard' }],
+      }),
+      OPTS,
+    );
+    const entry = preview.entries[0];
+    expect(entry?.valid).toBe(true);
+    expect(spiderExtOf(preview, 0)?.jarUrl).toBe(
+      'https://example.com/jar/fan.txt;md5;b55978c4fe6d12e2fea9075f17c8a67a',
+    );
+  });
+
+  it('条目自带相对 jar 同样补全', () => {
+    const preview = subscriptionParser.parse(
+      JSON.stringify({
+        sites: [{ key: 'x', name: 'X', type: 3, api: 'csp_X', jar: './jar/custom.jar' }],
+      }),
+      OPTS,
+    );
+    expect(preview.entries[0]?.valid).toBe(true);
+    expect(spiderExtOf(preview, 0)?.jarUrl).toBe('https://example.com/jar/custom.jar');
+  });
+
+  it('相对 drpy api + 相对 ext 规则 → spider(kind=js)，ext 补全，不再误报 ext 非法 JSON', () => {
+    const preview = subscriptionParser.parse(
+      JSON.stringify({
+        sites: [
+          {
+            key: '斗鱼js',
+            name: '🐟斗鱼┃直播',
+            type: 3,
+            api: './FTY/drpy2.min.js',
+            ext: './FTY/斗鱼直播.js',
+          },
+        ],
+      }),
+      OPTS,
+    );
+    const entry = preview.entries[0];
+    expect(entry?.valid).toBe(true);
+    expect(entry?.type).toBe('spider');
+    expect(entry?.baseUrl).toBe('https://example.com/FTY/drpy2.min.js');
+    const ext = spiderExtOf(preview, 0);
+    expect(ext?.kind).toBe('js');
+    expect(ext?.initExt).toBe('https://example.com/FTY/%E6%96%97%E9%B1%BC%E7%9B%B4%E6%92%AD.js');
+    expect(entry?.issues.some((i) => i.message.includes('ext 不是合法 JSON'))).toBe(false);
+  });
+
+  it('相对 drpy api + 相对豆瓣规则 → douban 类型', () => {
+    const preview = subscriptionParser.parse(
+      JSON.stringify({
+        sites: [
+          { key: 'db', name: '豆瓣', type: 3, api: './lib/drpy2.min.js', ext: './lib/douban.js' },
+        ],
+      }),
+      OPTS,
+    );
+    expect(preview.entries[0]?.type).toBe('douban');
+    expect(preview.entries[0]?.valid).toBe(true);
+  });
+
+  it('无基准（文件导入，sourceUrl 为空）时相对路径原样保留并按原有规则判错', () => {
+    const preview = subscriptionParser.parse(
+      JSON.stringify({
+        spider: './jar/fan.txt',
+        sites: [{ key: 'x', name: 'X', type: 3, api: 'csp_X' }],
+      }),
+      { origin: 'file', sourceUrl: null },
+    );
+    const entry = preview.entries[0];
+    expect(entry?.valid).toBe(false);
+    expect(entry?.issues.some((i) => i.code === 'URL_INVALID' && i.field === 'jar')).toBe(true);
+    // invalid 条目 normalized 为 null；baseUrl 用 jar 地址占位，验证原样保留未补全
+    expect(entry?.baseUrl).toBe('./jar/fan.txt');
+  });
+
+  it('绝对地址与 csp_ 类名不受补全影响（回归）', () => {
+    const preview = parseJson({
+      spider: 'https://cdn.example.com/spider.jar;md5;abc',
+      sites: [
+        {
+          key: 'j',
+          name: 'J',
+          type: 3,
+          api: 'csp_XBPQ',
+          ext: '分类url:https://a.com/x,分类:电影',
+        },
+        { key: 's', name: 'S', type: 1, api: 'https://cms.example.com/api.php/provide/vod' },
+      ],
+    });
+    expect(spiderExtOf(preview, 0)?.jarUrl).toBe('https://cdn.example.com/spider.jar;md5;abc');
+    expect(spiderExtOf(preview, 0)?.initExt).toContain('分类url:');
+    expect(preview.entries[1]?.type).toBe('site');
+    expect(preview.entries[1]?.baseUrl).toBe('https://cms.example.com/api.php/provide/vod');
+  });
+});

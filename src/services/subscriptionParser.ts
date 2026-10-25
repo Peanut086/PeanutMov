@@ -12,7 +12,7 @@
  * - 同批重复 key → 后者 `valid:false`（`DUPLICATE_KEY`）。
  */
 import { MAX_SUBSCRIPTION_SOURCES, SOURCE_NAME_MAX_LENGTH } from '@/shared/constants';
-import { isValidHttpUrl, normalizeBaseUrl } from '@/shared/url';
+import { isValidHttpUrl, normalizeBaseUrl, toAbsoluteUrl } from '@/shared/url';
 import {
   diagnoseJsonFailure,
   joinWrappedStrings,
@@ -169,6 +169,28 @@ function flagToBool(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
+/** 是否为 TVBox 风格的相对引用（`./x`、`../x`、`/x`）；只有这类才按订阅基准补全 */
+function isRelativeRef(ref: string): boolean {
+  return /^\.{0,2}\//.test(ref);
+}
+
+/**
+ * TVBox 约定：订阅内的 spider/jar/api/ext 常用相对路径（`./jar/fan.txt`、`/FTY/斗鱼.js`），
+ * 以订阅 URL 为基准补全为绝对地址。爬虫类名（csp_X）、key:value 配置、密钥串
+ * 都不以 `./`、`/` 开头，不受影响；无基准（文件导入）或补全失败时原样返回，走原有校验报错。
+ */
+function resolveRef(ref: string, base: string | null): string {
+  if (base === null || ref.length === 0 || !isRelativeRef(ref)) return ref;
+  return toAbsoluteUrl(base, ref) ?? ref;
+}
+
+/** spider/jar 引用补全：`;md5;校验串` 后缀原样保留（原生侧解析校验） */
+function resolveJarRef(raw: string, base: string | null): string {
+  const idx = raw.indexOf(';md5;');
+  if (idx <= 0) return resolveRef(raw, base);
+  return `${resolveRef(raw.slice(0, idx), base)}${raw.slice(idx)}`;
+}
+
 /** 去掉 `;md5;xxx` 后缀，得到纯 URL */
 function jarHttpUrl(raw: string): string {
   return raw.split(';md5;')[0]!.trim();
@@ -184,6 +206,7 @@ function parseEntry(
   index: number,
   seenKeys: Set<string>,
   globalJar: string | null = null,
+  base: string | null = null,
 ): ImportPreviewEntry {
   const issues: ImportIssue[] = [];
   const ordinal = `第 ${index + 1} 条`;
@@ -208,18 +231,24 @@ function parseEntry(
   const rawKey = typeof raw['key'] === 'string' ? raw['key'].trim() : '';
   const rawName = typeof raw['name'] === 'string' ? raw['name'].trim() : '';
   const rawApi = typeof raw['api'] === 'string' ? raw['api'].trim() : '';
+  // TVBox 约定：api 可能是相对路径（`./FTY/drpy2.min.js`、`/api.php/...`），
+  // 先以订阅 URL 补全为绝对地址，再判定爬虫形态与站点地址合法性
+  const api = resolveRef(rawApi, base);
+  // ext 里的相对规则地址（`./FTY/斗鱼.js`）同样补全；key:value 文本、密钥串不以 ./ / 开头，原样保留
+  const rawExt = typeof raw['ext'] === 'string' ? raw['ext'].trim() : null;
+  const extRef = rawExt !== null ? resolveRef(rawExt, base) : null;
   let type = mapType(raw['type']);
 
   // TVBox 爬虫：`api` 是爬虫类名（csp_XBPQ）或 drpy 脚本地址，不是站点 URL。
   // 三者都在 `type: 3` 下出现，按 api 形态改判：
   //   csp_/py_ 类名          → spider（jar 引擎）
   //   豆瓣类 drpy 规则        → douban（TS 原生实现，播放跨源借 CMS）
-  //   其它 .js 脚本           → spider（kind: 'js'，当前版本不执行）
-  const spiderKind: 'jar' | 'js' | 'douban' | null = isSpiderApi(rawApi)
+  //   其它 .js 脚本           → spider（kind: 'js'，QuickJS 引擎执行）
+  const spiderKind: 'jar' | 'js' | 'douban' | null = isSpiderApi(api)
     ? 'jar'
-    : isDoubanSpider(rawApi, raw['ext'])
+    : isDoubanSpider(api, extRef)
       ? 'douban'
-      : isJsSpiderApi(rawApi)
+      : isJsSpiderApi(api)
         ? 'js'
         : null;
   if (spiderKind !== null && (type === 'alist' || type === 'site' || type === null)) {
@@ -235,7 +264,7 @@ function parseEntry(
     );
   }
   // 爬虫源的 api 是类名/脚本地址，只有非爬虫源才要求 http(s) 站点地址
-  if (spiderKind === null && rawApi.length > 0 && !isValidHttpUrl(rawApi)) {
+  if (spiderKind === null && api.length > 0 && !isValidHttpUrl(api)) {
     issues.push(issue('error', 'URL_INVALID', 'api', `${ordinal}地址不合法（需 http/https）`));
   }
   if (rawName.length > SOURCE_NAME_MAX_LENGTH) {
@@ -247,7 +276,12 @@ function parseEntry(
   // jar 爬虫必须有可下载的 jar：条目自带 `jar` 优先（含显式空串覆盖），
   // 否则回落到订阅顶层 `spider`
   const rawJar = typeof raw['jar'] === 'string' ? raw['jar'].trim() : null;
-  const jarUrl = spiderKind === 'jar' ? (rawJar !== null && rawJar.length > 0 ? rawJar : globalJar) : null;
+  const jarUrl =
+    spiderKind === 'jar'
+      ? rawJar !== null && rawJar.length > 0
+        ? resolveJarRef(rawJar, base)
+        : globalJar
+      : null;
   if (spiderKind === 'jar' && jarUrl === null) {
     issues.push(
       issue('error', 'MISSING_FIELD', 'jar', `${ordinal}缺少 jar 地址（订阅未提供顶层 spider）`),
@@ -278,12 +312,12 @@ function parseEntry(
 
   const baseUrl =
     spiderKind === null
-      ? rawApi.length > 0 && isValidHttpUrl(rawApi)
-        ? normalizeBaseUrl(rawApi)
-        : rawApi
+      ? api.length > 0 && isValidHttpUrl(api)
+        ? normalizeBaseUrl(api)
+        : api
       : // 爬虫源没有站点根地址：jar 爬虫用 jar 地址占位（原生侧据此定位/校验 jar），
         // JS 爬虫用脚本地址；豆瓣源用规则地址
-        normalizeBaseUrl(spiderKind === 'jar' ? jarHttpUrl(jarUrl ?? '') : rawApi);
+        normalizeBaseUrl(spiderKind === 'jar' ? jarHttpUrl(jarUrl ?? '') : api);
   const searchable = flagToBool(raw['searchable'] ?? raw['search'], true);
 
   const spiderExt: SpiderExtRecord | null =
@@ -293,7 +327,9 @@ function parseEntry(
           kind: spiderKind,
           api: spiderKind === 'jar' ? rawApi : null,
           jarUrl: spiderKind === 'jar' ? jarUrl : null,
-          initExt: spiderInitExt(raw['ext']),
+          // jar 爬虫的 ext 原样（key:value/对象由 jar 自己解析）；
+          // JS/豆瓣爬虫的 ext 是规则地址，用补全后的绝对地址
+          initExt: spiderInitExt(spiderKind === 'jar' ? raw['ext'] : (extRef ?? raw['ext'])),
         };
 
   const valid = issues.every((i) => i.level !== 'error') && !duplicateKey;
@@ -467,11 +503,14 @@ export const subscriptionParser: SubscriptionParser = {
     }
 
     const seenKeys = new Set<string>();
-    // TVBox 顶层 `spider`：全局爬虫 jar，条目未自带 `jar` 时作为默认值
-    const globalSpider = typeof payload['spider'] === 'string' ? payload['spider'].trim() : null;
-    const entries = rawList.map((raw, index) =>
-      parseEntry(raw, index, seenKeys, globalSpider !== null && globalSpider.length > 0 ? globalSpider : null),
-    );
+    // 相对引用（`./jar/fan.txt`）的补全基准：订阅自身的 URL；文件导入没有基准，保持原样走校验报错
+    const sourceUrl = opts.sourceUrl?.trim() ?? '';
+    const base = isValidHttpUrl(sourceUrl) ? sourceUrl : null;
+    // TVBox 顶层 `spider`：全局爬虫 jar，条目未自带 `jar` 时作为默认值（相对路径同样补全）
+    const globalSpiderRaw = typeof payload['spider'] === 'string' ? payload['spider'].trim() : null;
+    const globalSpider =
+      globalSpiderRaw !== null && globalSpiderRaw.length > 0 ? resolveJarRef(globalSpiderRaw, base) : null;
+    const entries = rawList.map((raw, index) => parseEntry(raw, index, seenKeys, globalSpider, base));
     const globalIssues: ImportIssue[] = [];
     if (relaxed !== 'none') {
       const detail = {
