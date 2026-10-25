@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "updatedAt": "2026-10-25",
+  "note": "人工筛选的推荐订阅清单（v1.7/CHG-24，FR-56）。只用于评测展示，导入必须用户逐项确认；不含成人/家庭宽带/已知死链条目。",
+  "items": [
+    { "name": "饭太硬", "url": "https://qist.wyfc.qzz.io/fty.json", "note": "社区老牌综合订阅", "tags": ["综合"] },
+    { "name": "潇洒", "url": "https://qist.wyfc.qzz.io/xiaosa/api.json", "note": "同源维护，更新勤", "tags": ["综合"] },
+    { "name": "王二小", "url": "https://9280.kstore.vip/newwex.json", "note": "kstore 托管，直连稳定", "tags": ["综合"] },
+    { "name": "牛二", "url": "https://9280.kstore.space/newwex.json", "note": "王二小备用线路", "tags": ["综合"] },
+    { "name": "大嗷呜", "url": "https://9763.kstore.vip/aowu.json", "note": "kstore 托管", "tags": ["综合"] },
+    { "name": "御制(无采集)-加速", "url": "https://yqx.imgos.cn/yqx/tv/yqx2.json", "note": "无采集站依赖", "tags": ["综合"] },
+    { "name": "PG", "url": "https://www.252035.xyz/p/jsm.json", "note": "drpy 规则为主，需内置引擎", "tags": ["drpy"] },
+    { "name": "摸鱼儿", "url": "https://6800.kstore.vip/fish.json", "note": "kstore 托管", "tags": ["综合"] },
+    { "name": "IPv6 直播", "url": "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u", "note": "fanmingming IPTV（需 IPv6 网络）", "tags": ["直播"] },
+    { "name": "Guovin IPTV", "url": "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/ipv6/result.m3u", "note": "自动测速维护的直播列表", "tags": ["直播"] }
+  ]
+}

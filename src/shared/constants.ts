@@ -20,8 +20,8 @@ export const BUILD_TIME: number | null =
 
 /* ---------- IndexedDB ---------- */
 export const DB_NAME = 'cinema-db';
-/** v2（CHG-13）：新增 lives store（直播播放列表） */
-export const DB_VERSION = 2;
+/** v2（CHG-13）：新增 lives store（直播播放列表）；v3（CHG-22/23）：danmakuCache / epgCache */
+export const DB_VERSION = 3;
 
 /** kv 表中存放应用设置的 key */
 export const KV_KEY_SETTINGS = 'app-settings';
@@ -132,3 +132,57 @@ export const SOURCE_NAME_MIN_LENGTH = 1;
 export const TAB_BAR_HEIGHT_PX = 56;
 export const HEADER_HEIGHT_PX = 52;
 export const MIN_TOUCH_TARGET_PX = 44;
+
+/* ---------- v1.7：订阅导入归一化（CHG-18） ---------- */
+/** 会被代理前缀包装的 GitHub raw 域名（gh-proxy/ghfast 等前缀在失效时剥离直连） */
+export const URL_PROXY_HOSTS = ['gh-proxy.org', 'ghfast.top', 'gh-proxy.com', 'ghproxy.net', 'mirror.ghproxy.com'] as const;
+/** CDN 变体对：网络失败时 jsdelivr ↔ raw.githubusercontent 互换重试 */
+export const CDN_VARIANT_MAP: Readonly<Record<string, string>> = {
+  'cdn.jsdelivr.net': 'raw.githubusercontent.com',
+  'fastly.jsdelivr.net': 'raw.githubusercontent.com',
+  'testingcf.jsdelivr.net': 'raw.githubusercontent.com',
+};
+/** HTML 落地页嗅探：同域候选配置链接上限 */
+export const HTML_SNIFF_MAX_CANDIDATES = 3;
+
+/* ---------- v1.7：订阅生命周期（CHG-19） ---------- */
+/** 自动刷新 TTL：距上次成功刷新超过该值才在启动/前台时刷新 */
+export const SUBSCRIPTION_REFRESH_TTL_MS = 24 * 60 * 60 * 1000;
+/** 自动刷新并发上限 */
+export const SUBSCRIPTION_REFRESH_CONCURRENCY = 2;
+/** 连续体检 bad 达到该次数自动禁用（FR-51） */
+export const SUBSCRIPTION_AUTO_DISABLE_STREAK = 3;
+
+/* ---------- v1.7：播放（CHG-21） ---------- */
+/** 起播失败自动兜底窗口：窗口内失败自动换线→换源 */
+export const PLAYER_FAILOVER_WINDOW_MS = 10000;
+/** 高码率（≥1080p）前向缓冲目标（秒） */
+export const HLS_MAX_BUFFER_HIGH_S = 60;
+/** 高码率前向缓冲默认值（秒，hls.js 默认 30） */
+export const HLS_MAX_BUFFER_DEFAULT_S = 30;
+/** 直播低延迟：落后直播点多少个分片内追平 */
+export const LIVE_SYNC_COUNT = 3;
+/** 直播频道起播超时（超时自动切同组下一路） */
+export const TIMEOUT_LIVE_CHANNEL_MS = 5000;
+/** 直播失效判定：同频道连续起播失败次数 */
+export const LIVE_DEAD_STREAK = 2;
+
+/* ---------- v1.7：弹幕（CHG-22） ---------- */
+/** 同屏弹幕密度上限 */
+export const DANMAKU_MAX_ONSCREEN = 150;
+/** 弹幕缓存 TTL（30 天；命中缓存不发网络请求） */
+export const DANMAKU_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** dandanplay 匹配接口基址（appId/secret 就绪前不启用该 Provider） */
+export const DANMAKU_DANDANPLAY_BASE = 'https://api.dandanplay.net';
+/** 社区聚合弹幕端点（备源） */
+export const DANMAKU_AGGREGATE_BASE = 'https://api.danmu.icu';
+
+/* ---------- v1.7：EPG（CHG-23） ---------- */
+/** EPG 缓存 TTL */
+export const EPG_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+/** 默认 EPG 端点（diyp 风格） */
+export const EPG_DEFAULT_ENDPOINT = 'https://epg.112114.eu.org';
+
+/* ---------- v1.7：推荐订阅（CHG-24） ---------- */
+/** 内置推荐订阅清单版本（清单内容见 src/data/recommended/recommended.json） */
+export const RECOMMENDED_SUBSCRIPTIONS_VERSION = 1;

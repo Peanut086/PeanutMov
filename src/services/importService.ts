@@ -24,6 +24,7 @@ import { probeJarUrls } from '@/services/jarProbe';
 import { subscriptionParser } from '@/services/subscriptionParser';
 import { extractTvboxLives } from '@/sources/live/liveParsers';
 import {
+  HTML_SNIFF_MAX_CANDIDATES,
   KV_KEY_IMPORT_RECORDS,
   MAX_SUBSCRIPTION_BYTES,
   TIMEOUT_SUBSCRIPTION_FETCH_MS,
@@ -32,8 +33,10 @@ import { AppError, toAppError } from '@/shared/errors';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { newId, nextKey } from '@/shared/id';
 import { isValidHttpUrl } from '@/shared/url';
+import { normalizeImportUrl } from '@/shared/urlNormalize';
 import { crawl } from '@/sources/pipeline/scheduler';
-import type { SubscriptionText } from '@/sources/pipeline/parsers';
+import { detectCmsApiPayload, detectLiveList } from '@/sources/pipeline/detectors';
+import type { HtmlLandingResult, SubscriptionText } from '@/sources/pipeline/parsers';
 import { kvRepo } from '@/db/repositories/kvRepo';
 import type {
   ImportCommitOptions,
@@ -102,7 +105,9 @@ async function previewFromRaw(
 ): Promise<ImportPreview> {
   const parsed = subscriptionParser.parse(text, opts);
   // CHG-13：顺带提取 TVBox lives[] 直播源（导入成功后由 UI 添加到直播页）
-  const preview: ImportPreview = { ...parsed, lives: extractTvboxLives(text) };
+  const parsedPreview: ImportPreview = { ...parsed, lives: extractTvboxLives(text) };
+  // v1.7/CHG-18：非订阅内容兜底建议（直播列表 / 单流 / CMS 采集接口）
+  const preview = attachSuggestions(parsedPreview, text, opts.sourceUrl ?? null);
   const annotated = await annotateDuplicates(preview);
   if (precheckOpts?.jarPrecheck === false) return annotated;
   return precheckSpiderJars(annotated, signal);
@@ -149,43 +154,127 @@ async function precheckSpiderJars(preview: ImportPreview, signal?: AbortSignal):
   return { ...preview, entries };
 }
 
+/* ---------- v1.7/CHG-18：URL 归一化变体 + 落地页嗅探拉取 ---------- */
+
+type SubscriptionFetchValue = SubscriptionText | HtmlLandingResult;
+
+export interface SubscriptionFetch {
+  text: string;
+  /** 响应是 HTML 落地页且嗅探到同域候选配置链接；其余为 null */
+  htmlCandidates: string[] | null;
+}
+
+async function crawlSubscription(
+  variantUrl: string,
+  signal: AbortSignal | undefined,
+  budgetMs: number,
+): Promise<SubscriptionFetch> {
+  const { value } = await crawl<SubscriptionFetchValue>({
+    intent: 'subscription',
+    url: variantUrl,
+    signal,
+    budgetMs,
+    headers: { Accept: 'application/json, text/plain, */*' },
+    maxBytes: MAX_SUBSCRIPTION_BYTES,
+  });
+  if ('kind' in value && value.kind === 'html-landing') {
+    return { text: value.text, htmlCandidates: value.candidates };
+  }
+  return { text: value.text, htmlCandidates: null };
+}
+
+/** 网络类失败才继续换变体；HTTP 4xx/5xx / 格式错误说明资源本身有问题 */
+function isRetryableVariantError(e: unknown): boolean {
+  const code = e instanceof AppError ? e.code : null;
+  return code === 'E_NETWORK' || code === 'E_TIMEOUT';
+}
+
 /**
- * 拉取订阅文本（10s 超时 / 2MB 上限），URL 预览与多仓展开共用。
+ * 拉取订阅文本（默认 10s 预算 / 2MB 上限），URL 预览与多仓展开共用。
  *
- * 走爬虫管道：指纹 + 规则决定"这是 JSON / 纯文本 URL 列表 / 图片伪装"，
+ * v1.7/CHG-18 拉取顺序（全部共享同一预算）：
+ *   ① 首选地址（GitHub raw 自带镜像回退；gh-proxy 前缀地址失败先剥前缀直连）
+ *   ② `normalizeImportUrl` 变体（CDN 互换、重写后地址等）
+ *
+ * 走爬虫管道：指纹 + 规则决定"这是 JSON / 纯文本 URL 列表 / 直播列表 / HTML 落地页"，
  * 并按 BOM → header → 探测解码字符集（GBK 站点不再乱码）。
  * 失败时抛出带用户文案的 `AppError`（文案由规则里的解析器决定）。
  */
-async function fetchSubscriptionText(url: string, signal?: AbortSignal): Promise<string> {
+async function fetchSubscriptionText(
+  url: string,
+  signal?: AbortSignal,
+  budgetOverrideMs?: number,
+): Promise<SubscriptionFetch> {
   const trimmed = url.trim();
   if (!isValidHttpUrl(trimmed)) {
     throw new AppError('E_INVALID_INPUT', '订阅地址必须是 http(s):// 开头的合法地址');
   }
 
-  // 镜像回退共享拉取预算：直连失败换镜像时用剩余时间，不为镜像额外加时（CHG-11）
-  const deadline = Date.now() + TIMEOUT_SUBSCRIPTION_FETCH_MS;
-  const { value: result } = await withGithubMirrorFallback(
-    trimmed,
-    (variantUrl) =>
-      crawl<SubscriptionText>({
-        intent: 'subscription',
-        url: variantUrl,
-        signal,
-        budgetMs: Math.max(2000, deadline - Date.now()),
-        headers: { Accept: 'application/json, text/plain, */*' },
-        maxBytes: MAX_SUBSCRIPTION_BYTES,
-      }),
-    signal,
-  );
+  const normalized = normalizeImportUrl(trimmed);
+  const deadline = Date.now() + (budgetOverrideMs ?? TIMEOUT_SUBSCRIPTION_FETCH_MS);
 
-  const text = result.value.text;
-
-  // 兜底：管道按字节校验过，这里再按 UTF-8 编码长度确认一次（中文按 3 字节）
-  const bytes = new TextEncoder().encode(text).byteLength;
-  if (bytes > MAX_SUBSCRIPTION_BYTES) {
-    throw new AppError('E_INVALID_INPUT', '订阅内容过大（上限 2MB）');
+  let lastError: unknown;
+  try {
+    const { value } = await withGithubMirrorFallback(
+      normalized.url,
+      (variantUrl) => crawlSubscription(variantUrl, signal, Math.max(2000, deadline - Date.now())),
+      signal,
+    );
+    return value;
+  } catch (e) {
+    lastError = e;
+    if (!isRetryableVariantError(e) || signal?.aborted) throw e;
   }
-  return text;
+
+  for (const variant of normalized.variants) {
+    if (signal?.aborted) throw lastError;
+    const remaining = deadline - Date.now();
+    if (remaining < 2000) break;
+    try {
+      return await crawlSubscription(variant, signal, remaining);
+    } catch (e) {
+      if (!isRetryableVariantError(e)) throw e;
+      lastError = e;
+    }
+  }
+  throw lastError;
+}
+
+/** 把 URL 归一化提示追加为 info issue（不改预览结构） */
+function withNotes(preview: ImportPreview, notes: string[]): ImportPreview {
+  if (notes.length === 0) return preview;
+  return {
+    ...preview,
+    globalIssues: [
+      ...preview.globalIssues,
+      ...notes.map((message) => ({ level: 'info' as const, code: 'URL_NORMALIZED', field: null, message })),
+    ],
+  };
+}
+
+/**
+ * v1.7/CHG-18：内容不是普通订阅时给出可操作建议（纯函数，URL 与文件导入共用）。
+ * 仅当没有可导入条目/仓库/直播时才兜底判定，payload 需要可寻址 URL。
+ */
+function attachSuggestions(preview: ImportPreview, text: string, payloadUrl: string | null): ImportPreview {
+  if (payloadUrl === null) return preview;
+  if (preview.entries.length > 0 || preview.repos.length > 0 || preview.lives.length > 0) return preview;
+  if (preview.suggestions && preview.suggestions.length > 0) return preview;
+
+  const live = detectLiveList(text);
+  if (live) {
+    return {
+      ...preview,
+      suggestions:
+        live.kind === 'single-stream'
+          ? [{ kind: 'single-stream', action: 'add-channel', payload: payloadUrl }]
+          : [{ kind: 'live-list', action: 'add-live', payload: payloadUrl, channelCount: live.channelCount }],
+    };
+  }
+  if (detectCmsApiPayload(text)) {
+    return { ...preview, suggestions: [{ kind: 'cms-api', action: 'add-site', payload: payloadUrl }] };
+  }
+  return preview;
 }
 
 export const importService: ImportService = {
@@ -194,14 +283,44 @@ export const importService: ImportService = {
     signal?: AbortSignal,
     opts?: { jarPrecheck?: boolean },
   ): Promise<ImportPreview> {
-    const text = await fetchSubscriptionText(url, signal);
-    return previewFromRaw(text, { origin: 'url', sourceUrl: url.trim() }, signal, opts);
+    const trimmed = url.trim();
+    const normalized = normalizeImportUrl(trimmed);
+    const fetched = await fetchSubscriptionText(trimmed, signal);
+
+    // v1.7/CHG-18：落地页候选跟进——同域 ≤3 条，首个产出有效内容的胜出
+    if (fetched.htmlCandidates !== null) {
+      const candidates = fetched.htmlCandidates.slice(0, HTML_SNIFF_MAX_CANDIDATES);
+      let lastError: unknown = new AppError(
+        'E_UNSUPPORTED_FORMAT',
+        '该地址返回的不是订阅 JSON，可能是网页地址或已被拦截',
+        { detail: 'HTML 落地页内未发现可用的配置链接', retryable: false },
+      );
+      for (const candidate of candidates) {
+        try {
+          const sub = await fetchSubscriptionText(candidate, signal);
+          if (sub.htmlCandidates !== null) continue; // 候选又是落地页：不递归
+          const preview = await previewFromRaw(sub.text, { origin: 'url', sourceUrl: trimmed }, signal, opts);
+          if (preview.entries.length > 0 || preview.repos.length > 0 || preview.lives.length > 0) {
+            return withNotes(preview, [
+              `已从落地页发现的配置链接导入：${candidate}`,
+              ...normalized.notes,
+            ]);
+          }
+        } catch (e) {
+          lastError = e;
+        }
+      }
+      throw lastError;
+    }
+
+    const preview = await previewFromRaw(fetched.text, { origin: 'url', sourceUrl: trimmed }, signal, opts);
+    return withNotes(preview, normalized.notes);
   },
 
   /** 展开多仓索引中的一个仓库地址，返回该仓库的源预览 */
   async previewFromRepo(repoUrl: string, signal?: AbortSignal): Promise<ImportPreview> {
-    const text = await fetchSubscriptionText(repoUrl, signal);
-    return previewFromRaw(text, { origin: 'url', sourceUrl: repoUrl.trim() }, signal);
+    const fetched = await fetchSubscriptionText(repoUrl, signal);
+    return previewFromRaw(fetched.text, { origin: 'url', sourceUrl: repoUrl.trim() }, signal);
   },
 
   async previewFromText(text: string, fileName: string): Promise<ImportPreview> {

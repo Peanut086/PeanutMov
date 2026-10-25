@@ -88,6 +88,8 @@ export interface Source {
   subscriptionId: string | null;
   /** 合规警示文案（命中敏感关键词时），无则 null */
   warning: string | null;
+  /** v1.7/FR-51：因连续体检失败被自动禁用的时间；null/undefined = 非自动禁用 */
+  autoDisabledAt?: Timestamp | null;
   health: SourceHealth;
   healthCheckedAt: Timestamp | null;
   lastErrorCode: ErrorCode | null;
@@ -232,6 +234,8 @@ export interface PlaybackSource {
   expiresAt: Timestamp | null;
   /** url 是否已指向本地文件/Blob URL */
   isLocal: boolean;
+  /** v1.7/CHG-21：直播流（启用 hls.js 低延迟模式与追帧） */
+  isLive?: boolean;
 }
 
 /* ---------- 列表查询 ---------- */
@@ -298,6 +302,21 @@ export interface SearchResult {
   candidates: number;
   /** 因体检失效/类型不支持/关闭搜索被过滤掉的启用源数量 */
   filteredOut: number;
+  /** v1.7/CHG-20：按「归一化片名+年份」聚合的分组视图（items 为组内按源质量排序的条目） */
+  groups?: SearchResultGroup[];
+}
+
+/** v1.7/CHG-20 聚合检索：检索范围 */
+export type SearchScope = 'all' | 'site' | 'spider' | 'douban' | 'selected';
+
+/** 跨源聚合分组（同一部片在不同源的结果归并） */
+export interface SearchResultGroup {
+  /** 归一化片名 + `:`` + 年份（缺失为 unknown） */
+  key: string;
+  title: string;
+  year: number | null;
+  /** 组内条目，按源健康 tier → 延迟 → sort 排序 */
+  items: MediaItem[];
 }
 
 /* ---------- 历史 / 收藏 ---------- */
@@ -480,7 +499,60 @@ export interface AppSettings {
   gesture: GestureSettings;
   download: DownloadSettings;
   searchHistory: string[];
+  /** v1.7/CHG-24：内置推荐订阅清单可见性（默认开，见 settingsService 默认值） */
+  showRecommendedSubscriptions?: boolean;
+  /** v1.7/CHG-21 PoC：实验性原生播放引擎（ExoPlayer），默认关 */
+  experimentalNativePlayer?: boolean;
+  /** v1.7/CHG-22：弹幕设置（只读展示） */
+  danmaku?: DanmakuSettings;
   updatedAt: Timestamp;
+}
+
+/* ---------- v1.7 增量（CHG-19 / CHG-22） ---------- */
+
+/** 订阅健康摘要（CHG-19，按 subscriptionId 聚合） */
+export interface SubscriptionSummary {
+  subscriptionId: string;
+  sourceCount: number;
+  alive: number;
+  dead: number;
+  jarDead: number;
+  lastRefreshAt: number | null;
+}
+
+/* ---------- 弹幕（CHG-22，只读不发） ---------- */
+
+export type DanmakuProviderId = 'dandanplay' | 'aggregate' | 'local-xml';
+
+export interface DanmakuComment {
+  /** 相对视频起点的秒数 */
+  time: number;
+  mode: 'scroll' | 'top' | 'bottom';
+  /** RGB 整数值（B 站 xml 惯例） */
+  color: number;
+  text: string;
+}
+
+export interface DanmakuMatch {
+  provider: DanmakuProviderId;
+  matchedTitle: string | null;
+  /** 时间轴偏移（秒），播放时加到弹幕 time 上 */
+  offsetSec: number;
+  comments: DanmakuComment[];
+}
+
+export interface DanmakuSettings {
+  enabled: boolean;
+  fontSize: number;
+  /** 0.1 ~ 1 */
+  opacity: number;
+  /** 滚动时长倍率：越大越慢，1 为基准 */
+  speed: number;
+  /** 弹幕占屏幕高度百分比（10~100） */
+  areaPercent: number;
+  merge: boolean;
+  /** 底部安全区百分比（默认 15，字幕区禁显） */
+  safeBottomPercent: number;
 }
 
 export type DeepPartial<T> = {
@@ -524,7 +596,15 @@ export interface ImportPreview {
   repos: string[];
   /** TVBox `lives[]` 直播源（CHG-13）：导入成功后由 UI 征询/自动添加到直播页 */
   lives: Array<{ name: string; url: string }>;
+  /** v1.7/CHG-18：内容不是普通订阅时的可操作建议（加入直播源 / 自定义频道 / 采集源） */
+  suggestions?: ImportSuggestion[];
 }
+
+/** v1.7/CHG-18：非订阅内容的引导动作 */
+export type ImportSuggestion =
+  | { kind: 'live-list'; action: 'add-live'; payload: string; channelCount: number }
+  | { kind: 'single-stream'; action: 'add-channel'; payload: string }
+  | { kind: 'cms-api'; action: 'add-site'; payload: string };
 
 export interface ImportCommitOptions {
   selectedKeys: string[];

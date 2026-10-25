@@ -21,7 +21,7 @@ import { DEMO_SOURCE_ID, seedDemoData } from '@/data/demo/demoSeed';
 import { appEvents } from '@/services/events';
 import { COMPLIANCE_VERSION, KV_KEY_SETTINGS, SEARCH_HISTORY_MAX } from '@/shared/constants';
 import { AppError } from '@/shared/errors';
-import type { AppSettings, DeepPartial, DownloadSettings, GestureSettings, PlayerSettings } from '@/types';
+import type { AppSettings, DanmakuSettings, DeepPartial, DownloadSettings, GestureSettings, PlayerSettings } from '@/types';
 
 const SCHEMA_VERSION = 1;
 
@@ -55,6 +55,18 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
     download: { concurrency: 2, wifiOnly: false, autoResume: true },
     searchHistory: [],
+    /* v1.7 增量（CHG-22/24/21） */
+    showRecommendedSubscriptions: true,
+    experimentalNativePlayer: false,
+    danmaku: {
+      enabled: false,
+      fontSize: 16,
+      opacity: 0.8,
+      speed: 1,
+      areaPercent: 50,
+      merge: true,
+      safeBottomPercent: 15,
+    },
     updatedAt: now,
   };
 }
@@ -100,6 +112,16 @@ function sanitize(input: AppSettings): AppSettings {
   const download: DownloadSettings = { ...defaults.download, ...(downloadPatch ?? {}) };
   download.concurrency = ([1, 2, 3] as const).includes(download.concurrency) ? download.concurrency : 2;
 
+  const danmakuPatch = input.danmaku as Partial<DanmakuSettings> | undefined;
+  const danmaku: DanmakuSettings = { ...defaults.danmaku!, ...(danmakuPatch ?? {}) };
+  danmaku.fontSize = Math.max(10, Math.min(36, Number(danmaku.fontSize) || 16));
+  danmaku.opacity = Math.max(0.1, Math.min(1, Number(danmaku.opacity) || 0.8));
+  danmaku.speed = Math.max(0.5, Math.min(3, Number(danmaku.speed) || 1));
+  danmaku.areaPercent = Math.max(10, Math.min(100, Number(danmaku.areaPercent) || 50));
+  danmaku.safeBottomPercent = Math.max(0, Math.min(50, Number(danmaku.safeBottomPercent) || 0));
+  danmaku.merge = Boolean(danmaku.merge);
+  danmaku.enabled = Boolean(danmaku.enabled);
+
   return {
     ...defaults,
     ...input,
@@ -114,6 +136,9 @@ function sanitize(input: AppSettings): AppSettings {
         ? input.complianceAcceptedAt
         : null,
     hideDemoContent: Boolean(input.hideDemoContent),
+    showRecommendedSubscriptions: input.showRecommendedSubscriptions === undefined ? true : Boolean(input.showRecommendedSubscriptions),
+    experimentalNativePlayer: Boolean(input.experimentalNativePlayer),
+    danmaku,
     searchHistory: Array.isArray(input.searchHistory)
       ? input.searchHistory.filter((k): k is string => typeof k === 'string' && k.trim().length > 0).slice(0, SEARCH_HISTORY_MAX)
       : [],

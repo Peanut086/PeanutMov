@@ -12,6 +12,11 @@ import type { AppErrorShape, PlaybackSource } from '@/types';
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 import { VideoEngine } from '@/player/VideoEngine';
 import { NETWORK_RETRY_TIMES } from '@/player/constants';
+import {
+  HLS_MAX_BUFFER_DEFAULT_S,
+  HLS_MAX_BUFFER_HIGH_S,
+  LIVE_SYNC_COUNT,
+} from '@/shared/constants';
 import { assertSourceSupported } from '@/player/sourceGuard';
 
 type HlsModule = typeof import('hls.js');
@@ -110,7 +115,9 @@ export class HlsEngine implements PlayableEngine {
     const headers = source.headers ?? {};
     const hls = new HlsCtor({
       enableWorker: true,
-      lowLatencyMode: false,
+      // v1.7/CHG-21：直播用低延迟模式（liveSyncDurationCount=LIVE_SYNC_COUNT），点播关闭
+      lowLatencyMode: source.isLive === true,
+      liveSyncDurationCount: source.isLive === true ? LIVE_SYNC_COUNT : undefined,
       backBufferLength: 30,
       maxBufferLength: 30,
       capLevelToPlayerSize: true,
@@ -152,6 +159,9 @@ export class HlsEngine implements PlayableEngine {
         const level = hls.levels[hls.currentLevel];
         const quality = qualityOf(level);
         this.currentQuality = hls.currentLevel < 0 ? 'auto' : quality;
+        // v1.7/CHG-21：高码率（≥1080p）前向缓冲 30→60s，换卡顿为预缓冲；低码率维持默认控内存
+        const height = level?.height ?? 0;
+        hls.config.maxBufferLength = height >= 1080 ? HLS_MAX_BUFFER_HIGH_S : HLS_MAX_BUFFER_DEFAULT_S;
         this.events.onQualityChange(this.currentQuality, this.qualities);
       });
 

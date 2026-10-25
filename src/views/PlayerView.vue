@@ -10,7 +10,7 @@
  * 进度：ProgressReporter 每 5s / 暂停 / 切页 / 结束写回 historyStore
  * 自动连播：ended + autoPlayNext → 3s 倒计时 → nextEpisode
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type {
@@ -51,10 +51,18 @@ import { castService } from '@/services/castService';
 import { useBackButton } from '@/composables/useBackButton';
 import { usePlayerController } from '@/composables/usePlayerController';
 import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
+import { DanmakuOverlay } from '@/player/DanmakuOverlay';
+import { danmakuService } from '@/services/danmakuService';
+import DanmakuSettingsSheet from '@/components/player/DanmakuSettingsSheet.vue';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
 import { DIM_MAX_OPACITY, QUALITY_AUTO } from '@/player/constants';
+import { PLAYER_FAILOVER_WINDOW_MS } from '@/shared/constants';
 import { localProxyUrl } from '@/native/localProxy';
+import { libraryService } from '@/services/libraryService';
+import { sourceService } from '@/services/sourceService';
+import { pickPlayCandidates } from '@/sources/douban/playMatch';
+import { healthService } from '@/services/healthService';
 
 const route = useRoute();
 const router = useRouter();
@@ -348,6 +356,8 @@ async function resolveAndLoad(): Promise<boolean> {
   pageLoading.value = true;
   loadError.value = null;
   startLoadingHint();
+  // v1.7/CHG-21：记录起播时刻——失败自动兜底只在窗口期内触发
+  failoverStartedAt.value = Date.now();
   try {
     const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
     const prepared = await preparePlayback(playback);
@@ -401,7 +411,13 @@ async function resolveAndLoad(): Promise<boolean> {
     // 「本地文件不可用，已切换网络源」时在页面给出「重新下载」入口（AC-78②）
     detectLocalMissing();
     // `load()` 内部把失败写入 player.error 而不抛出，这里显式判定
-    return loadError.value === null && player.error === null;
+    const ok = loadError.value === null && player.error === null;
+    if (ok) {
+      // 起播成功：重置自动兜底状态（CHG-21），下次失败重新各试一次
+      failoverLineTried.value = false;
+      failoverSourceTried.value = false;
+    }
+    return ok;
   } catch (e) {
     loadError.value = toErrorShape(e, 'E_NO_PLAY_URL').message;
     return false;
@@ -542,6 +558,104 @@ async function onSwitchLine(): Promise<void> {
   if (!next) return;
   await switchLine(next.id);
 }
+
+/* ---------- v1.7/CHG-21：起播失败自动换线 → 换源（FR-53） ---------- */
+
+const failoverStartedAt = ref(0);
+const failoverLineTried = ref(false);
+const failoverSourceTried = ref(false);
+const failoverRunning = ref(false);
+
+/** 源侧故障码（与 17.6 口径一致 + 解码/无地址），命中才考虑自动兜底 */
+const FAILOVER_ERROR_CODES = new Set([
+  'E_NETWORK',
+  'E_TIMEOUT',
+  'E_DECODE',
+  'E_SOURCE_UNAVAILABLE',
+  'E_NO_PLAY_URL',
+  'E_UNSUPPORTED_FORMAT',
+  'E_PARSE',
+]);
+
+function withinFailoverWindow(): boolean {
+  return failoverStartedAt.value > 0 && Date.now() - failoverStartedAt.value <= PLAYER_FAILOVER_WINDOW_MS;
+}
+
+/** 在其它启用源里找同名同年的可播条目，返回其 mediaId 与源名 */
+async function findAlternateSource(): Promise<{ mediaId: string; sourceName: string } | null> {
+  const it = item.value;
+  if (!it || !isOnlineNow()) return null;
+  try {
+    const [result, allSources] = await Promise.all([libraryService.search({ keyword: it.title }), sourceService.list()]);
+    const sourceById = new Map(allSources.map((s) => [s.id, s]));
+    const candidates = pickPlayCandidates(it.title, it.year, result.items, sourceById, (id) =>
+      healthService.latencyOf(id),
+    ).filter((candidate) => candidate.source.id !== it.sourceId);
+    for (const candidate of candidates) {
+      try {
+        const detail = await libraryService.getDetail(candidate.item.id);
+        const target = detail.episodes.find((ep) => ep.number === (currentEpisode.value?.number ?? 1)) ?? detail.episodes[0];
+        if (!target) continue;
+        await router.replace({
+          name: 'player',
+          params: { mediaId: candidate.item.id, episodeId: target.id },
+        });
+        // mediaId 变化不会自动触发重载：显式加载新详情与新集
+        await library.loadDetail(candidate.item.id);
+        return { mediaId: candidate.item.id, sourceName: candidate.source.name };
+      } catch {
+        continue; // 候选源也失败 → 顺延下一个
+      }
+    }
+  } catch {
+    /* 搜索失败：按无候选处理 */
+  }
+  return null;
+}
+
+function isOnlineNow(): boolean {
+  return navigator.onLine !== false;
+}
+
+/** 起播窗口内失败：自动换线（一次）→ 自动换源（一次）→ 才落到错误面板 */
+watch(
+  () => player.error,
+  async (error) => {
+    if (!error || failoverRunning.value) return;
+    if (!FAILOVER_ERROR_CODES.has(error.code) || !withinFailoverWindow()) return;
+    failoverRunning.value = true;
+    try {
+      // ① 换线路
+      if (!failoverLineTried.value && lines.value.length > 1) {
+        failoverLineTried.value = true;
+        const other = lines.value.find((l) => l.id !== currentLineId.value);
+        if (other) {
+          toast.info('起播失败，自动切换到其它线路…');
+          await switchLine(other.id);
+          if (player.error === null && loadError.value === null) return; // 换线成功
+        }
+      }
+      // ② 换源（同名同年在其它源重找片源；进度按集号延续）
+      if (!failoverSourceTried.value) {
+        failoverSourceTried.value = true;
+        player.patch({ error: null });
+        toast.info('当前源无法播放，正在尝试其它来源…');
+        const target = await findAlternateSource();
+        if (target) {
+          toast.info(`已切换到「${target.sourceName}」继续播放`);
+          await resolveAndLoad();
+          if (player.error === null && loadError.value === null) return;
+        }
+      }
+      // 兜底失败：恢复错误面板（清掉的错误重新呈现）
+      if (player.error === null && loadError.value === null) {
+        player.patch({ error });
+      }
+    } finally {
+      failoverRunning.value = false;
+    }
+  },
+);
 
 /** LineSelector 选择线路：保持当前集号（AC-31） */
 async function onSwitchLineById(id: string): Promise<void> {
@@ -690,6 +804,89 @@ function onBackgroundExit(): void {
   goBack();
 }
 
+/* ---------- v1.7/CHG-22：弹幕（只读展示） ---------- */
+
+const danmakuOpen = ref(false);
+const danmakuOverlay = shallowRef<DanmakuOverlay | null>(null);
+
+const danmakuSettings = computed(
+  () =>
+    settings.settings?.danmaku ?? {
+      enabled: false,
+      fontSize: 16,
+      opacity: 0.8,
+      speed: 1,
+      areaPercent: 50,
+      merge: true,
+      safeBottomPercent: 15,
+    },
+);
+
+/** 弹幕可用性：设置开启 + 正在播放 + 有当前集号 */
+const danmakuReady = computed(() => danmakuSettings.value.enabled && currentEpisode.value !== null && !pageLoading.value);
+
+/** 按当前媒体/集号拉取弹幕（缓存命中离线可用；关闭开关不发请求） */
+async function loadDanmaku(): Promise<void> {
+  const it = item.value;
+  const ep = currentEpisode.value;
+  if (!it || !ep || !danmakuSettings.value.enabled) {
+    danmakuOverlay.value?.clear();
+    return;
+  }
+  try {
+    const match = await danmakuService.match(it.title, it.year, ep.number);
+    if (match === null) return;
+    const comments = danmakuSettings.value.merge ? danmakuService.dedupe(match.comments) : match.comments;
+    danmakuOverlay.value?.load(comments);
+  } catch {
+    /* 弹幕失败静默：不影响播放 */
+  }
+}
+
+function toggleDanmaku(): void {
+  const next = !danmakuSettings.value.enabled;
+  void settings.update({ danmaku: { ...danmakuSettings.value, enabled: next } });
+  if (!next) danmakuOverlay.value?.clear();
+  else void loadDanmaku();
+  toast.info(next ? '弹幕已开启' : '弹幕已关闭');
+}
+
+/** 设置开启/关闭 → 挂载或卸载渲染层 */
+watch(danmakuReady, (ready) => {
+  if (ready && stageRef.value && danmakuOverlay.value === null) {
+    const overlay = new DanmakuOverlay({
+      settings: danmakuSettings.value,
+      getTime: () => player.currentTime,
+    });
+    overlay.attach(stageRef.value);
+    danmakuOverlay.value = overlay;
+    void loadDanmaku();
+  } else if (!ready && danmakuOverlay.value !== null) {
+    danmakuOverlay.value.detach();
+    danmakuOverlay.value = null;
+  }
+});
+
+// 设置变化（字号/速度等）即时生效
+watch(danmakuSettings, (next) => danmakuOverlay.value?.setSettings(next), { deep: true });
+
+// 播放进度驱动弹幕时间轴（store.currentTime 由 timeupdate 事件更新）
+watch(
+  () => player.currentTime,
+  (t) => danmakuOverlay.value?.tick(t),
+);
+
+// 切集重新匹配弹幕
+watch(
+  () => currentEpisode.value?.id,
+  () => void loadDanmaku(),
+);
+
+onBeforeUnmount(() => {
+  danmakuOverlay.value?.detach();
+  danmakuOverlay.value = null;
+});
+
 /* ---------- 监听 route 集号变化（选集/切集后重新加载） ---------- */
 watch(episodeIdParam, async (next, prev) => {
   if (!detailReady.value || next === prev) return;
@@ -775,6 +972,27 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             :sensitivity="gestureSettings.sensitivity"
             @intent="onGesture"
           />
+
+          <!-- v1.7/CHG-22：弹幕 HUD（开关 + 设置入口） -->
+          <div v-if="!pageLoading && !loadError && !player.error" class="danmaku-hud">
+            <button
+              class="danmaku-hud__btn"
+              :class="{ 'danmaku-hud__btn--on': danmakuSettings.enabled }"
+              type="button"
+              :aria-label="danmakuSettings.enabled ? '关闭弹幕' : '开启弹幕'"
+              @click.stop="toggleDanmaku"
+            >
+              弹
+            </button>
+            <button
+              class="danmaku-hud__btn"
+              type="button"
+              aria-label="弹幕设置"
+              @click.stop="danmakuOpen = true"
+            >
+              ⚙
+            </button>
+          </div>
 
           <PlayerHud
             :kind="hud.kind"
@@ -956,6 +1174,7 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
 
     <!-- 面板 -->
     <SpeedSheet v-model="speedOpen" :rate="player.rate" @select="setRate" />
+    <DanmakuSettingsSheet v-model:open="danmakuOpen" />
     <SubtitleSheet
       v-model="subtitleOpen"
       :tracks="player.subtitles"
@@ -1001,6 +1220,33 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
 </template>
 
 <style scoped>
+/* v1.7/CHG-22：弹幕 HUD（播放区内右上角，pointer 事件不透传） */
+.danmaku-hud {
+  position: absolute;
+  top: calc(var(--safe-top) + var(--space-8));
+  right: var(--space-2);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.danmaku-hud__btn {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background-color: rgba(0, 0, 0, 0.45);
+  color: rgba(255, 255, 255, 0.6);
+  font: var(--text-caption);
+}
+
+.danmaku-hud__btn--on {
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+}
 .player-root {
   display: flex;
   flex-direction: column;

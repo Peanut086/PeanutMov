@@ -8,6 +8,7 @@ import { computed, ref } from 'vue';
 
 import { libraryService } from '@/services/libraryService';
 import { EMPTY_LIBRARY_FILTERS, markSourceFailedByError } from '@/services/libraryService';
+import { groupSearchResults, sortByRelevance } from '@/services/searchAggregate';
 import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
 import { PAGE_SIZE } from '@/shared/constants';
@@ -23,6 +24,9 @@ import type {
   MediaItem,
   PageResult,
   PlaybackSource,
+  SearchScope,
+  SearchResultGroup,
+  SourceType,
 } from '@/types';
 
 export const useLibraryStore = defineStore('library', () => {
@@ -45,6 +49,26 @@ export const useLibraryStore = defineStore('library', () => {
   /** CHG-15：最近一次搜索实际参与的源数 / 被过滤掉的启用源数（空态诊断用） */
   const searchCandidates = ref(0);
   const searchFilteredOut = ref(0);
+  /* ---------- v1.7/CHG-20：聚合检索 ---------- */
+  /** 未去重的完整结果（分组视图的数据源；`searchResults` 是片名去重后的平铺视图） */
+  const searchResultsAll = ref<MediaItem[]>([]);
+  /** 组卡视图（默认）/ 按源平铺视图 */
+  const searchViewMode = ref<'grouped' | 'flat'>('grouped');
+  /** 检索范围：全部 / 仅站点 / 仅爬虫 / 仅豆瓣 / 选定源 */
+  const searchScope = ref<SearchScope>('all');
+  const searchSelectedSourceIds = ref<string[]>([]);
+  /** 慢源晚到提示：「+N 条新结果」计数（第一波上屏之后到达的条数） */
+  const searchLateCount = ref(0);
+  /** 聚合分组（按源健康 tier → 延迟 → 来源数排序） */
+  const searchGroups = computed<SearchResultGroup[]>(() => {
+    if (searchResultsAll.value.length === 0) return [];
+    return groupSearchResults(
+      searchResultsAll.value,
+      searchKeyword.value,
+      (sourceId) => sourceStore.sources.find((s) => s.id === sourceId)?.health ?? 'unknown',
+      (sourceId) => sourceStore.latencyOf(sourceId),
+    );
+  });
 
   const detail = ref<MediaDetail | null>(null);
   const detailState = ref<LoadState>('idle');
@@ -345,6 +369,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchController = null;
     if (trimmed.length === 0) {
       searchResults.value = [];
+      searchResultsAll.value = [];
       searchFailed.value = [];
       searchState.value = 'idle';
       return;
@@ -353,24 +378,34 @@ export const useLibraryStore = defineStore('library', () => {
     const controller = new AbortController();
     searchController = controller;
     searchResults.value = [];
+    searchResultsAll.value = [];
     searchFailed.value = [];
+    searchLateCount.value = 0;
     /** 本次搜索已上屏的片名（P1-8 聚合去重：不同源的同名条目只显示一条） */
     const titleSeen = new Set<string>();
+    /** 第一波（首源完成）之后到达的条目计为「晚到」（CHG-20 慢源提示） */
+    let firstBatchSeen = false;
     try {
       const result = await libraryService.search({
         keyword: trimmed,
         signal: controller.signal,
         // CHG-15：空态"仍要搜索全部源"重试时跳过体检结论过滤
         forceAll: opts?.forceAll === true,
+        // CHG-20：范围筛选 + 会话级退避源排除
+        sourceIds: scopeSourceIds(),
         // CHG-12 渐进搜索：单源完成即上屏，先到先显示
         onPartial: ({ sourceId, items, error: sourceError, done, total }) => {
           if (controller.signal.aborted) return;
           searchProgress.value = { done, total };
           if (sourceError) {
             searchFailed.value = [...searchFailed.value, { sourceId, error: sourceError }];
+            recordTimeoutStreak(sourceId, sourceError.code);
             return;
           }
           if (items.length > 0) {
+            searchResultsAll.value = [...searchResultsAll.value, ...items];
+            if (firstBatchSeen) searchLateCount.value += items.length;
+            firstBatchSeen = true;
             const seenIds = new Set(searchResults.value.map((item) => item.id));
             const fresh = items.filter((item) => {
               const titleKey = titleKeyOf(item.title);
@@ -382,20 +417,26 @@ export const useLibraryStore = defineStore('library', () => {
             if (fresh.length > 0) {
               searchResults.value = [...searchResults.value, ...fresh];
             }
+          } else {
+            firstBatchSeen = true;
           }
         },
       });
       if (controller.signal.aborted) return;
-      // 终态列表同样按 id + 片名去重（保持与渐进上屏一致的展示口径）
+      // 终态列表同样按 id + 片名去重（保持与渐进上屏一致的展示口径），并按相关度排序
       const seenIds = new Set<string>();
       const seenTitles = new Set<string>();
-      searchResults.value = result.items.filter((item) => {
-        const titleKey = titleKeyOf(item.title);
-        if (seenIds.has(item.id) || seenTitles.has(titleKey)) return false;
-        seenIds.add(item.id);
-        seenTitles.add(titleKey);
-        return true;
-      });
+      searchResults.value = sortByRelevance(
+        result.items.filter((item) => {
+          const titleKey = titleKeyOf(item.title);
+          if (seenIds.has(item.id) || seenTitles.has(titleKey)) return false;
+          seenIds.add(item.id);
+          seenTitles.add(titleKey);
+          return true;
+        }),
+        trimmed,
+      );
+      for (const failure of result.failed) recordTimeoutStreak(failure.sourceId, failure.error.code);
       searchFailed.value = result.failed;
       // CHG-15：诊断信息——0 源参与时 UI 给出原因与行动项，而不是"没搜到"
       searchCandidates.value = result.candidates;
@@ -404,6 +445,7 @@ export const useLibraryStore = defineStore('library', () => {
     } catch (e) {
       if (isCanceled(e) || controller.signal.aborted) return;
       searchResults.value = [];
+      searchResultsAll.value = [];
       searchFailed.value = [];
       searchState.value = 'error';
       error.value = toErrorShape(e);
@@ -413,13 +455,62 @@ export const useLibraryStore = defineStore('library', () => {
     }
   }
 
+  /* ---------- v1.7/CHG-20：范围筛选与会话级退避 ---------- */
+
+  /** 同源连续超时阈值（会话内记忆；达到后本次会话跳过该源） */
+  const SEARCH_BACKOFF_STREAK = 3;
+  const searchTimeoutStreak = new Map<string, number>();
+
+  function recordTimeoutStreak(sourceId: string, code: string): void {
+    if (code !== 'E_TIMEOUT') {
+      searchTimeoutStreak.delete(sourceId);
+      return;
+    }
+    const streak = (searchTimeoutStreak.get(sourceId) ?? 0) + 1;
+    searchTimeoutStreak.set(sourceId, streak);
+    if (streak >= SEARCH_BACKOFF_STREAK) searchBackoffSources.value.add(sourceId);
+  }
+
+  const searchBackoffSources = ref(new Set<string>());
+
+  /** 范围筛选 + 退避排除 → libraryService 的 sourceIds（undefined = 全部） */
+  function scopeSourceIds(): string[] | undefined {
+    const all = sourceStore.sources;
+    const scopeType: Partial<Record<SearchScope, SourceType[]>> = {
+      site: ['site'],
+      spider: ['spider'],
+      douban: ['douban'],
+    };
+    let ids: string[] | undefined;
+    if (searchScope.value === 'selected') {
+      ids = searchSelectedSourceIds.value;
+    } else if (scopeType[searchScope.value]) {
+      const types = scopeType[searchScope.value]!;
+      ids = all.filter((s) => types.includes(s.type)).map((s) => s.id);
+    }
+    if (searchBackoffSources.value.size === 0) return ids;
+    const exclude = (list: string[]): string[] => list.filter((id) => !searchBackoffSources.value.has(id));
+    return ids === undefined ? exclude(all.map((s) => s.id)) : exclude(ids);
+  }
+
+  function setSearchScope(scope: SearchScope, selectedIds?: string[]): void {
+    searchScope.value = scope;
+    if (selectedIds) searchSelectedSourceIds.value = selectedIds;
+  }
+
+  function setSearchViewMode(mode: 'grouped' | 'flat'): void {
+    searchViewMode.value = mode;
+  }
+
   function clearSearch(): void {
     searchController?.abort();
     searchController = null;
     searchProgress.value = null;
     searchKeyword.value = '';
     searchResults.value = [];
+    searchResultsAll.value = [];
     searchFailed.value = [];
+    searchLateCount.value = 0;
     searchState.value = 'idle';
   }
 
@@ -469,11 +560,19 @@ export const useLibraryStore = defineStore('library', () => {
     error,
     searchKeyword,
     searchResults,
+    searchResultsAll,
     searchState,
     searchFailed,
     searchProgress,
     searchCandidates,
     searchFilteredOut,
+    searchViewMode,
+    searchScope,
+    searchSelectedSourceIds,
+    searchGroups,
+    searchLateCount,
+    setSearchScope,
+    setSearchViewMode,
     detail,
     detailState,
     posterItems,

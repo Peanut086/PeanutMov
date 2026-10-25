@@ -10,6 +10,7 @@
  */
 import { GITHUB_MIRROR_HOSTS } from '@/shared/constants';
 import { AppError } from '@/shared/errors';
+import { stripProxyPrefix } from '@/shared/urlNormalize';
 
 /** 视为 GitHub raw 资源的域名（github.com 本体在判定函数里单独处理 `/raw/` 路径） */
 const GITHUB_HOSTS: ReadonlySet<string> = new Set([
@@ -38,6 +39,17 @@ export function mirrorVariants(url: string): string[] {
   return GITHUB_MIRROR_HOSTS.map((host) => `https://${host}/${url}`);
 }
 
+/**
+ * v1.7/CHG-18：代理前缀变体。
+ * `https://gh-proxy.org/https://raw.githubusercontent.com/...` 形态在代理失效时
+ * 剥前缀直连（再失败走镜像）。非代理前缀地址返回空数组。
+ */
+export function proxyStripVariants(url: string): string[] {
+  const stripped = stripProxyPrefix(url);
+  if (!stripped || !isGithubRawUrl(stripped.target)) return [];
+  return [stripped.target];
+}
+
 export interface MirrorFallbackResult<T> {
   value: T;
   /** 命中的镜像地址；原地址直连成功为 null */
@@ -46,19 +58,22 @@ export interface MirrorFallbackResult<T> {
 
 /**
  * 带镜像回退的执行器：先跑原地址；网络类失败且为 GitHub raw 地址时按序换镜像。
- * 任一镜像返回 HTTP 类失败（4xx/5xx）说明资源在镜像上也不存在，直接抛出不再换。
+ * v1.7/CHG-18：代理前缀地址失败先剥前缀直连，再走镜像。
+ * 任一变体返回 HTTP 类失败（4xx/5xx）说明资源本身不存在，直接抛出不再换。
  */
 export async function withGithubMirrorFallback<T>(
   url: string,
   run: (variantUrl: string) => Promise<T>,
   signal?: AbortSignal,
 ): Promise<MirrorFallbackResult<T>> {
+  const stripped = stripProxyPrefix(url);
+  const mirrorBase = stripped?.target ?? url;
+  const variants = [...proxyStripVariants(url), ...mirrorVariants(mirrorBase)];
   try {
     return { value: await run(url), viaMirror: null };
   } catch (e) {
     const code = e instanceof AppError ? e.code : null;
     if (!code || !MIRROR_FALLBACK_CODES.has(code) || signal?.aborted) throw e;
-    const variants = mirrorVariants(url);
     let last: unknown = e;
     for (const variant of variants) {
       if (signal?.aborted) throw last instanceof Error ? last : e;

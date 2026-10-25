@@ -9,8 +9,10 @@
  * 在管道里重复实现会让两份语义漂移。
  */
 import { AppError } from '@/shared/errors';
+import { HTML_SNIFF_MAX_CANDIDATES } from '@/shared/constants';
 import { toAbsoluteUrl } from '@/shared/url';
 import { decodeBody } from '../decode';
+import { sniffHtmlConfigLinks } from '../detectors';
 import { extractMediaFromPage } from '../mediaExtract';
 import { NOT_TVBOX_MESSAGE, PLAY_PAGE_NOT_FOUND_MESSAGE, UNSUPPORTED_FORMAT_MESSAGE } from '../messages';
 import type { CrawlIntent, CrawlParser } from '../types';
@@ -266,6 +268,33 @@ export const textCharsetParser: CrawlParser<{ text: string; charset: string }> =
         retryable: false,
       });
     }
+  },
+};
+
+/* ---------- sub.html-sniff：订阅落地页候选链接嗅探（v1.7 / CHG-18） ---------- */
+
+/** 落地页嗅探结果：`candidates` 为同域配置链接（≤3 条，importService 负责二次拉取） */
+export interface HtmlLandingResult {
+  kind: 'html-landing';
+  text: string;
+  candidates: string[];
+}
+
+export const subHtmlSniffParser: CrawlParser<HtmlLandingResult> = {
+  id: 'sub.html-sniff',
+  version: 1,
+  intents: ['subscription'],
+
+  parse(ctx) {
+    const candidates = sniffHtmlConfigLinks(ctx.text, ctx.url, HTML_SNIFF_MAX_CANDIDATES);
+    if (candidates.length === 0) {
+      // 与 reject.html-landing 同文案：订阅意图下没有候选可跟，明确拒绝
+      throw new AppError('E_UNSUPPORTED_FORMAT', UNSUPPORTED_FORMAT_MESSAGE, {
+        detail: `HTML 落地页内未发现同域 .json/.txt/api.php 候选链接（前 80 字符：${ctx.text.trim().replace(/\s+/g, ' ').slice(0, 80)}）`,
+        retryable: false,
+      });
+    }
+    return { kind: 'html-landing', text: ctx.text, candidates };
   },
 };
 

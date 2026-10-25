@@ -34,6 +34,8 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const refreshingId = ref<string | null>(null);
 const removingId = ref<string | null>(null);
+/* v1.7/CHG-19 */
+const refreshingAll = computed(() => sources.refreshingSubscriptions);
 
 interface SubscriptionRow {
   id: string;
@@ -72,12 +74,36 @@ onMounted(async () => {
   try {
     records.value = await listImportRecords();
     await sources.load();
+    void sources.loadSummaries();
   } catch (e) {
     error.value = toErrorShape(e).message;
   } finally {
     loading.value = false;
   }
 });
+
+/* ---------- v1.7/CHG-19：全部刷新与自动禁用恢复 ---------- */
+
+/** 一键刷新全部 URL 订阅（TTL 内的自动跳过） */
+async function refreshAll(): Promise<void> {
+  if (isOffline.value) {
+    toast.info('当前离线，无法刷新订阅');
+    return;
+  }
+  const { refreshed, failed } = await sources.refreshAllSubscriptions();
+  if (refreshed === 0 && failed === 0) toast.info('所有订阅都在 24h 内刷新过，暂无需刷新');
+  else if (failed === 0) toast.success(`已刷新 ${refreshed} 个订阅`);
+  else toast.error(`刷新完成：成功 ${refreshed}，失败 ${failed}（失败项已静默，可稍后重试）`);
+}
+
+/** 恢复被自动禁用的源 */
+async function restoreSource(sourceId: string): Promise<void> {
+  await sources.restoreAutoDisabled(sourceId);
+  toast.success('已恢复该源并重新启用');
+}
+
+/** 被自动禁用的源（摘要卡下方逐个恢复） */
+const autoDisabledSources = computed(() => sources.sources.filter((s) => s.autoDisabledAt));
 
 /** 刷新订阅：重新拉取解析（含 jar 预检），仅覆盖已有源；新增不导入 */
 async function refresh(row: SubscriptionRow): Promise<void> {
@@ -127,6 +153,11 @@ function goEval(): void {
   void router.push('/settings/subscriptions/eval');
 }
 
+/** v1.7/CHG-19：订阅健康摘要查询（loadSummaries 填充） */
+function summaryOf(subscriptionId: string) {
+  return sources.subscriptionSummaries.find((s) => s.subscriptionId === subscriptionId) ?? null;
+}
+
 async function retry(): Promise<void> {
   error.value = null;
   loading.value = true;
@@ -152,6 +183,16 @@ async function retry(): Promise<void> {
     </AppHeader>
 
     <div class="subs-body">
+      <button
+        class="btn btn--secondary btn--md subs-refresh-all"
+        type="button"
+        :disabled="refreshingAll || isOffline || rows.length === 0"
+        @click="refreshAll"
+      >
+        <LoadingSpinner v-if="refreshingAll" :size="14" />
+        {{ refreshingAll ? '正在刷新全部订阅…' : '全部刷新（24h 内自动跳过）' }}
+      </button>
+
       <div v-if="loading" class="subs-loading" role="status">
         <LoadingSpinner :size="24" />
         <span>正在读取订阅…</span>
@@ -177,7 +218,11 @@ async function retry(): Promise<void> {
             <p class="subs-row__meta">
               {{ row.sourceCount }} 个源 · 启用 {{ row.enabledCount }}
               <template v-if="row.unhealthyCount > 0"> · 失效 {{ row.unhealthyCount }}</template>
+              <template v-if="summaryOf(row.id)?.jarDead"> · jar 死 {{ summaryOf(row.id)?.jarDead }}</template>
               <template v-if="row.importedAt"> · {{ formatRelativeTime(row.importedAt) }}</template>
+              <template v-if="summaryOf(row.id)?.lastRefreshAt">
+                · 上次刷新 {{ formatRelativeTime(summaryOf(row.id)!.lastRefreshAt!) }}
+              </template>
             </p>
           </div>
           <div class="subs-row__actions">
@@ -203,6 +248,19 @@ async function retry(): Promise<void> {
           </div>
         </li>
       </ul>
+
+      <!-- v1.7/CHG-19：被自动禁用的源（一键恢复） -->
+      <section v-if="autoDisabledSources.length > 0" class="subs-disabled">
+        <h2 class="field__label">已自动禁用（连续体检失败）</h2>
+        <ul class="subs-disabled__list">
+          <li v-for="source in autoDisabledSources" :key="source.id" class="subs-disabled__row">
+            <span class="truncate-1">{{ source.name }}</span>
+            <button class="btn btn--secondary btn--sm" type="button" @click="restoreSource(source.id)">
+              恢复
+            </button>
+          </li>
+        </ul>
+      </section>
     </div>
   </main>
 </template>
@@ -282,5 +340,37 @@ async function retry(): Promise<void> {
 
 .subs-row__remove {
   color: var(--color-danger);
+}
+
+/* v1.7/CHG-19 */
+.subs-refresh-all {
+  margin-bottom: var(--space-3);
+}
+
+.subs-disabled {
+  margin-top: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.subs-disabled__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+}
+
+.subs-disabled__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
 }
 </style>

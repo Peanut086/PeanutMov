@@ -76,5 +76,10 @@ export function upgrade(db: IDBPDatabase<CinemaDB>, oldVersion: number, _newVers
     const lives = db.createObjectStore('lives', { keyPath: 'id' });
     lives.createIndex('by-created', 'createdAt');
   }
-  // 未来：if (oldVersion < 3) { db.createObjectStore('xxx', ...) }
+  // v3（2026-10-25，CHG-22/23）：danmakuCache / epgCache。纯缓存 store（TTL 自清理），
+  // 无既有数据迁移；回滚 = 客户端降级到 v2 时忽略多出的 store。
+  if (oldVersion < 3) {
+    db.createObjectStore('danmakuCache', { keyPath: 'key' });
+    db.createObjectStore('epgCache', { keyPath: 'key' });
+  }
 }

@@ -15,11 +15,17 @@ import { VideoEngine, type VideoEngineEvents } from '@/player/VideoEngine';
 import { normalizeFormat } from '@/sources/base/normalize';
 import { deviceService } from '@/services/deviceService';
 import type { PlaybackSource } from '@/types';
+import { TIMEOUT_LIVE_CHANNEL_MS } from '@/shared/constants';
 import { logger } from '@/shared/logger';
 
 const props = defineProps<{
   url: string | null;
   title: string;
+}>();
+
+const emit = defineEmits<{
+  /** v1.7/CHG-21：起播超时或加载失败，请求外层切换同组下一路 */
+  (e: 'timeout', url: string): void;
 }>();
 
 const containerRef = ref<HTMLElement | null>(null);
@@ -28,6 +34,8 @@ const errorMessage = ref<string | null>(null);
 const fullscreen = ref(false);
 
 let engine: HlsEngine | VideoEngine | null = null;
+/** 起播超时定时器（CHG-21：5s 内没出画面通知外层切路） */
+let channelTimer: ReturnType<typeof setTimeout> | null = null;
 const fullscreenController = new FullscreenController({
   onChange: (fs) => {
     fullscreen.value = fs;
@@ -84,6 +92,14 @@ async function loadChannel(url: string): Promise<void> {
   if (!container) return;
   fullscreenController.setElement(container);
 
+  // v1.7/CHG-21：起播 5s 超时 → 通知外层切同组下一路（FR-55）
+  if (channelTimer !== null) clearTimeout(channelTimer);
+  channelTimer = setTimeout(() => {
+    channelTimer = null;
+    if (state.value === 'playing') return;
+    emit('timeout', url);
+  }, TIMEOUT_LIVE_CHANNEL_MS);
+
   const format = normalizeFormat(url, 'mp4');
   const source: PlaybackSource = {
     url,
@@ -94,6 +110,7 @@ async function loadChannel(url: string): Promise<void> {
     quality: null,
     expiresAt: null,
     isLocal: false,
+    isLive: true,
   };
   const next =
     format === 'hls'
@@ -104,11 +121,20 @@ async function loadChannel(url: string): Promise<void> {
   try {
     await next.load(source);
     await next.play();
+    if (channelTimer !== null) {
+      clearTimeout(channelTimer);
+      channelTimer = null;
+    }
   } catch (e) {
     if (engine !== next) return; // 频道已再次切换，废弃本次结果
     logger.warn('直播频道加载失败', url, e);
     state.value = 'error';
     errorMessage.value = e instanceof Error ? e.message : '频道加载失败';
+    if (channelTimer !== null) {
+      clearTimeout(channelTimer);
+      channelTimer = null;
+    }
+    emit('timeout', url);
   }
 }
 
@@ -136,6 +162,8 @@ async function toggleFullscreen(): Promise<void> {
 }
 
 onBeforeUnmount(() => {
+  if (channelTimer !== null) clearTimeout(channelTimer);
+  channelTimer = null;
   destroyEngine();
   fullscreenController.destroy();
   void orientationController.lock('portrait');

@@ -8,11 +8,12 @@ import { computed, ref } from 'vue';
 
 import { sourceService } from '@/services/sourceService';
 import { healthService } from '@/services/healthService';
+import { subscriptionLifecycleService } from '@/services/subscriptionLifecycleService';
 import { appEvents } from '@/services/events';
 import { sourceRegistry } from '@/sources/registry';
 import { logger } from '@/shared/logger';
 import { toAppError, toErrorShape } from '@/shared/errors';
-import type { AppErrorShape, Source, SourceInput } from '@/types';
+import type { AppErrorShape, Source, SourceInput, SubscriptionSummary } from '@/types';
 
 /** `testConnection` 的 UI 投影（不暴露 health/itemCount 等枚举细节） */
 export interface TestConnectionFeedback {
@@ -34,6 +35,10 @@ export const useSourceStore = defineStore('source', () => {
   const healthChecking = ref(false);
   /** 批量测速进度（CHG-05）：由 `sources:healthProgress` 驱动，结束后置 null */
   const healthProgress = ref<HealthProgress | null>(null);
+  /** v1.7/CHG-19：按订阅来源聚合的健康摘要（`loadSummaries` 填充） */
+  const subscriptionSummaries = ref<SubscriptionSummary[]>([]);
+  /** v1.7/CHG-19：订阅自动刷新进行中 */
+  const refreshingSubscriptions = ref(false);
   const error = ref<AppErrorShape | null>(null);
 
   const enabledSources = computed(() => sources.value.filter((source) => source.enabled));
@@ -221,7 +226,10 @@ export const useSourceStore = defineStore('source', () => {
       // 走 healthService 而非 sourceService：后者不维护延迟快照，
       // 会导致 `latencyOf` 恒为 null → 所有 ok 源被降级为「异常」（CHG-05 / AC-106）。
       await healthService.checkAll();
+      // v1.7/CHG-19：体检后处置连续失败源（自动禁用；UI 经 autoDisabledAt 角标/摘要感知）
+      await subscriptionLifecycleService.applyHealthDegradation();
       await reload();
+      void loadSummaries();
     } catch (e) {
       error.value = toErrorShape(e, 'E_NETWORK');
     } finally {
@@ -236,6 +244,37 @@ export const useSourceStore = defineStore('source', () => {
    */
   function latencyOf(sourceId: string): number | null {
     return healthService.latencyOf(sourceId);
+  }
+
+  /* ---------- v1.7（CHG-19）新增：订阅生命周期 ---------- */
+
+  /** 订阅健康摘要（订阅管理页） */
+  async function loadSummaries(): Promise<void> {
+    try {
+      subscriptionSummaries.value = await subscriptionLifecycleService.summarize();
+    } catch (e) {
+      logger.warn('订阅摘要加载失败', e);
+    }
+  }
+
+  /** 立即刷新全部订阅（TTL 判定跳过；返回刷新/失败数） */
+  async function refreshAllSubscriptions(): Promise<{ refreshed: number; failed: number }> {
+    refreshingSubscriptions.value = true;
+    try {
+      const result = await subscriptionLifecycleService.maybeAutoRefresh();
+      await reload();
+      void loadSummaries();
+      return result;
+    } finally {
+      refreshingSubscriptions.value = false;
+    }
+  }
+
+  /** 恢复被自动禁用的源 */
+  async function restoreAutoDisabled(id: string): Promise<void> {
+    await subscriptionLifecycleService.restore(id);
+    await reload();
+    void loadSummaries();
   }
 
   /** 测试/登出时重置（非契约方法，仅供内部使用） */
@@ -309,6 +348,8 @@ export const useSourceStore = defineStore('source', () => {
     loading,
     healthChecking,
     healthProgress,
+    subscriptionSummaries,
+    refreshingSubscriptions,
     error,
     enabledSources,
     currentSource,
@@ -325,6 +366,9 @@ export const useSourceStore = defineStore('source', () => {
     remove,
     testConnection,
     latencyOf,
+    loadSummaries,
+    refreshAllSubscriptions,
+    restoreAutoDisabled,
     $dispose,
   };
 });

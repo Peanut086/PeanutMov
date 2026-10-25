@@ -12,7 +12,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import type { ImportPreviewEntry, ImportResult } from '@/types';
+import type { ImportPreviewEntry, ImportResult, ImportSuggestion } from '@/types';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import ComplianceNotice from '@/components/common/ComplianceNotice.vue';
@@ -22,16 +22,21 @@ import EmptyState from '@/components/common/EmptyState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import ImportPreviewList from '@/components/source/ImportPreviewList.vue';
 import { useImportStore } from '@/stores/importStore';
+import { useSourceStore } from '@/stores/sourceStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { liveService } from '@/services/liveService';
+import { recommendedSubscriptions, type RecommendedSubscription } from '@/data/recommended/recommended';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
-import { isValidHttpUrl } from '@/shared/url';
+import { getHost, isValidHttpUrl } from '@/shared/url';
 
 const router = useRouter();
 const route = useRoute();
 const importer = useImportStore();
+const sourceStore = useSourceStore();
+const settings = useSettingsStore();
 const toast = useToast();
 const ui = useUiStore();
 const { isOffline } = useOnlineStatus();
@@ -76,9 +81,56 @@ const globalErrors = computed(
 const repoList = computed(() => preview.value?.repos ?? []);
 const isMultiRepo = computed(() => repoList.value.length > 0);
 
-onMounted(() => {
+/* ---------- v1.7/CHG-18：非订阅内容的可操作建议 ---------- */
+const suggestions = computed<ImportSuggestion[]>(() => preview.value?.suggestions ?? []);
+
+/** v1.7/CHG-24：内置推荐订阅（设置可整体关闭） */
+const recommended = computed<RecommendedSubscription[]>(() =>
+  settings.settings?.showRecommendedSubscriptions === false ? [] : recommendedSubscriptions().items,
+);
+
+async function applySuggestion(suggestion: ImportSuggestion): Promise<void> {
+  try {
+    if (suggestion.action === 'add-live' || suggestion.action === 'add-channel') {
+      const name = suggestion.action === 'add-channel' ? `单流 ${getHost(suggestion.payload)}` : `直播源 ${getHost(suggestion.payload)}`;
+      await liveService.add({
+        name,
+        url: suggestion.payload,
+        format: suggestion.action === 'add-channel' ? 'm3u' : 'auto',
+        subscriptionId: preview.value?.sourceUrl ?? null,
+      });
+      toast.success('已添加到「直播」页');
+    } else {
+      const host = getHost(suggestion.payload);
+      await sourceStore.create({
+        name: host.length > 0 ? host : '采集接口',
+        type: 'site',
+        baseUrl: suggestion.payload,
+        ext: { cmsDirect: true, searchable: true },
+      });
+      toast.success('已添加为采集接口源，可去源管理查看');
+    }
+    importer.reset();
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
+}
+
+/** 推荐项：预填地址并立即评测展示（导入仍需用户逐项确认） */
+function useRecommended(item: RecommendedSubscription): void {
+  mode.value = 'url';
+  url.value = item.url;
+  void fetchPreview();
+}
+
+onMounted(async () => {
   // 进入页面清空上一次会话的预览（保留历史导入记录）
   importer.reset();
+  try {
+    if (!settings.settings) await settings.load();
+  } catch {
+    /* 设置加载失败不阻塞导入 */
+  }
   // 批量评测页「导入」跳转预填（CHG-12）：支持 ?url= 自动获取预览
   const prefill = route.query.url;
   if (typeof prefill === 'string' && isValidHttpUrl(prefill.trim())) {
@@ -316,6 +368,27 @@ function leave(): void {
 
       <p v-if="parseError" class="import-error" role="alert">{{ parseError }}</p>
 
+      <!-- v1.7/CHG-18：内容不是普通订阅，但可以一键落地 -->
+      <section v-if="hasPreview && suggestions.length > 0" class="import-summary">
+        <div class="import-summary__head">
+          <span class="import-summary__title">这不是普通订阅，但可以：</span>
+        </div>
+        <ul class="import-skipped__list">
+          <li v-for="(suggestion, index) in suggestions" :key="`sg-${index}`" class="import-skipped__item">
+            <button class="btn btn--secondary btn--md" type="button" :disabled="importing" @click="applySuggestion(suggestion)">
+              {{
+                suggestion.action === 'add-live'
+                  ? `加入直播源（${suggestion.channelCount} 个频道）`
+                  : suggestion.action === 'add-channel'
+                    ? '加入自定义频道'
+                    : '添加为采集接口源'
+              }}
+            </button>
+          </li>
+        </ul>
+        <p class="field__hint">添加动作在当前页面完成，不会写入订阅源列表。</p>
+      </section>
+
       <!-- 未解析 -->
       <EmptyState
         v-if="!hasPreview && !parsing && !parseError"
@@ -323,6 +396,24 @@ function leave(): void {
         title="尚未解析订阅"
         description="粘贴订阅链接或选择本地 JSON 文件后，可在此预览将导入哪些源"
       />
+
+      <!-- v1.7/CHG-24：内置推荐订阅（评测展示，导入需逐项确认） -->
+      <section v-if="recommended.length > 0" class="import-summary">
+        <div class="import-summary__head">
+          <span class="import-summary__title">推荐订阅（随版本内置，点击评测后自行确认导入）</span>
+        </div>
+        <ul class="import-skipped__list">
+          <li v-for="item in recommended" :key="item.url" class="import-skipped__item import-recommend">
+            <div class="import-recommend__text">
+              <strong>{{ item.name }}</strong>
+              <span class="import-recommend__note">{{ item.note }}</span>
+            </div>
+            <button class="btn btn--secondary btn--md" type="button" :disabled="parsing" @click="useRecommended(item)">
+              评测
+            </button>
+          </li>
+        </ul>
+      </section>
 
       <!-- 预览 -->
       <template v-if="hasPreview && preview">
@@ -607,6 +698,35 @@ function leave(): void {
   font: var(--text-caption);
   color: var(--color-danger);
   line-height: 1.5;
+}
+
+/* v1.7：suggestions 动作条与推荐区块复用 skipped 容器，去掉危险色 */
+.import-skipped__item button {
+  color: inherit;
+}
+
+.import-recommend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--color-text);
+  list-style: none;
+}
+
+.import-recommend__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.import-recommend__note {
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .import-strategy {

@@ -52,11 +52,32 @@ export const BUILTIN_RULES: readonly CrawlRule[] = [
     cost: 'cheap',
   },
 
-  /* ---------- 拒绝：HTML 落地页（不是播放页、也不是 JSON） ---------- */
+  /* ---------- v1.7/CHG-18：订阅 HTML 落地页嗅探（优先于通用拒绝） ----------
+   * 官网主页 / 短链落地页（影视仓.com、Link3.cc 这类）拉到的是 HTML，
+   * 先抽同域 .json/.txt/api.php 候选链接给 importService 二次拉取；
+   * 无候选时由解析器自身按同文案拒绝。其余意图维持 reject.html-landing。
+   */
+  {
+    id: 'sub.html-sniff',
+    priority: 2,
+    intent: ['subscription'],
+    when: {
+      all: [
+        { field: 'looksLike.html', op: 'eq', value: true },
+        { field: 'looksLike.json', op: 'eq', value: false },
+      ],
+    },
+    parser: 'sub.html-sniff',
+    terminal: true,
+    retry: NO_RETRY,
+    cost: 'cheap',
+  },
+
+  /* ---------- 拒绝：HTML 落地页（不是播放页、也不是 JSON；订阅意图由 sub.html-sniff 接管） ---------- */
   {
     id: 'reject.html-landing',
     priority: 2,
-    intent: ['subscription', 'catalog', 'detail', 'search', 'probe'],
+    intent: ['catalog', 'detail', 'search', 'probe'],
     when: {
       all: [
         { field: 'looksLike.html', op: 'eq', value: true },
@@ -149,6 +170,27 @@ export const BUILTIN_RULES: readonly CrawlRule[] = [
     },
     terminal: true,
     retry: NETWORK_RETRY,
+  },
+
+  /* ---------- v1.7/CHG-18：直播播放列表文本透传 ----------
+   * m3u（#EXTM3U）与 TVBox txt（xx,#genre#）不是 JSON、也未必匹配 sub.raw 的
+   * 逐行 URL 条件，会掉进 reject.not-json。先透传给 subscriptionParser 链路，
+   * 由 importService 的检测器分类「直播列表 / 单流」并产出建议。
+   */
+  {
+    id: 'sub.live-list',
+    priority: 5,
+    intent: ['subscription'],
+    when: {
+      any: [
+        { field: 'bodyRegex', op: 'regex', value: '^\\s*#EXTM3U', flags: 'm' },
+        { field: 'bodyRegex', op: 'regex', value: '^.*,#genre#\\s*$', flags: 'm' },
+      ],
+    },
+    parser: 'sub.raw',
+    terminal: true,
+    retry: NO_RETRY,
+    cost: 'cheap',
   },
 
   /* ---------- 订阅：TVBox/简化 JSON 或逐行 URL 文本（原样交给 subscriptionParser） ---------- */

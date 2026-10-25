@@ -6,7 +6,7 @@
  * 频道按需拉取解析（liveService 5min 缓存），不落库、不写历史（v1 口径）。
  * 添加直播源：底部「添加直播源」→ 名称 + m3u/txt 地址。
  */
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import type { LiveGroup, LiveRecord } from '@/types';
 
@@ -17,6 +17,9 @@ import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import LivePlayer from '@/components/live/LivePlayer.vue';
 import { liveService } from '@/services/liveService';
+import { epgService, type EpgProgramme } from '@/services/epgService';
+import { kvRepo } from '@/db/repositories/kvRepo';
+import { LIVE_DEAD_STREAK } from '@/shared/constants';
 import { useToast } from '@/composables/useToast';
 import { toErrorShape } from '@/shared/errors';
 
@@ -31,6 +34,74 @@ const channelsError = ref<string | null>(null);
 
 const playing = ref<{ url: string; title: string } | null>(null);
 
+/* ---------- v1.7/CHG-23：EPG / 收藏 / 失效沉底 / 超时切路 ---------- */
+
+/** 当前频道的节目单（现在播 + 接下来） */
+const epgNow = ref<EpgProgramme | null>(null);
+const epgNext = ref<EpgProgramme[]>([]);
+
+/** 频道收藏（channel name 集合，落 kv，跨会话保留） */
+const KV_LIVE_FAVORITES = 'live-channel-favorites';
+const favoriteNames = ref<Set<string>>(new Set());
+
+/** 失效频道：起播超时累计 ≥ LIVE_DEAD_STREAK 次沉底标记 */
+const deadNames = ref<Set<string>>(new Set());
+const failStreak = new Map<string, number>();
+
+async function loadFavorites(): Promise<void> {
+  const list = await kvRepo.get<string[]>(KV_LIVE_FAVORITES);
+  favoriteNames.value = new Set(Array.isArray(list) ? list : []);
+}
+
+async function toggleFavorite(name: string): Promise<void> {
+  const next = new Set(favoriteNames.value);
+  if (next.has(name)) next.delete(name);
+  else next.add(name);
+  favoriteNames.value = next;
+  await kvRepo.set(KV_LIVE_FAVORITES, [...next]);
+}
+
+function isFavorite(name: string): boolean {
+  return favoriteNames.value.has(name);
+}
+
+function isDead(name: string): boolean {
+  return deadNames.value.has(name);
+}
+
+/** EPG：频道切换后拉取当日节目单（失败静默，不影响播放） */
+watch(
+  () => playing.value?.title,
+  async (channel) => {
+    epgNow.value = null;
+    epgNext.value = [];
+    if (!channel) return;
+    const programmes = await epgService.programmes(channel);
+    epgNow.value = epgService.nowPlaying(programmes);
+    epgNext.value = epgService.upNext(programmes);
+  },
+);
+
+/** 起播超时/失败：累计失效 → 切同组下一路（同名多路优先） */
+function onChannelTimeout(failedUrl: string): void {
+  const flat = groups.value.flatMap((g) => g.channels);
+  const failed = flat.find((c) => c.url === failedUrl) ?? null;
+  if (failed) {
+    const streak = (failStreak.get(failed.name) ?? 0) + 1;
+    failStreak.set(failed.name, streak);
+    if (streak >= LIVE_DEAD_STREAK) deadNames.value = new Set([...deadNames.value, failed.name]);
+  }
+  const sameName = failed ? flat.filter((c) => c.name === failed.name && c.url !== failedUrl) : [];
+  const idx = flat.findIndex((c) => c.url === failedUrl);
+  const next = sameName[0] ?? (idx >= 0 ? flat[idx + 1] : undefined) ?? flat[0];
+  if (next && next.url !== failedUrl) {
+    toast.info(`频道无响应，已切换到「${next.name}」`);
+    playing.value = { url: next.url, title: next.name };
+  } else if (failed) {
+    toast.error(`「${failed.name}」暂时无法播放`);
+  }
+}
+
 const addOpen = ref(false);
 const addName = ref('');
 const addUrl = ref('');
@@ -43,7 +114,30 @@ const activeRecord = computed(() => records.value.find((r) => r.id === activeId.
 
 onMounted(() => {
   void reload();
+  void loadFavorites();
+  window.addEventListener('keydown', onDigitKey);
 });
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onDigitKey);
+});
+
+/* ---------- v1.7/CHG-23：数字快速换台（1.5s 内连按数字，跳到第 N 个频道） ---------- */
+
+let digitBuffer = '';
+let digitTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onDigitKey(event: KeyboardEvent): void {
+  if (!/^[0-9]$/.test(event.key)) return;
+  digitBuffer += event.key;
+  if (digitTimer !== null) clearTimeout(digitTimer);
+  digitTimer = setTimeout(() => {
+    const target = visibleChannels.value[Number.parseInt(digitBuffer, 10) - 1];
+    digitBuffer = '';
+    digitTimer = null;
+    if (target) playChannel(target);
+  }, 1500);
+}
 
 async function reload(): Promise<void> {
   error.value = null;
@@ -88,10 +182,13 @@ async function selectRecord(id: string): Promise<void> {
 }
 
 const visibleChannels = computed(() => {
-  if (activeGroup.value === null) {
-    return groups.value.flatMap((g) => g.channels);
-  }
-  return groups.value.find((g) => g.name === activeGroup.value)?.channels ?? [];
+  const list =
+    activeGroup.value === null
+      ? groups.value.flatMap((g) => g.channels)
+      : (groups.value.find((g) => g.name === activeGroup.value)?.channels ?? []);
+  // v1.7/CHG-23：收藏置顶，失效沉底（各自组内保持原顺序）
+  const rank = (name: string): number => (isDead(name) ? 2 : isFavorite(name) ? 0 : 1);
+  return [...list].sort((a, b) => rank(a.name) - rank(b.name));
 });
 
 function playChannel(channel: { name: string; url: string }): void {
@@ -169,7 +266,17 @@ async function removeRecord(record: LiveRecord): Promise<void> {
           </button>
         </div>
 
-        <LivePlayer :url="playing?.url ?? null" :title="playing?.title ?? ''" />
+        <LivePlayer :url="playing?.url ?? null" :title="playing?.title ?? ''" @timeout="onChannelTimeout" />
+
+        <!-- v1.7/CHG-23：EPG 节目单（现在播 / 接下来） -->
+        <div v-if="epgNow" class="live-epg">
+          <p class="live-epg__now">
+            <span class="live-epg__badge">正在播</span> {{ epgNow.start }} {{ epgNow.title }}
+          </p>
+          <p v-for="programme in epgNext" :key="`${programme.start}-${programme.title}`" class="live-epg__next">
+            <span class="live-epg__badge live-epg__badge--muted">接下来</span> {{ programme.start }} {{ programme.title }}
+          </p>
+        </div>
 
         <!-- 分组 chips -->
         <div v-if="groups.length > 0" class="live-groups">
@@ -200,11 +307,21 @@ async function removeRecord(record: LiveRecord): Promise<void> {
           <li v-for="channel in visibleChannels" :key="channel.url">
             <button
               class="live-channel"
-              :class="{ 'live-channel--playing': playing?.url === channel.url }"
+              :class="{ 'live-channel--playing': playing?.url === channel.url, 'live-channel--dead': isDead(channel.name) }"
               type="button"
               @click="playChannel(channel)"
             >
               {{ channel.name }}
+              <span v-if="isDead(channel.name)" class="live-channel__dead-badge">失效</span>
+            </button>
+            <button
+              class="live-channel__fav"
+              :class="{ 'live-channel__fav--on': isFavorite(channel.name) }"
+              type="button"
+              :aria-label="isFavorite(channel.name) ? `取消收藏 ${channel.name}` : `收藏 ${channel.name}`"
+              @click.stop="toggleFavorite(channel.name)"
+            >
+              {{ isFavorite(channel.name) ? '★' : '☆' }}
             </button>
           </li>
         </ul>
@@ -356,11 +473,65 @@ async function removeRecord(record: LiveRecord): Promise<void> {
   color: var(--color-text-primary);
   font: var(--text-body);
   text-align: left;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .live-channel--playing {
   border-color: var(--color-brand);
   color: var(--color-brand-text);
+}
+
+.live-channel--dead {
+  opacity: 0.55;
+}
+
+.live-channel__dead-badge {
+  font: var(--text-caption);
+  color: var(--color-danger);
+}
+
+.live-channel__fav {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 44px;
+  font-size: 18px;
+  color: var(--color-text-tertiary);
+}
+
+.live-channel__fav--on {
+  color: var(--color-brand-text);
+}
+
+/* v1.7/CHG-23：EPG 节目单 */
+.live-epg {
+  margin: var(--space-2) var(--space-4) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.live-epg__badge {
+  display: inline-block;
+  margin-right: var(--space-1);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-full);
+  background-color: var(--color-brand-soft, rgba(124, 92, 255, 0.16));
+  color: var(--color-brand-text);
+  font-size: 11px;
+}
+
+.live-epg__badge--muted {
+  background-color: transparent;
+  border: 1px solid var(--color-divider);
+  color: var(--color-text-tertiary);
 }
 
 .live-error {

@@ -41,14 +41,16 @@ describe('DB 表结构与事务（AC-14）', () => {
     await resetAll();
   });
 
-  it('v2 建表：11 个 store（含 lives）与全部索引均存在', async () => {
+  it('v3 建表：13 个 store（含 lives / danmakuCache / epgCache）与全部索引均存在', async () => {
     const db = await getDb();
     const stores = [...db.objectStoreNames].sort();
     expect(stores).toEqual(
       [
         'blobs',
         'categories',
+        'danmakuCache',
         'downloads',
+        'epgCache',
         'episodes',
         'favorites',
         'history',
@@ -113,7 +115,7 @@ describe('DB 表结构与事务（AC-14）', () => {
     await deleteDatabase();
     resetDbConnection();
     const db = await getDb();
-    expect([...db.objectStoreNames].length).toBe(11);
+    expect([...db.objectStoreNames].length).toBe(13);
     expect(await sourceRepo.count()).toBe(0);
   });
 

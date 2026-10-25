@@ -15,6 +15,7 @@ import AppHeader from '@/components/layout/AppHeader.vue';
 import SafeArea from '@/components/layout/SafeArea.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import DanmakuSettingsSheet from '@/components/player/DanmakuSettingsSheet.vue';
 import SettingsGroup from '@/components/settings/SettingsGroup.vue';
 import SettingsRow from '@/components/settings/SettingsRow.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
@@ -147,6 +148,21 @@ async function setHideDemo(value: boolean): Promise<void> {
   await update({ hideDemoContent: value });
 }
 
+/* ---------- v1.7（CHG-22/24/21 PoC） ---------- */
+
+const danmakuOpen = ref(false);
+
+async function setShowRecommended(value: boolean): Promise<void> {
+  await update({ showRecommendedSubscriptions: value });
+}
+
+async function setExperimentalNativePlayer(value: boolean): Promise<void> {
+  if (value) {
+    toast.info('实验功能：仅用于验证原生硬解，随时可能失效');
+  }
+  await update({ experimentalNativePlayer: value });
+}
+
 async function clearCache(): Promise<void> {
   const ok = await ui.confirm({
     title: '清理缓存？',
@@ -239,6 +255,7 @@ function go(path: string): void {
           />
           <SettingsRow label="手势灵敏度" :value="sensitivityLabel" chevron @click="sensitivityOpen = true" />
           <SettingsRow label="字幕设置" description="在播放页内调整字号/颜色/偏移" chevron @click="toast.info('请在播放页的字幕面板中调整')" />
+          <SettingsRow label="弹幕设置" description="字号/透明度/速度/显示区域（播放页内开关）" chevron @click="danmakuOpen = true" />
         </SettingsGroup>
 
         <SettingsGroup title="外观">
@@ -260,6 +277,22 @@ function go(path: string): void {
             @click="clearCache"
           />
           <SettingsRow label="清空全部数据" danger chevron @click="clearDataOpen = true" />
+        </SettingsGroup>
+
+        <!-- v1.7（CHG-24 / CHG-21 PoC） -->
+        <SettingsGroup title="推荐与实验性">
+          <SettingsRow
+            label="显示推荐订阅"
+            description="随版本内置的人工筛选清单，导入仍需逐项确认"
+            :switch-value="settings.settings?.showRecommendedSubscriptions ?? true"
+            @update:switch-value="setShowRecommended"
+          />
+          <SettingsRow
+            label="原生播放引擎（实验）"
+            description="Media3 ExoPlayer 硬解 PoC，仅新设备 4K 场景测试用"
+            :switch-value="settings.settings?.experimentalNativePlayer ?? false"
+            @update:switch-value="setExperimentalNativePlayer"
+          />
         </SettingsGroup>
 
         <SettingsGroup title="关于">
@@ -346,6 +379,9 @@ function go(path: string): void {
         </button>
       </template>
     </BottomSheet>
+
+    <!-- v1.7/CHG-22：弹幕设置 -->
+    <DanmakuSettingsSheet v-model:open="danmakuOpen" />
   </SafeArea>
 </template>
 

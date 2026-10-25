@@ -10,7 +10,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import type { MediaItem } from '@/types';
+import type { MediaItem, SearchScope } from '@/types';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import OfflineBanner from '@/components/common/OfflineBanner.vue';
@@ -179,6 +179,24 @@ async function forceSearch(): Promise<void> {
   }
 }
 
+/* ---------- v1.7/CHG-20：范围筛选与视图切换 ---------- */
+
+const scopeOptions: Array<{ value: SearchScope; label: string }> = [
+  { value: 'all', label: '全部' },
+  { value: 'site', label: '站点' },
+  { value: 'spider', label: '爬虫' },
+  { value: 'douban', label: '豆瓣' },
+];
+
+function applyScope(scope: SearchScope): void {
+  library.setSearchScope(scope);
+  if (keyword.value.trim().length > 0) void runSearch(keyword.value, false);
+}
+
+function toggleViewMode(): void {
+  library.setSearchViewMode(library.searchViewMode === 'grouped' ? 'flat' : 'grouped');
+}
+
 function openSourceManage(): void {
   void router.push({ name: 'sources' });
 }
@@ -290,13 +308,56 @@ function openSourceManage(): void {
       <template v-else-if="hasResults">
         <div v-if="isOffline" class="search-offline-hint">离线，仅搜索本地缓存</div>
 
+        <!-- v1.7/CHG-20：视图切换 + 范围筛选 + 慢源晚到提示 -->
+        <div class="search-toolbar">
+          <div class="search-toolbar__chips">
+            <button
+              v-for="scope in scopeOptions"
+              :key="scope.value"
+              class="search-scope-chip"
+              :class="{ 'search-scope-chip--active': library.searchScope === scope.value }"
+              type="button"
+              @click="applyScope(scope.value)"
+            >
+              {{ scope.label }}
+            </button>
+          </div>
+          <button class="search-view-toggle" type="button" @click="toggleViewMode">
+            {{ library.searchViewMode === 'grouped' ? '按源平铺' : '聚合视图' }}
+          </button>
+        </div>
+
         <section class="search-section">
           <div class="search-section__head">
             <h2 class="section-title">搜索结果</h2>
-            <span class="search-section__count">{{ library.searchResults.length }} 条</span>
+            <span class="search-section__count">
+              <template v-if="library.searchViewMode === 'grouped'">
+                {{ library.searchGroups.length }} 部 · 来源 {{ library.searchResultsAll.length }} 条
+              </template>
+              <template v-else>{{ library.searchResults.length }} 条</template>
+            </span>
           </div>
 
-          <ul class="result-list">
+          <!-- 聚合视图：组卡片（同片跨源归并，点卡片进详情换源） -->
+          <ul v-if="library.searchViewMode === 'grouped'" class="result-list">
+            <li v-for="group in library.searchGroups" :key="group.key">
+              <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
+                <span class="result-row__poster">
+                  <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" />
+                </span>
+                <span class="result-row__body">
+                  <span class="result-row__title clamp-2">{{ group.title }}</span>
+                  <span class="result-row__meta">
+                    {{ group.items.length }} 个来源 · 首选 {{ sourceName(group.items[0]!.sourceId) }}
+                    <template v-if="group.year"> · {{ group.year }}</template>
+                  </span>
+                </span>
+              </button>
+            </li>
+          </ul>
+
+          <!-- 平铺视图：按相关度排序的单条列表（原视图） -->
+          <ul v-else class="result-list">
             <li v-for="item in library.searchResults" :key="item.id">
               <button class="result-row" type="button" @click="openDetail(item)">
                 <span class="result-row__poster">
@@ -310,6 +371,16 @@ function openSourceManage(): void {
             </li>
           </ul>
         </section>
+
+        <!-- 慢源晚到提示：不重排已浏览内容，计数提示可点击刷新排序 -->
+        <button
+          v-if="library.searchLateCount > 0 && !isSearching"
+          class="search-late"
+          type="button"
+          @click="retry"
+        >
+          爬虫源晚到 {{ library.searchLateCount }} 条新结果，点击重新排序
+        </button>
 
         <div v-if="isSearching" class="search-progress" role="status">
           <LoadingSpinner :size="16" />
@@ -399,6 +470,53 @@ function openSourceManage(): void {
 .search-section__action {
   min-height: 44px;
   font: var(--text-label);
+  color: var(--color-brand-text);
+}
+
+/* v1.7/CHG-20：工具行（范围筛选 + 视图切换） */
+.search-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.search-toolbar__chips {
+  display: flex;
+  gap: var(--space-1);
+  overflow-x: auto;
+}
+
+.search-scope-chip {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  border: var(--border-default);
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font: var(--text-caption);
+}
+
+.search-scope-chip--active {
+  background-color: var(--color-brand-soft, rgba(124, 92, 255, 0.16));
+  border-color: var(--color-brand-text);
+  color: var(--color-brand-text);
+}
+
+.search-view-toggle {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.search-late {
+  margin-top: var(--space-3);
+  min-height: 36px;
+  font: var(--text-caption);
   color: var(--color-brand-text);
 }
 

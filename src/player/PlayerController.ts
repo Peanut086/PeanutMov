@@ -147,6 +147,8 @@ export class PlayerController {
     this.clearRetryTimer();
     // 同时中止上一轮 m3u8 DRM 预检（AC-40）：旧预检结果不得影响本次加载
     this.resetPreflight();
+    // 上一集的预载参数对新集已过期（CHG-21）
+    this.clearPreload();
     this.setState('loading');
     this.options = opts;
     this.networkRetries = 0;
@@ -301,6 +303,10 @@ export class PlayerController {
         text,
         failedIds: this.subtitles.getFailedIds(),
       });
+    }
+    // v1.7/CHG-21：临近片尾（剩 90s）预载下一集，连播切换零等待
+    if (duration > 0 && duration - currentTime <= 90 && this.canNext()) {
+      this.preloadNext();
     }
   }
 
@@ -547,9 +553,38 @@ export class PlayerController {
     const opts = this.options;
     if (!opts?.resolveEpisode) throw new AppError('E_INVALID_STATE', '当前不支持切集');
     await this.progress.flush();
-    const nextOpts = await opts.resolveEpisode(episodeId);
+    // v1.7/CHG-21：命中预载时直接复用已解析好的下一集参数（<1s 起播）
+    const preloaded = this.preloadEpisodeId === episodeId ? this.preloadOpts : null;
+    this.clearPreload();
+    const nextOpts = await (preloaded ?? opts.resolveEpisode(episodeId));
     await this.load({ ...nextOpts, resolveEpisode: opts.resolveEpisode });
     await this.play();
+  }
+
+  /* ---------- v1.7/CHG-21：下一集预载 ---------- */
+
+  private preloadOpts: Promise<PlayerLoadOptions> | null = null;
+  private preloadEpisodeId: string | null = null;
+
+  private clearPreload(): void {
+    this.preloadOpts = null;
+    this.preloadEpisodeId = null;
+  }
+
+  /**
+   * 预载下一集：仅预取播放地址与 m3u8 清单（resolvePlay + manifest 预检），
+   * 不拉分片、不触碰当前播放。幂等——同集已预载则跳过；失败静默清空。
+   */
+  preloadNext(): void {
+    const next = this.nextEpisodeRef();
+    const opts = this.options;
+    if (!next || !opts?.resolveEpisode) return;
+    if (this.preloadEpisodeId === next.episodeId && this.preloadOpts) return;
+    this.preloadEpisodeId = next.episodeId;
+    this.preloadOpts = opts.resolveEpisode(next.episodeId).catch(() => {
+      this.clearPreload();
+      return null as unknown as PlayerLoadOptions;
+    });
   }
 
   /* ================= 进度 ================= */

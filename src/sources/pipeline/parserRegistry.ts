@@ -12,6 +12,7 @@ import {
   htmlMediaParser,
   jsonTvboxParser,
   rejectFixedParser,
+  subHtmlSniffParser,
   subRawParser,
   textCharsetParser,
   xmlVodParser,
@@ -52,6 +53,7 @@ export const parserRegistry: ParserRegistry = new Registry();
 const BUILTIN_PARSERS: readonly CrawlParser[] = [
   jsonTvboxParser,
   subRawParser,
+  subHtmlSniffParser,
   textCharsetParser,
   htmlMediaParser,
   xmlVodParser,

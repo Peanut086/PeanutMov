@@ -10,6 +10,7 @@ import type { DBSchema, IDBPTransaction } from 'idb';
 
 import type {
   Category,
+  DanmakuMatch,
   DownloadTask,
   Episode,
   FavoriteRecord,
@@ -34,6 +35,8 @@ export const STORE_NAMES = {
   blobs: 'blobs',
   kv: 'kv',
   lives: 'lives',
+  danmakuCache: 'danmakuCache',
+  epgCache: 'epgCache',
 } as const;
 
 /** Web 端下载内容（技术方案 5.1） */
@@ -130,6 +133,37 @@ export interface CinemaDB extends DBSchema {
     value: LiveRecord;
     indexes: { 'by-created': number };
   };
+  /** v3（CHG-22）：弹幕匹配缓存，key = `${mediaId}:${episodeNumber}` */
+  danmakuCache: {
+    key: string;
+    value: DanmakuCacheRecord;
+  };
+  /** v3（CHG-23）：EPG 节目单缓存，key = `${channel}:${date}` */
+  epgCache: {
+    key: string;
+    value: EpgCacheRecord;
+  };
+}
+
+/** 弹幕缓存记录（CHG-22：命中即离线可用，TTL 见 DANMAKU_CACHE_TTL_MS） */
+export interface DanmakuCacheRecord {
+  key: string;
+  match: DanmakuMatch;
+  fetchedAt: number;
+}
+
+/** EPG 缓存记录（CHG-23：TTL 见 EPG_CACHE_TTL_MS；结构与 epgService.EpgProgramme 对齐） */
+export interface EpgCacheRecord {
+  key: string;
+  programmes: Array<{
+    start: string;
+    end: string;
+    title: string;
+    desc: string | null;
+    startSec: number;
+    endSec: number;
+  }>;
+  fetchedAt: number;
 }
 
 /** store 名字面量联合（注意：`keyof CinemaDB` 含 DBSchema 的字符串索引，会退化为 string） */

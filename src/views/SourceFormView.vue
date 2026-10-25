@@ -170,6 +170,56 @@ function cancel(): void {
   void router.back();
 }
 
+/* ---------- v1.7/FR-50：CMS 采集接口快捷入口（一等公民） ---------- */
+
+const cmsUrl = ref('');
+const cmsBusy = ref(false);
+const cmsFeedback = ref<string | null>(null);
+
+/** 粘贴 macCMS provide/vod 端点 → 探测确认 → 建 site 源（ext.cmsDirect） */
+async function addCmsDirect(): Promise<void> {
+  const trimmed = cmsUrl.value.trim();
+  if (cmsBusy.value) return;
+  if (!/^https?:\/\//i.test(trimmed)) {
+    cmsFeedback.value = '请填写 http(s):// 开头的采集接口地址';
+    return;
+  }
+  if (isOffline.value) {
+    cmsFeedback.value = '网络不可用，请连接网络后重试';
+    return;
+  }
+  cmsBusy.value = true;
+  cmsFeedback.value = null;
+  const host = (() => {
+    try {
+      return new URL(trimmed).hostname;
+    } catch {
+      return '采集接口';
+    }
+  })();
+  const input: SourceInput = {
+    name: host,
+    type: 'site',
+    baseUrl: trimmed,
+    ext: { cmsDirect: true, searchable: true },
+  };
+  try {
+    const feedback = await sources.testConnection(input);
+    if (!feedback.ok) {
+      cmsFeedback.value = `探测失败：${feedback.message}`;
+      return;
+    }
+    const created = await sources.create(input);
+    dirty.value = false;
+    toast.success(`已添加采集接口「${created.name}」`);
+    await router.replace('/settings/sources');
+  } catch (e) {
+    cmsFeedback.value = toErrorShape(e).message;
+  } finally {
+    cmsBusy.value = false;
+  }
+}
+
 onBeforeRouteLeave(async () => {
   if (!dirty.value) return true;
   return ui.confirm({
@@ -193,6 +243,33 @@ onBeforeRouteLeave(async () => {
         <LoadingSpinner :size="24" />
         <span>正在读取源配置…</span>
       </div>
+
+      <!-- v1.7/FR-50：CMS 采集接口一键添加（仅新增态展示） -->
+      <section v-if="!isEdit && !loading" class="cms-quick">
+        <h2 class="field__label">采集接口（CMS）一键添加</h2>
+        <div class="cms-quick__row">
+          <input
+            v-model="cmsUrl"
+            class="field__input"
+            type="url"
+            inputmode="url"
+            placeholder="https://example.com/api.php/provide/vod/at/json"
+            :disabled="cmsBusy || saving"
+            @keydown.enter.prevent="addCmsDirect"
+          />
+          <button
+            class="btn btn--secondary btn--md"
+            type="button"
+            :disabled="cmsBusy || saving || isOffline"
+            @click="addCmsDirect"
+          >
+            <LoadingSpinner v-if="cmsBusy" :size="16" />
+            {{ cmsBusy ? '探测中' : '探测并添加' }}
+          </button>
+        </div>
+        <p v-if="cmsFeedback" class="cms-quick__feedback" role="alert">{{ cmsFeedback }}</p>
+        <p class="field__hint">支持 macCMS 采集端点（provide/vod JSON）。添加后可直接搜索与播放。</p>
+      </section>
 
       <SourceForm
         v-else
@@ -248,6 +325,28 @@ onBeforeRouteLeave(async () => {
   padding: var(--space-8);
   font: var(--text-label);
   color: var(--color-text-tertiary);
+}
+
+/* v1.7/FR-50：采集接口快捷入口 */
+.cms-quick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.cms-quick__row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.cms-quick__row .field__input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.cms-quick__feedback {
+  font: var(--text-caption);
+  color: var(--color-danger);
 }
 
 .source-form-page__delete {
