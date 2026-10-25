@@ -112,3 +112,33 @@ describe('sortByRelevance', () => {
     expect(sorted[1]!.title).toBe('庆余年第二季');
   });
 });
+
+describe('groupSearchResults 组间排序（v1.8 修订：相关度第一优先级）', () => {
+  it('精确匹配组压过健康垃圾源组（AC-121 口径修订回归）', () => {
+    // 真机案例：采集站对任意关键词返回「找新影视片 001~N」（源健康 ok + 低延迟），
+    // 唯一精确匹配的组来自未体检源（unknown tier）——相关度必须先于健康档位
+    const items = [
+      makeItem({ sourceId: 'junk', title: '找新影视片 001', year: 2024 }),
+      makeItem({ sourceId: 'exact', title: '坏线路验证片', year: 2026 }),
+      makeItem({ sourceId: 'junk2', title: '找新影视片 002', year: 2024 }),
+    ];
+    const groups = groupSearchResults(
+      items,
+      '坏线路验证片',
+      (id) => (id.startsWith('junk') ? 'ok' : 'unknown'),
+      (id) => (id.startsWith('junk') ? 30 : null),
+    );
+    expect(groups[0]!.title).toBe('坏线路验证片');
+    expect(groups.slice(1).every((g) => g.title.startsWith('找新影视片'))).toBe(true);
+  });
+
+  it('同等相关度时健康档位仍生效：fast 源组在 unknown 源组前', () => {
+    const items = [
+      makeItem({ sourceId: 'unknown-src', title: '庆余年', year: 2019 }),
+      makeItem({ sourceId: 'fast-src', title: '庆余年', year: 2020 }),
+    ];
+    const groups = groupSearchResults(items, '找不到的片', () => 'unknown', () => null);
+    // 关键词都不命中（同 0 分）→ 不并组（年份不同）→ 健康与延迟决定顺序
+    expect(groups.map((g) => g.year)).toEqual([2019, 2020]);
+  });
+});

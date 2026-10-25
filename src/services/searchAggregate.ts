@@ -40,8 +40,13 @@ function sortGroupItems(
 }
 
 /**
- * 按组展示时的组间排序：
- * 组内最优 tier → 最优延迟 → 组大小（来源多优先）→ 首次出现顺序。
+ * 按组展示时的组间排序（v1.8 修订）：
+ * **相关度 → 组内最优 tier → 最优延迟 → 组大小 → 首次出现顺序**。
+ *
+ * v1.7 把 tier 放在首位，实测产生「垃圾健康源霸屏」：采集站对任意关键词返回
+ * 固定站内内容（如「找新影视片 001~N」），其源健康 tier 好，把唯一精确匹配
+ * 的组（未体检源 tier=unknown）挤到列表尾部。搜索场景用户的意图是找片——
+ * 相关度必须是第一优先级，健康度只在同等相关度时决定谁先（AC-121 口径修订）。
  */
 export function groupSearchResults(
   items: MediaItem[],
@@ -76,8 +81,8 @@ export function groupSearchResults(
       : HEALTH_TIER_ORDER.unknown;
     const latency = best ? latencyOf(best.sourceId) : null;
     const latencyRank = latency === null || !Number.isFinite(latency) ? Number.POSITIVE_INFINITY : latency;
-    // 组大小与相关度做最后微调：来源更多、片名更贴合关键词的组更值得看
-    return [tier, latencyRank, -group.items.length, -scoreRelevance(group.title, keyword)];
+    // 相关度第一（越大越靠前取负）；同相关度时健康 tier / 延迟 / 来源数做次级排序
+    return [-scoreRelevance(group.title, keyword), tier, latencyRank, -group.items.length];
   };
 
   return list

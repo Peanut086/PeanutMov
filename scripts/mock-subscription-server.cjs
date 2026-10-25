@@ -350,6 +350,8 @@ function failoverSubscriptionFor(host) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
+  // v1.8 验收调试：全量请求日志（stderr 不干扰 stdout 管道）
+  console.error(`[req] ${req.method} ${url.pathname}${url.search}`);
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
