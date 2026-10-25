@@ -280,6 +280,41 @@ const server = http.createServer((req, res) => {
 
   if (url.pathname === '/sub.json') return json(res, 200, subscriptionFor(req.headers.host));
   if (url.pathname === '/tvbox') return tvbox(req, res, url);
+  /* ---------- v1.7/CHG-18 验收 fixtures（AC-113/114） ---------- */
+  // HTML 落地页：同域 .json 候选 + meta refresh（模拟官网主页/短链跳转）
+  if (url.pathname === '/landing') {
+    const host = req.headers.host;
+    return text(
+      res,
+      200,
+      [
+        '<!doctype html><html><head>',
+        '<meta http-equiv="refresh" content="0; url=/sub.json">',
+        '<title>影视站导航</title></head><body>',
+        `<a href="/landing-sub.json">接口1</a>`,
+        `<a href="http://other.example.com/x.json">外域（应被剔除）</a>`,
+        '<script>location.href="/sub.json"</script>',
+        '</body></html>',
+      ].join('\n'),
+    );
+  }
+  if (url.pathname === '/landing-sub.json') {
+    return json(res, 200, { name: '落地页嗅探命中', sources: subscriptionFor(req.headers.host).sources.slice(0, 2) });
+  }
+  // 直播播放列表（m3u，2 路）与单流 m3u8
+  if (url.pathname === '/live.m3u') {
+    return text(res, 200, [
+      '#EXTM3U',
+      '#EXTINF:-1 tvg-id="cctv1" group-title="央视",CCTV-1 综合',
+      `${V.hls}`,
+      '#EXTINF:-1 group-title="央视",CCTV-2 财经',
+      `${V.bbb}`,
+      '',
+    ].join('\n'));
+  }
+  if (url.pathname === '/single.m3u8') {
+    return text(res, 200, `#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1280000\n${V.hls}\n`);
+  }
   // 网页播放页（验证 SiteAdapter 的播放页 → 直链解析）
   if (url.pathname === `/share/${SHARE_PAGE_ID}`) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Access-Control-Allow-Origin': '*' });

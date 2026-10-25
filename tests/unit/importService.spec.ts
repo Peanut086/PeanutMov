@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { importService } from '@/services/importService';
+import { attachSuggestions, importService } from '@/services/importService';
 import { sourceService } from '@/services/sourceService';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { resetAll } from './helpers';
@@ -261,5 +261,49 @@ describe('importService 爬虫 jar 预检（CHG-10）', () => {
       expect(entry.selected).toBe(true);
       expect(entry.warning ?? '').not.toContain('jar 不可达');
     }
+  });
+});
+
+/* ---------- v1.7/CHG-18：非订阅内容兜底建议 ---------- */
+
+describe('CHG-18 suggestions', () => {
+  const LIVE_M3U = [
+    '#EXTM3U',
+    '#EXTINF:-1 group-title="央视",CCTV-1',
+    'https://cdn.example.com/1.m3u8',
+    '#EXTINF:-1 group-title="央视",CCTV-2',
+    'https://cdn.example.com/2.m3u8',
+  ].join('\n');
+
+  it('m3u 直播列表：不被误判为多仓索引（真机回归），URL 导入产出 add-live 建议', async () => {
+    const preview = await importService.previewFromText(LIVE_M3U, 'live.m3u');
+    expect(preview.repos).toEqual([]); // 不再误判为多仓
+    // 文件/文本导入无来源地址，不产建议（attachSuggestions 门控）
+    expect(preview.suggestions ?? []).toEqual([]);
+    // URL 导入路径（真机走的就是这条）
+    const withUrl = attachSuggestions(preview, LIVE_M3U, 'https://cdn.example.com/live.m3u');
+    expect(withUrl.suggestions).toHaveLength(1);
+    expect(withUrl.suggestions?.[0]).toMatchObject({ kind: 'live-list', action: 'add-live', channelCount: 2 });
+  });
+
+  it('单流 m3u8：URL 导入产出 add-channel 建议', async () => {
+    const text = '#EXTM3U\nhttps://cdn.example.com/live.m3u8';
+    const preview = await importService.previewFromText(text, 'x.m3u8');
+    const withUrl = attachSuggestions(preview, text, 'https://cdn.example.com/live.m3u8');
+    expect(withUrl.suggestions?.[0]).toMatchObject({ kind: 'single-stream', action: 'add-channel' });
+  });
+
+  it('macCMS 采集响应：URL 导入产出 add-site 建议', async () => {
+    const cms = JSON.stringify({ code: 1, class: [{ type_id: 1, type_name: '电影' }], list: [] });
+    const preview = await importService.previewFromText(cms, 'api.json');
+    const withUrl = attachSuggestions(preview, cms, 'https://api.example.com/api.php/provide/vod/at/json');
+    expect(withUrl.suggestions?.[0]).toMatchObject({ kind: 'cms-api', action: 'add-site' });
+  });
+
+  it('多仓逐行 URL 文本（非直播）：仍是多仓识别，不产建议', async () => {
+    const repos = 'https://a.example.com/1.json\nhttps://b.example.com/2.json';
+    const preview = await importService.previewFromText(repos, 'dc.txt');
+    expect(preview.repos).toHaveLength(2);
+    expect(preview.suggestions ?? []).toEqual([]);
   });
 });

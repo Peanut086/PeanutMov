@@ -80,8 +80,8 @@ public class ExoPlayerPlugin extends Plugin {
                         .setAllowCrossProtocolRedirects(true)
                         .setConnectTimeoutMs(15_000)
                         .setReadTimeoutMs(30_000);
-                for (Map.Entry<String, String> entry : headers.entrySet()) {
-                    httpFactory.setDefaultRequestProperty(entry.getKey(), entry.getValue());
+                if (!headers.isEmpty()) {
+                    httpFactory.setDefaultRequestProperties(headers);
                 }
 
                 boolean isHls = url.contains(".m3u8");
@@ -132,7 +132,7 @@ public class ExoPlayerPlugin extends Plugin {
             call.resolve();
             return;
         }
-        float density = getResources().getDisplayMetrics().density;
+        float density = getContext().getResources().getDisplayMetrics().density;
         getBridge().executeOnMainThread(() -> {
             overlay.setX(x * density);
             overlay.setY(y * density);

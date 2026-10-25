@@ -15,6 +15,7 @@ import type { ComplianceGateLike } from '@/router';
 import { settingsService } from '@/services/settingsService';
 import { seedService } from '@/services/seedService';
 import { downloadService } from '@/services/downloadService';
+import { subscriptionLifecycleService } from '@/services/subscriptionLifecycleService';
 import { appEvents } from '@/services/events';
 import { configureDoubanRuntime } from '@/sources/douban/doubanRuntime';
 import { useUiStore } from '@/stores/uiStore';
@@ -81,6 +82,24 @@ export function initDoubanRuntime(): void {
   } catch (e) {
     logger.error('豆瓣跨源播放装配失败（不阻塞启动）', toAppError(e, 'E_UNKNOWN'));
   }
+}
+
+/**
+ * v1.7/CHG-19：订阅自动刷新（启动触发）。
+ *
+ * 距上次成功刷新超过 24h（TTL）的订阅后台静默刷新（并发 ≤2、失败静默），
+ * 只在在线时触发。fire-and-forget，不阻塞启动；TTL 之外重复调用无副作用。
+ */
+export function initSubscriptionAutoRefresh(): void {
+  void (async () => {
+    try {
+      const { isOnline } = await import('@/native/network');
+      if (!isOnline()) return;
+      await subscriptionLifecycleService.maybeAutoRefresh();
+    } catch (e) {
+      logger.debug('订阅自动刷新失败（静默）', e);
+    }
+  })();
 }
 
 let unbindToasts: (() => void) | null = null;

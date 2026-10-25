@@ -106,8 +106,12 @@ async function previewFromRaw(
   const parsed = subscriptionParser.parse(text, opts);
   // CHG-13：顺带提取 TVBox lives[] 直播源（导入成功后由 UI 添加到直播页）
   const parsedPreview: ImportPreview = { ...parsed, lives: extractTvboxLives(text) };
+  // v1.7/CHG-18：直播列表优先于多仓识别——m3u 的频道 URL 行会被 reposOf
+  // 误判成「多仓索引」（逐行 URL 文本），必须先按直播列表定性再谈多仓。
+  const isLiveList = detectLiveList(text) !== null;
+  const base = isLiveList ? { ...parsedPreview, repos: [] } : parsedPreview;
   // v1.7/CHG-18：非订阅内容兜底建议（直播列表 / 单流 / CMS 采集接口）
-  const preview = attachSuggestions(parsedPreview, text, opts.sourceUrl ?? null);
+  const preview = attachSuggestions(base, text, opts.sourceUrl ?? null);
   const annotated = await annotateDuplicates(preview);
   if (precheckOpts?.jarPrecheck === false) return annotated;
   return precheckSpiderJars(annotated, signal);
@@ -254,9 +258,10 @@ function withNotes(preview: ImportPreview, notes: string[]): ImportPreview {
 
 /**
  * v1.7/CHG-18：内容不是普通订阅时给出可操作建议（纯函数，URL 与文件导入共用）。
- * 仅当没有可导入条目/仓库/直播时才兜底判定，payload 需要可寻址 URL。
+ * 仅当没有可导入条目/仓库/直播时才兜底判定，payload 需要可寻址 URL
+ * （文件/文本导入没有来源地址，不产建议——导出供单测直接覆盖 URL 路径）。
  */
-function attachSuggestions(preview: ImportPreview, text: string, payloadUrl: string | null): ImportPreview {
+export function attachSuggestions(preview: ImportPreview, text: string, payloadUrl: string | null): ImportPreview {
   if (payloadUrl === null) return preview;
   if (preview.entries.length > 0 || preview.repos.length > 0 || preview.lives.length > 0) return preview;
   if (preview.suggestions && preview.suggestions.length > 0) return preview;
