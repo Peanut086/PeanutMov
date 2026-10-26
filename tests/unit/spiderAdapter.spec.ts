@@ -540,3 +540,77 @@ describe('SpiderAdapter List 形参（arrayArgs）', () => {
     expect(call.arrayArgs).toBeUndefined();
   });
 });
+
+/**
+ * 空 tid 回退（CHG-29）
+ *
+ * UI 默认选中「全部」时 `categoryId` 为 null，`parseCategoryValue` 返回 null。
+ * 旧行为传空串给 categoryContent——实测枫叶源 8 个分类全部因此返回空列表。
+ * 新行为：回退用 homeContent 的第一个 `type_id`（对齐 TVBox 客户端约定）。
+ */
+describe('SpiderAdapter 空 tid 回退', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+    vi.doMock('@/shared/platform', () => ({ isNative: () => true }));
+    mockHttpHead();
+  });
+
+  it('categoryId 为 null → 用 homeContent 首个分类的 type_id', async () => {
+    const { invoke } = mockPlugin(ALL);
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+
+    await adapter.browse({
+      source: makeSource(),
+      categoryId: null,
+      page: 1,
+      pageSize: 20,
+      filters: { type: null, yearFrom: null, yearTo: null, area: null },
+      signal: undefined,
+    });
+
+    const index = invoke.mock.calls.findIndex((c) => (c[0] as { method: string }).method === 'categoryContent');
+    expect(callArgsOf(invoke, index).args[0]).toBe('1');
+  });
+
+  it('显式分类优先于回退值', async () => {
+    const { invoke } = mockPlugin(ALL);
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+
+    await adapter.browse({
+      source: makeSource(),
+      categoryId: 'src-spider:2',
+      page: 2,
+      pageSize: 20,
+      filters: { type: null, yearFrom: null, yearTo: null, area: null },
+      signal: undefined,
+    });
+
+    const index = invoke.mock.calls.findIndex((c) => (c[0] as { method: string }).method === 'categoryContent');
+    expect(callArgsOf(invoke, index).args[0]).toBe('2');
+  });
+
+  it('homeContent 无分类时仍传空串（保持旧行为）', async () => {
+    const { invoke } = mockPlugin({
+      ...ALL,
+      homeContent: JSON.stringify({ list: [] }),
+      categoryContent: JSON.stringify({ list: [] }),
+    });
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+
+    await adapter.browse({
+      source: makeSource(),
+      categoryId: null,
+      page: 1,
+      pageSize: 20,
+      filters: { type: null, yearFrom: null, yearTo: null, area: null },
+      signal: undefined,
+    });
+
+    const index = invoke.mock.calls.findIndex((c) => (c[0] as { method: string }).method === 'categoryContent');
+    expect(callArgsOf(invoke, index).args[0]).toBe('');
+  });
+});

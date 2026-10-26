@@ -15,6 +15,9 @@ import { logger } from '@/shared/logger';
 import { toAppError, toErrorShape } from '@/shared/errors';
 import type { AppErrorShape, Source, SourceInput, SubscriptionSummary } from '@/types';
 
+/** 爬虫源后台预热的并发上限（jar 下载是 IO 等待型，3 并发让「当前源」更快就绪） */
+const WARMUP_CONCURRENCY = 3;
+
 /** `testConnection` 的 UI 投影（不暴露 health/itemCount 等枚举细节） */
 export interface TestConnectionFeedback {
   ok: boolean;
@@ -104,19 +107,30 @@ export const useSourceStore = defineStore('source', () => {
   }
 
   /**
-   * CHG-15：爬虫源后台预热（低并发 2，fire-and-forget）。
+   * CHG-15：爬虫源后台预热（fire-and-forget）。
    * 冷启动就加载 jar 拿句柄，搜索/浏览才不至于被 jar 下载拖到超时。
    * 适配器内部对句柄/预热中去重，load 与 reload 双入口重复调用无副作用。
+   *
+   * 顺序：当前源/默认源优先（用户下一个动作最可能用到它），其余按列表顺序。
+   * 并发 3：jar 下载是 IO 等待型，2 并发在 99 个源的订阅上要等好几分钟才轮到用户
+   * 真正在看的那个源；3 并发兼顾下载压力与「当前源先就绪」。
    */
   function warmupSpiderSources(): void {
     const candidates = sources.value.filter(
       (source) => source.enabled && source.type === 'spider' && source.health !== 'unreachable',
     );
     if (candidates.length === 0) return;
+    const preferredId = currentSourceId.value;
+    const ordered = preferredId === null
+      ? candidates
+      : [
+          ...candidates.filter((s) => s.id === preferredId),
+          ...candidates.filter((s) => s.id !== preferredId),
+        ];
     let cursor = 0;
     const worker = async (): Promise<void> => {
-      while (cursor < candidates.length) {
-        const source = candidates[cursor];
+      while (cursor < ordered.length) {
+        const source = ordered[cursor];
         cursor += 1;
         if (!source) continue;
         try {
@@ -126,7 +140,7 @@ export const useSourceStore = defineStore('source', () => {
         }
       }
     };
-    for (let i = 0; i < Math.min(2, candidates.length); i += 1) void worker();
+    for (let i = 0; i < Math.min(WARMUP_CONCURRENCY, ordered.length); i += 1) void worker();
   }
 
   async function select(sourceId: string | null): Promise<void> {

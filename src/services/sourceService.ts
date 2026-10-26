@@ -400,6 +400,18 @@ export const sourceService = {
     return probeWithinTimeout(probeSource, () => adapter.testConnection(probeSource));
   },
 
+  /** 需要优先检测的源 id（当前源 + 默认源）；读取失败不影响检测 */
+  async prioritySourceIds(): Promise<Set<string>> {
+    const out = new Set<string>();
+    try {
+      const settings = await settingsService.get();
+      if (settings.defaultSourceId) out.add(settings.defaultSourceId);
+    } catch {
+      // 设置读取失败：仅按默认顺序检测
+    }
+    return out;
+  },
+
   /**
    * 批量健康检查（AC-16 / AC-107）
    *
@@ -407,13 +419,22 @@ export const sourceService = {
    * - 进度事件 `sources:healthProgress`（唯一发送方）：起点 `{0,total}`，每完成一个源（
    *   `markHealth` 之后，成功失败均计）`{n,total}` 严格 +1，终点 `{total,total}`；
    * - `total === 0` 只发一次 `{0,0}`；整体抛错时不发终点事件。
+   * - 排序：当前源与默认源优先检测（用户最关心「我正在用的能不能用」），
+   *   其余按线路质量档位从好到差；结果每个源完成即写库，源列表实时刷新。
    */
   async checkHealth(ids?: string[]): Promise<Record<string, HealthCheckResult>> {
     const sources = await sourceRepo.list();
     const targets = sources.filter(
       (source) => source.enabled && (ids === undefined || ids.includes(source.id)),
     );
-    const total = targets.length;
+    // 当前源/默认源排最前：183 条线路全量检测要 2 分钟，用户最想先知道手头这个能不能用
+    const priorityIds = await this.prioritySourceIds();
+    const ordered = [...targets].sort((a, b) => {
+      const pa = priorityIds.has(a.id) ? 0 : 1;
+      const pb = priorityIds.has(b.id) ? 0 : 1;
+      return pa - pb;
+    });
+    const total = ordered.length;
     let done = 0;
     let lastEmitted = -1;
     /** 进度去重：最后一个源完成时已经发过 {total,total}，终点不再重复发（AC-107 不重不漏） */
@@ -425,7 +446,7 @@ export const sourceService = {
     emitProgress(0);
     if (total === 0) return {};
 
-    const results = await runWithConcurrency(targets, HEALTH_CHECK_CONCURRENCY, async (source) => {
+    const results = await runWithConcurrency(ordered, HEALTH_CHECK_CONCURRENCY, async (source) => {
       const adapter = sourceRegistry.has(source.type) ? sourceRegistry.get(source.type) : null;
       const checkedAt = Date.now();
       let result: HealthCheckResult;

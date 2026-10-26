@@ -28,8 +28,25 @@ public class SpiderApi {
         return address;
     }
 
+    /**
+     * TVBox 的 `getAddress(boolean)`：部分爬虫据此决定要不要走本地代理。
+     * 本应用没有本地代理服务，一律返回直连地址。
+     */
+    public String getAddress(boolean proxy) {
+        return address;
+    }
+
     public String getPort() {
         return port;
+    }
+
+    /**
+     * 批量请求（TVBox 用它一次拉多个 URL 做并发探测）。
+     * 未实现：返回空数组 JSON，让爬虫走单请求降级。
+     */
+    public String multiReq(com.google.gson.JsonArray urls) {
+        log("multiReq not supported, fallback to single request");
+        return "[]";
     }
 
     /** 爬虫日志：桥接到 Android logcat，由 JS 侧按需读取 */

@@ -25,6 +25,7 @@ import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
 import { useLibraryStore } from '@/stores/libraryStore';
+import { useSourceStore } from '@/stores/sourceStore';
 import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { toErrorShape } from '@/shared/errors';
@@ -34,6 +35,7 @@ defineOptions({ name: 'HomeView' });
 const router = useRouter();
 const history = useHistoryStore();
 const library = useLibraryStore();
+const sources = useSourceStore();
 const downloads = useDownloadStore();
 const favorites = useFavoriteStore();
 const toast = useToast();
@@ -55,6 +57,18 @@ const downloadedIds = computed(() =>
 const isEmpty = computed(
   () => !initialLoading.value && recentItems.value.length === 0 && continueItems.value.length === 0,
 );
+
+/**
+ * 首页无内容/报错时，判断「是不是当前源的问题」。
+ *
+ * 首页「最近添加」读跨源缓存，只有回源当前源才可能暴露源故障；因此这里按
+ * 「当前源已禁用或健康状态非 ok」来判定，给用户「换源」而非笼统的「还没有内容」。
+ */
+const sourceLooksBroken = computed(() => {
+  const source = sources.currentSource;
+  if (!source) return false;
+  return !source.enabled || source.health === 'unreachable' || source.health === 'bad_config';
+});
 
 async function load(): Promise<void> {
   localError.value = null;
@@ -116,6 +130,14 @@ async function retry(): Promise<void> {
       <div v-if="errorMessage" class="home-error" role="alert">
         <span class="home-error__text">{{ errorMessage }}</span>
         <button class="btn btn--secondary btn--sm" type="button" @click="retry">重试</button>
+        <button
+          v-if="sourceLooksBroken"
+          class="btn btn--secondary btn--sm"
+          type="button"
+          @click="goLibrary"
+        >
+          换源
+        </button>
       </div>
 
       <!-- loading 骨架 -->
@@ -136,12 +158,18 @@ async function retry(): Promise<void> {
 
       <!-- empty -->
       <div v-else-if="isEmpty" class="home-empty">
-        <h2 class="home-empty__title">还没有内容</h2>
+        <h2 class="home-empty__title">{{ sourceLooksBroken ? '当前源没有内容' : '还没有内容' }}</h2>
         <p class="home-empty__desc">
-          添加一个你自己的源（NAS / AList / Jellyfin / 站点）后，内容会出现在这里。
+          {{
+            sourceLooksBroken
+              ? '当前源可能已失效或没有可浏览的内容。可以切换到其他源，或到源管理检查该源状态。'
+              : '添加一个你自己的源（NAS / AList / Jellyfin / 站点）后，内容会出现在这里。'
+          }}
         </p>
         <div class="home-empty__actions">
-          <button class="btn btn--primary btn--md" type="button" @click="goLibrary">去媒体库看看</button>
+          <button class="btn btn--primary btn--md" type="button" @click="goLibrary">
+            {{ sourceLooksBroken ? '去媒体库换源' : '去媒体库看看' }}
+          </button>
           <button class="btn btn--secondary btn--md" type="button" @click="retry">刷新</button>
         </div>
       </div>

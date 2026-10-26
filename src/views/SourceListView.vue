@@ -139,6 +139,44 @@ const progressText = computed(() => {
   return `检测中 ${progress.done}/${progress.total}`;
 });
 
+/**
+ * 已禁用且非内置的源（批量清理目标）。
+ *
+ * 订阅导入 + 体检 + 一键禁用之后，源列表会残留大量已禁用的死源（实测 183 条里
+ * 有 105 条被禁用）。它们只在源管理页占位、拖慢检测与列表渲染，应提供一次性清理。
+ * 内置源不参与（只能禁用不能删除，见 REV-14）。
+ */
+const disabledRemovable = computed(() => sources.sources.filter((s) => !s.enabled && !s.builtin));
+const purgingDisabled = ref(false);
+
+/** 批量删除全部已禁用源（保留内置源、默认源、有下载任务的源由服务层拦截） */
+async function purgeDisabled(): Promise<void> {
+  const targets = disabledRemovable.value;
+  if (targets.length === 0 || purgingDisabled.value) return;
+  const ok = await ui.confirm({
+    title: `删除 ${targets.length} 个已禁用源？`,
+    message: '只删除当前处于禁用状态的源，内置源与正在使用的源不受影响。收藏与观看历史会保留；已下载的文件不会被删除。此操作不可撤销。',
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  purgingDisabled.value = true;
+  try {
+    let removed = 0;
+    for (const source of targets) {
+      try {
+        await sources.remove(source.id);
+        removed += 1;
+      } catch {
+        // 单个失败（如有下载任务）不阻断其余清理
+      }
+    }
+    toast.success(removed === targets.length ? `已删除 ${removed} 个源` : `已删除 ${removed} 个源，${targets.length - removed} 个未能删除`);
+  } finally {
+    purgingDisabled.value = false;
+  }
+}
+
 const defaultSourceId = computed(() => settings.settings?.defaultSourceId ?? sources.defaultSource?.id ?? null);
 
 /**
@@ -380,6 +418,17 @@ async function retry(): Promise<void> {
         >
           <LoadingSpinner v-if="disablingUnhealthy" :size="14" />
           禁用 {{ unhealthyEnabled.length }} 个失效源
+        </button>
+        <!-- 批量清理已禁用源：订阅体检后常见（实测 183 条里 105 条已禁用） -->
+        <button
+          v-if="disabledRemovable.length > 0"
+          class="btn btn--ghost btn--sm sources-overview__disable"
+          type="button"
+          :disabled="purgingDisabled || healthChecking"
+          @click="purgeDisabled"
+        >
+          <LoadingSpinner v-if="purgingDisabled" :size="14" />
+          删除 {{ disabledRemovable.length }} 个已禁用源
         </button>
       </div>
 

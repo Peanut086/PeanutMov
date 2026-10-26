@@ -246,6 +246,8 @@ export class SpiderAdapter extends BaseAdapter {
   private readonly handles = new Map<string, string>();
   /** sourceId → 实际可下载的 jar 变体地址（探活/加载命中的镜像，CHG-11 回退） */
   private readonly jarVariants = new Map<string, string>();
+  /** sourceId → 最近一次 homeContent 的分类表（空 tid 回退 + 健康检测复用） */
+  private readonly categoryCache = new Map<string, Category[]>();
   /** CHG-15：正在预热中的 sourceId，防重复加载 */
   private readonly warmingUp = new Set<string>();
 
@@ -285,6 +287,8 @@ export class SpiderAdapter extends BaseAdapter {
       if (reachable.viaMirror) this.jarVariants.set(source.id, reachable.viaMirror);
       await this.load(source);
       const response = await this.invoke(source, 'homeContent', [true], undefined, undefined);
+      const categories = categoriesOf(source, response.class, response);
+      this.categoryCache.set(source.id, categories);
       return {
         itemCount: response.class?.length ?? response.list?.length ?? 0,
       };
@@ -314,9 +318,26 @@ export class SpiderAdapter extends BaseAdapter {
     // B 段：完整加载 + homeContent，测「jar 活着但源站死了」
     await this.load(source);
     const response = await this.invoke(source, 'homeContent', [true], undefined, undefined);
-    return {
-      itemCount: response.list?.length ?? response.class?.length ?? 0,
-    };
+    const categories = categoriesOf(source, response.class, response);
+    this.categoryCache.set(source.id, categories);
+    // C 段：真正拉一次列表，验证「能出片」。
+    // 只测 homeContent 会把「jar 能加载但源站已死」判成 ok——实测修复前 61 个
+    // 「可用」源点进去全空，正是这个口径造成的误导。
+    const sampleTid = categories[0]?.value ?? '';
+    const probeItems = await this.invoke(
+      source,
+      'categoryContent',
+      [sampleTid, 1, true, {}],
+      undefined,
+      undefined,
+    );
+    const itemCount = probeItems.list?.length ?? response.list?.length ?? 0;
+    if (itemCount === 0) {
+      throw new AppError('E_SOURCE_UNAVAILABLE', '源可加载但没有内容（源站可能已失效）', {
+        detail: `homeContent 分类 ${categories.length} 个，categoryContent 返回 0 条`,
+      });
+    }
+    return { itemCount };
   }
 
   /**
@@ -501,13 +522,17 @@ export class SpiderAdapter extends BaseAdapter {
   async listCategories(source: Source, signal?: AbortSignal): Promise<Category[]> {
     this.assertEnabled(source);
     const response = await this.invoke(source, 'homeContent', [true], undefined, signal);
-    return categoriesOf(source, response.class, response);
+    const categories = categoriesOf(source, response.class, response);
+    this.categoryCache.set(source.id, categories);
+    return categories;
   }
 
   async browse(params: BrowseParams): Promise<PageResult<MediaItem>> {
     const { source, categoryId, page, pageSize, filters } = params;
     this.assertEnabled(source);
-    const typeId = parseCategoryValue(source.id, categoryId) ?? '';
+    // 空 tid（UI 选中「全部」）会让大量爬虫直接返回空列表：实测枫叶 8 个分类全空。
+    // TVBox 的约定是「没有显式分类时取第一个分类」，这里对齐该行为。
+    const typeId = parseCategoryValue(source.id, categoryId) ?? (await this.firstCategoryValue(source));
     // categoryContent(tid, pg, filter, hashmap)：第 4 参是 HashMap，不能传字符串。
     // 服务端筛选选中值（UI 由 homeContent 的 filters 配置生成）放 HashMap 透传给爬虫。
     const filterExt =
@@ -738,6 +763,24 @@ export class SpiderAdapter extends BaseAdapter {
 
   private toItem(source: Source, vod: TvboxVod): MediaItem {
     return toItemFromVod(source, vod, (input) => this.makeItem(source, input));
+  }
+
+  /**
+   * 取该源的第一个分类值（空 tid 的回退目标）。
+   *
+   * 优先用 `listCategories` 缓存的分类表；没有缓存时拉一次 homeContent。
+   * 全部失败时返回空串——保持旧行为，让爬虫自己决定怎么处理（有些源确实接受空 tid）。
+   */
+  private async firstCategoryValue(source: Source): Promise<string> {
+    const cached = this.categoryCache.get(source.id);
+    if (cached !== undefined) return cached[0]?.value ?? '';
+    try {
+      const categories = await this.listCategories(source);
+      return categories[0]?.value ?? '';
+    } catch (e) {
+      logger.warn('取首个分类失败，回退空 tid', source.name, e);
+      return '';
+    }
   }
 }
 

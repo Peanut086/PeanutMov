@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { subscriptionParser } from '@/services/subscriptionParser';
+import { stripLocalProxyPrefix, subscriptionParser } from '@/services/subscriptionParser';
 import type { ImportPreview } from '@/types';
 
 /**
@@ -353,5 +353,69 @@ describe('订阅解析：相对路径按订阅 URL 补全', () => {
     expect(spiderExtOf(preview, 0)?.initExt).toContain('分类url:');
     expect(preview.entries[1]?.type).toBe('site');
     expect(preview.entries[1]?.baseUrl).toBe('https://cms.example.com/api.php/provide/vod');
+  });
+});
+
+/**
+ * TVBox 本地代理前缀：`http://127.0.0.1:<port>/p/<n>/proxy/<真实地址>`
+ *
+ * 实测 PG 订阅 6 个 CMS 源里 5 个被这样包装。PeanutMov 没有本地代理进程，
+ * 原样保留会让源指向本机空端口（导入即死），解析时必须还原真实地址。
+ */
+describe('订阅解析：剥离本地代理前缀', () => {
+  it('127.0.0.1 代理前缀被剥离（CMS 源）', () => {
+    const preview = parseJson({
+      sites: [
+        {
+          key: 'bfzy',
+          name: '暴風',
+          type: 1,
+          api: 'http://127.0.0.1:10079/p/0/proxy/https://bfzyapi.com/api.php/provide/vod?',
+        },
+      ],
+    });
+    // normalizeBaseUrl 会去掉末尾的 `?`（站点地址归一化既有行为）
+    expect(preview.entries[0]?.baseUrl).toBe('https://bfzyapi.com/api.php/provide/vod');
+  });
+
+  it('jar 地址的代理前缀同样剥离，md5 后缀保留', () => {
+    const preview = parseJson({
+      sites: [
+        {
+          key: 'p',
+          name: 'P',
+          type: 3,
+          api: 'csp_XBPQ',
+          jar: 'http://127.0.0.1:9978/p/1/proxy/https://cdn.example.com/a.jar;md5;deadbeef',
+        },
+      ],
+    });
+    expect(spiderExtOf(preview, 0)?.jarUrl).toBe('https://cdn.example.com/a.jar;md5;deadbeef');
+  });
+
+  it('URL 编码的内层地址被解码', () => {
+    const preview = parseJson({
+      sites: [
+        {
+          key: 'enc',
+          name: 'Enc',
+          type: 1,
+          api: 'http://127.0.0.1:10079/p/0/proxy/https%3A%2F%2Fsuoniapi.com%2Fapi.php%2Fprovide%2Fvod',
+        },
+      ],
+    });
+    expect(preview.entries[0]?.baseUrl).toBe('https://suoniapi.com/api.php/provide/vod');
+  });
+
+  it('非回环 host 的代理地址保持原样（可能是用户网络里的真实代理）', () => {
+    const raw = 'http://10.0.0.5:10079/p/0/proxy/https://example.com/api.php';
+    expect(stripLocalProxyPrefix(raw)).toBe(raw);
+  });
+
+  it('普通地址不受影响', () => {
+    expect(stripLocalProxyPrefix('https://a.com/api.php')).toBe('https://a.com/api.php');
+    expect(stripLocalProxyPrefix('http://127.0.0.1:8080/other/path')).toBe(
+      'http://127.0.0.1:8080/other/path',
+    );
   });
 });

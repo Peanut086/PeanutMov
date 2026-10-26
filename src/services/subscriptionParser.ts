@@ -180,8 +180,11 @@ function isRelativeRef(ref: string): boolean {
  * 都不以 `./`、`/` 开头，不受影响；无基准（文件导入）或补全失败时原样返回，走原有校验报错。
  */
 function resolveRef(ref: string, base: string | null): string {
-  if (base === null || ref.length === 0 || !isRelativeRef(ref)) return ref;
-  return toAbsoluteUrl(base, ref) ?? ref;
+  if (ref.length === 0) return ref;
+  // 先剥本地代理前缀，再判相对引用（剥完可能是绝对地址）
+  const unwrapped = stripLocalProxyPrefix(ref);
+  if (base === null || !isRelativeRef(unwrapped)) return unwrapped;
+  return toAbsoluteUrl(base, unwrapped) ?? unwrapped;
 }
 
 /** spider/jar 引用补全：`;md5;校验串` 后缀原样保留（原生侧解析校验） */
@@ -194,6 +197,35 @@ function resolveJarRef(raw: string, base: string | null): string {
 /** 去掉 `;md5;xxx` 后缀，得到纯 URL */
 function jarHttpUrl(raw: string): string {
   return raw.split(';md5;')[0]!.trim();
+}
+
+/**
+ * TVBox 本地代理前缀：`http://127.0.0.1:<port>/p/<n>/proxy/<真实地址>`。
+ *
+ * 这是 TVBox 客户端的「本地代理」语法——宿主起一个 127.0.0.1 上的 HTTP 服务，
+ * 由它转发请求（常用于加 Referer / 绕 CORS）。PeanutMov 没有这个代理进程，
+ * 原样保留会让源指向本机空端口，导入即死。
+ * 实测 PG 订阅 6 个 CMS 源里 5 个被这样包装，剥掉前缀后 bfzyapi / suoniapi 均可直连。
+ *
+ * 只处理 host 是本机回环的形态；非回环地址（如别的机器上的代理）保持原样，
+ * 因为那种地址在用户网络里可能是真实可达的。
+ */
+const LOCAL_PROXY_PATTERN =
+  /^https?:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\])(?::\d+)?\/p\/\d+\/proxy\/(.+)$/i;
+
+/** 剥离本地代理前缀，还原真实地址；非该形态原样返回 */
+export function stripLocalProxyPrefix(raw: string): string {
+  const match = LOCAL_PROXY_PATTERN.exec(raw.trim());
+  if (!match) return raw;
+  const inner = match[1] ?? '';
+  // 内层地址可能被 URL 编码（`https%3A%2F%2F...`），也可能原样
+  if (/^https?:\/\//i.test(inner)) return inner;
+  try {
+    const decoded = decodeURIComponent(inner);
+    return /^https?:\/\//i.test(decoded) ? decoded : raw;
+  } catch {
+    return raw;
+  }
 }
 
 /**

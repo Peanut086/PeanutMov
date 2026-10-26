@@ -151,10 +151,27 @@ async function reload(): Promise<void> {
     const next = records.value.find((r) => r.id === activeId.value) ?? records.value[0];
     if (next) await selectRecord(next.id);
   } catch (e) {
-    error.value = toErrorShape(e).message;
+    error.value = describeSourceError(e);
   } finally {
     loading.value = false;
   }
+}
+
+/**
+ * 直播源请求失败 → 用户可读原因。
+ *
+ * `httpClient` 把 fetch 层失败统一映射成 `E_NETWORK`（"网络不可用，请检查网络"），
+ * 但直播源失败绝大多数是「源站挂了 / 域名被污染」而不是设备断网——按原文案展示会让
+ * 用户去查 WiFi。这里用 `navigator.onLine` 区分：确实离线才保留网络文案，
+ * 否则按「源不可用」提示换源。
+ */
+function describeSourceError(e: unknown): string {
+  const shape = toErrorShape(e);
+  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  if (shape.code === 'E_NETWORK' && !offline) {
+    return '该直播源暂时不可用，请切换其他直播源或稍后重试';
+  }
+  return shape.message;
 }
 
 async function selectRecord(id: string): Promise<void> {
@@ -175,7 +192,7 @@ async function selectRecord(id: string): Promise<void> {
       if (channel) playing.value = { url: channel.url, title: channel.name };
     }
   } catch (e) {
-    channelsError.value = toErrorShape(e).message;
+    channelsError.value = describeSourceError(e);
   } finally {
     channelsLoading.value = false;
   }
