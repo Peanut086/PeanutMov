@@ -147,7 +147,7 @@ function onClick(ep: Episode): void {
 }
 
 .episode-chip:active {
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: var(--color-overlay-press-strong);
 }
 
 .episode-chip--current {

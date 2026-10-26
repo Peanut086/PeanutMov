@@ -101,7 +101,7 @@ function goBack(): void {
   align-items: center;
   gap: var(--space-2);
   min-height: var(--layout-header-height);
-  padding: var(--safe-top) var(--space-4) 0;
+  padding: var(--safe-top) var(--layout-page-padding-x) 0;
   background-color: var(--color-bg-base);
   box-shadow: 0 var(--space-2) var(--space-2) calc(var(--space-2) * -1) var(--color-bg-base);
 }
@@ -149,6 +149,6 @@ function goBack(): void {
 }
 
 .app-header__icon:active {
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: var(--color-overlay-press-strong);
 }
 </style>

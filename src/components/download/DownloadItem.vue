@@ -201,7 +201,7 @@ const canPlay = computed(() => props.task.status === 'completed');
   height: 4px;
   margin-top: var(--space-1);
   border-radius: var(--radius-full);
-  background-color: rgba(255, 255, 255, 0.16);
+  background-color: var(--color-overlay-track);
   overflow: hidden;
 }
 
@@ -254,7 +254,7 @@ const canPlay = computed(() => props.task.status === 'completed');
 }
 
 .download-item__action:active {
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: var(--color-overlay-press-strong);
 }
 
 .download-item__action--play {

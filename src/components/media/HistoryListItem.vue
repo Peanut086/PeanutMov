@@ -93,7 +93,7 @@ const emit = defineEmits<{
 }
 
 .history-row__main:active {
-  background-color: rgba(255, 255, 255, 0.04);
+  background-color: var(--color-overlay-subtle);
 }
 
 .history-row__poster {
@@ -125,7 +125,7 @@ const emit = defineEmits<{
   display: block;
   height: 3px;
   border-radius: var(--radius-full);
-  background-color: rgba(255, 255, 255, 0.16);
+  background-color: var(--color-overlay-track);
   overflow: hidden;
   margin-top: var(--space-1);
 }

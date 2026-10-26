@@ -86,6 +86,17 @@
   --color-border-strong: rgba(255, 255, 255, 0.16);
   --color-divider: rgba(255, 255, 255, 0.06);
 
+  /* 色彩 · 交互态叠色
+     深色主题靠"白色叠加"提亮，浅色主题必须换成"墨色叠加"，否则白叠白 = 不可见。
+     组件禁止再写 rgba(255,255,255,x)：海报角标与播放器区域例外（规范 §9.2 第 2/3 条）。 */
+  --color-overlay-subtle: rgba(255, 255, 255, 0.03);   /* 禁用容器底 */
+  --color-overlay-press: rgba(255, 255, 255, 0.06);    /* 列表行 / Tab 按压 */
+  --color-overlay-press-strong: rgba(255, 255, 255, 0.08); /* 图标按钮按压 / 禁用轨道 */
+  --color-overlay-neutral: rgba(255, 255, 255, 0.08);  /* Tag 中性底（规范 §8.14） */
+  --color-overlay-control: rgba(255, 255, 255, 0.12);  /* 小圆形控件底 / 禁用填充 */
+  --color-overlay-track: rgba(255, 255, 255, 0.16);    /* 进度条 / 开关轨道 */
+  --color-overlay-handle: rgba(255, 255, 255, 0.24);   /* 抽屉拖拽把手 */
+
   /* 色彩 · 渐变与遮罩 */
   --gradient-hero: linear-gradient(180deg, rgba(11, 11, 15, 0) 0%, rgba(11, 11, 15, 0.85) 62%, #0b0b0f 100%);
   --gradient-top-fade: linear-gradient(180deg, rgba(0, 0, 0, 0.68) 0%, rgba(0, 0, 0, 0) 100%);
@@ -146,6 +157,15 @@
   --color-border: rgba(20, 20, 26, 0.1);
   --color-border-strong: rgba(20, 20, 26, 0.2);
   --color-divider: rgba(20, 20, 26, 0.07);
+
+  /* 交互态叠色：浅色底上改用墨色叠加（同一套变量，两种取向） */
+  --color-overlay-subtle: rgba(20, 20, 26, 0.03);
+  --color-overlay-press: rgba(20, 20, 26, 0.05);
+  --color-overlay-press-strong: rgba(20, 20, 26, 0.07);
+  --color-overlay-neutral: rgba(20, 20, 26, 0.06);
+  --color-overlay-control: rgba(20, 20, 26, 0.08);
+  --color-overlay-track: rgba(20, 20, 26, 0.14);
+  --color-overlay-handle: rgba(20, 20, 26, 0.22);
 
   --gradient-hero: linear-gradient(180deg, rgba(244, 244, 246, 0) 0%, rgba(244, 244, 246, 0.86) 62%, #f4f4f6 100%);
   --gradient-top-fade: linear-gradient(180deg, rgba(0, 0, 0, 0.5) 0%, rgba(0, 0, 0, 0) 100%);

@@ -101,7 +101,7 @@ function onClick(): void {
 }
 
 .settings-row__main:active:not(:disabled) {
-  background-color: rgba(255, 255, 255, 0.06);
+  background-color: var(--color-overlay-press);
 }
 
 .settings-row--disabled {

@@ -214,7 +214,7 @@ onBeforeUnmount(() => {
   width: 36px;
   height: 4px;
   border-radius: var(--radius-full);
-  background-color: rgba(255, 255, 255, 0.24);
+  background-color: var(--color-overlay-handle);
 }
 
 .sheet__header {

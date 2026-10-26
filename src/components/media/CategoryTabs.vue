@@ -106,6 +106,6 @@ watch(
 }
 
 .category-tabs__item:active {
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: var(--color-overlay-press-strong);
 }
 </style>

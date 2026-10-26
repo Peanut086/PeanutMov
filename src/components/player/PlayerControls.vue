@@ -358,11 +358,12 @@ const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
 .controls-secondary {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
   padding-bottom: 2px;
 }
 
 .controls-secondary__btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
@@ -370,6 +371,13 @@ const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
   padding: 0 var(--space-2);
   border-radius: var(--radius-full);
   color: rgba(255, 255, 255, 0.92);
+}
+
+/* 视觉高度 36，命中区扩到 44（规范 §12.1） */
+.controls-secondary__btn::after {
+  content: '';
+  position: absolute;
+  inset: -4px -2px;
 }
 
 .controls-secondary__btn:active {

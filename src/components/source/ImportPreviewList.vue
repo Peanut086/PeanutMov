@@ -177,7 +177,7 @@ function statusOf(entry: ImportPreviewEntry): { text: string; tone: 'ok' | 'warn
   display: inline-flex;
   align-items: center;
   border-radius: var(--radius-sm);
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: var(--color-overlay-neutral);
   color: var(--color-text-secondary);
   font: var(--text-caption);
 }

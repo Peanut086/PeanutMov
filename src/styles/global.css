@@ -121,6 +121,21 @@
   animation: route-in var(--duration-base) var(--ease-decelerate);
 }
 
+/*
+ * 大屏内容宽度上限（规范 §14 / §6.4）：平板上列表与长文不拉伸到整屏。
+ * 手机（<720px）完全不受影响，max-width 不会生效。
+ *
+ * 排除需要全幅背景的页面：详情页的模糊背景层、播放器画布、欢迎页插画
+ * 都必须铺满屏幕，收窄会出现"背景中间一块"的割裂感。
+ * 页面根节点带 data-route，可直接据此排除，无需新增路由 meta。
+ */
+.route-view:not([data-route='detail']):not([data-route='player']):not([data-route='welcome']) {
+  width: 100%;
+  max-width: var(--layout-content-max-width);
+  margin-left: auto;
+  margin-right: auto;
+}
+
 @keyframes route-in {
   from {
     transform: translateY(6px);
@@ -232,7 +247,7 @@
 }
 
 .btn--ghost:active:not(:disabled) {
-  background-color: rgba(255, 255, 255, 0.06);
+  background-color: var(--color-overlay-press);
   color: var(--color-text-primary);
 }
 
@@ -247,7 +262,7 @@
 }
 
 .btn--primary:disabled {
-  background-color: rgba(255, 255, 255, 0.12);
+  background-color: var(--color-overlay-control);
   color: var(--color-text-disabled);
 }
 

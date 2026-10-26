@@ -165,7 +165,7 @@ function confirm(): void {
 
 .picker-chip--disabled {
   color: var(--color-text-disabled);
-  background-color: rgba(255, 255, 255, 0.03);
+  background-color: var(--color-overlay-subtle);
 }
 
 .picker-actions {

@@ -139,7 +139,7 @@ defineExpose({ focus });
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-full);
-  background-color: rgba(255, 255, 255, 0.12);
+  background-color: var(--color-overlay-control);
   color: var(--color-text-secondary);
 }
 

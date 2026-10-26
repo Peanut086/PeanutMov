@@ -69,6 +69,26 @@ describe('PosterCard', () => {
     expect(demo.find('.poster-card__badge--demo').exists()).toBe(true);
   });
 
+  it('已下载角标使用 SVG 图标而非文本字符', () => {
+    const wrapper = mount(PosterCard, { props: { item: makeItem(), downloaded: true } });
+    const badge = wrapper.find('.poster-card__badge--done');
+    expect(badge.exists()).toBe(true);
+    expect(badge.attributes('aria-label')).toBe('已下载');
+    // 图标必须是内联 SVG（不随字体渲染漂移），且装饰性内容对读屏隐藏
+    const svg = badge.find('svg');
+    expect(svg.exists()).toBe(true);
+    expect(svg.attributes('aria-hidden')).toBe('true');
+    expect(badge.text()).toBe('');
+  });
+
+  it('演示角标优先于已下载角标（避免两个右上角角标重叠）', () => {
+    const wrapper = mount(PosterCard, {
+      props: { item: makeItem({ isDemo: true }), downloaded: true },
+    });
+    expect(wrapper.find('.poster-card__badge--demo').exists()).toBe(true);
+    expect(wrapper.find('.poster-card__badge--done').exists()).toBe(false);
+  });
+
   it('进度条按 0~1 换算为百分比并写入 aria', () => {
     const wrapper = mount(PosterCard, { props: { item: makeItem(), progress: 0.456 } });
     const bar = wrapper.find('[role="progressbar"]');

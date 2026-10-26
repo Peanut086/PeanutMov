@@ -188,7 +188,7 @@ function go(tab: TabItem): void {
 }
 
 .tabbar__item:active {
-  background-color: rgba(255, 255, 255, 0.06);
+  background-color: var(--color-overlay-press);
 }
 
 .tabbar__item:active .tabbar__icon {

@@ -11,6 +11,7 @@ import { computed } from 'vue';
 import type { MediaItem } from '@/types';
 
 import PosterImage from '@/components/common/PosterImage.vue';
+import IconCheck from '@/components/icons/IconCheck.vue';
 import { mediaTypeLabel } from '@/components/common/format';
 
 const props = withDefaults(
@@ -97,7 +98,7 @@ function onClick(): void {
 
       <span v-if="showDemo" class="poster-card__badge poster-card__badge--demo">演示</span>
       <span v-else-if="downloaded" class="poster-card__badge poster-card__badge--done" aria-label="已下载">
-        ✓
+        <IconCheck :size="14" />
       </span>
 
       <div
@@ -168,6 +169,7 @@ function onClick(): void {
 .poster-card__badge--done {
   background-color: var(--color-success-soft);
   color: var(--color-success);
+  padding: 0 4px;
 }
 
 .poster-card__progress {

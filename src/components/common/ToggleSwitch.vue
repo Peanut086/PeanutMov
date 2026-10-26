@@ -47,7 +47,7 @@ function toggle(): void {
   width: 44px;
   height: 24px;
   border-radius: var(--radius-full);
-  background-color: rgba(255, 255, 255, 0.16);
+  background-color: var(--color-overlay-track);
   transition: background-color var(--duration-base) var(--ease-standard);
 }
 
@@ -79,7 +79,7 @@ function toggle(): void {
 }
 
 .switch--disabled {
-  background-color: rgba(255, 255, 255, 0.08);
+  background-color: var(--color-overlay-press-strong);
 }
 
 .switch--disabled .switch__thumb {
