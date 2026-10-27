@@ -371,7 +371,7 @@ public class DrpyRuntime implements AutoCloseable {
             if (logs.size() >= 200) logs.poll();
             logs.add(message);
         }
-        SpiderApi.get().getDebug().log("[drpy] " + message);
+        com.github.catvod.crawler.SpiderDebug.log("[drpy] " + message);
     }
 
     private void loadLocalStore() {

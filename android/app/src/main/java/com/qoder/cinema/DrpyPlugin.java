@@ -311,6 +311,18 @@ public class DrpyPlugin extends Plugin {
             "https://mirror.ghproxy.com/",
     };
 
+    /**
+     * jsdelivr 系 CDN 主机（国内可达性通常优于 GitHub 直连与 gh-proxy 系）。
+     * 它们不是「前缀代理」，而是把 `raw.githubusercontent.com/u/r/ref/path`
+     * 映射成 `https://<cdn>/gh/u/r@ref/path` 的独立 CDN，需要单独拼接。
+     */
+    private static final String[] JSDELIVR_HOSTS = {
+            "https://cdn.jsdelivr.net/gh/",
+            "https://fastly.jsdelivr.net/gh/",
+            "https://gcore.jsdelivr.net/gh/",
+            "https://testingcf.jsdelivr.net/gh/",
+    };
+
     /** 会被镜像前缀包装的原始 host（剥掉前缀后能直连的） */
     private static final String[] MIRRORED_HOSTS = {
             "raw.githubusercontent.com",
@@ -327,7 +339,8 @@ public class DrpyPlugin extends Plugin {
      * 候选依次为：
      *   1. 原地址（用户配置优先，能用就不折腾）
      *   2. 剥掉镜像前缀直连原始 host
-     *   3. 换成其它镜像前缀
+     *   3. jsdelivr CDN 变体（国内可达性最好，放在 gh-proxy 系之前）
+     *   4. 其它 gh-proxy 系镜像前缀
      *
      * 非 GitHub 域名不生成候选（避免对任意 URL 乱加前缀）。
      */
@@ -346,13 +359,48 @@ public class DrpyPlugin extends Plugin {
                 break;
             }
         }
-        if (bare == null) return out;   // 不是镜像包装地址，不需要回退
+        // 原地址本身就是裸 GitHub 地址时也要生成变体（直连不通时可走 CDN）
+        if (bare == null && url.startsWith("https://")) {
+            for (String host : MIRRORED_HOSTS) {
+                if (url.startsWith("https://" + host + "/")) {
+                    bare = url;
+                    break;
+                }
+            }
+        }
+        if (bare == null) return out;   // 非 GitHub 域名，不需要回退
         if (!out.contains(bare)) out.add(bare);
 
-        // 2) 换镜像前缀（原地址若已带前缀，跳过同一个）
+        // 2) jsdelivr CDN 变体：raw.githubusercontent.com/u/r/ref/path → cdn/gh/u/r@ref/path
+        for (String jsdelivr : jsdelivrUrlVariants(bare)) {
+            if (!out.contains(jsdelivr)) out.add(jsdelivr);
+        }
+
+        // 3) gh-proxy 系前缀镜像
         for (String prefix : GITHUB_MIRROR_PREFIXES) {
             String candidate = prefix + bare;
             if (!out.contains(candidate)) out.add(candidate);
+        }
+        return out;
+    }
+
+    /**
+     * 生成 jsdelivr 变体。
+     * `https://raw.githubusercontent.com/{u}/{r}/{ref}/{path}`
+     *   → `https://cdn.jsdelivr.net/gh/{u}/{r}@{ref}/{path}`
+     * 非 raw 域名（gist/gitlab 等）不生成。
+     */
+    private static java.util.List<String> jsdelivrUrlVariants(String bareUrl) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        String rawPrefix = "https://raw.githubusercontent.com/";
+        if (!bareUrl.startsWith(rawPrefix)) return out;
+        String rest = bareUrl.substring(rawPrefix.length());
+        // 至少要 u/r/ref/path 四段
+        String[] parts = rest.split("/", 4);
+        if (parts.length < 4 || parts[3].isEmpty()) return out;
+        String mapped = parts[0] + "/" + parts[1] + "@" + parts[2] + "/" + parts[3];
+        for (String host : JSDELIVR_HOSTS) {
+            out.add(host + mapped);
         }
         return out;
     }

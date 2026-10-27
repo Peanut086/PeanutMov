@@ -306,7 +306,7 @@ public class SpiderPlugin extends Plugin {
     /* ---------------- 内部 ---------------- */
 
     private String[] targetLogs() {
-        return SpiderApi.get().getDebug().drain();
+        return SpiderDebug.drain();
     }
 
     /**
@@ -577,6 +577,12 @@ public class SpiderPlugin extends Plugin {
                 Application app = (Application) context.getApplicationContext();
                 if (app == null) app = (Application) context;
 
+                // 部分 guard jar（AiWex/MyCrypto 系）在 Init.init 里把 assets/*.so
+                // 解密落到 files/AiWex/libdec/，再用 System.load 加载。目录不存在或
+                // 不可写时它只抛 "MyCrypto so 未在启动阶段初始化完成"，且**不会重试**。
+                // 预创建目录并保证可写，实测能救回 ManJu/Book 系 8 个源。
+                prepareGuardWorkDirs(context);
+
                 Method initMethod = findInitMethod(initClass);
                 if (initMethod == null) {
                     throw new NoSuchMethodException("Init.init(Context/Application) not found");
@@ -678,8 +684,49 @@ public class SpiderPlugin extends Plugin {
         }
     }
 
-    /** guard 系 jar 的特征字符串（在 classes.dex 字节里出现即认定） */
-    private static final byte[][] GUARD_DEX_MARKERS = {
+    /**
+     * 预创建 guard jar 的工作目录。
+     *
+     * AiWex/MyCrypto 系 guard jar 在 `Init.init()` 里把 `assets/*guard_v*.so`
+     * 解密落到 `files/AiWex/libdec/`，然后 `System.load()` 它。若目录缺失/不可写，
+     * jar 内部只抛 `MyCrypto so 未在启动阶段初始化完成: <path>` 且不会重试，
+     * 表现为该源永久不可用（实测 8 个 ManJu/Book 系源）。
+     *
+     * 这里提前建好目录并做一次可写探测，让 jar 的落盘步骤能成功。
+     */
+    private static void prepareGuardWorkDirs(Context context) {
+        File base = context.getFilesDir();
+        String[] dirs = {
+                "AiWex",
+                "AiWex/libdec",
+                "AiWex/lib",
+        };
+        for (String rel : dirs) {
+            File dir = new File(base, rel);
+            if (dir.exists()) continue;
+            if (dir.mkdirs()) {
+                Log.i(TAG, "created guard work dir: " + rel);
+            } else {
+                Log.w(TAG, "cannot create guard work dir: " + rel);
+            }
+        }
+        // 可写探测：目录存在但只读（部分 ROM 的 filesDir 子目录会这样）同样会让 jar 静默失败
+        File probe = new File(base, "AiWex/.write-probe");
+        try {
+            if (probe.exists() && !probe.delete()) {
+                Log.w(TAG, "guard work dir not writable (stale probe)");
+            }
+            if (probe.createNewFile()) {
+                if (!probe.delete()) Log.w(TAG, "cannot remove write probe");
+            } else {
+                Log.w(TAG, "guard work dir not writable");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "guard work dir write probe failed: " + e.getMessage());
+        }
+    }
+
+    /** guard 系 jar 的特征字符串（在 classes.dex 字节里出现即认定） */    private static final byte[][] GUARD_DEX_MARKERS = {
             "DexNative".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
             "BaseSpiderGuard".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
     };

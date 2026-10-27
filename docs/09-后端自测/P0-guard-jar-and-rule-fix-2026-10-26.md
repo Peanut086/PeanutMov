@@ -197,7 +197,75 @@ app-debug.apk  15,906,984 bytes
 
 **结论**: guard 型 jar **大部分能正常加载并返回数据**，部分问题属于「配置缺失」或「外部依赖未满足」，而非 App 本身缺陷。本次 P0-A 已确保这些 jar 不再导致崩溃。
 
-## 六、未完成 / 遗留
+## 六、第二轮修复（出片率失败归因驱动）
+
+出片率实测暴露两类**可解的代码缺陷**（非源站问题），已修复：
+
+### 6.1 `SpiderDebug` 必须为 static（修 5 个源）
+
+**现象**：`IncompatibleClassChangeError: The method 'void
+com.github.catvod.crawler.SpiderDebug.log(java.lang.Throwable)' was expected to be of type static`
+
+**根因**（dexdump 实证）：
+
+```
+1cc068: 7110 ed12 0200  |invoke-static {v2}, Lcom/github/catvod/crawler/SpiderDebug;.log:(Ljava/lang/Throwable;)V
+```
+
+jar 内是 `invoke-static` 调用，而我们的 stub 声明为**实例方法** → 运行期抛 ICCE。
+
+**修复**：`SpiderDebug` 全部改为 static，环形缓冲改静态字段；
+补上 jar 可能调用的 `log(String, Throwable)` 重载。
+调用点 `SpiderPlugin` / `DrpyRuntime` 同步改为 `SpiderDebug.xxx()`。
+
+**影响源**：`csp_FakeAi115ShareGuard`、`csp_AnimeCiYuanChengGuard`、
+`csp_AiNewHuBanGuard`、`csp_AiNewDuoDuoGuard` 等 5 个。
+
+### 6.2 guard 工作目录预创建（修 8 个源）
+
+**现象**：`RuntimeException: MyCrypto so 未在启动阶段初始化完成:
+/data/user/0/com.qoder.cinema/files/AiWex/libdec`
+
+**根因**：AiWex/MyCrypto 系 guard jar 在 `Init.init()` 里把 `assets/*guard_v*.so`
+解密落到 `files/AiWex/libdec/` 再 `System.load()`。目录缺失/不可写时 jar 内部
+只抛上述异常且**不重试**，该源永久不可用。
+
+**修复**：`prepareGuardWorkDirs()` 在调用 `Init.init()` 前预创建
+`files/AiWex/{,libdec,lib}` 并做可写探测。
+
+**影响源**：`csp_ManJuAiHongGuoGuard`、`csp_BookHeMaGuard`、
+`csp_ManJuAiHuoLongGuard`、`csp_BookHongGuoGuard`、
+`csp_ManJuAiQiMaoGuard`、`csp_ManJuAiXiFanGuard` 等 8 个。
+
+### 6.3 镜像候选补充 jsdelivr CDN
+
+**现象**：真机网络下 `gh-proxy.net` 与 `raw.githubusercontent.com` 全部 20s 超时，
+原有 fallback 链（原地址 → 直连 → gh-proxy 系镜像）无一命中。
+
+**修复**：候选链插入 jsdelivr 系 CDN（国内可达性通常更好），置于 gh-proxy 系之前：
+
+```
+raw.githubusercontent.com/{u}/{r}/{ref}/{path}
+  → https://cdn.jsdelivr.net/gh/{u}/{r}@{ref}/{path}
+  → https://fastly.jsdelivr.net/gh/...
+  → https://gcore.jsdelivr.net/gh/...
+  → https://testingcf.jsdelivr.net/gh/...
+```
+
+裸 GitHub 地址（非镜像包装）现在也会生成变体候选，不再直接返回单地址。
+
+### 验证状态
+
+| 项 | 编译 | 真机验证 |
+|---|---|---|
+| 6.1 SpiderDebug static | ✅ BUILD SUCCESSFUL | ❌ **未验证**（设备离线） |
+| 6.2 guard 工作目录 | ✅ BUILD SUCCESSFUL | ❌ **未验证**（设备离线） |
+| 6.3 jsdelivr 候选 | ✅ BUILD SUCCESSFUL | ❌ **未验证**（设备离线） |
+
+**阻塞原因**：本轮修改后真机 USB 断开（`adb devices` 为空），MuMu 模拟器
+（`192.168.3.3:5555`）也连不上，无法装机复测。三项均需设备恢复后补验。
+
+## 七、未完成 / 遗留
 
 1. **guard jar 真实出片率未验证**：本次只证明「能加载、能调用、不崩溃」。
    `FyGuard` 的 `homeContent` 返回空列表，需要配对应的真实源站参数（`initExt`/`ext`）才能拉到内容。
