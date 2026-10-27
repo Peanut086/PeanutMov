@@ -77,28 +77,62 @@ public final class CatvodLoader {
 
     /* ---------------- import / export 识别 ---------------- */
 
+    /**
+     * import 语句匹配（支持**跨行**）。
+     *
+     * 实测 `drpy2.min.js`（drpy 2.1 运行时库）写的是多行 import：
+     *   import {
+     *       cheerio,
+     *       模板
+     *   } from "./drpy-core-lite.min.js";
+     *
+     * 早期正则要求整条语句在一行内（`.*['"]...['"]$`），多行形态匹配不到 →
+     * import 原样留在拼接结果里 → QuickJS（非模块模式）把 `import` 当动态
+     * import 操作符解析 → 报 `expecting '('`，整条规则加载失败。
+     *
+     * 这里改为：`import` 开头，允许中间的 `{...}` 跨行，以 `from '<spec>'` 或
+     * `'<spec>'` 结尾。用 `[^;{}]*` 限制避免跨语句吞掉过多内容。
+     */
     private static final Pattern IMPORT_LINE = Pattern.compile(
-            "(?m)^[ \\t]*import[ \\t]+.*['\"][^'\"]+['\"][ \\t]*;?[ \\t]*$");
-    private static final Pattern SPEC_AT_END = Pattern.compile("['\"]([^'\"]+)['\"][ \\t]*;?[ \\t]*$");
+            "(?m)^[ \\t]*import[ \\t]+(?:[^;]*?)[ \\t]*['\"][^'\"\\n]+['\"][ \\t]*;?[ \\t]*$");
+    /** 单行 import 的行尾说明符（跨行形态下 group 仍能取到末尾的引号内容） */
+    private static final Pattern SPEC_AT_END = Pattern.compile("['\"]([^'\"\\n]+)['\"][ \\t]*;?[ \\t]*$");
     private static final Pattern NS_IMPORT = Pattern.compile("^[ \\t]*import[ \\t]+\\*[ \\t]*as[ \\t]+(\\w+)[ \\t]+from[ \\t]+");
-    private static final Pattern DEF_IMPORT = Pattern.compile("^[ \\t]*import[ \\t]+(\\w+)[ \\t]*,[ \\t]*\\{([^}]*)\\}[ \\t]+from[ \\t]+");
+    private static final Pattern DEF_IMPORT = Pattern.compile("^[ \\t]*import[ \\t]+(\\w+)[ \\t]*,[ \\t]*\\{([^}]*)\\}[ \\t]+from[ \\t]+", Pattern.DOTALL);
     private static final Pattern DEF_ONLY_IMPORT = Pattern.compile("^[ \\t]*import[ \\t]+(\\w+)[ \\t]+from[ \\t]+");
-    private static final Pattern LIST_IMPORT = Pattern.compile("^[ \\t]*import[ \\t]+\\{([^}]*)\\}[ \\t]+from[ \\t]+");
+    private static final Pattern LIST_IMPORT = Pattern.compile("^[ \\t]*import[ \\t]+\\{([^}]*)\\}[ \\t]+from[ \\t]+", Pattern.DOTALL);
     private static final Pattern BARE_IMPORT = Pattern.compile("^[ \\t]*import[ \\t]+['\"]");
 
     /** export 名单（含跨行）：`export { a, b as c } from 'x' ?` */
     private static final Pattern EXPORT_LIST = Pattern.compile(
             "export[ \\t]*\\{([^}]*)\\}[ \\t]*(?:from[ \\t]*['\"]([^'\"]+)['\"][ \\t]*)?;?",
             Pattern.DOTALL);
-    /** export default <expr> 至行尾/分号（类/函数表达式包一层括号） */
+    /**
+     * export default <expr>（单行）。
+     *
+     * 只负责「命名 function/class」与「单行表达式」。**多行对象/数组字面量**
+     * （`export default {\n  a,\n  b\n}`）不能靠这条正则：`(.+?)$` 非贪婪只会吃到
+     * 首行的 `{`，生成 `var __catDefault_0 = ({);` —— 直接语法错误。
+     * 实测 `drpy2.min.js` 尾部正是 `export default {` + 十余行成员，曾因此报
+     * `expecting '('`。多行字面量在 transform 的 ③-a 步用括号配平处理。
+     */
     private static final Pattern EXPORT_DEFAULT = Pattern.compile(
-            "(?m)^[ \\t]*export[ \\t]+default[ \\t]+(.+?);?[ \\t]*$");
+            "(?m)^[ \\t]*export[ \\t]+default[ \\t]+([^\\n{]+?);?[ \\t]*$");
+    /** 多行 default 导出的起点：`export default {` 或 `export default [` */
+    private static final Pattern EXPORT_DEFAULT_MULTILINE = Pattern.compile(
+            "(?m)^[ \\t]*export[ \\t]+default[ \\t]+([\\[{])");
     /** export 声明前缀（function/class/const/let/var/async function） */
     private static final Pattern EXPORT_DECL = Pattern.compile(
             "(?m)^[ \\t]*export[ \\t]+(?=(?:async[ \\t]+function|function|class|const|let|var)\\b)");
     private static final Pattern EXPORTED_DECL_NAME = Pattern.compile(
             "^[ \\t]*export[ \\t]+(?:async[ \\t]+function|function|class|const|let|var)[ \\t]+([\\w$]+)",
             Pattern.MULTILINE);
+    /**
+     * 顶层 `const`/`let` 声明（行首、非缩进）→ 捕获缩进与关键字，替换成 `var`。
+     * 多模块拼接后共享词法作用域，同名 const 会编译期报错，var 允许重复声明。
+     */
+    private static final Pattern TOP_LEVEL_CONST_LET = Pattern.compile(
+            "(?m)^([ \\t]*)(?:const|let)(?=[ \\t]+[\\w$\\[{])");
 
     /* ---------------- 入口 ---------------- */
 
@@ -110,6 +144,11 @@ public final class CatvodLoader {
 
         StringBuilder out = new StringBuilder(1 << 20);
         long total = 0;
+        // collect() 是后序遍历：依赖先入 order，**入口在最后**。
+        // 早期实现用 `i == 0` 判定入口，把第一个依赖当成了入口模块，
+        // 导致入口的 default 导出拿不到 __catDefault_entry 别名
+        // （实测 drpy2.min.js + drpy-core-lite 场景报「未导出可用的 __jsEvalReturn」）。
+        int entryIndex = order.size() - 1;
         for (int i = 0; i < order.size(); i++) {
             Module m = order.get(i);
             m.defaultVarIndex = i;
@@ -118,7 +157,7 @@ public final class CatvodLoader {
                 throw new IllegalStateException("catvod 模块总量超出上限（16MB）");
             }
             out.append("\n/* ===== catvod module[").append(i).append("]: ").append(m.url).append(" ===== */\n");
-            out.append(transform(m, i == 0, order, modules));
+            out.append(transform(m, i == entryIndex, order, modules));
         }
         Log.i(TAG, "catvod bundle: " + order.size() + " modules, " + out.length() + " chars");
         return out.toString();
@@ -221,7 +260,13 @@ public final class CatvodLoader {
             }
         }
         // ③ export default EXPR（标记 + 变换期处理）
-        if (EXPORT_DEFAULT.matcher(m.code).find()) m.hasDefaultExport = true;
+        // 必须同时检查单行与多行两种形态：`export default {` 开头的多行对象
+        // 不匹配单行正则（后者已排除 `{`），漏判会让入口拿不到 __catDefault_entry，
+        // 表现为「catvod 规则未导出可用的 __jsEvalReturn」。
+        if (EXPORT_DEFAULT.matcher(m.code).find()
+                || EXPORT_DEFAULT_MULTILINE.matcher(m.code).find()) {
+            m.hasDefaultExport = true;
+        }
     }
 
     /* ---------------- 变换 ---------------- */
@@ -284,8 +329,38 @@ public final class CatvodLoader {
         sb.append(code, cursor, code.length());
         code = sb;
 
-        // ③ export default → default 变量
-        // 单行表达式（对象/标识符/调用）直接包一层；命名 function/class 去前缀、
+        // ③-a 多行对象/数组字面量：`export default { ... }` / `[ ... ]`
+        // 必须在单行正则之前处理，否则 `{` 会被当成完整表达式截断。
+        String codeStr = code.toString();
+        Matcher multiDef = EXPORT_DEFAULT_MULTILINE.matcher(codeStr);
+        sb = new StringBuilder();
+        cursor = 0;
+        boolean multiDefaultFound = false;
+        while (multiDef.find()) {
+            int exprStart = multiDef.start(1);
+            int exprEnd = matchBracket(codeStr, exprStart);
+            if (exprEnd < 0) {
+                throw new IllegalStateException("export default 括号不配平（" + m.url + "）");
+            }
+            sb.append(codeStr, cursor, multiDef.start());
+            String literal = codeStr.substring(exprStart, exprEnd).trim();
+            sb.append("var __catDefault_").append(m.defaultVarIndex).append(" = (").append(literal).append(");");
+            cursor = exprEnd;
+            // 吃掉紧跟的分号
+            while (cursor < codeStr.length() && (codeStr.charAt(cursor) == ';' || codeStr.charAt(cursor) == ' '
+                    || codeStr.charAt(cursor) == '\n' || codeStr.charAt(cursor) == '\r')) {
+                if (codeStr.charAt(cursor) == ';') { cursor++; break; }
+                cursor++;
+            }
+            multiDefaultFound = true;
+        }
+        if (multiDefaultFound) {
+            sb.append(codeStr, cursor, codeStr.length());
+            code = sb;
+        }
+
+        // ③-b export default → default 变量
+        // 单行表达式（标识符/调用）直接包一层；命名 function/class 去前缀、
         // 模块尾部补绑定（多行函数体只匹配到首行，正文原样保留）；
         // 匿名多行 function/class 默认导出不支持（明确报错）。
         Matcher def = EXPORT_DEFAULT.matcher(code);
@@ -317,6 +392,13 @@ public final class CatvodLoader {
         // ④ export function/class/const... → 去前缀
         code = new StringBuilder(EXPORT_DECL.matcher(code).replaceAll(""));
 
+        // ④-b 顶层 const/let → var
+        // 多模块拼接后共享同一个词法作用域，两个模块各声明 `const MOBILE_UA`
+        // 会在编译期抛 `redeclaration of 'MOBILE_UA'`（QuickJS 实测报错）。
+        // 降级为 var 后重复声明合法（后者覆盖前者），语义对这些常量无实质影响；
+        // 只处理**行首**（顶层）声明，函数体内 `const` 属于局部作用域，保持原样。
+        code = new StringBuilder(TOP_LEVEL_CONST_LET.matcher(code).replaceAll("$1var "));
+
         // ⑤ 入口 default 别名固定名（DrpyRuntime 取 __catDefault_entry）
         if (isEntry && m.hasDefaultExport) {
             code.append("\nvar __catDefault_entry = __catDefault_").append(m.defaultVarIndex).append(";");
@@ -324,13 +406,61 @@ public final class CatvodLoader {
         return code.toString();
     }
 
-    /** import 行 → 绑定代码（var 本地名 = 原始名; / var Ns = {...}; / 空） */
+    /**
+     * 从 `openIndex`（指向 `{` 或 `[`）起做括号配平扫描，返回闭合括号之后的下标。
+     * 跳过字符串字面量（`'` `"` `` ` ``）与注释，避免 `{` `}` 出现在字符串里时误判。
+     * 找不到闭合返回 -1。
+     */
+    private static int matchBracket(String code, int openIndex) {
+        char open = code.charAt(openIndex);
+        char close = open == '{' ? '}' : ']';
+        int depth = 0;
+        char quote = 0;
+        boolean lineComment = false;
+        boolean blockComment = false;
+        for (int i = openIndex; i < code.length(); i++) {
+            char c = code.charAt(i);
+            char next = i + 1 < code.length() ? code.charAt(i + 1) : 0;
+
+            if (lineComment) {
+                if (c == '\n') lineComment = false;
+                continue;
+            }
+            if (blockComment) {
+                if (c == '*' && next == '/') { blockComment = false; i++; }
+                continue;
+            }
+            if (quote != 0) {
+                if (c == '\\') { i++; continue; }
+                if (c == quote) quote = 0;
+                continue;
+            }
+            if (c == '/' && next == '/') { lineComment = true; i++; continue; }
+            if (c == '/' && next == '*') { blockComment = true; i++; continue; }
+            if (c == '\'' || c == '"' || c == '`') { quote = c; continue; }
+            if (c == open) depth++;
+            else if (c == close) {
+                depth--;
+                if (depth == 0) return i + 1;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * import 行 → 绑定代码（var 本地名 = 原始名; / var Ns = {...}; / 空）
+     *
+     * 注意：这里必须用 `find()` 而不是 `matches()`。`matches()` 要求**整串**匹配，
+     * 而 import 语句末尾还有说明符（`from "x.js";`），子模式只覆盖到 `from ` 之前，
+     * 整串匹配必然失败 → 绑定被静默丢弃 → 导入名变成未定义变量。
+     * 多行 import（`import {\n a,\n b\n} from "x"`）下这个坑更明显。
+     */
     private static String bindingOf(Module m, String line, Map<String, Module> modules) {
         String spec = specifierOf(line);
         Module dep = modules.get(resolveSpecifier(m.url, spec));
 
         Matcher ns = NS_IMPORT.matcher(line);
-        if (ns.matches()) {
+        if (ns.find()) {
             String local = ns.group(1);
             StringBuilder obj = new StringBuilder("var ").append(local).append(" = {");
             boolean first = true;
@@ -349,22 +479,22 @@ public final class CatvodLoader {
 
         StringBuilder bind = new StringBuilder();
         Matcher defList = DEF_IMPORT.matcher(line);
-        if (defList.matches()) {
+        if (defList.find()) {
             appendDefaultBind(bind, defList.group(1), dep);
             appendNamedBinds(bind, defList.group(2), dep);
             return bind.toString();
         }
         Matcher defOnly = DEF_ONLY_IMPORT.matcher(line);
-        if (defOnly.matches()) {
+        if (defOnly.find()) {
             appendDefaultBind(bind, defOnly.group(1), dep);
             return bind.toString();
         }
         Matcher listImp = LIST_IMPORT.matcher(line);
-        if (listImp.matches()) {
+        if (listImp.find()) {
             appendNamedBinds(bind, listImp.group(1), dep);
             return bind.toString();
         }
-        if (BARE_IMPORT.matcher(line).matches()) return ""; // 副作用导入：模块本身已评估
+        if (BARE_IMPORT.matcher(line).find()) return ""; // 副作用导入：模块本身已评估
         return ""; // 未知形态（多行 import 等）：保守移除，未绑定名会以 ReferenceError 暴露
     }
 

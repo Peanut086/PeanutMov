@@ -26,6 +26,67 @@ function __drpyStr(v) {
   return String(v);
 }
 
+/**
+ * console 兜底。
+ *
+ * QuickJS wrapper 未设置 console.stdout 时，规则里任何 `console.log(...)`
+ * 都会抛 `When invoke console stuff, you should be set a stdout of platform
+ * to console.stdout`，把一次正常调用打断（实测 drpy2.min.js 的 home 方法）。
+ * 这里在宿主未提供 console 时补一个静默实现；已存在则不动。
+ */
+(function () {
+  var target;
+  try {
+    target = typeof console !== 'undefined' && console ? console : null;
+  } catch (e) {
+    target = null; // 原生 console getter 可能直接抛，吞掉后自建
+  }
+  if (!target) {
+    target = {};
+    try {
+      globalThis.console = target;
+    } catch (e) {
+      return; // 无法注入时放弃，不阻断规则加载
+    }
+  }
+  var noop = function () {};
+  var levels = ['log', 'info', 'warn', 'error', 'debug', 'trace', 'dir'];
+  for (var i = 0; i < levels.length; i++) {
+    var name = levels[i];
+    try {
+      if (typeof target[name] !== 'function') target[name] = noop;
+    } catch (e) {
+      // 只读属性：跳过，调用时仍可能抛，但至少不在这里崩
+    }
+  }
+})();
+
+/**
+ * 把「拿 HTML 当 JSON 解析」的报错还原成真实原因。
+ *
+ * 规则普遍写 `JSON.parse(request(url))`；源站失效后返回 404/跳转 HTML 页，
+ * 原生 QuickJS 只会抛 `unexpected token: '<'`，把「源已死」伪装成「规则有语法错」。
+ * 这里只在输入确实以 '<' 开头时改写文案，其余异常原样抛出，不改变解析语义。
+ */
+(function () {
+  var nativeParse = JSON.parse;
+  JSON.parse = function (text, reviver) {
+    try {
+      return nativeParse(text, reviver);
+    } catch (e) {
+      if (typeof text === 'string' && /^\s*</.test(text)) {
+        var hit = __drpyLastHttp;
+        throw new Error(
+          '接口返回的是 HTML 页面而非 JSON（HTTP ' + (hit ? hit.code || '?' : '?') + '）'
+          + (hit && hit.url ? '：' + hit.url : '')
+          + '；该源站可能已失效',
+        );
+      }
+      throw e;
+    }
+  };
+})();
+
 /** 极简 URL 解析（QuickJS 无 WHATWG URL）：绝对/协议相对/根相对/路径相对 */
 function __drpyResolveUrl(base, rel) {
   if (!rel) return rel;
@@ -127,6 +188,7 @@ function req(url, options) {
   }
   if (res && res.__error) throw new Error('req 失败(' + res.code + '): ' + res.__error + ' <- ' + url);
   var body = res && typeof res.body === 'string' ? res.body : '';
+  __drpyLastHttp = { url: url, code: res ? (res.code || 0) : 0 };
   return {
     ok: !!res && res.code >= 200 && res.code < 300,
     code: res ? res.code : 0,
@@ -300,6 +362,8 @@ var MY_CATE = '';
 var TYPE = '';
 var KEY = '';
 var detailUrl = '';
+/** 最近一次 request/req 的结果摘要：用于把 `unexpected token '<'` 还原成真实原因 */
+var __drpyLastHttp = null;
 
 async function __ensureInit() {
   if (__drpyInited) return;

@@ -99,6 +99,11 @@ public class DrpyRuntime implements AutoCloseable {
         context = onEngine(() -> {
             QuickJSContext ctx = QuickJSContext.create();
             try {
+                // 必须先设 console：wrapper 未设置时任何 `console.log` 调用都会抛
+                // "When invoke console stuff, you should be set a stdout of platform
+                //  to console.stdout"，把一次正常调用打断（实测 drpy2.min.js 的 home）。
+                // 在 JS 侧覆盖 console 无法绕过——原生绑定在调用时才检查 stdout。
+                ctx.setConsole(new RuleConsole(handle));
                 installBindings(ctx, handle);
                 ctx.evaluate(readHostScript(appContext), "drpy_host.js");
                 ctx.getGlobalObject().setProperty("__drpyExt", initExt == null ? "" : initExt);
@@ -115,14 +120,35 @@ public class DrpyRuntime implements AutoCloseable {
                 }
                 ctx.evaluate(code, catvod ? "catvod_bundle.js" : "rule.js");
                 if (catvod) {
+                    // 带 import 的不一定是 catvod Spider 规则：`drpy2.min.js` 这类
+                    // **drpy 运行时库**也是 ES module，它的 default 导出是 drpy 风格的
+                    // `{runMain, getRule, home, category, ...}`（home 无参），
+                    // 不是 catvod 的 `{home(filter), category(tid,pg,filter,ext), ...}`。
+                    // 错挂到 __catvod 会让派发签名不匹配（实测 home(true) 返回字符串，
+                    // 下游 JSONObject 解析报 "cannot be converted to JSONObject"）。
+                    // 这里按导出对象的特征键分流：有 runMain/getRule 视作 drpy 规则库。
                     ctx.evaluate(
-                            "(function(){ var o = (typeof __jsEvalReturn === 'function')"
-                                    + " ? __jsEvalReturn()"
-                                    + " : (typeof __catDefault_entry !== 'undefined' ? __catDefault_entry : null);"
+                            "(function(){"
+                                    + " var o = (typeof __jsEvalReturn === 'function')"
+                                    + "   ? __jsEvalReturn()"
+                                    + "   : (typeof __catDefault_entry !== 'undefined' ? __catDefault_entry : null);"
                                     + " if (!o || typeof o !== 'object') {"
-                                    + " throw new Error('catvod 规则未导出可用的 __jsEvalReturn'); }"
-                                    + " globalThis.__catvod = o; })()",
+                                    + "   throw new Error('catvod 规则未导出可用的 __jsEvalReturn'); }"
+                                    + " var isDrpyLib = (typeof o.runMain === 'function')"
+                                    + "   || (typeof o.getRule === 'function');"
+                                    + " if (isDrpyLib) {"
+                                    + "   globalThis.rule = o;"
+                                    + "   globalThis.__drpyLibRule = true;"
+                                    + " } else {"
+                                    + "   globalThis.__catvod = o;"
+                                    + " }"
+                                    + "})()",
                             "catvod_bind.js");
+                    // drpy 规则库走 drpy 派发路径，需要读回判定结果
+                    Object libFlag = ctx.getGlobalObject().getProperty("__drpyLibRule");
+                    if (libFlag != null && Boolean.TRUE.equals(libFlag)) {
+                        Log.i(TAG, "catvod module is drpy rule lib, dispatch via rule object: " + handle);
+                    }
                 } else {
                     // 规则里常见的 `var rule = {...}` 与 `globalThis.rule = {...}` 都覆盖
                     Object ruleObj = ctx.getGlobalObject().getProperty("rule");
@@ -422,6 +448,42 @@ public class DrpyRuntime implements AutoCloseable {
             return sb.toString();
         } catch (Exception e) {
             return "";
+        }
+    }
+
+    /**
+     * 规则内 `console.*` 的落点。
+     *
+     * wrapper 的 `setConsole` 是**必须**调用的：不设时任何 console 调用都会抛
+     * `When invoke console stuff, you should be set a stdout of platform to console.stdout`。
+     * 规则普遍用 console 打调试信息，不接就会把正常调用打断。
+     * 这里只写 logcat，不回流到 JS 侧日志缓冲（避免与 addLog 重复、也防止规则刷屏）。
+     */
+    private static final class RuleConsole implements QuickJSContext.Console {
+        private final String tag;
+
+        RuleConsole(String handle) {
+            this.tag = "DrpyRule/" + handle;
+        }
+
+        @Override
+        public void log(String message) {
+            Log.d(tag, message == null ? "" : message);
+        }
+
+        @Override
+        public void info(String message) {
+            Log.i(tag, message == null ? "" : message);
+        }
+
+        @Override
+        public void warn(String message) {
+            Log.w(tag, message == null ? "" : message);
+        }
+
+        @Override
+        public void error(String message) {
+            Log.e(tag, message == null ? "" : message);
         }
     }
 }
