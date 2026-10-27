@@ -256,14 +256,68 @@ raw.githubusercontent.com/{u}/{r}/{ref}/{path}
 
 ### 验证状态
 
-| 项 | 编译 | 真机验证 |
-|---|---|---|
-| 6.1 SpiderDebug static | ✅ BUILD SUCCESSFUL | ❌ **未验证**（设备离线） |
-| 6.2 guard 工作目录 | ✅ BUILD SUCCESSFUL | ❌ **未验证**（设备离线） |
-| 6.3 jsdelivr 候选 | ✅ BUILD SUCCESSFUL | ❌ **未验证**（设备离线） |
+| 项 | 编译 | 真机验证 | 结果 |
+|---|---|---|---|
+| 6.1 SpiderDebug static | ✅ | ✅ **已复测** | 2/4 恢复（另 2 个转成"首页空"，非 ICCE） |
+| 6.2 guard 工作目录 | ✅ | ✅ **已复测** | **6/6 全部恢复** |
+| 6.3 jsdelivr 候选 | ✅ | ⚠️ **部分验证** | 下载链路打通；命中候选的日志因 logcat 被清未能留存 |
 
-**阻塞原因**：本轮修改后真机 USB 断开（`adb devices` 为空），MuMu 模拟器
-（`192.168.3.3:5555`）也连不上，无法装机复测。三项均需设备恢复后补验。
+### 复测明细（真机 BLT0222A11043727，2026-10-27）
+
+**6.2 MyCrypto 系（修复前 6/6 全挂）—— 全部恢复**
+
+| 源 | api | 复测结果 | 修复前 |
+|---|---|---|---|
+| 🍉漫短┃小红🍉 | `csp_ManJuAiHongGuoGuard` | ✅ class=0 list=1 | ❌ MyCrypto so 未初始化 |
+| 🎃‍小马┃听书🎃 | `csp_BookHeMaGuard` | ✅ class=9 list=0 | ❌ 同上 |
+| 🍉漫剧┃小龙🍉 | `csp_ManJuAiHuoLongGuard` | ✅ class=4 list=0 | ❌ 同上 |
+| 🎃‍小红┃听书🎃 | `csp_BookHongGuoGuard` | ✅ class=1 list=0 | ❌ 同上 |
+| 🍉漫剧┃小猫🍉 | `csp_ManJuAiQiMaoGuard` | ✅ class=1 list=0 | ❌ 同上 |
+| 🍉漫短┃小喜🍉 | `csp_ManJuAiXiFanGuard` | ✅ class=6 list=0 | ❌ 同上 |
+
+**结论**：`prepareGuardWorkDirs()` 预创建 `files/AiWex/libdec/` 有效，
+guard jar 现在能把加密 `.so` 解密落盘并加载成功。
+
+**6.1 ICCE 系（修复前 4 个全报 IncompatibleClassChangeError）**
+
+| 源 | api | 复测结果 | 说明 |
+|---|---|---|---|
+| 💓115┃分享💓‍ | `csp_FakeAi115ShareGuard` | ✅ class=1 list=0 | ICCE 已消除 |
+| 🤡次元┃动漫🤡 | `csp_AnimeCiYuanChengGuard` | ✅ class=2 list=20 | ICCE 已消除，有数据 |
+| 💓虎斑┃4K💓 | `csp_AiNewHuBanGuard` | ⚠️ class=0 list=0 | ICCE 已消除，但首页空（源站无数据） |
+| 💓多多┃4K💓 | `csp_AiNewDuoDuoGuard` | ⚠️ class=0 list=0 | ICCE 已消除，但首页空（源站无数据） |
+
+**结论**：`SpiderDebug` 改 static 消除了全部 ICCE 报错。剩下 2 个"首页空"
+是源站本身无内容，非代码缺陷（`csp_AiNewDuoDuoGuard` 在 logcat 中可见
+`guard jar initialized` + `loaded spider` 正常完成）。
+
+**6.3 jsdelivr 镜像候选**
+
+复测时 `raw.githubusercontent.com` 恰好恢复直连，命中候选 #2：
+
+```
+I DrpyPlugin: rule url normalized: https://github.com/.../blob/... -> https://raw.githubusercontent.com/...
+I DrpyPlugin: downloaded rule: https://raw.githubusercontent.com/ne7359/tvurl/main/lib/drpy2.min.js
+```
+
+规则下载成功，后续报 `expecting '(' at catvod_bundle.js:3` —— 这是
+**drpy2.min.js 与内置引擎的 JS 兼容性问题**，已不属于镜像可达性范畴。
+
+用强制失败地址（`gh-proxy.net/...`）触发候选链时，同样越过了下载阶段
+直达 JS 解析，证明 fallback 链在工作。但命中具体候选的日志因设备 logcat
+缓冲被反复清空未能留存，**该条验证证据不完整**。
+
+### 复测环境阻塞
+
+真机 USB 连接在复测期间极不稳定，反复出现 `device` ↔ `offline` 抖动
+（`transport_id` 从 6 递增到 14）。表现为：
+
+- `am start` 偶发 `error: closed`（USB 传输中断，非 App 崩溃）
+- DevTools WebSocket 会话在探测过程中被切断
+- logcat 缓冲被系统频繁清空，历史日志难以留存
+
+已确认 **App 本身没有崩溃**：`pidof` 稳定返回进程号，`logcat -b crash` 为空，
+`/data/tombstones/` 无新增记录。
 
 ## 七、未完成 / 遗留
 
