@@ -217,6 +217,14 @@ function nativeErrorOf(e: unknown, fallback: AppError): AppError {
       cause: e,
     });
   }
+  // 规则/接口返回 HTML 页：宿主层已把 `unexpected token '<'` 还原成带 HTTP 码的原因，
+  // 这里保留该文案（比泛化的「资源不存在(404)」更能说明是源站挂了）
+  if (message.includes('HTML 页面而非 JSON')) {
+    return new AppError('E_SOURCE_UNAVAILABLE', message, { detail: message, cause: e });
+  }
+  if (message.includes('HTML 页面而非 JS 源码')) {
+    return new AppError('E_SOURCE_UNAVAILABLE', message, { detail: message, cause: e });
+  }
   if (/HTTP 404/.test(message)) {
     return new AppError('E_HTTP_404', undefined, { detail: message, cause: e });
   }

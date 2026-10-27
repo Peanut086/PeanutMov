@@ -412,16 +412,17 @@ public class DrpyPlugin extends Plugin {
     private static String inspectRuleContent(File file) throws Exception {
         long size = file.length();
         if (size <= 0) return "规则内容为空";
-        byte[] head = new byte[(int) Math.min(size, 512)];
+        byte[] head = new byte[(int) Math.min(size, 4096)];
         try (InputStream in = new java.io.FileInputStream(file)) {
             int read = in.read(head);
             if (read <= 0) return "规则内容为空";
-            String text = new String(head, 0, read, "UTF-8").trim();
-            if (text.isEmpty()) return "规则内容为空";
-            char first = text.charAt(0);
-            if (first == '<') return "返回的是 HTML 页面而非 JS 源码";
-            String lower = text.toLowerCase();
-            if (lower.startsWith("<!doctype") || lower.startsWith("<html")) {
+            String text = new String(head, 0, read, "UTF-8");
+            // BOM 是 U+FEFF，trim() 去不掉（只去 <= ' '），带 BOM 的 HTML 页会骗过首字符判断
+            if (!text.isEmpty() && text.charAt(0) == '\uFEFF') text = text.substring(1);
+            String trimmed = text.trim();
+            if (trimmed.isEmpty()) return "规则内容为空";
+            String lower = trimmed.toLowerCase();
+            if (trimmed.charAt(0) == '<' || lower.startsWith("<!doctype") || lower.startsWith("<html")) {
                 return "返回的是 HTML 页面而非 JS 源码";
             }
         }

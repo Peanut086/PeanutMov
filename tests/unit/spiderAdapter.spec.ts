@@ -476,6 +476,38 @@ describe('SpiderAdapter', () => {
     expect(result.error?.code).toBe('E_HTTP_404');
     expect(result.health).toBe('unreachable');
   });
+
+  it('规则下载拿到 HTML 页 → E_SOURCE_UNAVAILABLE，且保留可读原因', async () => {
+    vi.resetModules();
+    vi.doMock('@/shared/platform', () => ({ isNative: () => true }));
+    vi.doMock('@/native/spiderPlugin', () => ({
+      Spider: { load: vi.fn(), invoke: vi.fn(), proxy: vi.fn(), unload: vi.fn() },
+      isSpiderAvailable: vi.fn().mockResolvedValue(true),
+      spiderInvoke: vi.fn(),
+    }));
+    vi.doMock('@/native/drpyPlugin', () => ({
+      Drpy: {
+        load: vi
+          .fn()
+          .mockRejectedValue(
+            new Error('规则加载失败: 返回的是 HTML 页面而非 JS 源码（885 字节）：https://x.test/JustLive.js'),
+          ),
+        invoke: vi.fn(),
+        unload: vi.fn(),
+      },
+      isDrpyAvailable: vi.fn().mockResolvedValue(true),
+    }));
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource({
+      ext: { kind: 'js', api: null, jarUrl: null, initExt: 'https://x.test/JustLive.js', searchable: true },
+    });
+    const result = await adapter.testConnection(source);
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('E_SOURCE_UNAVAILABLE');
+    // 不能退化成泛化的「该源暂不可用」——用户要能看出是源站返回了网页
+    expect(result.error?.message).toContain('HTML 页面而非 JS 源码');
+  });
 });
 
 describe('SpiderAdapter List 形参（arrayArgs）', () => {
