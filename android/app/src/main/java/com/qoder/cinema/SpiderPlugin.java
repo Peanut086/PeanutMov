@@ -536,6 +536,7 @@ public class SpiderPlugin extends Plugin {
 
         File jarFile = jarCache.get(cleanUrl);
         if (jarFile == null) {
+            purgeCorruptJarCache(context);
             jarFile = ensureJarFile(context, cleanUrl, expectedMd5);
             jarCache.put(cleanUrl, jarFile);
         }
@@ -564,6 +565,43 @@ public class SpiderPlugin extends Plugin {
         // 不注入时 Init.context() 返回 null，爬虫在 detailContent 等路径里
         // 调 context.getPackageName() 会 NPE（YunDuo 等一大批爬虫的实际失败原因）。
         injectCatvodInit(loader, context);
+
+        // P0-A: Guard Jar 必须在实例化前调用 Init.init(Application)。
+        // Guard 类型 jar（BaseSpiderGuard 系）的构造函数会走 Init.getSpider() → Init.loader()，
+        // 而 loader 字段只有 Init.init(Context) 才会赋值。我们此前只注入 Application 字段，
+        // 导致真机 ARM64 上构造函数读到 null → JNI abort（SIGABRT 杀进程，Java catch 无效）。
+        // 非 guard jar 绝不能调用 Init.init()：那会连带拉起 jar 自带的悬浮球/本地代理。
+        if (isGuardJar(jarFile, loader)) {
+            try {
+                Class<?> initClass = loader.loadClass("com.github.catvod.spider.Init");
+                Application app = (Application) context.getApplicationContext();
+                if (app == null) app = (Application) context;
+
+                Method initMethod = findInitMethod(initClass);
+                if (initMethod == null) {
+                    throw new NoSuchMethodException("Init.init(Context/Application) not found");
+                }
+                initMethod.setAccessible(true);
+                initMethod.invoke(null, app);
+
+                // 验证 loader 是否真的就绪；方法不存在则跳过（不同混淆版本命名不同）
+                Method loaderMethod = findNoArgMethod(initClass, "loader", "getLoader");
+                if (loaderMethod != null) {
+                    loaderMethod.setAccessible(true);
+                    Object loaderObj = loaderMethod.invoke(null);
+                    if (loaderObj == null) {
+                        throw new IllegalStateException("Init.init() 未初始化 DexClassLoader");
+                    }
+                }
+                Log.i(TAG, "guard jar initialized: " + api);
+            } catch (Exception e) {
+                Throwable cause = e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null
+                        ? e.getCause() : e;
+                Log.e(TAG, "guard jar init failed: " + api + " -> " + describeFailure(cause), cause);
+                throw new IllegalStateException(
+                        "guard 类型爬虫初始化失败（" + api + "）：" + describeFailure(cause), cause);
+            }
+        }
 
         String className = resolveSpiderClassName(api, loader);
         Class<?> clazz = loader.loadClass(className);
@@ -638,6 +676,99 @@ public class SpiderPlugin extends Plugin {
         } catch (Exception e) {
             Log.w(TAG, "inject catvod Init failed", e);
         }
+    }
+
+    /** guard 系 jar 的特征字符串（在 classes.dex 字节里出现即认定） */
+    private static final byte[][] GUARD_DEX_MARKERS = {
+            "DexNative".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+            "BaseSpiderGuard".getBytes(java.nio.charset.StandardCharsets.US_ASCII),
+    };
+
+    /**
+     * 判断 jar 是否 guard 加固类型。
+     *
+     * 实测（真机缓存取样）guard jar 的 zip 条目只有 5 个：
+     * `classes.dex`(37KB) + `assets/{fty,wex}guard_v7/v8.so` + `assets/*shinidie.guard`(加密载荷)。
+     * **真实爬虫类名不在 zip 条目里，而在 dex 字符串池中**，所以不能按条目名判断，
+     * 必须读 dex 字节找 `DexNative` / `BaseSpiderGuard` 特征串。
+     *
+     * 判定必须保守：对非 guard jar 误调 `Init.init()` 会连带拉起 jar 自带的
+     * 悬浮球与本地代理，反而污染宿主环境。
+     */
+    private static boolean isGuardJar(File jarFile, ClassLoader loader) {
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jarFile)) {
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = entries.nextElement();
+                if (entry.isDirectory() || !entry.getName().endsWith(".dex")) continue;
+                byte[] dex;
+                try (InputStream in = zip.getInputStream(entry)) {
+                    // dex 可能很大（实测普通 jar 达 4.9MB），只需前 512KB 覆盖字符串池
+                    byte[] buf = new byte[(int) Math.min(entry.getSize() > 0 ? entry.getSize() : 524288, 524288)];
+                    int total = 0;
+                    int read;
+                    while (total < buf.length && (read = in.read(buf, total, buf.length - total)) > 0) {
+                        total += read;
+                    }
+                    dex = total == buf.length ? buf : java.util.Arrays.copyOf(buf, total);
+                }
+                for (byte[] marker : GUARD_DEX_MARKERS) {
+                    if (indexOf(dex, marker) >= 0) return true;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "guard jar probe failed: " + jarFile.getName() + " -> " + e.getMessage());
+        }
+        // 兜底：极少数 jar 把 guard 类放在外部（不在 dex 里），再试一次类加载
+        for (String marker : new String[]{"com.github.catvod.spider.DexNative",
+                "com.github.catvod.spider.BaseSpiderGuard"}) {
+            try {
+                Class.forName(marker, false, loader);
+                return true;
+            } catch (Throwable ignored) {
+                // 该类不存在，继续看下一个特征
+            }
+        }
+        return false;
+    }
+
+    /** 字节数组子串查找（dex 特征串匹配） */
+    private static int indexOf(byte[] haystack, byte[] needle) {
+        if (needle.length == 0 || haystack.length < needle.length) return -1;
+        outer:
+        for (int i = 0; i <= haystack.length - needle.length; i++) {
+            for (int j = 0; j < needle.length; j++) {
+                if (haystack[i + j] != needle[j]) continue outer;
+            }
+            return i;
+        }
+        return -1;
+    }
+
+    /** 找 `Init.init(Context/Application)` 静态方法（不同 jar 参数类型不同） */
+    private static Method findInitMethod(Class<?> initClass) {
+        for (Method method : initClass.getDeclaredMethods()) {
+            if (!method.getName().equals("init")) continue;
+            if (!java.lang.reflect.Modifier.isStatic(method.getModifiers())) continue;
+            Class<?>[] params = method.getParameterTypes();
+            if (params.length != 1) continue;
+            if (Context.class.isAssignableFrom(params[0]) || params[0].isAssignableFrom(Context.class)) {
+                return method;
+            }
+        }
+        return null;
+    }
+
+    /** 按候选名找无参静态方法（loader 字段的 getter 命名因混淆而异） */
+    private static Method findNoArgMethod(Class<?> clazz, String... names) {
+        for (String name : names) {
+            for (Method method : clazz.getDeclaredMethods()) {
+                if (!method.getName().equals(name)) continue;
+                if (method.getParameterTypes().length != 0) continue;
+                return method;
+            }
+        }
+        return null;
     }
 
     /**
@@ -863,12 +994,18 @@ public class SpiderPlugin extends Plugin {
         }
         File jar = new File(dir, name);
         if (jar.exists() && jar.length() > 0) {
-            if (expectedMd5 == null || expectedMd5.equalsIgnoreCase(md5OfFile(jar))) {
+            // P0-B: 缓存命中也要验 ZIP magic。死域名常返回 HTML 跳转页（实测 114 字节），
+            // 之前会被当 jar 落盘并长期缓存，之后每次加载都失败且错误信息误导。
+            if (!hasZipMagic(jar)) {
+                Log.w(TAG, "cached jar is not a valid zip, dropping: " + name);
+                if (!jar.delete()) Log.w(TAG, "cannot delete invalid cached jar");
+            } else if (expectedMd5 == null || expectedMd5.equalsIgnoreCase(md5OfFile(jar))) {
                 return jar;
-            }
-            Log.w(TAG, "cached jar md5 mismatch, re-download");
-            if (!jar.delete()) {
-                throw new IllegalStateException("cannot delete stale jar");
+            } else {
+                Log.w(TAG, "cached jar md5 mismatch, re-download");
+                if (!jar.delete()) {
+                    throw new IllegalStateException("cannot delete stale jar");
+                }
             }
         }
 
@@ -929,11 +1066,68 @@ public class SpiderPlugin extends Plugin {
                 }
                 throw new SecurityException("jar md5 mismatch");
             }
+            // P0-B: 内容必须是 ZIP。死域名/防盗链会返回 HTML 或 200 空页，
+            // 不校验就会把垃圾长期缓存成"已下载的 jar"。
+            if (!hasZipMagic(temp)) {
+                long size = temp.length();
+                if (!temp.delete()) Log.w(TAG, "cannot delete non-zip temp jar");
+                throw new java.io.IOException("下载内容不是有效 jar（" + size + " 字节，疑似 HTML/跳转页）：" + url);
+            }
             if (!temp.renameTo(jar)) {
                 throw new IllegalStateException("cannot save jar");
             }
         } finally {
             conn.disconnect();
+        }
+    }
+
+    /** 一次性清扫标记：历史版本的污染 jar 只需清理一次 */
+    private final AtomicBoolean cachePurged = new AtomicBoolean(false);
+
+    /**
+     * 清扫历史遗留的污染 jar 缓存。
+     *
+     * P0-B 只在「该源被重新加载」时才校验，用户设备上已落盘的假 jar / 半截下载
+     * 会长期残留（实测真机上有 114 字节 HTML 跳转页和 central-directory 损坏的包）。
+     * 首次加载任意源时顺带全量扫一遍 `spider-jars/`，把非 ZIP 的文件删掉——
+     * 下次用到该源会自动重新下载。
+     *
+     * 只删「明显不是 jar」的文件，不动 ABI 不符或内容有效的 jar（那些是源本身的问题）。
+     */
+    private void purgeCorruptJarCache(Context context) {
+        if (!cachePurged.compareAndSet(false, true)) return;
+        File dir = new File(context.getFilesDir(), "spider-jars");
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        int removed = 0;
+        for (File file : files) {
+            String name = file.getName();
+            if (!name.endsWith(".jar") || !file.isFile()) continue;
+            if (hasZipMagic(file)) continue;
+            long size = file.length();
+            if (file.delete()) {
+                removed++;
+                jarCache.values().removeIf(cached -> cached.getName().equals(name));
+                Log.w(TAG, "purged corrupt jar cache: " + name + " (" + size + " bytes)");
+            } else {
+                Log.w(TAG, "cannot delete corrupt jar: " + name);
+            }
+        }
+        if (removed > 0) Log.i(TAG, "purged " + removed + " corrupt jar file(s)");
+    }
+
+    /** 校验文件头是否为 ZIP magic（`PK\x03\x04` / 空包 `PK\x05\x06`） */    private static boolean hasZipMagic(File file) {
+        if (!file.exists() || file.length() < 4) return false;
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
+            int b0 = raf.read();
+            int b1 = raf.read();
+            int b2 = raf.read();
+            int b3 = raf.read();
+            if (b0 != 'P' || b1 != 'K') return false;
+            return (b2 == 3 && b3 == 4) || (b2 == 5 && b3 == 6) || (b2 == 7 && b3 == 8);
+        } catch (Exception e) {
+            Log.w(TAG, "zip magic check failed: " + file.getName(), e);
+            return false;
         }
     }
 
@@ -946,6 +1140,8 @@ public class SpiderPlugin extends Plugin {
         }
         String message = e.getMessage();
         if (message != null && message.contains("jar too large")) return false;
+        // 内容不是 zip：源站返回的是 HTML/跳转页，重试同样结果，直接判死
+        if (message != null && message.contains("不是有效 jar")) return false;
         // IOException / SocketTimeout / UnknownHost / SSLException 等一律按瞬时处理
         return true;
     }
