@@ -1,0 +1,1002 @@
+{
+  "seed": 20261028,
+  "total": 240,
+  "okPool": 109,
+  "badPool": 131,
+  "session": {
+    "restarts": 0,
+    "crashes": []
+  },
+  "results": [
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 976,
+          "items": 64,
+          "categories": [
+            "全部直播",
+            "篮球直播",
+            "足球直播",
+            "其他直播"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "全部直播",
+          "state": "success",
+          "ms": 489,
+          "items": 64,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 18,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "22:3",
+          "state": "success",
+          "ms": 291,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        }
+      },
+      "source": {
+        "id": "8b7f6c5d-5455-4b82-a4e4-fabfd0cc78e7",
+        "name": "️厂长影视|可",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://tc-new.z.wiki/autoupload/jLN4jzkamM_tezLMeEZDHtiO_OyvX7mIgxFBfDMDErs/20260703/fx9w/yqx.jar",
+        "subscriptionId": "https://yqx.imgos.cn/yqx/tv/yqx2.json",
+        "warning": null
+      },
+      "ms": 1788
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 728,
+          "items": 4,
+          "categories": [
+            "全部直播",
+            "篮球直播",
+            "足球直播",
+            "其他直播"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "全部直播",
+          "state": "success",
+          "ms": 390,
+          "items": 64,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 13,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "22:3",
+          "state": "success",
+          "ms": 142,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        }
+      },
+      "source": {
+        "id": "bced98a4-4152-4d4c-b7e0-9ff2adc8c897",
+        "name": "🐟斗鱼┃直播",
+        "type": "spider",
+        "kind": "js",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/FTY/drpy2.min.js",
+        "subscriptionId": "https://qist.wyfc.qzz.io/fty.json",
+        "warning": "该源是 JS 爬虫（drpy），由内置引擎执行；规则兼容性问题可能导致部分功能不可用"
+      },
+      "ms": 1286
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 203,
+          "items": 20,
+          "categories": [
+            "番剧",
+            "电影",
+            "纪录",
+            "国创",
+            "剧集",
+            "综艺"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "番剧",
+          "state": "success",
+          "ms": 160,
+          "items": 20,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 1853,
+          "title": "名侦探柯南（中配）",
+          "lines": [
+            {
+              "name": "哔哩影视",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 1277,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 1321,
+          "error": {
+            "code": "E_UNKNOWN",
+            "message": "操作失败，请重试"
+          }
+        },
+        "search": {
+          "ok": true,
+          "keyword": "名侦探柯",
+          "state": "success",
+          "ms": 1012,
+          "results": 28,
+          "all": 27,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "b6ee322a-67f9-45e8-8b49-700ae9b2f55d",
+        "name": "哔哩 • 视频",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 4771
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 1114,
+          "items": 50,
+          "categories": [
+            "最新",
+            "top250",
+            "剧集",
+            "电影"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "最新",
+          "state": "success",
+          "ms": 1377,
+          "items": 50,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 895,
+          "title": "虎度门",
+          "lines": [],
+          "episodes": 0,
+          "error": null
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "虎度门",
+          "state": "success",
+          "ms": 1023,
+          "results": 1,
+          "all": 2,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "0d504fdd-875e-4933-be98-7003ade5aee8",
+        "name": "指南 • 4K",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 4428
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 1002,
+          "items": 20,
+          "categories": [
+            "电影",
+            "剧集",
+            "动画"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "电影",
+          "state": "success",
+          "ms": 1635,
+          "items": 20,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 1634,
+          "title": "末世行者",
+          "lines": [],
+          "episodes": 0,
+          "error": null
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "末世行者",
+          "state": "success",
+          "ms": 916,
+          "results": 1,
+          "all": 1,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "7f0d69e8-8142-408f-ad0a-599bbce9635c",
+        "name": "茉莉 • 4K",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 5626
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 5821,
+          "items": 72,
+          "categories": [
+            "闪电电影",
+            "闪电剧集",
+            "闪电综艺",
+            "闪电动漫",
+            "闪电短剧"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "闪电电影",
+          "state": "success",
+          "ms": 2316,
+          "items": 72,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 620,
+          "title": "年会不能停！2",
+          "lines": [],
+          "episodes": 0,
+          "error": null
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "年会不能",
+          "state": "success",
+          "ms": 906,
+          "results": 2,
+          "all": 1,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "bd150779-ebf4-4bad-8d4c-09b9467f7f92",
+        "name": "闪电 • 4K",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 9684
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 4289,
+          "items": 24,
+          "categories": [
+            "排行榜",
+            "韩剧",
+            "综艺",
+            "电影",
+            "明星"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "排行榜",
+          "state": "success",
+          "ms": 31,
+          "items": 24,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 743,
+          "title": "在你灿烂的季节",
+          "lines": [
+            {
+              "name": "正片",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 12,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 15412,
+          "error": {
+            "code": "E_NO_PLAY_URL",
+            "message": "未能从解析页取得播放地址，请换线路"
+          }
+        },
+        "search": {
+          "ok": true,
+          "keyword": "在你灿烂",
+          "state": "success",
+          "ms": 507,
+          "results": 22,
+          "all": 22,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "fd536a16-dd33-4bca-8ca6-491ec6240b11",
+        "name": "韩圈 • APP",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 21006
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 50,
+          "items": 10,
+          "categories": [
+            "最新",
+            "热门",
+            "推荐",
+            "连载",
+            "评书"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "最新",
+          "state": "success",
+          "ms": 283,
+          "items": 30,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 724,
+          "title": "鹤唳华亭|罗晋、李一桐主演同名影视原著（满超/毛星月双播）",
+          "lines": [
+            {
+              "name": "听友",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 160,
+          "error": null
+        },
+        "resolve": {
+          "ok": true,
+          "ms": 547,
+          "format": "mp4",
+          "isLocal": false,
+          "isLive": false,
+          "urlScheme": "https",
+          "urlHost": "file.hgeuz.cn",
+          "headers": [],
+          "subtitles": 0,
+          "expiresAt": null
+        },
+        "search": {
+          "ok": true,
+          "keyword": "鹤唳华亭",
+          "state": "success",
+          "ms": 809,
+          "results": 3,
+          "all": 3,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "playTarget": {
+        "mediaId": "9af53267-9955-4e80-ad4e-56417de8883b:8838070245~1i03fm7",
+        "episodeId": "9af53267-9955-4e80-ad4e-56417de8883b-8838070245-1i03fm7:9af53267-9955-4e80-ad4e-56417de8883b-8838070245-1i03fm7-0-wmcfdq:1~15qcxf8",
+        "lineId": "9af53267-9955-4e80-ad4e-56417de8883b-8838070245-1i03fm7:0~wmcfdq"
+      },
+      "source": {
+        "id": "9af53267-9955-4e80-ad4e-56417de8883b",
+        "name": "听友 • 听书",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 2445,
+      "player": {
+        "state": {
+          "loading": false,
+          "engineKind": "video",
+          "error": null,
+          "duration": 663,
+          "currentTime": 2.31,
+          "playing": true,
+          "waiting": false,
+          "qualities": [],
+          "subtitles": 0,
+          "mediaId": "9af53267-9955-4e80-ad4e-56417de8883b:8838070245~1i03fm7",
+          "lineId": "9af53267-9955-4e80-ad4e-56417de8883b-8838070245-1i03fm7:0~wmcfdq"
+        },
+        "vstate": {
+          "readyState": 4,
+          "networkState": 2,
+          "paused": false,
+          "currentSrc": "https://file.hgeuz.cn/stream/eJziCU2TNneOq6qKrC0IjnSqqQ4rrA6NiKtLY6rVAAQAAP__h_4Jsg..?ts=1793153532&sign=52aad715acac874",
+          "errorCode": null,
+          "videoWidth": 0,
+          "videoHeight": 0
+        },
+        "ready": true
+      }
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 647,
+          "items": 2,
+          "categories": [
+            "枣梆",
+            "豫剧",
+            "黄梅戏",
+            "越剧",
+            "京剧",
+            "评剧",
+            "曲剧",
+            "坠子",
+            "秦腔",
+            "河北梆子",
+            "潮剧",
+            "粤剧"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "枣梆",
+          "state": "success",
+          "ms": 96,
+          "items": 2,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 125,
+          "title": "枣梆《生日》潘海英版",
+          "lines": [
+            {
+              "name": "在线播放",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 1,
+          "error": null
+        },
+        "resolve": {
+          "ok": true,
+          "ms": 265,
+          "format": "hls",
+          "isLocal": false,
+          "isLive": false,
+          "urlScheme": "http",
+          "urlHost": "flytx.daoran.tv",
+          "headers": [],
+          "subtitles": 0,
+          "expiresAt": null
+        },
+        "search": {
+          "ok": true,
+          "keyword": "枣梆《生",
+          "state": "success",
+          "ms": 209,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": null
+        }
+      },
+      "playTarget": {
+        "mediaId": "c5df7129-feb8-42be-be84-27ca08d5e702:0dotpfehnm484017~saao06",
+        "episodeId": "c5df7129-feb8-42be-be84-27ca08d5e702-0dotpfehnm484017-saao06:c5df7129-feb8-42be-be84-27ca08d5e702-0dotpfehnm484017-saao06-0-enwrjs:1~1qdjrq7",
+        "lineId": "c5df7129-feb8-42be-be84-27ca08d5e702-0dotpfehnm484017-saao06:0~enwrjs"
+      },
+      "source": {
+        "id": "c5df7129-feb8-42be-be84-27ca08d5e702",
+        "name": "戏曲 • 多多",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 1370,
+      "player": {
+        "state": {
+          "loading": false,
+          "engineKind": "video",
+          "error": null,
+          "duration": 0,
+          "currentTime": 0,
+          "playing": true,
+          "waiting": false,
+          "qualities": [],
+          "subtitles": 0,
+          "mediaId": "c5df7129-feb8-42be-be84-27ca08d5e702:0dotpfehnm484017~saao06",
+          "lineId": "c5df7129-feb8-42be-be84-27ca08d5e702-0dotpfehnm484017-saao06:0~enwrjs"
+        },
+        "vstate": {
+          "readyState": 4,
+          "networkState": 1,
+          "paused": false,
+          "currentSrc": "http://flytx.daoran.tv/sv/49a75a2a-19cf7c76741/49a75a2a-19cf7c76741.m3u8?auth_key=1793153456-6cc2b4c1a8b84ca3b9b6f15f274",
+          "errorCode": null,
+          "videoWidth": 1440,
+          "videoHeight": 1080
+        },
+        "ready": true
+      }
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": false,
+          "state": "empty",
+          "ms": 3599,
+          "items": 0,
+          "categories": [
+            "电影",
+            "剧集",
+            "动漫"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": false,
+          "name": "电影",
+          "state": "empty",
+          "ms": 305,
+          "items": 0,
+          "error": null
+        },
+        "detail": {
+          "skipped": "no-items"
+        },
+        "resolve": {
+          "ok": true,
+          "ms": 261,
+          "format": "hls",
+          "isLocal": false,
+          "isLive": false,
+          "urlScheme": "http",
+          "urlHost": "flytx.daoran.tv",
+          "headers": [],
+          "subtitles": 0,
+          "expiresAt": null
+        },
+        "search": {
+          "ok": false,
+          "keyword": "测试",
+          "state": "empty",
+          "ms": 169,
+          "results": 0,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": null
+        }
+      },
+      "playTarget": {
+        "mediaId": "c5df7129-feb8-42be-be84-27ca08d5e702:0dotpfehnm484017~saao06",
+        "episodeId": "c5df7129-feb8-42be-be84-27ca08d5e702-0dotpfehnm484017-saao06:c5df7129-feb8-42be-be84-27ca08d5e702-0dotpfehnm484017-saao06-0-enwrjs:1~1qdjrq7",
+        "lineId": "c5df7129-feb8-42be-be84-27ca08d5e702-0dotpfehnm484017-saao06:0~enwrjs"
+      },
+      "source": {
+        "id": "56dfcf07-1c86-4fe2-b375-bcf54625278b",
+        "name": "💓‍观影┃4K💓‍",
+        "type": "spider",
+        "kind": "jar",
+        "health": "unreachable",
+        "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg",
+        "subscriptionId": "https://9280.kstore.space/newwex.json",
+        "warning": null
+      },
+      "ms": 4657,
+      "player": {
+        "state": {
+          "loading": false,
+          "engineKind": "video",
+          "error": null,
+          "duration": 6374,
+          "currentTime": 2.81,
+          "playing": true,
+          "waiting": false,
+          "qualities": [],
+          "subtitles": 0,
+          "mediaId": "c5df7129-feb8-42be-be84-27ca08d5e702:0dotpfehnm484017~saao06",
+          "lineId": "c5df7129-feb8-42be-be84-27ca08d5e702-0dotpfehnm484017-saao06:0~enwrjs"
+        },
+        "vstate": {
+          "readyState": 4,
+          "networkState": 1,
+          "paused": false,
+          "currentSrc": "http://flytx.daoran.tv/sv/49a75a2a-19cf7c76741/49a75a2a-19cf7c76741.m3u8?auth_key=1793153456-6cc2b4c1a8b84ca3b9b6f15f274",
+          "errorCode": null,
+          "videoWidth": 1440,
+          "videoHeight": 1080
+        },
+        "ready": true
+      }
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 3379,
+          "items": 15,
+          "categories": [
+            "漫剧",
+            "漫榜",
+            "剧榜",
+            "热搜榜"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "漫剧",
+          "state": "success",
+          "ms": 673,
+          "items": 15,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 1887,
+          "title": "三千庇护第三十七季",
+          "lines": [
+            {
+              "name": "免费分享！切勿上当！",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 78,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 1108,
+          "error": {
+            "code": "E_NO_PLAY_URL",
+            "message": "请到配置中心配置百度网盘，夸克网盘，uc网盘cookie！"
+          }
+        },
+        "search": {
+          "ok": true,
+          "keyword": "三千庇护",
+          "state": "success",
+          "ms": 249,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "35b5433c-18e9-4f65-826d-16a17082a393",
+        "name": "🍉漫剧┃小龙🍉",
+        "type": "spider",
+        "kind": "jar",
+        "health": "unreachable",
+        "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg",
+        "subscriptionId": "https://9280.kstore.space/newwex.json",
+        "warning": null
+      },
+      "ms": 7328
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 3975,
+          "items": 30,
+          "categories": [
+            "华语男",
+            "华语女",
+            "华语组合",
+            "日韩男",
+            "日韩女",
+            "日韩组合",
+            "欧美男",
+            "欧美女",
+            "欧美组合",
+            "其他"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "华语男",
+          "state": "success",
+          "ms": 275,
+          "items": 30,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 2204,
+          "title": "方大同",
+          "lines": [
+            {
+              "name": "免费分享！切勿上当！",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 300,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 2622,
+          "error": {
+            "code": "E_UNKNOWN",
+            "message": "操作失败，请重试"
+          }
+        },
+        "search": {
+          "ok": true,
+          "keyword": "方大同",
+          "state": "success",
+          "ms": 238,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "f3630c5d-4078-4484-ade5-8976f73379bc",
+        "name": "🎼小酷┃音乐🎼",
+        "type": "spider",
+        "kind": "jar",
+        "health": "unreachable",
+        "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg",
+        "subscriptionId": "https://9280.kstore.space/newwex.json",
+        "warning": null
+      },
+      "ms": 9336
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 120,
+          "items": 4,
+          "categories": [
+            "全部直播",
+            "篮球直播",
+            "足球直播",
+            "其他直播"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "全部直播",
+          "state": "success",
+          "ms": 3185,
+          "items": 64,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 10,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "22:3",
+          "state": "success",
+          "ms": 153,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        }
+      },
+      "source": {
+        "id": "de3782eb-dbf7-4ecc-9d01-d247b9b6a231",
+        "name": "🎼蜻蜓┃电台🎼",
+        "type": "spider",
+        "kind": "jar",
+        "health": "unreachable",
+        "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg",
+        "subscriptionId": "https://9280.kstore.space/newwex.json",
+        "warning": null
+      },
+      "ms": 3476
+    }
+  ],
+  "partial": true
+}

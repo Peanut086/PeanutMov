@@ -1,0 +1,147 @@
+{
+  "seed": 20261028,
+  "total": 240,
+  "okPool": 109,
+  "badPool": 131,
+  "session": {
+    "restarts": 0,
+    "crashes": []
+  },
+  "results": [
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 976,
+          "items": 64,
+          "categories": [
+            "全部直播",
+            "篮球直播",
+            "足球直播",
+            "其他直播"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "全部直播",
+          "state": "success",
+          "ms": 489,
+          "items": 64,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 18,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "22:3",
+          "state": "success",
+          "ms": 291,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        }
+      },
+      "source": {
+        "id": "8b7f6c5d-5455-4b82-a4e4-fabfd0cc78e7",
+        "name": "️厂长影视|可",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://tc-new.z.wiki/autoupload/jLN4jzkamM_tezLMeEZDHtiO_OyvX7mIgxFBfDMDErs/20260703/fx9w/yqx.jar",
+        "subscriptionId": "https://yqx.imgos.cn/yqx/tv/yqx2.json",
+        "warning": null
+      },
+      "ms": 1788
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 728,
+          "items": 4,
+          "categories": [
+            "全部直播",
+            "篮球直播",
+            "足球直播",
+            "其他直播"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "全部直播",
+          "state": "success",
+          "ms": 390,
+          "items": 64,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 13,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "22:3",
+          "state": "success",
+          "ms": 142,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        }
+      },
+      "source": {
+        "id": "bced98a4-4152-4d4c-b7e0-9ff2adc8c897",
+        "name": "🐟斗鱼┃直播",
+        "type": "spider",
+        "kind": "js",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/FTY/drpy2.min.js",
+        "subscriptionId": "https://qist.wyfc.qzz.io/fty.json",
+        "warning": "该源是 JS 爬虫（drpy），由内置引擎执行；规则兼容性问题可能导致部分功能不可用"
+      },
+      "ms": 1286
+    }
+  ],
+  "partial": true
+}

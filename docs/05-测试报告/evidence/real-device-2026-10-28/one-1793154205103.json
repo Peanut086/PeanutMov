@@ -1,0 +1,562 @@
+{
+  "steps": {
+    "browse": {
+      "ok": true,
+      "state": "success",
+      "ms": 30124,
+      "items": 30,
+      "categories": [
+        "最新",
+        "热门",
+        "推荐",
+        "连载",
+        "评书"
+      ],
+      "hasMore": false,
+      "error": null
+    },
+    "category": {
+      "ok": false,
+      "name": "最新",
+      "ms": 60001,
+      "error": {
+        "code": "Error",
+        "message": "TIMEOUT:category:60000"
+      }
+    },
+    "detail": {
+      "ok": true,
+      "state": "success",
+      "ms": 30048,
+      "title": "鹤唳华亭|罗晋、李一桐主演同名影视原著（满超/毛星月双播）",
+      "lines": [
+        {
+          "name": "听友",
+          "format": "mp4"
+        }
+      ],
+      "episodes": 160,
+      "error": {
+        "code": "E_TIMEOUT",
+        "message": "源响应超时（30 秒）"
+      }
+    },
+    "resolve": {
+      "ok": false,
+      "ms": 30037,
+      "error": {
+        "code": "E_SOURCE_UNAVAILABLE",
+        "message": "该源暂不可用，可切换其他源"
+      }
+    },
+    "search": {
+      "ok": true,
+      "keyword": "鹤唳华亭",
+      "state": "success",
+      "ms": 20422,
+      "results": 3,
+      "all": 0,
+      "candidates": 1,
+      "filteredOut": 0,
+      "failed": [],
+      "error": {
+        "code": "E_TIMEOUT",
+        "message": "源响应超时（30 秒）"
+      }
+    }
+  },
+  "source": {
+    "id": "9af53267-9955-4e80-ad4e-56417de8883b",
+    "name": "听友 • 听书",
+    "type": "spider",
+    "kind": "jar",
+    "health": "ok",
+    "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+    "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+    "warning": null
+  },
+  "ms": 170658,
+  "restartedBefore": false,
+  "console": [
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 枫叶 • 影视 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 光鸭 • 云盘 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 堇夏 • 听书 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 夸克 • 网盘 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🌐飞球┃体育🌐 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💃跳舞┃教学💃 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💓蜡笔┃4K💓 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💓Emby┃4K💓 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 👼兔兔┃儿歌👼 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎠卡卡┃综合🎠 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💓Emby001┃4K💓 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎼易听┃音乐🎼 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💥咸鱼┃秒播💥 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💓‍观影┃4K💓‍ 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💥瓜子┃秒播💥 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 👼贝贝┃儿歌👼 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💥柿子┃秒播💥 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎼酷听┃音乐🎼 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎠趣搜┃百度🎠 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎠爱盘┃综合🎠 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎠盘搜┃综合🎠 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💓盘迷┃4K💓 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎼KTV┃音乐🎼 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 网盘|Alist[jar] 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎠九七┃综合🎠 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 👁️WebDav┃DIY👁️ 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎎戏曲┃秒播🎎 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 👁Vod┃DIY👁️ 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🅱️哔哩┃直播🅱️ 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💓虎斑┃4K💓 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💥柠檬┃秒播💥 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎃‍小马┃听书🎃 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🐮我的┃网盘🐮 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 💓多多┃4K💓 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 👼宝宝┃儿歌👼 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎼轮回┃舞曲🎼 3"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 连续体检失败，已自动禁用 🎃‍爱上┃听书🎃 3"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657250) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 📽推送 http://tv.nxog.top/m/jar.php?id=ou Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38657195) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#38657251) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657251) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#38657252) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657252) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cScreenOrientation.lock (#38657253) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cScreenOrientation.lock (#38657253) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#38656254) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#38657254) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657254) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657254) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#38657255) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657255) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657255) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#38657256) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#38657257) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#38657258) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657256) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657257) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657257) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 详情刷新失败，使用缓存 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#38657259) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657258) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657258) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657259) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38657259) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#38657260) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    }
+  ]
+}

@@ -278,6 +278,9 @@ async function playEpisode(ep: Episode | null, restart = false): Promise<void> {
   });
 }
 
+/** 播放页面跳转进行中（AC-92）：避免用户误触多次 */
+const playingNavigate = ref(false);
+
 async function onPrimary(): Promise<void> {
   const rec = progressRecord.value;
   const restart = isFinished.value;
@@ -286,18 +289,38 @@ async function onPrimary(): Promise<void> {
     toast.error('暂无可播放剧集');
     return;
   }
+  // AC-92：防止重复点击，显示加载状态
+  if (playingNavigate.value) {
+    toast.warning('正在打开播放页，请稍候');
+    return;
+  }
   // AC-68：记录集号已下线时先给出明确提示，再从第 1 集开始，不静默跳集
   const offline = offlineEpisodeNumber.value;
   if (offline !== null) {
     toast.info(offlineEpisodeMessage(offline), 3600);
-    await playEpisode(ep, restart);
+    playingNavigate.value = true;
+    try {
+      await playEpisode(ep, restart);
+    } finally {
+      playingNavigate.value = false;
+    }
     return;
   }
   if (!isSeries.value && rec && !restart) {
-    await playEpisode(ep, false);
+    playingNavigate.value = true;
+    try {
+      await playEpisode(ep, false);
+    } finally {
+      playingNavigate.value = false;
+    }
     return;
   }
-  await playEpisode(ep, restart);
+  playingNavigate.value = true;
+  try {
+    await playEpisode(ep, restart);
+  } finally {
+    playingNavigate.value = false;
+  }
 }
 
 async function onEpisodeSelect(ep: Episode): Promise<void> {
@@ -549,11 +572,11 @@ function openCompliance(): void {
           <button
             class="btn btn--primary btn--lg detail-actions__main"
             type="button"
-            :aria-busy="prechecking ? 'true' : undefined"
+            :aria-busy="prechecking || playingNavigate ? 'true' : undefined"
             @click="onPrimary"
           >
             <IconPlay :size="20" />
-            {{ primaryLabel }}
+            {{ playingNavigate ? '正在打开播放页…' : primaryLabel }}
           </button>
           <button
             class="detail-actions__icon"
@@ -630,8 +653,10 @@ function openCompliance(): void {
             :watched-numbers="watchedNumbers"
             :downloaded-ids="downloadedIds"
             :unavailable-ids="unavailableIds"
+            :playing-navigate="prechecking || playingNavigate"
             @select="onEpisodeSelect"
             @unavailable="toast.error('该集暂无可播放地址')"
+            @playing="(ep) => { toast.warning('正在打开播放页，请稍候'); }"
           />
         </section>
 
@@ -790,6 +815,12 @@ function openCompliance(): void {
 .detail-actions__main {
   flex: 1 1 auto;
   width: auto;
+}
+
+.detail-actions__main[aria-busy="true"] {
+  opacity: 0.75;
+  cursor: wait;
+  pointer-events: none;
 }
 
 .detail-actions__icon {

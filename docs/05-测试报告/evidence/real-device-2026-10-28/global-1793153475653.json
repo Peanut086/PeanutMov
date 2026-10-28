@@ -1,0 +1,1092 @@
+{
+  "steps": {
+    "home": {
+      "state": "success",
+      "ms": 514,
+      "recent": 8,
+      "currentSource": "🏝奥特┃多线",
+      "error": null
+    },
+    "searchAll": {
+      "state": "success",
+      "settled": true,
+      "ms": 20667,
+      "results": 44,
+      "all": 568,
+      "groups": 287,
+      "candidates": 99,
+      "filteredOut": 142,
+      "failed": 40,
+      "failedByCode": {
+        "E_SOURCE_UNAVAILABLE": 33,
+        "E_PARSE": 5,
+        "E_UNKNOWN": 2
+      },
+      "failedBySource": [
+        {
+          "name": "巴士动漫",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_Dm84）：该源依赖的原生库无法在当前设备加载（多为 ARM 专有源，模拟器不可用）：dlopen failed: library \"/data/user/0/com.qoder.cinema/cache/.ftyfn"
+        },
+        {
+          "name": "新6V磁力",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_SixV）：该源依赖的原生库无法在当前设备加载（多为 ARM 专有源，模拟器不可用）：dlopen failed: library \"/data/user/0/com.qoder.cinema/cache/.ftyfn"
+        },
+        {
+          "name": "哔哔演唱会┃弹幕",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: 爬虫类缺失（Didn't find class \"csp_Bili\" on path: DexPathList[[zip file \"/data/user/0/com.qoder.cinema/files/spider-jars/d4c9f8dcb98299dee1b7ea44e142e018.jar\""
+        },
+        {
+          "name": "🌟立播┃不卡",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_LibvioGuard）：IllegalStateException: Init.init() 未初始化 DexClassLoader"
+        },
+        {
+          "name": "🐯虎牙┃直播",
+          "kind": "js",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "规则调用失败: 搜索执行失败: expecting ';'"
+        },
+        {
+          "name": "🧲┃荐片┃磁力",
+          "kind": "js",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "规则加载失败: Unable to resolve host \"rihou.vip\": No address associated with hostname"
+        },
+        {
+          "name": "🐟斗鱼┃直播",
+          "kind": "js",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "规则调用失败: 搜索执行失败: 'rule_fetch_params' is not defined"
+        },
+        {
+          "name": "哔哔合集┃弹幕",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_Bili）：该源依赖的原生库无法在当前设备加载（多为 ARM 专有源，模拟器不可用）：dlopen failed: library \"/data/user/0/com.qoder.cinema/cache/.ftyfn"
+        },
+        {
+          "name": "厂长",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: 爬虫类缺失（Didn't find class \"csp_NewCz\" on path: DexPathList[[zip file \"/data/user/0/com.qoder.cinema/files/spider-jars/d4c9f8dcb98299dee1b7ea44e142e018.jar"
+        },
+        {
+          "name": "🐻剧圈┃多线",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.searchContent(java.lang.String, boolean)' on a"
+        },
+        {
+          "name": "糯米",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: 爬虫类缺失（Didn't find class \"csp_Nmyswv\" on path: DexPathList[[zip file \"/data/user/0/com.qoder.cinema/files/spider-jars/d4c9f8dcb98299dee1b7ea44e142e018.ja"
+        },
+        {
+          "name": "玩偶哥哥(网盘)",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: 爬虫类缺失（Didn't find class \"csp_WoGG\" on path: DexPathList[[zip file \"/data/user/0/com.qoder.cinema/files/spider-jars/d4c9f8dcb98299dee1b7ea44e142e018.jar\""
+        },
+        {
+          "name": "苹果",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: 爬虫类缺失（Didn't find class \"csp_LiteApple\" on path: DexPathList[[zip file \"/data/user/0/com.qoder.cinema/files/spider-jars/d4c9f8dcb98299dee1b7ea44e142e018"
+        },
+        {
+          "name": "💓快影┃4K💓",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewKuaiYingGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/co"
+        },
+        {
+          "name": "💥小枫┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexFengYe4KGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com."
+        },
+        {
+          "name": "文采",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: 爬虫类缺失（Didn't find class \"csp_Jpys\" on path: DexPathList[[zip file \"/data/user/0/com.qoder.cinema/files/spider-jars/d4c9f8dcb98299dee1b7ea44e142e018.jar\""
+        },
+        {
+          "name": "💓逸动┃4K💓",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewYiDong4KGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/co"
+        },
+        {
+          "name": "💥粉猪┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexAppV7Guard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.qod"
+        },
+        {
+          "name": "💓‍蜗牛┃4K💓‍",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewWoNiu4KGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com"
+        },
+        {
+          "name": "💥零七┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexAppV7Guard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.qod"
+        },
+        {
+          "name": "🍉短剧┃小薇🍉",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_DuanJuAiWeiGuanGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/"
+        },
+        {
+          "name": "💓盘库┃4K💓",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewPianKuGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com."
+        },
+        {
+          "name": "本地 • 视频",
+          "kind": "jar",
+          "code": "E_PARSE",
+          "msg": "爬虫未返回数据"
+        },
+        {
+          "name": "💓剧透┃4K💓",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewJuTouGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.q"
+        },
+        {
+          "name": "️厂长影视|可",
+          "kind": "jar",
+          "code": "E_PARSE",
+          "msg": "爬虫未返回数据"
+        },
+        {
+          "name": "🍉短剧┃星星🍉",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_DuanJuAiXingYaGuard）：IllegalStateException: Init.init() 未初始化 DexClassLoader"
+        },
+        {
+          "name": "💥文才┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexAiWenCaiGuard）：IllegalStateException: Init.init() 未初始化 DexClassLoader"
+        },
+        {
+          "name": "🍉短剧┃好看🍉",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.searchContent(java.lang.String, boolean)' on a"
+        },
+        {
+          "name": "💓立播┃4K💓",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewLibvioGuard）：IllegalStateException: Init.init() 未初始化 DexClassLoader"
+        },
+        {
+          "name": "🎃‍小马┃听书🎃",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_BookHeMaGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.qod"
+        },
+        {
+          "name": "💥师兄┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexAppV7Guard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.qod"
+        },
+        {
+          "name": "🅱‍哔哩┃合集🅱‍",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_BiliGuard）：IllegalStateException: Init.init() 未初始化 DexClassLoader"
+        },
+        {
+          "name": "世界 • 听书",
+          "kind": null,
+          "code": "E_UNKNOWN",
+          "msg": "操作失败，请重试"
+        },
+        {
+          "name": "🤡稀饭┃动漫🤡",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.searchContent(java.lang.String, boolean)' on a"
+        },
+        {
+          "name": "🐯‍虎牙┃直播🐯‍",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.searchContent(java.lang.String, boolean)' on a"
+        },
+        {
+          "name": "星芽 • 短剧",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: JSONException: No value for data"
+        },
+        {
+          "name": "红果 • 短剧",
+          "kind": null,
+          "code": "E_UNKNOWN",
+          "msg": "操作失败，请重试"
+        },
+        {
+          "name": "番社 • 动漫",
+          "kind": "jar",
+          "code": "E_PARSE",
+          "msg": "爬虫未返回数据"
+        },
+        {
+          "name": "面包 • 影视",
+          "kind": "jar",
+          "code": "E_PARSE",
+          "msg": "爬虫未返回数据"
+        },
+        {
+          "name": "果果 • 短剧",
+          "kind": "jar",
+          "code": "E_PARSE",
+          "msg": "爬虫未返回数据"
+        }
+      ],
+      "error": null
+    },
+    "live": {
+      "ms": 3154,
+      "hash": "#/live"
+    },
+    "history": {
+      "hash": "#/history",
+      "records": null
+    },
+    "favorites": {
+      "hash": "#/favorites",
+      "records": null
+    },
+    "subscriptions": {
+      "hash": "#/settings/subscriptions",
+      "summaries": 7
+    },
+    "sources": {
+      "hash": "#/settings/sources",
+      "count": 241
+    }
+  },
+  "console": [
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656558) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656560) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#38656254) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656559) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656560) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 🐮【免费分享】🐮 http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656556) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656561) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656562) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656563) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656561) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 哔哔演唱会┃弹幕 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656564) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656563) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 小学┃课堂 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656565) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656562) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 少儿┃教育 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656566) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656566) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 哔哔合集┃弹幕 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656567) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656564) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 文采 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656568) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656565) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 玩偶哥哥(网盘) https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656569) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656567) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 厂长 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656570) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656568) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 初中┃课堂 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656571) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656570) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 糯米 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656572) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656569) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 巴士动漫 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#38656573) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656571) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 一直播LIVE https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656574) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656572) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 新6V磁力 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656575) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#38656573) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/jianpian.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#38656576) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#38656576) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/drpy2.min.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656574) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 苹果 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656577) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656578) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#38656254) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656579) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656578) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 哔哔演唱会┃弹幕 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656577) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 抠抠(网盘搜索) https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656579) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 高中┃课堂 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#38656462) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656580) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656581) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656581) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 🚑急救┃教学 https://qist.wyfc.qzz.io/jar/fan.txt Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656582) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656580) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 少儿┃教育 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656582) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 🏝奥特┃多线 https://qist.wyfc.qzz.io/jar/fan.txt Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656583) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656583) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 🐻剧圈┃多线 https://qist.wyfc.qzz.io/jar/fan.txt Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656584) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#38656585) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656584) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 文采 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656585) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 小学┃课堂 https://files.zohopublic.com.cn/public/workdrive-public/download/gd5ic01b6d4922692401eac6018178d033d06 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#38656575) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    }
+  ]
+}

@@ -25,6 +25,8 @@ const props = withDefaults(
     unavailableIds?: string[];
     /** 起播批次大小 */
     batchSize?: number;
+    /** 正在打开播放页的标志，由父级传入 */
+    playingNavigate?: boolean;
   }>(),
   {
     currentId: null,
@@ -32,12 +34,14 @@ const props = withDefaults(
     downloadedIds: () => [],
     unavailableIds: () => [],
     batchSize: 50,
+    playingNavigate: false,
   },
 );
 
 const emit = defineEmits<{
   (e: 'select', episode: Episode): void;
   (e: 'unavailable', episode: Episode): void;
+  (e: 'playing'): void;
 }>();
 
 const visibleCount = ref(props.batchSize);
@@ -67,6 +71,11 @@ function isUnavailable(ep: Episode): boolean {
 }
 
 function onClick(ep: Episode): void {
+  // AC-92：防止重复点击
+  if (props.playingNavigate) {
+    emit('playing');
+    return;
+  }
   // 地址探测由父级完成（详情页播放前预检 `resolvePlay`），
   // 探测为空的集由父级写入 `unavailableIds`，这里渲染禁用态并回传 `unavailable`。
   if (isUnavailable(ep)) {
