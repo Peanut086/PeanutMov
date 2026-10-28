@@ -1,0 +1,547 @@
+{
+  "steps": {
+    "browse": {
+      "ok": true,
+      "state": "success",
+      "ms": 739,
+      "items": 30,
+      "categories": [
+        "花卷高帧",
+        "花卷电影",
+        "花卷剧集",
+        "花卷动漫",
+        "花卷AI短剧",
+        "花卷综艺",
+        "4K原盘"
+      ],
+      "hasMore": true,
+      "error": null
+    },
+    "category": {
+      "ok": true,
+      "name": "花卷高帧",
+      "state": "success",
+      "ms": 774,
+      "items": 40,
+      "error": null
+    },
+    "detail": {
+      "ok": true,
+      "state": "success",
+      "ms": 1219,
+      "title": "不存在的罪人（臻彩）",
+      "lines": [],
+      "episodes": 0,
+      "error": null
+    },
+    "resolve": {
+      "skipped": "no-line-or-episode"
+    },
+    "search": {
+      "ok": true,
+      "keyword": "不存在的",
+      "state": "success",
+      "ms": 390,
+      "results": 5,
+      "all": 0,
+      "candidates": 0,
+      "filteredOut": 1,
+      "failed": [],
+      "error": null
+    }
+  },
+  "source": {
+    "id": "6a34871d-6ca2-4861-827c-be554d3458a1",
+    "name": "🧲┃荐片┃磁力",
+    "type": "spider",
+    "kind": "js",
+    "health": "ok",
+    "baseUrl": "http://rihou.vip:55/lib/drpy2.min.js",
+    "subscriptionId": "http://xhztv.top/4k.json",
+    "warning": "该源是 JS 爬虫（drpy），由内置引擎执行；规则兼容性问题可能导致部分功能不可用"
+  },
+  "ms": 3173,
+  "restartedBefore": false,
+  "console": [
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#36342516) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342500) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342517) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342505) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342518) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#36342516) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342511) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342519) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#36342520) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#36342520) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342518) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342510) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342519) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342514) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342515) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342517) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#36342507) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342521) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342522) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342522) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/jianpian.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342523) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342521) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/jianpian.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342524) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342523) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/drpy2.min.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342524) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/drpy2.min.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342525) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342525) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/jianpian.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342526) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342526) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/drpy2.min.js Object"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 取首个分类失败，回退空 tid 🧲┃荐片┃磁力 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342527) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342527) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/jianpian.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342528) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342528) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/drpy2.min.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#36342529) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#36342529) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#36342530) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#36342530) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    }
+  ]
+}

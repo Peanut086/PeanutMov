@@ -1,0 +1,80 @@
+{
+  "seed": 20261027,
+  "total": 182,
+  "okPool": 17,
+  "badPool": 165,
+  "picked": [
+    {
+      "id": "29d8d558-0631-46f6-8d8d-ea3e889ae242",
+      "name": "花卷 • 4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar"
+    },
+    {
+      "id": "6a34871d-6ca2-4861-827c-be554d3458a1",
+      "name": "🧲┃荐片┃磁力",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "http://rihou.vip:55/lib/drpy2.min.js"
+    },
+    {
+      "id": "9bfe9a2b-58b2-4ed8-924b-a38676e44367",
+      "name": "百度┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://api.apibdzy.com/api.php/provide/vod?ac=list"
+    },
+    {
+      "id": "a5e60667-5d15-4ad4-93e8-9501f5a34577",
+      "name": "暴風┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://bfzyapi.com/api.php/provide/vod"
+    },
+    {
+      "id": "f2de2b5d-31af-4295-8be3-a03af32e2b9e",
+      "name": "索尼┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://suoniapi.com/api.php/provide/vod"
+    },
+    {
+      "id": "d015ac3a-cccb-4668-9ce7-4298fa92f445",
+      "name": "🎼轮回┃舞曲🎼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg"
+    },
+    {
+      "id": "af80f197-32b5-44e7-a747-aa9f7b6d14eb",
+      "name": "👼宝宝┃儿歌👼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg"
+    },
+    {
+      "id": "f5e941b7-a412-4c8f-bf27-d40ed3190e8a",
+      "name": "海外看┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "unreachable",
+      "enabled": true,
+      "baseUrl": "https://haiwaikan.com/api.php/provide/vod"
+    }
+  ]
+}

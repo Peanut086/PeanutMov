@@ -1,0 +1,299 @@
+{
+  "seed": 20261028,
+  "total": 158,
+  "okPool": 10,
+  "badPool": 148,
+  "session": {
+    "restarts": 0,
+    "crashes": []
+  },
+  "results": [
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 1630,
+          "items": 25,
+          "categories": [
+            "电影",
+            "剧集",
+            "综艺",
+            "动漫",
+            "音乐MV"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "电影",
+          "state": "success",
+          "ms": 609,
+          "items": 25,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 1086,
+          "title": "飞向太空",
+          "lines": [
+            {
+              "name": "荐片下载播放",
+              "format": "mp4"
+            },
+            {
+              "name": "电视格式下载5",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 5,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 1144,
+          "error": {
+            "code": "E_UNSUPPORTED_FORMAT",
+            "message": "播放地址协议不受支持"
+          }
+        },
+        "search": {
+          "ok": true,
+          "keyword": "飞向太空",
+          "state": "success",
+          "ms": 480,
+          "results": 1,
+          "all": 1,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "44fa8316-9cc3-4512-affe-c8a2f02e9146",
+        "name": "80S｜磁力",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar",
+        "subscriptionId": "https://play.iptv365.org/潇洒/api.json",
+        "warning": null
+      },
+      "ms": 4978
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 2017,
+          "items": 30,
+          "categories": [
+            "全部",
+            "影视片",
+            "影视剧",
+            "动漫",
+            "综艺",
+            "短剧"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "全部",
+          "state": "success",
+          "ms": 395,
+          "items": 30,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 15377,
+          "title": "武神主宰",
+          "lines": [
+            {
+              "name": "腾讯",
+              "format": "mp4"
+            },
+            {
+              "name": "腾讯2",
+              "format": "mp4"
+            },
+            {
+              "name": "腾讯3",
+              "format": "mp4"
+            },
+            {
+              "name": "腾讯4",
+              "format": "mp4"
+            },
+            {
+              "name": "优酷",
+              "format": "mp4"
+            },
+            {
+              "name": "优酷2",
+              "format": "mp4"
+            },
+            {
+              "name": "优酷3",
+              "format": "mp4"
+            },
+            {
+              "name": "暴风资源",
+              "format": "mp4"
+            },
+            {
+              "name": "量子资源",
+              "format": "mp4"
+            },
+            {
+              "name": "暴风资源",
+              "format": "mp4"
+            },
+            {
+              "name": "1080资源",
+              "format": "mp4"
+            },
+            {
+              "name": "ikun资源",
+              "format": "mp4"
+            },
+            {
+              "name": "非凡资源",
+              "format": "mp4"
+            },
+            {
+              "name": "索尼资源",
+              "format": "mp4"
+            },
+            {
+              "name": "鸭鸭资源",
+              "format": "mp4"
+            },
+            {
+              "name": "西瓜资源",
+              "format": "mp4"
+            },
+            {
+              "name": "无水印资源",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 9935,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 4747,
+          "error": {
+            "code": "E_PARSE",
+            "message": "爬虫未返回数据"
+          }
+        },
+        "search": {
+          "ok": true,
+          "keyword": "武神主宰",
+          "state": "success",
+          "ms": 371,
+          "results": 16,
+          "all": 20,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "55db28aa-f00e-4696-bb1b-1667ed6cbf7e",
+        "name": "火锅｜APP",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar",
+        "subscriptionId": "https://play.iptv365.org/潇洒/api.json",
+        "warning": null
+      },
+      "ms": 22931
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 1302,
+          "items": 64,
+          "categories": [
+            "全部直播",
+            "篮球直播",
+            "足球直播",
+            "其他直播"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "全部直播",
+          "state": "success",
+          "ms": 392,
+          "items": 64,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 30,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "22:3",
+          "state": "success",
+          "ms": 56,
+          "results": 1,
+          "all": 0,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [
+            {
+              "sourceId": "250f2142-9cbe-4f77-b15d-ac535cfe9800",
+              "code": "E_PARSE",
+              "message": "爬虫未返回数据"
+            }
+          ],
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        }
+      },
+      "source": {
+        "id": "250f2142-9cbe-4f77-b15d-ac535cfe9800",
+        "name": "⚽88┃看球",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://play.iptv365.org/%E5%A4%A9%E5%A4%A9%E5%BC%80%E5%BF%83/spider.jar",
+        "subscriptionId": "https://play.iptv365.org/天天开心/api.json",
+        "warning": null
+      },
+      "ms": 1800
+    }
+  ],
+  "partial": true
+}

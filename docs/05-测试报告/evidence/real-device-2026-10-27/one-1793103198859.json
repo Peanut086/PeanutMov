@@ -1,0 +1,583 @@
+{
+  "steps": {
+    "browse": {
+      "ok": false,
+      "state": "empty",
+      "ms": 6431,
+      "items": 0,
+      "categories": [
+        "电音House",
+        "中文舞曲",
+        "外文舞曲",
+        "酒吧风格",
+        "串烧舞曲",
+        "私改舞曲",
+        "大赛作品"
+      ],
+      "hasMore": false,
+      "error": null
+    },
+    "category": {
+      "ok": false,
+      "name": "电音House",
+      "state": "empty",
+      "ms": 73,
+      "items": 0,
+      "error": null
+    },
+    "detail": {
+      "skipped": "no-items"
+    },
+    "resolve": {
+      "ok": true,
+      "ms": 411,
+      "format": "hls",
+      "isLocal": false,
+      "isLive": false,
+      "urlScheme": "https",
+      "urlHost": "v14.rstu6.com",
+      "headers": [],
+      "subtitles": 0,
+      "expiresAt": null
+    },
+    "search": {
+      "ok": false,
+      "keyword": "测试",
+      "state": "empty",
+      "ms": 320,
+      "results": 0,
+      "all": 0,
+      "candidates": 0,
+      "filteredOut": 1,
+      "failed": [],
+      "error": null
+    }
+  },
+  "playTarget": {
+    "mediaId": "f2de2b5d-31af-4295-8be3-a03af32e2b9e:151311~1hzpbut",
+    "episodeId": "f2de2b5d-31af-4295-8be3-a03af32e2b9e-151311-1hzpbut:f2de2b5d-31af-4295-8be3-a03af32e2b9e-151311-1hzpbut-0-1hamnbv:1~atjvx5",
+    "lineId": "f2de2b5d-31af-4295-8be3-a03af32e2b9e-151311-1hzpbut:0~1hamnbv"
+  },
+  "source": {
+    "id": "d015ac3a-cccb-4668-9ce7-4298fa92f445",
+    "name": "🎼轮回┃舞曲🎼",
+    "type": "spider",
+    "kind": "jar",
+    "health": "unreachable",
+    "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg",
+    "subscriptionId": "https://9280.kstore.space/newwex.json",
+    "warning": null
+  },
+  "ms": 7315,
+  "restartedBefore": false,
+  "player": {
+    "state": {
+      "loading": false,
+      "engineKind": "video",
+      "error": {
+        "code": "E_TIMEOUT",
+        "message": "加载超时，请检查网络后重试"
+      },
+      "duration": 0,
+      "currentTime": 0,
+      "playing": false,
+      "waiting": false,
+      "qualities": [],
+      "subtitles": 0,
+      "mediaId": "f2de2b5d-31af-4295-8be3-a03af32e2b9e:151311~1hzpbut",
+      "lineId": "f2de2b5d-31af-4295-8be3-a03af32e2b9e-151311-1hzpbut:0~1hamnbv"
+    },
+    "vstate": {
+      "readyState": 0,
+      "networkState": 2,
+      "paused": true,
+      "currentSrc": "https://v14.rstu6.com/202607/22/NQst4qPPXj27/video/index.m3u8",
+      "errorCode": null,
+      "videoWidth": 0,
+      "videoHeight": 0
+    },
+    "ready": true
+  },
+  "console": [
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#12745505) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cCastShare.isSupported (#12745506) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cApp.removeListener (#12745507) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cApp.addListener (#12745508) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cCastShare.isSupported (#12745506) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cScreenOrientation.unlock (#12745509) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cScreenOrientation.unlock (#12745509) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745494) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 评书┃评书随身听[js] https://github.com/ne7359/tvurl/blob/main/js/%E8%AF%84%E4%B9%A6%E9%9A%8F%E8%BA%AB%E5%90%AC.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#12745510) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745495) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 弹幕┃我的哔哩[js] https://github.com/ne7359/tvurl/blob/main/js/%E6%88%91%E7%9A%84%E5%93%94%E5%93%A9.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#12745511) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745496) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 听书┃博看听书[js] https://github.com/ne7359/tvurl/blob/main/js/%E5%8D%9A%E7%9C%8B%E5%90%AC%E4%B9%A6.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#12745512) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#12745513) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#12745514) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#12745515) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#12745516) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745494) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745498) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 请勿相信视频中任何广告 https://github.com/ne7359/tvurl/blob/main/js/drpy.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#12745517) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745499) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 广播┃蜻蜓FM[js] https://github.com/ne7359/tvurl/blob/main/js/%E8%9C%BB%E8%9C%93FM.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#12745518) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745500) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 广播┃广播迷FM[js] https://github.com/ne7359/tvurl/blob/main/js/%E5%B9%BF%E6%92%AD%E8%BF%B7FM.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#12745519) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745496) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#12745516) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#12745520) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745495) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#12745520) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#12745521) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745499) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#12745521) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#12745522) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#12745522) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#12745523) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#12745523) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745500) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#12745498) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    }
+  ]
+}

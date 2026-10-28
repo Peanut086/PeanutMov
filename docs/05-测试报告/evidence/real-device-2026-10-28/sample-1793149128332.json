@@ -1,0 +1,89 @@
+{
+  "seed": 20261028,
+  "total": 158,
+  "okPool": 10,
+  "badPool": 148,
+  "session": {
+    "restarts": 0,
+    "crashes": []
+  },
+  "results": [
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 1630,
+          "items": 25,
+          "categories": [
+            "电影",
+            "剧集",
+            "综艺",
+            "动漫",
+            "音乐MV"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "电影",
+          "state": "success",
+          "ms": 609,
+          "items": 25,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 1086,
+          "title": "飞向太空",
+          "lines": [
+            {
+              "name": "荐片下载播放",
+              "format": "mp4"
+            },
+            {
+              "name": "电视格式下载5",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 5,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 1144,
+          "error": {
+            "code": "E_UNSUPPORTED_FORMAT",
+            "message": "播放地址协议不受支持"
+          }
+        },
+        "search": {
+          "ok": true,
+          "keyword": "飞向太空",
+          "state": "success",
+          "ms": 480,
+          "results": 1,
+          "all": 1,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "44fa8316-9cc3-4512-affe-c8a2f02e9146",
+        "name": "80S｜磁力",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar",
+        "subscriptionId": "https://play.iptv365.org/潇洒/api.json",
+        "warning": null
+      },
+      "ms": 4978
+    }
+  ],
+  "partial": true
+}

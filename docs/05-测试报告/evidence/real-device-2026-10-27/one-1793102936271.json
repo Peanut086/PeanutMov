@@ -1,0 +1,556 @@
+{
+  "steps": {
+    "browse": {
+      "ok": true,
+      "state": "success",
+      "ms": 2352,
+      "items": 20,
+      "categories": [],
+      "hasMore": true,
+      "error": null
+    },
+    "category": {
+      "skipped": "no-categories"
+    },
+    "detail": {
+      "ok": true,
+      "state": "success",
+      "ms": 504,
+      "title": "马修·派瑞：老友最后的传记",
+      "lines": [
+        {
+          "name": "dbm3u8",
+          "format": "hls"
+        }
+      ],
+      "episodes": 3,
+      "error": null
+    },
+    "resolve": {
+      "ok": true,
+      "ms": 456,
+      "format": "hls",
+      "isLocal": false,
+      "isLive": false,
+      "urlScheme": "https",
+      "urlHost": "b3.bdzybf22.com",
+      "headers": [],
+      "subtitles": 0,
+      "expiresAt": null
+    },
+    "search": {
+      "ok": true,
+      "keyword": "马修·派",
+      "state": "success",
+      "ms": 1388,
+      "results": 1,
+      "all": 1,
+      "candidates": 1,
+      "filteredOut": 0,
+      "failed": [],
+      "error": null
+    }
+  },
+  "playTarget": {
+    "mediaId": "9bfe9a2b-58b2-4ed8-924b-a38676e44367:52178~1ko7m1t",
+    "episodeId": "9bfe9a2b-58b2-4ed8-924b-a38676e44367-52178-1ko7m1t:9bfe9a2b-58b2-4ed8-924b-a38676e44367-52178-1ko7m1t-0-uyyj25:1~ksuzwo",
+    "lineId": "9bfe9a2b-58b2-4ed8-924b-a38676e44367-52178-1ko7m1t:0~uyyj25"
+  },
+  "source": {
+    "id": "9bfe9a2b-58b2-4ed8-924b-a38676e44367",
+    "name": "百度┃采集",
+    "type": "site",
+    "kind": null,
+    "health": "ok",
+    "baseUrl": "https://api.apibdzy.com/api.php/provide/vod?ac=list",
+    "subscriptionId": "https://github.com/ne7359/tvurl/blob/main/0821.json",
+    "warning": null
+  },
+  "ms": 4713,
+  "restartedBefore": false,
+  "player": {
+    "fatal": "CDP_ERR: CDP_CLOSED"
+  },
+  "console": [
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342521) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342522) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342522) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/jianpian.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342523) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342521) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/jianpian.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342524) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342523) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/drpy2.min.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342524) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/drpy2.min.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342525) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342525) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/jianpian.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342526) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342526) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/drpy2.min.js Object"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 取首个分类失败，回退空 tid 🧲┃荐片┃磁力 Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342527) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342527) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/jianpian.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#36342528) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#36342528) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 🧲┃荐片┃磁力 http://rihou.vip:55/lib/drpy2.min.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#36342529) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#36342529) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#36342530) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#36342530) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cCastShare.isSupported (#36342531) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cApp.addListener (#36342532) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cCastShare.isSupported (#36342531) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.isSupported (#36342533) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.isSupported (#36342533) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.addListener (#36342534) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.prepare (#36342535) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.addListener (#36342534) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.prepare (#36342535) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.addListener (#36342534) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.setRate (#36342536) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.setVolume (#36342537) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.play (#36342538) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.setRate (#36342536) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.setVolume (#36342537) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.play (#36342538) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.progress (#36342539) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    }
+  ]
+}

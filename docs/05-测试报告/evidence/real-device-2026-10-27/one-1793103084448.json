@@ -1,0 +1,556 @@
+{
+  "steps": {
+    "browse": {
+      "ok": true,
+      "state": "success",
+      "ms": 4945,
+      "items": 20,
+      "categories": [],
+      "hasMore": true,
+      "error": null
+    },
+    "category": {
+      "skipped": "no-categories"
+    },
+    "detail": {
+      "ok": true,
+      "state": "success",
+      "ms": 552,
+      "title": "我的刺猬女孩",
+      "lines": [
+        {
+          "name": "bfzym3u8",
+          "format": "hls"
+        }
+      ],
+      "episodes": 24,
+      "error": null
+    },
+    "resolve": {
+      "ok": true,
+      "ms": 336,
+      "format": "hls",
+      "isLocal": false,
+      "isLive": false,
+      "urlScheme": "https",
+      "urlHost": "c1.rrcdnbf6.com",
+      "headers": [],
+      "subtitles": 0,
+      "expiresAt": null
+    },
+    "search": {
+      "ok": true,
+      "keyword": "我的刺猬",
+      "state": "success",
+      "ms": 1323,
+      "results": 3,
+      "all": 2,
+      "candidates": 1,
+      "filteredOut": 0,
+      "failed": [],
+      "error": null
+    }
+  },
+  "playTarget": {
+    "mediaId": "a5e60667-5d15-4ad4-93e8-9501f5a34577:35961~rh4o7d",
+    "episodeId": "a5e60667-5d15-4ad4-93e8-9501f5a34577-35961-rh4o7d:a5e60667-5d15-4ad4-93e8-9501f5a34577-35961-rh4o7d-0-1v7zsjt:1~1de7rw1",
+    "lineId": "a5e60667-5d15-4ad4-93e8-9501f5a34577-35961-rh4o7d:0~1v7zsjt"
+  },
+  "source": {
+    "id": "a5e60667-5d15-4ad4-93e8-9501f5a34577",
+    "name": "暴風┃采集",
+    "type": "site",
+    "kind": null,
+    "health": "ok",
+    "baseUrl": "https://bfzyapi.com/api.php/provide/vod",
+    "subscriptionId": "https://github.com/ne7359/tvurl/blob/main/0821.json",
+    "warning": null
+  },
+  "ms": 7187,
+  "restartedBefore": false,
+  "player": {
+    "fatal": "CDP_ERR: CDP_CLOSED"
+  },
+  "console": [
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#96592989) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#96592990) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#96592990) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#96592979) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#96592991) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#96592992) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#96592993) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#96592994) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#96592980) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 请勿相信视频中任何广告 https://github.com/ne7359/tvurl/blob/main/js/drpy.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#96592995) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 广播┃蜻蜓FM[js] https://github.com/ne7359/tvurl/blob/main/js/%E8%9C%BB%E8%9C%93FM.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#96592996) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#96592982) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#96592983) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 广播┃广播迷FM[js] https://github.com/ne7359/tvurl/blob/main/js/%E5%B9%BF%E6%92%AD%E8%BF%B7FM.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#96592997) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#96592985) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] drpy 规则加载失败（本次变体） 配置接口完全免费 https://github.com/ne7359/tvurl/blob/main/js/drpy.js Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#96592998) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#96592992) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cDrpy.load (#96592999) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cCastShare.isSupported (#96593000) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cCastShare.isSupported (#96593000) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cApp.addListener (#96593001) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#96592982) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#96592985) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.isSupported (#96593002) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.isSupported (#96593002) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.addListener (#96593003) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.prepare (#96593004) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.addListener (#96593003) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.prepare (#96593004) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cDrpy.load (#96592983) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.addListener (#96593003) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.setRate (#96593005) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.setVolume (#96593006) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.play (#96593007) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.setRate (#96593005) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.setVolume (#96593006) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cExoPlayer.play (#96593007) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cExoPlayer.progress (#96593008) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    }
+  ]
+}

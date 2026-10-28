@@ -1,0 +1,557 @@
+{
+  "steps": {
+    "browse": {
+      "ok": true,
+      "state": "success",
+      "ms": 1495,
+      "items": 30,
+      "categories": [
+        "电影",
+        "连续剧",
+        "综艺",
+        "动漫",
+        "短剧",
+        "小姐姐",
+        "音乐"
+      ],
+      "hasMore": true,
+      "error": null
+    },
+    "category": {
+      "ok": true,
+      "name": "电影",
+      "state": "success",
+      "ms": 219,
+      "items": 30,
+      "error": null
+    },
+    "detail": {
+      "ok": true,
+      "state": "success",
+      "ms": 276,
+      "title": "遇见你",
+      "lines": [
+        {
+          "name": "在线播放",
+          "format": "hls"
+        }
+      ],
+      "episodes": 1,
+      "error": null
+    },
+    "resolve": {
+      "ok": false,
+      "ms": 30254,
+      "error": {
+        "code": "E_SOURCE_UNAVAILABLE",
+        "message": "该源暂不可用，可切换其他源"
+      }
+    },
+    "search": {
+      "ok": true,
+      "keyword": "遇见你",
+      "state": "success",
+      "ms": 291,
+      "results": 20,
+      "all": 20,
+      "candidates": 1,
+      "filteredOut": 0,
+      "failed": [],
+      "error": null
+    }
+  },
+  "source": {
+    "id": "057b8668-c419-4b7f-b326-0e2e8f87727c",
+    "name": "旺旺 • 影视",
+    "type": "spider",
+    "kind": "jar",
+    "health": "ok",
+    "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+    "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+    "warning": null
+  },
+  "ms": 32562,
+  "restartedBefore": false,
+  "console": [
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449873) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449877) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449814) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449878) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#11448794) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449875) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#11449879) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449877) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#11448794) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#11449870) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449880) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449880) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449881) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449881) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#11449879) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449882) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#11449876) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449883) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449882) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449884) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449884) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449883) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449885) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449885) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449872) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449878) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449886) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449886) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449887) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449887) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449888) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449888) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449889) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449889) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449890) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449890) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449891) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449891) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#11449892) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#11449892) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    }
+  ]
+}

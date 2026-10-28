@@ -1,0 +1,1288 @@
+{
+  "agg": {
+    "spider/jar/timeout": 3,
+    "spider/jar/unreachable": 22,
+    "spider/jar/unknown": 85,
+    "spider/js/unreachable": 9,
+    "spider/jar/bad_config": 14,
+    "spider/jar/ok": 10,
+    "site/-/unreachable": 1,
+    "spider/js/unknown": 10,
+    "alist/-/unknown": 4,
+    "demo/-/ok": 1
+  },
+  "data": [
+    {
+      "name": "火猫｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "timeout",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "丫丫｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "羊羊｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "动漫岛｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "糖果｜搜索",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "七味｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "哔哩｜戏曲",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "影视丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "狐狸君｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "New6V｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "番薯丨动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "虎斑｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "热剧丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "小猪丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "timeout",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "哔哩｜视频",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "56｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "⚽88┃看球",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "农民｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "哔哩｜合集",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "哔哩｜相声",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "夸父｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "天翼｜影视",
+      "type": "site",
+      "kind": null,
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "百酷｜搜索",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "莫小｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "曼波｜动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "双星｜4K",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "厂长｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "timeout",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "魔方｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "采集｜合集",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "优势丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "苹果｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "思念｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "电影港｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "美剧天堂｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "天翼｜盘搜",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "三六零｜视频",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "NT｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "爱奇艺｜视频",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "爱看｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "去看吧｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "八天丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "咕咕｜动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🛴手机┃推送",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "80S｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "清影｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "动画片｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "雷鲸｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "狂人丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "养生｜知识",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "金牌┃APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "漫国丨动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "星星 | 海外",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "我的｜UC",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "网盘|Alist[jar]",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "灵虎｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "火锅｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "异世界｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "我的｜百度",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "新片｜预告",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "瑞奇｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "莱米｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "👨‍🍳‍配置┃中心",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "方舟丨动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🎦荐片｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "爱动漫｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "玩偶｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "爱看｜搜索",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "永乐｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "酷乐｜搜索",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🎦小猫｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "派对｜动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🅱️哔哩┃直播",
+      "type": "spider",
+      "kind": "js",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "路漫漫｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "A1｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "旗星｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "快映｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "奇优｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "冬日丨动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "海绵｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "鹤雪｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "花子｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "稀饭丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "电影天堂｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "热播｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "星空｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "面包｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "盘它｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "三九｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "好看｜动漫",
+      "type": "spider",
+      "kind": "js",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "驿站丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "UC｜盘搜",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "蜡笔｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "甜圈｜短剧",
+      "type": "alist",
+      "kind": null,
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "爱看｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "木偶｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "百度｜盘搜",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "米饭｜动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "数字｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "哔哩｜音乐",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "急救｜教学",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "五八丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "极兔｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "哆啦｜新番社",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "瓜子｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "仓鼠｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "夸克｜盘搜",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "哔哩｜听书",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "欧哥｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "稀饭｜动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "芒果｜视频",
+      "type": "spider",
+      "kind": "js",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "阿里｜盘搜",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "网络｜直播",
+      "type": "alist",
+      "kind": null,
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "人人｜4K",
+      "type": "spider",
+      "kind": "js",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "冷心｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "星芽｜短剧",
+      "type": "alist",
+      "kind": null,
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "吉米｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "金牌｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "移动｜盘搜",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "全看｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "至臻｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "咖啡丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "美剧迷|网盘",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "鬼鬼｜搜索",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "巴士｜动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "蓝鹰｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "本地｜视频",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "樱花｜动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "元咲丨动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "豆瓣热播请关注公众号：“开心软件”不迷路",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🌖米搜┃搜索",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "优酷｜视频",
+      "type": "spider",
+      "kind": "js",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "迅雷吧｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "我的｜阿里",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "紫金丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "二三｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "多多｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "饺子｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "云播｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "我的｜夸克",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "哔哩｜小品",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "修罗｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "腾讯｜视频",
+      "type": "spider",
+      "kind": "js",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "云云丨APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "Mp4电影｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "柒月｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🎦1905｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "内置演示",
+      "type": "demo",
+      "kind": null,
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "茉莉｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "鲸鱼｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "二小｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "番茄｜短剧",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "浪酷｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "123｜盘搜",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "坚果｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "剧王｜短剧",
+      "type": "alist",
+      "kind": null,
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "戏曲｜多多",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "明星｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "骚火｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "123｜4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "autoDisabledAt": false
+    }
+  ]
+}

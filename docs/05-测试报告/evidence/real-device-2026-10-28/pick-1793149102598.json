@@ -1,0 +1,98 @@
+{
+  "seed": 20261028,
+  "total": 158,
+  "okPool": 10,
+  "badPool": 148,
+  "picked": [
+    {
+      "id": "44fa8316-9cc3-4512-affe-c8a2f02e9146",
+      "name": "80S｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar"
+    },
+    {
+      "id": "55db28aa-f00e-4696-bb1b-1667ed6cbf7e",
+      "name": "火锅｜APP",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar"
+    },
+    {
+      "id": "250f2142-9cbe-4f77-b15d-ac535cfe9800",
+      "name": "⚽88┃看球",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://play.iptv365.org/%E5%A4%A9%E5%A4%A9%E5%BC%80%E5%BF%83/spider.jar"
+    },
+    {
+      "id": "36914764-1278-458a-8bfb-fbf44687874e",
+      "name": "三六零｜视频",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar"
+    },
+    {
+      "id": "11fd72d1-62d2-45a4-8819-a894469ec821",
+      "name": "New6V｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar"
+    },
+    {
+      "id": "0f874d50-a545-414c-bfd0-331a28ee146c",
+      "name": "七味｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar"
+    },
+    {
+      "id": "3d3ffce2-1027-434d-ba7b-4a42b9355190",
+      "name": "爱看｜影视",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar"
+    },
+    {
+      "id": "35475da1-9584-44ed-be49-17389cc047f1",
+      "name": "美剧天堂｜磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar"
+    },
+    {
+      "id": "92149e96-4f48-4234-ad7a-31c54d51e130",
+      "name": "米饭｜动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar"
+    },
+    {
+      "id": "9675b87f-d965-4afd-8f69-b69491499e65",
+      "name": "哆啦｜新番社",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unknown",
+      "enabled": true,
+      "baseUrl": "https://play.iptv365.org/%E6%BD%87%E6%B4%92/spider.jar"
+    }
+  ]
+}

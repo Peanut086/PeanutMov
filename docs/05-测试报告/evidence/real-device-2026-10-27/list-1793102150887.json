@@ -1,0 +1,1483 @@
+{
+  "agg": {
+    "spider/js/unreachable/autoDisabled": 6,
+    "spider/js/ok": 14,
+    "spider/jar/unreachable/autoDisabled": 98,
+    "site/-/ok": 4,
+    "spider/js/unreachable": 23,
+    "spider/jar/ok/autoDisabled": 28,
+    "spider/jar/bad_config/autoDisabled": 3,
+    "spider/jar/timeout/autoDisabled": 1,
+    "site/-/bad_config": 1,
+    "site/-/timeout": 1,
+    "site/-/unreachable": 1,
+    "demo/-/ok": 1,
+    "site/-/unreachable/autoDisabled": 2
+  },
+  "data": [
+    {
+      "name": "贝乐虎[cat]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "直播┃斗鱼[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🎃‍爱上┃听书🎃",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎠卡卡┃综合🎠",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "暴风",
+      "type": "site",
+      "kind": null,
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💥零七┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥师兄┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "评书┃评书随身听[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "👁Vod┃DIY👁️",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "南瓜",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🌐WWE┃体育🌐",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "📽️一直播┃直播",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "👽玩偶哥哥┃4K弹幕",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "👀萌米┃多线",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎀异界┃动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "直播┃JustLive[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "MV┃酷奇[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "☀原创┃不卡",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎃‍极品┃听书🎃",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓Emby001┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🌐球通┃体育🌐",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓木偶┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🧲新6V┃磁力",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥粉猪┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎠爱盘┃综合🎠",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "官源┃360[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💓逸动┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓蜡笔┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "timeout",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "花卷 • 4K",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "👼兔兔┃儿歌👼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "📚初中┃课堂",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🌐飞球┃体育🌐",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓115┃分享💓‍",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🍉漫短┃小红🍉",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "弹幕┃我的哔哩[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🍉漫短┃小马🍉",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓‍七味┃4K💓‍",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥热播┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "豆瓣",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💃跳舞┃教学💃",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓‍观影┃4K💓‍",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🐯虎牙┃直播",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "官源┃芒果[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "📺热播┃多线",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "⚽Jrs┃球迷",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💓‍蜗牛┃4K💓‍",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "腐剧",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🦋米搜┃夸父",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "听书┃博看听书[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💥伊影┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "PanSearch|网盘搜索",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🅱哔哔合集┃弹幕",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥太奇┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎃‍小马┃听书🎃",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🌐瓜子┃体育🌐",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "😹易搜┃阿狸",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "⏮️低端┃外剧",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🌈优汐┃搜搜",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💮文采┃秒播",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "👓欢视┃多线",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🐳斗鱼┃直播🐳",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎼蜻蜓┃电台🎼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "动漫┃NyaFun[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🅱哔哩┃影视🅱",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "官源┃爱奇艺[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "官源┃优酷[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "泥视频(墙外)",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "少儿┃童趣[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🎠九七┃综合🎠",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🐾日本┃动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥小枫┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🧲┃荐片┃磁力",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "非凡┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🅱哔哔演唱会┃弹幕",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎇爱看┃采集🎇",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "请勿相信视频中任何广告",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💥咸鱼┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "动漫┃NT动漫[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "电视┃好趣网[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🍉短剧┃小猫🍉",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥瓜子┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "广播┃蜻蜓FM[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🤡魔都┃动漫🤡",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎃‍悦庭┃听书🎃",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "广播┃广播迷FM[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🅱️哔哩┃直播🅱️",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🐮我的┃网盘🐮",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "网盘|Alist[jar]",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🌟立播┃秒播",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🍉漫剧┃小龙🍉",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🍉短剧┃好看🍉",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🤡次元┃动漫🤡",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🍊在线┃秒播",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🐯‍虎牙┃直播🐯‍",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "量子┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "timeout",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💓盘迷┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "音频┃DJ音乐[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🎧有声┃小说",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "配置接口完全免费",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🐟斗鱼┃直播",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "百度┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "官源┃腾讯[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "聚合┃网易公版[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🍉短剧┃小薇🍉",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "📚少儿┃教育",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "👼贝贝┃儿歌👼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "盘搜(网盘搜索)",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "官源┃搜狗[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💓‍原盘┃4K💓‍",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "暴風┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🌐咖啡┃体育🌐",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🍎苹果┃不卡",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🌐八八┃体育🌐",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓闪电┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "👼宝宝┃儿歌👼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🚌巴士┃动漫",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥文才┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎼酷听┃音乐🎼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "快帆┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💥柿子┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎠趣搜┃百度🎠",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎃‍小红┃听书🎃",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "兔小贝[cat]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "相声┃相声随身听[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "📔厂长┃不卡",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🍓糯米┃秒播",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "童趣[cat]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥贱片┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "弹幕┃哔哩直播[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🎎戏曲┃秒播🎎",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓立播┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎇伯伯┃秒播🎇",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎼KTV┃音乐🎼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "少儿┃兔小贝[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💥柠檬┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🍉漫剧┃小猫🍉",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥韩剧┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "😻夸搜┃夸父",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "📚儿童┃启蒙",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "Bookan[cat]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓虎斑┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥黄人┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎼轮回┃舞曲🎼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "听书┃i275听书[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💓盘库┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "👁️WebDav┃DIY👁️",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "聚合┃短视频[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💥独播┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "Auete|可",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥柚子┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "📚高中┃课堂",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "聚合┃酷6网[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💥追剧┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🍉漫短┃小喜🍉",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "内置演示",
+      "type": "demo",
+      "kind": null,
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🅱‍哔哩┃合集🅱‍",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🐮配置┃中心🐮",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "直播┃虎牙[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "🍉短剧┃星星🍉",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🐮【更新日期:20261026】🐮",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💥闪电┃秒播💥",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎠盘搜┃综合🎠",
+      "type": "spider",
+      "kind": "jar",
+      "health": "bad_config",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "IK",
+      "type": "site",
+      "kind": null,
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🅱‍哔哩┃歌曲🅱‍",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🍄抠抠┃搜搜",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "📚小学┃课堂",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓剧透┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓快影┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎼小酷┃音乐🎼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "索尼┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "ok",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "可可",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🛴手机┃推送",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎤酷奇┃MV",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "海外看┃采集",
+      "type": "site",
+      "kind": null,
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "💓多多┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "央视[cat]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🅱‍哔哩┃戏曲🅱‍",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🐮【免费分享】🐮",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🤡稀饭┃动漫🤡",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "动漫┃AnFuns[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "听书┃爱上你听书[js]",
+      "type": "spider",
+      "kind": "js",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": false
+    },
+    {
+      "name": "💓Emby┃4K💓",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    },
+    {
+      "name": "🎼易听┃音乐🎼",
+      "type": "spider",
+      "kind": "jar",
+      "health": "unreachable",
+      "enabled": true,
+      "autoDisabledAt": true
+    }
+  ]
+}
