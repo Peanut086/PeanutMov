@@ -30,6 +30,7 @@ import { useUiStore } from '@/stores/uiStore';
 import { useToast } from '@/composables/useToast';
 import { mediaSubtitle } from '@/components/common/format';
 import { toErrorShape } from '@/shared/errors';
+import { classifySourceFailure, guidanceOf, sanitizeSourceMessage } from '@/shared/sourceFailure';
 
 defineOptions({ name: 'SearchView' });
 
@@ -71,6 +72,37 @@ const showError = computed(
     library.searchState === 'error' &&
     library.searchResults.length === 0,
 );
+
+/* ---------- P2-9：失败源汇总（一句话说清「为什么失败」+ 一键重试） ---------- */
+
+/** 失败源按原因聚类后的摘要，如「33 源站已失效 · 5 规则脚本异常」 */
+const failedSummary = computed(() => {
+  const counts = new Map<string, number>();
+  for (const failure of library.searchFailed) {
+    const guidance = guidanceOf(failure.error);
+    counts.set(guidance.title, (counts.get(guidance.title) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 2)
+    .map(([title, count]) => `${count} ${title}`)
+    .join(' · ');
+});
+
+/** 失败明细行：源名 + 分类后的可读原因（原始脚本异常不外泄） */
+const failedRows = computed(() =>
+  library.searchFailed.map((failure) => ({
+    sourceId: failure.sourceId,
+    name: sourceName(failure.sourceId),
+    reason: guidanceOf(failure.error).title,
+    detail: sanitizeSourceMessage(failure.error.message),
+    kind: classifySourceFailure(failure.error),
+  })),
+);
+
+async function retryFailed(): Promise<void> {
+  await library.retryFailedSources();
+}
 
 const debouncedSearch = useDebounce((value: string) => {
   void runSearch(value, false);
@@ -300,14 +332,26 @@ function openSourceManage(): void {
         >
           被跳过的源有 {{ library.searchFilteredOut }} 个，打开源管理检查
         </button>
-        <button
-          v-else-if="library.searchFailed.length > 0"
-          class="search-failed"
-          type="button"
-          @click="failedDetailOpen = true"
-        >
-          部分源搜索失败（{{ library.searchFailed.length }}），查看明细
-        </button>
+        <!-- P2-9：失败源汇总 + 一键重试（原来只有「查看明细」，用户没有下一步动作） -->
+        <div v-else-if="library.searchFailed.length > 0" class="search-failed-bar" role="status">
+          <span class="search-failed-bar__text">
+            {{ library.searchFailed.length }} 个源搜索失败
+            <span v-if="failedSummary" class="search-failed-bar__summary">（{{ failedSummary }}）</span>
+          </span>
+          <span class="search-failed-bar__actions">
+            <button
+              class="search-failed-bar__btn"
+              type="button"
+              :disabled="library.searchRetrying"
+              @click="retryFailed"
+            >
+              {{ library.searchRetrying ? '重试中…' : '重试失败源' }}
+            </button>
+            <button class="search-failed-bar__btn" type="button" @click="failedDetailOpen = true">
+              明细
+            </button>
+          </span>
+        </div>
       </template>
 
       <!-- 结果 -->
@@ -397,25 +441,37 @@ function openSourceManage(): void {
           </span>
         </div>
 
-        <button
-          v-if="library.searchFailed.length > 0"
-          class="search-failed"
-          type="button"
-          @click="failedDetailOpen = true"
-        >
-          部分源搜索失败（{{ library.searchFailed.length }}），查看明细
-        </button>
+        <!-- P2-9：结果已上屏时同样给汇总 + 重试（只重跑失败源，不打断当前列表） -->
+        <div v-if="library.searchFailed.length > 0" class="search-failed-bar" role="status">
+          <span class="search-failed-bar__text">
+            {{ library.searchFailed.length }} 个源搜索失败
+            <span v-if="failedSummary" class="search-failed-bar__summary">（{{ failedSummary }}）</span>
+          </span>
+          <span class="search-failed-bar__actions">
+            <button
+              class="search-failed-bar__btn"
+              type="button"
+              :disabled="library.searchRetrying"
+              @click="retryFailed"
+            >
+              {{ library.searchRetrying ? '重试中…' : '重试失败源' }}
+            </button>
+            <button class="search-failed-bar__btn" type="button" @click="failedDetailOpen = true">
+              明细
+            </button>
+          </span>
+        </div>
       </template>
     </div>
 
     <BottomSheet v-model="failedDetailOpen" title="搜索失败明细">
       <ul class="failed-list">
-        <li v-for="f in library.searchFailed" :key="f.sourceId" class="failed-row">
-          <span class="failed-row__source">{{ sourceName(f.sourceId) }}</span>
-          <span class="failed-row__error">{{ f.error.message }}</span>
+        <li v-for="f in failedRows" :key="f.sourceId" class="failed-row">
+          <span class="failed-row__source">{{ f.name }}</span>
+          <span class="failed-row__error">{{ f.reason }}</span>
         </li>
       </ul>
-      <p v-if="library.searchFailed.length === 0" class="failed-empty">没有失败的源</p>
+      <p v-if="failedRows.length === 0" class="failed-empty">没有失败的源</p>
     </BottomSheet>
   </main>
 </template>
@@ -671,6 +727,48 @@ function openSourceManage(): void {
   font: var(--text-caption);
   color: var(--color-warning);
   text-align: center;
+}
+
+/* P2-9：失败源汇总条（原因聚类 + 重试 + 明细） */
+.search-failed-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-elevated);
+  border: var(--border-default);
+}
+
+.search-failed-bar__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: var(--text-caption);
+  color: var(--color-warning);
+}
+
+.search-failed-bar__summary {
+  color: var(--color-text-tertiary);
+}
+
+.search-failed-bar__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-1);
+}
+
+.search-failed-bar__btn {
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  font: var(--text-caption);
+  color: var(--color-accent);
+  border-radius: var(--radius-sm);
+}
+
+.search-failed-bar__btn:disabled {
+  color: var(--color-text-disabled);
 }
 
 .failed-list {

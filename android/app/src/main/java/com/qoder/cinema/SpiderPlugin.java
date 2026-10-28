@@ -583,6 +583,12 @@ public class SpiderPlugin extends Plugin {
                 // 预创建目录并保证可写，实测能救回 ManJu/Book 系 8 个源。
                 prepareGuardWorkDirs(context);
 
+                // P1-7：InitOrigin 兼容性预检。部分 jar 的 Init.init 会调用
+                // InitOrigin.setClass(Class)，而它自带的 InitOrigin 还是旧版（无该方法）→
+                // NoSuchMethodError 在初始化链里被 JNI 直接升级成 SIGABRT，Java 侧 catch 不住。
+                // 预检不过就直接给可读错误，代价是这一个源不可用，而不是整个 App 崩掉。
+                assertInitOriginCompatible(loader, api);
+
                 Method initMethod = findInitMethod(initClass);
                 if (initMethod == null) {
                     throw new NoSuchMethodException("Init.init(Context/Application) not found");
@@ -600,7 +606,10 @@ public class SpiderPlugin extends Plugin {
                     }
                 }
                 Log.i(TAG, "guard jar initialized: " + api);
-            } catch (Exception e) {
+            } catch (Throwable e) {
+                // P1-7：这里必须是 Throwable —— Init.init 内部可能抛 NoSuchMethodError /
+                // ExceptionInInitializerError（Error 而非 Exception），漏掉就会越过本层
+                // 走到 JNI，被 native 侧升级成进程级 abort。
                 Throwable cause = e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null
                         ? e.getCause() : e;
                 Log.e(TAG, "guard jar init failed: " + api + " -> " + describeFailure(cause), cause);
@@ -806,9 +815,34 @@ public class SpiderPlugin extends Plugin {
         return null;
     }
 
+    /**
+     * P1-7：`InitOrigin` 兼容性预检。
+     *
+     * 部分 guard jar 编译时依赖较新的 catvod 库，`Init.init()` 里会调用
+     * `InitOrigin.setClass(Class)`；而它自己打包的 `InitOrigin` 是旧版，方法不存在 →
+     * `NoSuchMethodError`（Error 而非 Exception）在初始化链里被 JNI 升级成 SIGABRT，
+     * 整个进程被杀，Java 侧任何 catch 都来不及。
+     *
+     * 这里在调用 `Init.init` 之前静态确认方法存在；不存在就抛可读错误，
+     * 让该源明确「不兼容」而不是拖死 App。没有 `InitOrigin` 的 jar 不受影响。
+     */
+    private static void assertInitOriginCompatible(ClassLoader loader, String api) {
+        Class<?> origin;
+        try {
+            origin = loader.loadClass("com.github.catvod.spider.InitOrigin");
+        } catch (ClassNotFoundException ignored) {
+            return; // 不依赖 InitOrigin 的 jar 不走这条链路
+        }
+        try {
+            origin.getMethod("setClass", Class.class);
+        } catch (NoSuchMethodException missing) {
+            throw new IllegalStateException(
+                    "爬虫库版本不兼容（" + api + "）：InitOrigin 缺少 setClass(Class)，该源需要更新版本");
+        }
+    }
+
     /** 按候选名找无参静态方法（loader 字段的 getter 命名因混淆而异） */
-    private static Method findNoArgMethod(Class<?> clazz, String... names) {
-        for (String name : names) {
+    private static Method findNoArgMethod(Class<?> clazz, String... names) {        for (String name : names) {
             for (Method method : clazz.getDeclaredMethods()) {
                 if (!method.getName().equals(name)) continue;
                 if (method.getParameterTypes().length != 0) continue;

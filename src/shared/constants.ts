@@ -53,6 +53,14 @@ export const INFINITE_SCROLL_THRESHOLD_PX = 300;
 /* ---------- 超时（毫秒） ---------- */
 /** 源连通性探测（AC-15/AC-16） */
 export const TIMEOUT_TEST_CONNECTION_MS = 3000;
+/**
+ * 爬虫源探活窗口（P0-3）：jar 冷启动要走「下载 1MB+ → dex 加载 → 防护初始化 → homeContent」，
+ * 原生侧连接超时 20s、读取超时 30s，3s 必然误判。
+ * 命中缓存（热句柄）后只走一次 homeContent + 一次列表，按热窗口收紧，
+ * 避免每次体检都等满冷窗口。
+ */
+export const TIMEOUT_PROBE_SPIDER_MS = 35000;
+export const TIMEOUT_PROBE_SPIDER_WARM_MS = 15000;
 /** 健康检查并发上限（AC-16；CHG-05 由 3 提升为 6） */
 export const HEALTH_CHECK_CONCURRENCY = 6;
 /** 订阅拉取 */
@@ -156,6 +164,13 @@ export const SUBSCRIPTION_AUTO_DISABLE_STREAK = 3;
 /* ---------- v1.7：播放（CHG-21） ---------- */
 /** 起播失败自动兜底窗口：窗口内失败自动换线→换源 */
 export const PLAYER_FAILOVER_WINDOW_MS = 10000;
+/**
+ * 爬虫源 playerContent 单次超时（P1-6）：
+ * jar 已缓存命中（热句柄）时 10s 足够；只有「下载/镜像降级」链路才允许 30s。
+ * 否则真机实测出现过 30s 长等待后统一报错，用户以为卡死。
+ */
+export const TIMEOUT_SPIDER_PLAY_HOT_MS = 10000;
+export const TIMEOUT_SPIDER_PLAY_COLD_MS = 30000;
 /** 高码率（≥1080p）前向缓冲目标（秒） */
 export const HLS_MAX_BUFFER_HIGH_S = 60;
 /** 高码率前向缓冲默认值（秒，hls.js 默认 30） */

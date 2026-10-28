@@ -18,6 +18,7 @@ import {
   HEALTH_CHECK_CONCURRENCY,
   SOURCE_NAME_MAX_LENGTH,
   SOURCE_NAME_MIN_LENGTH,
+  TIMEOUT_PROBE_SPIDER_MS,
   TIMEOUT_TEST_CONNECTION_MS,
 } from '@/shared/constants';
 import { AppError, toAppError } from '@/shared/errors';
@@ -144,11 +145,19 @@ async function runWithConcurrency<T, R>(
  * 适配器 `probe` 内部的 `httpClient` 调用不传 `timeoutMs`（默认 10s），且多数不透传 AbortSignal，
  * 所以由 `httpClient.withProbeTimeout` 在该源的探测窗口内把默认超时收到 `TIMEOUT_TEST_CONNECTION_MS`
  * 并关闭重试；超时抛 `E_TIMEOUT` → `healthOfError` → `'timeout'` → `HealthBadge` 显示「连接超时」。
+ *
+ * P0-3：爬虫源探活不止 HTTP（还要下载 jar、加载 dex、初始化防护），3s 窗口会把
+ * 「慢网络下的活源」判成不可用；真机实测 92 个源被误标 unreachable 并面临自动禁用。
+ * 故按源类型分级：spider 15s，其余保持 3s（AC-15 口径不变）。
  */
+export function probeTimeoutOf(source: Source): number {
+  return source.type === 'spider' ? TIMEOUT_PROBE_SPIDER_MS : TIMEOUT_TEST_CONNECTION_MS;
+}
+
 function probeWithinTimeout<T>(source: Source, run: () => Promise<T>): Promise<T> {
   // 演示源无网络请求（baseUrl 为空），不进窗口，避免误伤其它并发请求
   if (source.baseUrl.length === 0) return run();
-  return httpClient.withProbeTimeout(TIMEOUT_TEST_CONNECTION_MS, run, source.baseUrl);
+  return httpClient.withProbeTimeout(probeTimeoutOf(source), run, source.baseUrl);
 }
 
 export const sourceService = {
@@ -500,6 +509,21 @@ export const sourceService = {
       updatedAt: existing.updatedAt,
     });
     appEvents.emit('sources:health', { sourceId, health });
+  },
+
+  /**
+   * 使用即校准（P0-3）：真实调用（browse / detail / resolve / search）成功时，
+   * 若当前健康结论不是 ok，就地回写 ok。
+   *
+   * 为什么需要：体检的探活口径（尤其爬虫 jar 冷启动）与真实链路不完全等价，
+   * 一次体检抖动就能让好源长期挂「无法连接」，并叠加 `applyHealthDegradation`
+   * 的连续 3 次计数把源自动禁掉。真实调用成功是比探活更强的证据，必须回写。
+   * 已是 ok 时直接返回，不产生额外写库与事件。
+   */
+  async noteAlive(sourceId: string): Promise<void> {
+    const existing = await sourceRepo.get(sourceId);
+    if (!existing || existing.health === 'ok') return;
+    await sourceService.markHealth(sourceId, 'ok', null);
   },
 
   /** 幂等：确保演示源与演示条目存在（启动时调用） */

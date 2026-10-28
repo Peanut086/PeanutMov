@@ -11,7 +11,7 @@ import { EMPTY_LIBRARY_FILTERS, markSourceFailedByError } from '@/services/libra
 import { groupSearchResults, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
 import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
-import { PAGE_SIZE } from '@/shared/constants';
+import { PAGE_SIZE, SEARCH_LOCAL_LIMIT } from '@/shared/constants';
 import { AppError, isCanceled, toErrorShape } from '@/shared/errors';
 import { isOnline } from '@/native/network';
 import type {
@@ -46,6 +46,8 @@ export const useLibraryStore = defineStore('library', () => {
   const searchResults = ref<MediaItem[]>([]);
   const searchState = ref<LoadState>('idle');
   const searchFailed = ref<Array<{ sourceId: string; error: AppErrorShape }>>([]);
+  /** P2-9：只重试失败源时的进行中标记（不打断已上屏结果） */
+  const searchRetrying = ref(false);
   /** CHG-15：最近一次搜索实际参与的源数 / 被过滤掉的启用源数（空态诊断用） */
   const searchCandidates = ref(0);
   const searchFilteredOut = ref(0);
@@ -362,7 +364,10 @@ export const useLibraryStore = defineStore('library', () => {
     await loadFirstPage(false);
   }
 
-  async function search(keyword: string, opts?: { forceAll?: boolean }): Promise<void> {
+  async function search(
+    keyword: string,
+    opts?: { forceAll?: boolean; sourceIds?: string[] },
+  ): Promise<void> {
     const trimmed = keyword.trim();
     searchKeyword.value = keyword;
     searchController?.abort();
@@ -392,7 +397,7 @@ export const useLibraryStore = defineStore('library', () => {
         // CHG-15：空态"仍要搜索全部源"重试时跳过体检结论过滤
         forceAll: opts?.forceAll === true,
         // CHG-20：范围筛选 + 会话级退避源排除
-        sourceIds: scopeSourceIds(),
+        sourceIds: opts?.sourceIds ?? scopeSourceIds(),
         // CHG-12 渐进搜索：单源完成即上屏，先到先显示
         onPartial: ({ sourceId, items, error: sourceError, done, total }) => {
           if (controller.signal.aborted) return;
@@ -456,6 +461,46 @@ export const useLibraryStore = defineStore('library', () => {
   }
 
   /* ---------- v1.7/CHG-20：范围筛选与会话级退避 ---------- */
+
+  /**
+   * P2-9：只重试失败的源。
+   *
+   * 真机实测一轮全量聚合搜索有 40+ 源失败，用户看到「N 个源失败」后没有下一步动作；
+   * 全量重搜又要等 20~30s。这里只对失败源再扇出一次，并把结果并入当前列表
+   * （已上屏内容不闪空、不重排）。
+   */
+  async function retryFailedSources(): Promise<void> {
+    const kw = searchKeyword.value.trim();
+    const ids = [...new Set(searchFailed.value.map((failure) => failure.sourceId))];
+    if (kw.length === 0 || ids.length === 0 || searchRetrying.value) return;
+    searchRetrying.value = true;
+    try {
+      const result = await libraryService.search({
+        keyword: kw,
+        // 失败源多半带着体检结论（unreachable 等），必须跳过过滤才有机会翻案
+        forceAll: true,
+        sourceIds: ids,
+        pageSize: SEARCH_LOCAL_LIMIT,
+      });
+      const seenIds = new Set(searchResultsAll.value.map((item) => item.id));
+      const seenTitles = new Set(searchResults.value.map((item) => titleDedupKey(item.title, item.year)));
+      const fresh = result.items.filter((item) => {
+        const titleKey = titleDedupKey(item.title, item.year);
+        if (seenIds.has(item.id) || seenTitles.has(titleKey)) return false;
+        seenIds.add(item.id);
+        seenTitles.add(titleKey);
+        return true;
+      });
+      if (result.items.length > 0) searchResultsAll.value = [...searchResultsAll.value, ...result.items];
+      if (fresh.length > 0) searchResults.value = sortByRelevance([...searchResults.value, ...fresh], kw);
+      searchFailed.value = result.failed;
+      searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
+    } catch (e) {
+      if (!isCanceled(e)) error.value = toErrorShape(e);
+    } finally {
+      searchRetrying.value = false;
+    }
+  }
 
   /** 同源连续超时阈值（会话内记忆；达到后本次会话跳过该源） */
   const SEARCH_BACKOFF_STREAK = 3;
@@ -566,6 +611,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchResultsAll,
     searchState,
     searchFailed,
+    searchRetrying,
     searchProgress,
     searchCandidates,
     searchFilteredOut,
@@ -593,6 +639,7 @@ export const useLibraryStore = defineStore('library', () => {
     loadNextPage,
     retry,
     search,
+    retryFailedSources,
     clearSearch,
     loadDetail,
     resolvePlay,

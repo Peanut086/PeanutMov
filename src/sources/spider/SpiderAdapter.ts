@@ -15,8 +15,15 @@ import { AppError } from '@/shared/errors';
 import { mediaIdOf } from '@/shared/id';
 import { toAbsoluteUrl } from '@/shared/url';
 import { mirrorVariants } from '@/shared/githubMirror';
-import { TIMEOUT_SEARCH_SPIDER_MS } from '@/shared/constants';
+import {
+  TIMEOUT_PROBE_SPIDER_MS,
+  TIMEOUT_PROBE_SPIDER_WARM_MS,
+  TIMEOUT_SEARCH_SPIDER_MS,
+  TIMEOUT_SPIDER_PLAY_COLD_MS,
+  TIMEOUT_SPIDER_PLAY_HOT_MS,
+} from '@/shared/constants';
 import { logger } from '@/shared/logger';
+import { isMagnetUrl, MAGNET_MESSAGE, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { isNative } from '@/shared/platform';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { httpClient } from '@/sources/base/httpClient';
@@ -143,8 +150,16 @@ function drpyArgOf(
       };
     case 'detailContent':
       return { id: String(args[0] ?? '') };
-    case 'searchContent':
-      return { wd: String(args[0] ?? ''), quick: args[1] === true };
+    case 'searchContent': {
+      // P2-8：drpy 的 search 编排需要页码，缺省（undefined）会让规则拼出 `page=undefined`，
+      // 源站直接 412/502。TVBox 的 searchContent 没有页码形参，故由调用方以第 3 参透传。
+      const pg = Number(args[2]);
+      return {
+        wd: String(args[0] ?? ''),
+        quick: args[1] === true,
+        pg: Number.isFinite(pg) && pg > 0 ? pg : 1,
+      };
+    }
     case 'playerContent':
       return { flag: String(args[0] ?? ''), id: String(args[1] ?? '') };
   }
@@ -154,7 +169,12 @@ function drpyArgOf(
 
 /** 单次原生调用超时（与原生看门狗对齐；JS 侧先到先报错，避免 UI 无限等待） */
 const NATIVE_LOAD_TIMEOUT_MS = 75_000;
-const NATIVE_INVOKE_TIMEOUT_MS = 30_000;
+/**
+ * 调用超时（P1-6）：jar 已缓存命中（热句柄）时 10s 就够——真机实测出现 30s 才报错的
+ * 长等待，用户以为卡死。只有「下载 jar / 镜像降级」的冷链路才允许 30s。
+ */
+const NATIVE_INVOKE_TIMEOUT_MS = TIMEOUT_SPIDER_PLAY_COLD_MS;
+const NATIVE_INVOKE_TIMEOUT_HOT_MS = TIMEOUT_SPIDER_PLAY_HOT_MS;
 const NATIVE_PROXY_TIMEOUT_MS = 25_000;
 
 /**
@@ -240,6 +260,13 @@ function nativeErrorOf(e: unknown, fallback: AppError): AppError {
   if (message.includes('jar too large')) {
     return new AppError('E_PARSE', 'jar 文件过大，无法加载', { detail: message, cause: e });
   }
+  // P1-5：规则脚本内部异常（`expecting ';'` / `'data' is not defined` / `... of null`）
+  // 对用户没有任何意义，还会泄露实现。原文只进日志，UI 统一成一句人话。
+  const safe = sanitizeSourceMessage(message);
+  if (safe !== message) {
+    logger.debug('规则脚本原始异常（仅日志）', message);
+    return new AppError(fallback.code, safe, { detail: safe, cause: e });
+  }
   return new AppError(fallback.code, message || fallback.message, { detail: message, cause: e });
 }
 
@@ -258,6 +285,8 @@ export class SpiderAdapter extends BaseAdapter {
   private readonly categoryCache = new Map<string, Category[]>();
   /** CHG-15：正在预热中的 sourceId，防重复加载 */
   private readonly warmingUp = new Set<string>();
+  /** P1-6：正在加载中的 sourceId → 加载 Promise（预热与真实调用共用一次加载） */
+  private readonly loading = new Map<string, Promise<string>>();
 
   /* ---------------- 探活与加载 ---------------- */
 
@@ -267,7 +296,15 @@ export class SpiderAdapter extends BaseAdapter {
    * 句柄缓存后，后续探活只走一次 homeContent，远快于窗口上限。
    */
   protected override get probeTimeoutMs(): number {
-    return 35_000;
+    return TIMEOUT_PROBE_SPIDER_MS;
+  }
+
+  /**
+   * P0-3：冷/热分级窗口。句柄已在内存时（复检、体检第二轮）只走 homeContent +
+   * 一次列表，按热窗口收紧；冷启动才给 jar 下载 + dex + 防护初始化的余量。
+   */
+  protected override probeWindowMs(source: Source): number {
+    return this.handles.has(source.id) ? TIMEOUT_PROBE_SPIDER_WARM_MS : TIMEOUT_PROBE_SPIDER_MS;
   }
 
   protected async probe(source: Source): Promise<ProbeResult> {
@@ -305,24 +342,29 @@ export class SpiderAdapter extends BaseAdapter {
       throw new AppError('E_UNSUPPORTED_FORMAT', '该爬虫源缺少 jar 或爬虫类名');
     }
     // A 段：HEAD jar 快速判死（CHG-09），失败直接归类（403 → auth_failed 等），
-    // 不再走 20~30s 的原生 jar 下载；结论不确定时继续 B 段
+    // 不再走 20~30s 的原生 jar 下载；结论不确定时继续 B 段。
+    // P0-3：句柄已在内存（热）时跳过 A 段——jar 已经验证过可达，再 HEAD 一次只会
+    // 给体检加一次可能失败的网络请求（慢网络下正是它把活源判成 unreachable）。
+    const hot = this.handles.has(source.id);
     const jarUrl = ext.jarUrl.split(';')[0] ?? ext.jarUrl;
-    const reachable = await withGithubMirrorFallback(
-      jarUrl,
-      (variantUrl) =>
-        httpClient.request(variantUrl, {
-          method: 'HEAD',
-          responseType: 'none',
-          timeoutMs: 3000,
-          retries: 0,
-        }),
-    ).catch((e: unknown) => {
-      // 结论不确定（超时可能是慢网络下的活源；405/501 是服务端不支持 HEAD）→ 交给 B 段
-      if (headInconclusive(e)) return { value: undefined, viaMirror: null };
-      throw e;
-    });
-    // 探活命中的镜像记下来，B 段与后续 load 直接纳用（不再重复试错）
-    if (reachable.viaMirror) this.jarVariants.set(source.id, reachable.viaMirror);
+    if (!hot) {
+      const reachable = await withGithubMirrorFallback(
+        jarUrl,
+        (variantUrl) =>
+          httpClient.request(variantUrl, {
+            method: 'HEAD',
+            responseType: 'none',
+            timeoutMs: 3000,
+            retries: 0,
+          }),
+      ).catch((e: unknown) => {
+        // 结论不确定（超时可能是慢网络下的活源；405/501 是服务端不支持 HEAD）→ 交给 B 段
+        if (headInconclusive(e)) return { value: undefined, viaMirror: null };
+        throw e;
+      });
+      // 探活命中的镜像记下来，B 段与后续 load 直接纳用（不再重复试错）
+      if (reachable.viaMirror) this.jarVariants.set(source.id, reachable.viaMirror);
+    }
     // B 段：完整加载 + homeContent，测「jar 活着但源站死了」
     await this.load(source);
     const response = await this.invoke(source, 'homeContent', [true], undefined, undefined);
@@ -403,7 +445,24 @@ export class SpiderAdapter extends BaseAdapter {
     }
   }
 
+  /**
+   * 加载入口（P1-6）：同源并发加载去重。
+   * 预热（warmup）与真实调用可能同时触发加载，若各自跑一遍会出现两次 jar 下载/加载，
+   * 既拖慢首屏也会让原生侧重复初始化。
+   */
   private async load(source: Source): Promise<string> {
+    const existing = this.handles.get(source.id);
+    if (existing) return existing;
+    const inflight = this.loading.get(source.id);
+    if (inflight) return inflight;
+    const task = this.loadInner(source).finally(() => {
+      this.loading.delete(source.id);
+    });
+    this.loading.set(source.id, task);
+    return task;
+  }
+
+  private async loadInner(source: Source): Promise<string> {
     const ext = extOf(source);
     if (!isNative()) {
       throw new AppError('E_NOT_IMPLEMENTED', '爬虫源仅支持在 App 内使用');
@@ -575,13 +634,11 @@ export class SpiderAdapter extends BaseAdapter {
     this.assertEnabled(source);
     const kw = keyword.trim();
     if (kw.length === 0) return [];
-    const response = await this.invoke(
-      source,
-      'searchContent',
-      [kw, true],
-      undefined,
-      params.signal,
-    );
+    // P2-8：只有 drpy（js）编排吃页码；jar 的 searchContent(String, boolean) 形参固定，
+    // 多传一个参数会让反射找不到方法，故按 kind 分别组参。
+    const args: Array<string | number | boolean> =
+      extOf(source).kind === 'js' ? [kw, true, params.page ?? 1] : [kw, true];
+    const response = await this.invoke(source, 'searchContent', args, undefined, params.signal);
     return (response.list ?? []).slice(0, params.pageSize).map((vod) => this.toItem(source, vod));
   }
 
@@ -655,8 +712,19 @@ export class SpiderAdapter extends BaseAdapter {
       // 解析页地址（jx 页面）：嗅探其加载过程中的媒体请求
       direct = await this.resolveViaParse(source, direct, params.signal);
     }
-    if (!/^https?:\/\//i.test(direct) && !direct.startsWith('magnet:')) {
-      throw new AppError('E_UNSUPPORTED_FORMAT', '播放地址协议不受支持');
+    if (isMagnetUrl(direct)) {
+      // P1-4：App 不内置种子下载/播放链路，点开必失败。这里给出确定结论 +
+      // 原始地址（detail），UI 据此提供「用外部应用打开」，而不是一句「该源暂不可用」。
+      throw new AppError('E_UNSUPPORTED_FORMAT', MAGNET_MESSAGE, {
+        detail: direct.trim(),
+        retryable: false,
+      });
+    }
+    if (!/^https?:\/\//i.test(direct)) {
+      throw new AppError('E_UNSUPPORTED_FORMAT', '播放地址协议不受支持', {
+        detail: direct.slice(0, 120),
+        retryable: false,
+      });
     }
 
     const headers = this.headersWith(
@@ -707,6 +775,9 @@ export class SpiderAdapter extends BaseAdapter {
     signal?: AbortSignal,
   ): Promise<SpiderPlayerResult> {
     signal?.throwIfAborted();
+    // P1-6：句柄已在内存（热）→ 10s 必须出结果；冷启动才给 30s 的下载/镜像余量
+    const hot = this.handles.has(source.id);
+    const invokeTimeout = hot ? NATIVE_INVOKE_TIMEOUT_HOT_MS : NATIVE_INVOKE_TIMEOUT_MS;
     const handle = await this.ensureLoaded(source);
     try {
       let result: { json: string | null; logs?: string[] };
@@ -720,7 +791,7 @@ export class SpiderAdapter extends BaseAdapter {
               arg: JSON.stringify({ flag, id }),
             }),
           signal,
-          NATIVE_INVOKE_TIMEOUT_MS,
+          invokeTimeout,
         );
       } else {
         result = await raceNative(
@@ -733,7 +804,7 @@ export class SpiderAdapter extends BaseAdapter {
               arrayArgs: { 2: [] },
             }),
           signal,
-          NATIVE_INVOKE_TIMEOUT_MS,
+          invokeTimeout,
         );
       }
       return parsePlayerJson(result.json);

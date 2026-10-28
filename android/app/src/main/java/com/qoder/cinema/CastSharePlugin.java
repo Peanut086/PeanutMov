@@ -24,6 +24,7 @@ import java.io.File;
  * JS 契约（src/native/castPlugin.ts）：
  * - shareFile({ path, mime, title, text? })   → { started: boolean }
  * - shareUrl ({ url, title, mime? })          → { started: boolean }
+ * - openExternal({ url })                      → { started: boolean }（磁力等外部 scheme）
  * - isSupported()                              → { supported: true }
  *
  * `path` 为 App Data 目录（getFilesDir()）下的相对路径；下载文件就落在那里。
@@ -85,6 +86,30 @@ public class CastSharePlugin extends Plugin {
         } catch (Exception e) {
             Log.w(TAG, "shareFile failed", e);
             call.reject("share failed: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void openExternal(PluginCall call) {
+        String url = call.getString("url");
+        if (url == null || url.isEmpty()) {
+            call.reject("url is required");
+            return;
+        }
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getActivity().startActivity(intent);
+            JSObject ret = new JSObject();
+            ret.put("started", true);
+            call.resolve(ret);
+        } catch (android.content.ActivityNotFoundException e) {
+            // P1-4：设备上没有能处理 magnet:/xxx 的应用
+            Log.w(TAG, "openExternal: no activity for " + url, e);
+            call.reject("未安装可处理该链接的应用，请先安装下载器（如迅雷/qBittorrent）");
+        } catch (Exception e) {
+            Log.w(TAG, "openExternal failed", e);
+            call.reject("打开失败: " + e.getMessage());
         }
     }
 

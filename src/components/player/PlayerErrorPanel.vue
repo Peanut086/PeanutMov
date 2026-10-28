@@ -10,6 +10,7 @@ import { computed } from 'vue';
 
 import type { AppErrorShape } from '@/types';
 import { ERROR_MESSAGES } from '@/shared/errors';
+import { guidanceOf, magnetUrlOf, sanitizeSourceMessage } from '@/shared/sourceFailure';
 
 const props = withDefaults(
   defineProps<{
@@ -33,6 +34,8 @@ const emit = defineEmits<{
   (e: 'health-check'): void;
   (e: 'back'): void;
   (e: 'copy'): void;
+  /** P1-4：磁力等外部 scheme 交给系统 Intent 打开 */
+  (e: 'open-external', url: string): void;
 }>();
 
 const title = computed(() => {
@@ -40,8 +43,18 @@ const title = computed(() => {
   return props.error.message || ERROR_MESSAGES[props.error.code];
 });
 
+/** P1-5：脚本内部异常不进 UI（服务层已收敛，这里兜底） */
+const detail = computed(() => sanitizeSourceMessage(props.error?.detail) || '');
+
+/** P1-4：磁力地址（有值时渲染「用外部应用打开」） */
+const magnetUrl = computed(() => magnetUrlOf(props.error));
+
 const hint = computed(() => {
-  switch (props.error?.code) {
+  if (!props.error) return '可能原因：播放过程中出现异常。可重试；若持续失败请返回详情页。';
+  // P0-1：源失败四分类优先（源站真死 / 解析超时 / 协议不支持 / 规则脚本异常）
+  const guidance = guidanceOf(props.error);
+  if (guidance.kind !== 'unknown') return `可能原因：${guidance.hint}`;
+  switch (props.error.code) {
     case 'E_NETWORK':
       return '可能原因：网络已断开或源站不可达。请检查网络，或切换线路。';
     case 'E_TIMEOUT':
@@ -87,9 +100,18 @@ const showRetry = computed(() => props.error?.retryable !== false);
 
       <h2 class="player-error__title">{{ title }}</h2>
       <p class="player-error__hint">{{ hint }}</p>
-      <p v-if="error?.detail" class="player-error__detail">{{ error.detail }}</p>
+      <p v-if="detail" class="player-error__detail">{{ detail }}</p>
 
       <div class="player-error__actions">
+        <!-- P1-4：磁力链接只能用外部应用打开，这是唯一有效动作，放最前 -->
+        <button
+          v-if="magnetUrl"
+          class="btn btn--primary btn--md"
+          type="button"
+          @click="emit('open-external', magnetUrl)"
+        >
+          用外部应用打开
+        </button>
         <button
           v-if="showRetry"
           class="btn btn--primary btn--md"

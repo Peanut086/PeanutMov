@@ -27,6 +27,8 @@ export interface ShareUrlOptions {
 export interface CastSharePlugin {
   shareFile(options: ShareFileOptions): Promise<{ started: boolean }>;
   shareUrl(options: ShareUrlOptions): Promise<{ started: boolean }>;
+  /** 用系统 ACTION_VIEW 打开任意 scheme（磁力链接交给外部下载器） */
+  openExternal(options: { url: string }): Promise<{ started: boolean }>;
   isSupported(): Promise<{ supported: boolean }>;
 }
 
@@ -52,5 +54,14 @@ export async function shareFile(options: ShareFileOptions): Promise<boolean> {
 /** 分享远程链接 */
 export async function shareUrl(options: ShareUrlOptions): Promise<boolean> {
   const result = await CastShare.shareUrl(options);
+  return result.started !== false;
+}
+
+/**
+ * 用系统 Intent 打开任意 scheme（P1-4：磁力链接 → 外部下载器/播放器）。
+ * 调用方（castService）负责把异常转成 CastResult，这里保持「成功即 true」。
+ */
+export async function openExternal(url: string): Promise<boolean> {
+  const result = await CastShare.openExternal({ url });
   return result.started !== false;
 }

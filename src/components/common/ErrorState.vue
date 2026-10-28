@@ -9,6 +9,7 @@ import { computed } from 'vue';
 
 import type { AppErrorShape } from '@/types';
 import { ERROR_MESSAGES } from '@/shared/errors';
+import { guidanceOf, sanitizeSourceMessage } from '@/shared/sourceFailure';
 
 const props = withDefaults(
   defineProps<{
@@ -32,14 +33,19 @@ const message = computed(() => {
   return props.error.message || ERROR_MESSAGES[props.error.code];
 });
 
-const detail = computed(() => props.error?.detail ?? '');
+/** P1-5：原始脚本异常不外泄（服务层已收敛，这里兜底组件被直接传入的场景） */
+const detail = computed(() => sanitizeSourceMessage(props.error?.detail) || '');
 
 const canRetry = computed(() => props.showRetry ?? props.error?.retryable ?? true);
 
 /** 常见错误码 → "可能原因 + 下一步动作"（NFR-R01 文案结构） */
 const advice = computed(() => {
   if (props.hint) return props.hint;
-  switch (props.error?.code) {
+  if (!props.error) return '可能原因：数据读取或请求异常。可重试；若持续失败请返回上一页。';
+  // P0-1：先按「源失败四分类」给可行动建议（源站死/超时/协议不支持/规则脚本异常）
+  const guidance = guidanceOf(props.error);
+  if (guidance.kind !== 'unknown') return `可能原因：${guidance.hint}`;
+  switch (props.error.code) {
     case 'E_NETWORK':
       return '可能原因：网络不可用或源站不可访问。请检查网络连接后重试。';
     case 'E_TIMEOUT':

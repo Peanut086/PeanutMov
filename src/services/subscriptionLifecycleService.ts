@@ -24,6 +24,8 @@ import {
   SUBSCRIPTION_REFRESH_TTL_MS,
 } from '@/shared/constants';
 import { logger } from '@/shared/logger';
+import { isNative } from '@/shared/platform';
+import { sourceRegistry } from '@/sources/registry';
 import type { Source, SubscriptionSummary } from '@/types';
 
 const KV_REFRESH_STATE = 'subscription-refresh-state';
@@ -47,6 +49,36 @@ function isBadHealth(source: Source): boolean {
 async function readMap<T>(key: string): Promise<Record<string, T>> {
   const value = await kvRepo.get<Record<string, T>>(key);
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+/**
+ * 自动禁用前复检（P0-3）。
+ *
+ * 只对爬虫源做：它们的探活要走 jar 下载 + dex 加载 + 防护初始化，与真实链路差异最大，
+ * 体检抖动造成的「假死」几乎都出在这一类。复检成功则就地回写 `health=ok`，
+ * 并让调用方跳过本次禁用——宁可多留一个源，也不要一次抖动误禁一批好源。
+ *
+ * 非爬虫源 / Web 环境直接返回 false（不做网络请求，保持体检耗时与单测确定性）。
+ */
+async function recheckAlive(source: Source): Promise<boolean> {
+  if (source.type !== 'spider' || !isNative() || !sourceRegistry.has(source.type)) return false;
+  try {
+    const adapter = sourceRegistry.get(source.type);
+    const result = await adapter.testConnection(source);
+    if (!result.ok) return false;
+    await sourceRepo.save({
+      ...source,
+      health: 'ok',
+      healthCheckedAt: Date.now(),
+      lastErrorCode: null,
+      updatedAt: source.updatedAt,
+    });
+    logger.info('自动禁用前复检通过，保留该源', source.name);
+    return true;
+  } catch (e) {
+    logger.warn('自动禁用前复检失败（按原结论处置）', source.name, e);
+    return false;
+  }
 }
 
 /** 单条订阅刷新（成功返回时间戳，失败返回 null 并静默） */
@@ -150,6 +182,12 @@ export const subscriptionLifecycleService = {
         streaks[key] = streak;
         dirty = true;
         if (streak >= SUBSCRIPTION_AUTO_DISABLE_STREAK && !source.autoDisabledAt) {
+          // P0-3：禁用是不可逆的用户可见后果，先复检一次（爬虫源）
+          if (await recheckAlive(source)) {
+            delete streaks[key];
+            dirty = true;
+            continue;
+          }
           await sourceRepo.save({
             ...source,
             enabled: false,

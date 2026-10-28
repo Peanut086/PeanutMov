@@ -508,6 +508,35 @@ describe('SpiderAdapter', () => {
     // 不能退化成泛化的「该源暂不可用」——用户要能看出是源站返回了网页
     expect(result.error?.message).toContain('HTML 页面而非 JS 源码');
   });
+
+  it('P2-8：drpy 搜索把页码透传给规则（缺省会拼出 page=undefined）', async () => {
+    vi.resetModules();
+    vi.doMock('@/shared/platform', () => ({ isNative: () => true }));
+    vi.doMock('@/native/spiderPlugin', () => ({
+      Spider: { load: vi.fn(), invoke: vi.fn(), proxy: vi.fn(), unload: vi.fn() },
+      isSpiderAvailable: vi.fn().mockResolvedValue(true),
+      spiderInvoke: vi.fn(),
+    }));
+    const drpyInvoke = vi.fn(async (_opts: { handle: string; method: string; arg: string }) => ({
+      json: SEARCH_JSON,
+      logs: [],
+    }));
+    vi.doMock('@/native/drpyPlugin', () => ({
+      Drpy: { load: vi.fn().mockResolvedValue({ handle: 'js-1' }), invoke: drpyInvoke, unload: vi.fn() },
+      isDrpyAvailable: vi.fn().mockResolvedValue(true),
+    }));
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource({
+      ext: { kind: 'js', api: null, jarUrl: null, initExt: 'https://x.test/rule.js', searchable: true },
+    });
+
+    await adapter.search({ source, keyword: '测试', page: 3, pageSize: 20, signal: undefined });
+
+    const call = drpyInvoke.mock.calls.find((c) => (c[0] as { method: string }).method === 'search');
+    expect(call).toBeDefined();
+    expect(JSON.parse((call![0] as { arg: string }).arg)).toMatchObject({ wd: '测试', pg: 3 });
+  });
 });
 
 describe('SpiderAdapter List 形参（arrayArgs）', () => {
@@ -644,5 +673,51 @@ describe('SpiderAdapter 空 tid 回退', () => {
 
     const index = invoke.mock.calls.findIndex((c) => (c[0] as { method: string }).method === 'categoryContent');
     expect(callArgsOf(invoke, index).args[0]).toBe('');
+  });
+
+  it('P1-4：magnet: 播放地址 → E_UNSUPPORTED_FORMAT，detail 带原始磁力链接', async () => {
+    mockPlugin({ ...ALL, playerContent: JSON.stringify({ url: 'magnet:?xt=urn:btih:abc123' }) });
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource();
+
+    const detail = await adapter.getDetail({ source, sourceItemId: '102' });
+    await expect(
+      adapter.resolvePlayUrl({
+        source,
+        mediaId: detail.item.id,
+        sourceItemId: '102',
+        lineId: detail.lines[0]!.id,
+        episodeId: detail.episodes[0]!.id,
+      }),
+    ).rejects.toMatchObject({
+      code: 'E_UNSUPPORTED_FORMAT',
+      retryable: false,
+      detail: 'magnet:?xt=urn:btih:abc123',
+    });
+  });
+
+  it('P1-5：规则脚本原始异常不外泄（统一成「规则脚本异常」）', async () => {
+    const { invoke } = mockPlugin({ ...ALL });
+    invoke.mockImplementation(async (opts: { method: string }) => {
+      if (opts.method === 'searchContent') throw new Error("搜索执行失败: expecting ';'");
+      return { json: ALL[opts.method] ?? null, logs: [] };
+    });
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+
+    await expect(
+      adapter.search({ source: makeSource(), keyword: '测试', page: 1, pageSize: 20, signal: undefined }),
+    ).rejects.toMatchObject({ message: '规则脚本异常（源站问题）' });
+  });
+
+  it('P2-8：drpy（kind=js）搜索透传页码，jar 保持两参', async () => {
+    const { invoke } = mockPlugin(ALL);
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+
+    await adapter.search({ source: makeSource(), keyword: '测试', page: 2, pageSize: 20, signal: undefined });
+    const jarIndex = invoke.mock.calls.findIndex((c) => (c[0] as { method: string }).method === 'searchContent');
+    expect(callArgsOf(invoke, jarIndex).args).toEqual(['测试', true]);
   });
 });

@@ -24,8 +24,9 @@ import {
   SEARCH_LOCAL_LIMIT,
   TIMEOUT_SEARCH_MS,
 } from '@/shared/constants';
-import { AppError, isCanceled, toErrorShape } from '@/shared/errors';
+import { AppError, isCanceled, toAppError, toErrorShape } from '@/shared/errors';
 import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
+import { sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
 import type {
@@ -234,6 +235,46 @@ async function adapterFor(source: Source): Promise<ReturnType<typeof sourceRegis
   return sourceRegistry.forSource(source);
 }
 
+/**
+ * P0-3 使用即校准：真实链路（浏览/详情/解析/搜索）成功即回写 `health=ok`。
+ *
+ * 探活口径与真实链路不等价（爬虫源尤其明显：探活走 jar 冷启动 + 首页 + 列表三段，
+ * 真实浏览往往命中缓存或更轻的接口），一次探活抖动就会让好源长期挂「无法连接」。
+ * 动态 import 避免与 sourceService 形成循环依赖（同 markSourceFailed 的处理）。
+ */
+function calibrateAlive(sourceId: string): void {
+  void import('@/services/sourceService')
+    .then(({ sourceService }) => sourceService.noteAlive(sourceId))
+    .catch((e: unknown) => {
+      logger.debug('健康校准回写失败（忽略）', { sourceId, error: toErrorShape(e) });
+    });
+}
+
+/** P1-6：进真实链路前顺手预热（爬虫源加载 jar；其它适配器为空实现） */
+function prewarm(adapter: object, source: Source): void {
+  const warmup = (adapter as { warmup?: (s: Source) => Promise<void> }).warmup;
+  if (typeof warmup !== 'function') return;
+  void Promise.resolve(warmup.call(adapter, source)).catch(() => undefined);
+}
+
+/**
+ * P0-1：底层「未知异常」→ 可读的源侧错误。
+ *
+ * 实测 alist 源（红果短剧）browse 抛的是普通 Error，最终落到 UI 只有
+ * 「操作失败，请重试」——用户既不知道为什么，也不知道该不该换源。
+ * 这里统一改判为 `E_SOURCE_UNAVAILABLE`，文案取底层原因（脚本内部异常先收敛），
+ * 让「换源」这个动作有依据。
+ */
+function readableSourceError(e: unknown): AppError {
+  const error = e instanceof AppError ? e : toAppError(e);
+  if (error.code !== 'E_UNKNOWN') return error;
+  const detail = sanitizeSourceMessage(error.detail ?? error.message);
+  return new AppError('E_SOURCE_UNAVAILABLE', detail || '源返回了无法识别的数据，可切换其他源', {
+    detail: detail || null,
+    cause: (error as { cause?: unknown }).cause,
+  });
+}
+
 /** 是否为"离线/网络"类错误：离线时用于回退缓存 */
 function isNetworkError(e: unknown): boolean {
   if (!(e instanceof AppError)) return false;
@@ -248,6 +289,8 @@ async function searchOneSource(
   pageSize: number,
 ): Promise<MediaItem[]> {
   const adapter = await adapterFor(source);
+  // P1-6：搜索扇出前预热（爬虫源 jar 加载与搜索并发；warmup 内部对同源去重）
+  prewarm(adapter, source);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), adapter.searchTimeoutMs ?? TIMEOUT_SEARCH_MS);
   const onAbort = (): void => controller.abort();
@@ -355,10 +398,13 @@ export const libraryService: LibraryService = {
 
     let result: PageResult<MediaItem>;
     try {
+      // P1-6：爬虫源先预热（jar 加载与浏览并发，冷启动不再吃满浏览超时）
+      prewarm(adapter, source);
       // 本地筛选维度走聚合分页（凑满一页 + 游标续拉）；纯服务端筛选（ext）分页天然对齐
       result = hasLocalFilters(query.filters)
         ? await aggregateBrowse(adapter, params, query)
         : await adapter.browse(params);
+      calibrateAlive(query.sourceId);
     } catch (e) {
       if (query.page === 1 && isNetworkError(e)) {
         // AC-28：刷新失败保留旧数据；指定分类时缓存无法还原分类维度，不返回全量
@@ -369,7 +415,7 @@ export const libraryService: LibraryService = {
           }
         }
       }
-      throw e;
+      throw readableSourceError(e);
     }
 
     const now = Date.now();
@@ -462,6 +508,8 @@ export const libraryService: LibraryService = {
       const settleOne = async (source: Source, index: number): Promise<void> => {
         try {
           const items = await searchOneSource(source, keyword, params.signal, pageSize);
+          // P0-3：搜索能返回（哪怕 0 条）就是「源活着」的强证据
+          calibrateAlive(source.id);
           const visible = hideDemo ? items.filter((item) => !item.isDemo) : items;
           remoteResults[index] = visible;
           done += 1;
@@ -610,15 +658,18 @@ export const libraryService: LibraryService = {
     if (!lineId) throw new AppError('E_NO_PLAY_URL');
 
     try {
-      return await adapter.resolvePlayUrl({
+      prewarm(adapter, source);
+      const playback = await adapter.resolvePlayUrl({
         source,
         mediaId: item.id,
         sourceItemId: item.sourceItemId,
         episodeId: params.episodeId,
         lineId,
       });
+      calibrateAlive(source.id);
+      return playback;
     } catch (e) {
-      const error = e instanceof AppError ? e : new AppError('E_UNKNOWN', undefined, { detail: String(e) });
+      const error = readableSourceError(e);
       if (error.code === 'E_NETWORK' || error.code === 'E_TIMEOUT' || error.code === 'E_HTTP_5XX') {
         await markSourceFailed(source.id, error);
         throw new AppError('E_SOURCE_UNAVAILABLE', undefined, { detail: error.message });
@@ -692,7 +743,9 @@ async function refreshDetail(item: MediaItem): Promise<MediaDetail> {
   if (!source) throw new AppError('E_SOURCE_UNAVAILABLE', '该源已被移除');
   const adapter = await adapterFor(source);
   const params: GetDetailParams = { source, sourceItemId: item.sourceItemId };
+  prewarm(adapter, source);
   const detail = await adapter.getDetail(params);
+  calibrateAlive(item.sourceId);
 
   const now = Date.now();
   const mediaItem: MediaItem = {

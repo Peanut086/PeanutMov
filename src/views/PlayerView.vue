@@ -14,6 +14,7 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { useRoute, useRouter } from 'vue-router';
 
 import type {
+  AppErrorShape,
   Episode,
   GestureSettings,
   PlaybackRate,
@@ -25,6 +26,7 @@ import type { PlayerLoadOptions } from '@/player/types';
 import { shouldIgnoreShortcut } from '@/player/shortcutGuard';
 import { formatClock } from '@/shared/time';
 import { toErrorShape } from '@/shared/errors';
+import { guidanceOf, magnetUrlOf } from '@/shared/sourceFailure';
 
 import PlayerSurface from '@/components/player/PlayerSurface.vue';
 import PlayerControls from '@/components/player/PlayerControls.vue';
@@ -84,6 +86,8 @@ const restart = computed(() => route.query.restart === '1');
 /* ---------- 页面数据 ---------- */
 const detailReady = ref(false);
 const loadError = ref<string | null>(null);
+/** P0-1/P1-4：解析失败的结构化错误（分类 + 磁力地址需要 detail，字符串不够用） */
+const loadErrorShape = ref<AppErrorShape | null>(null);
 const pageLoading = ref(true);
 
 const item = computed(() => library.detail?.item ?? null);
@@ -358,6 +362,7 @@ async function resolveAndLoad(): Promise<boolean> {
   }
   pageLoading.value = true;
   loadError.value = null;
+  loadErrorShape.value = null;
   startLoadingHint();
   // v1.7/CHG-21：记录起播时刻——失败自动兜底只在窗口期内触发
   failoverStartedAt.value = Date.now();
@@ -424,7 +429,9 @@ async function resolveAndLoad(): Promise<boolean> {
     }
     return ok;
   } catch (e) {
-    loadError.value = toErrorShape(e, 'E_NO_PLAY_URL').message;
+    const shape = toErrorShape(e, 'E_NO_PLAY_URL');
+    loadErrorShape.value = shape;
+    loadError.value = shape.message;
     return false;
   } finally {
     pageLoading.value = false;
@@ -600,6 +607,25 @@ const canHealthCheck = computed(() => {
 
 /** v1.8/CHG-26：手动换源可用性——有详情且在线（跨源候选搜索需要网络） */
 const canSwitchSourceManual = computed(() => item.value !== null && isOnlineNow());
+
+/* ---------- P0-1 / P1-4：解析失败的可行动引导 ---------- */
+
+/** 解析失败的可行动原因（源站真死 / 解析超时 / 协议不支持 / 规则脚本异常） */
+const loadErrorGuidance = computed(() => (loadErrorShape.value ? guidanceOf(loadErrorShape.value) : null));
+
+/** 磁力地址：有值时给「用外部应用打开」，否则重试没有任何意义 */
+const loadErrorMagnet = computed(() => magnetUrlOf(loadErrorShape.value));
+
+/** 外部应用打开（磁力交给下载器/播放器；失败给明确 Toast） */
+async function openExternalUrl(url: string): Promise<void> {
+  const result = await castService.openExternal(url);
+  if (result.started) return;
+  if (result.reason === 'unsupported-platform') {
+    toast.info('当前环境无法打开外部链接（仅 Android App 支持）');
+    return;
+  }
+  toast.error(result.error?.message ?? '打开失败，请安装下载器后重试');
+}
 
 function withinFailoverWindow(): boolean {
   return failoverStartedAt.value > 0 && Date.now() - failoverStartedAt.value <= PLAYER_FAILOVER_WINDOW_MS;
@@ -1140,13 +1166,32 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             @health-check="goHealthCheck"
             @back="openDetail"
             @copy="copyError"
+            @open-external="openExternalUrl"
           />
 
           <!-- 页面级错误（详情/解析失败） -->
           <div v-if="loadError && !player.error" class="player-loading" role="alert">
             <p class="player-loading__text">{{ loadError }}</p>
+            <!-- P0-1：给出可行动原因（源站死 / 超时 / 磁力 / 规则脚本异常） -->
+            <p v-if="loadErrorGuidance" class="player-loading__hint">{{ loadErrorGuidance.hint }}</p>
             <div class="player-loading__actions">
-              <button class="btn btn--primary btn--sm" type="button" @click="resolveAndLoad">重试</button>
+              <!-- P1-4：磁力链接只能外部打开，重试无意义 -->
+              <button
+                v-if="loadErrorMagnet"
+                class="btn btn--primary btn--sm"
+                type="button"
+                @click="openExternalUrl(loadErrorMagnet)"
+              >
+                用外部应用打开
+              </button>
+              <button
+                v-if="!loadErrorMagnet"
+                class="btn btn--primary btn--sm"
+                type="button"
+                @click="resolveAndLoad"
+              >
+                重试
+              </button>
               <!-- v1.8/CHG-26：解析失败常是源坏了，直接给换源路径 -->
               <button
                 v-if="canSwitchSourceManual"
@@ -1402,6 +1447,14 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
 .player-loading__text {
   font: var(--text-label);
   color: rgba(255, 255, 255, 0.86);
+}
+
+/* P0-1：解析失败的可行动原因（分类建议），比错误标题低一级 */
+.player-loading__hint {
+  max-width: 260px;
+  font: var(--text-caption);
+  color: rgba(255, 255, 255, 0.6);
+  line-height: 1.6;
 }
 
 .player-loading__actions {

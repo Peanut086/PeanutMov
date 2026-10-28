@@ -8,7 +8,7 @@
  *   AC-82/AC-84 明确要求 Web 环境按钮禁用并提示"当前环境不支持系统投屏（仅 Android App 可用）"，
  *   而 `navigator.share` 只是网页分享能力，不能当作系统投屏（REV-08）。
  */
-import { isCastShareAvailable, shareFile, shareUrl } from '@/native/castPlugin';
+import { isCastShareAvailable, openExternal, shareFile, shareUrl } from '@/native/castPlugin';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
 import { toErrorShape } from '@/shared/errors';
@@ -36,6 +36,11 @@ export interface CastResult {
 export interface CastService {
   isSupported(): Promise<boolean>;
   cast(req: CastRequest): Promise<CastResult>;
+  /**
+   * 用系统 Intent 打开外部 scheme（P1-4：磁力链接交给下载器/播放器）。
+   * Web 一律 `unsupported-platform`，不抛异常。
+   */
+  openExternal(url: string): Promise<CastResult>;
 }
 
 /** Web / 非原生容器的统一降级提示（AC-82） */
@@ -74,6 +79,24 @@ export const castService: CastService = {
       const canceled = /cancel|abort|dismiss/i.test(error.message);
       if (canceled) return { started: false, reason: 'canceled', error: null };
       logger.warn('系统分享失败', error);
+      return { started: false, reason: 'error', error };
+    }
+  },
+
+  async openExternal(url: string): Promise<CastResult> {
+    if (!isNative()) return { started: false, reason: 'unsupported-platform', error: null };
+    if (!url) return { started: false, reason: 'no-target', error: null };
+    if (!(await isCastShareAvailable())) {
+      return { started: false, reason: 'unsupported-platform', error: null };
+    }
+    try {
+      const started = await openExternal(url);
+      return started
+        ? { started: true, reason: null, error: null }
+        : { started: false, reason: 'error', error: null };
+    } catch (e) {
+      const error = toErrorShape(e);
+      logger.warn('外部打开失败', error);
       return { started: false, reason: 'error', error };
     }
   },

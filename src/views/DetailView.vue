@@ -281,6 +281,11 @@ async function playEpisode(ep: Episode | null, restart = false): Promise<void> {
 /** 播放页面跳转进行中（AC-92）：避免用户误触多次 */
 const playingNavigate = ref(false);
 
+/** AC-92：剧集列表在跳转期间的重复点击 → 统一提示（由父级收敛文案） */
+function onPlayingBlocked(): void {
+  toast.info('正在打开播放页，请稍候');
+}
+
 async function onPrimary(): Promise<void> {
   const rec = progressRecord.value;
   const restart = isFinished.value;
@@ -291,7 +296,7 @@ async function onPrimary(): Promise<void> {
   }
   // AC-92：防止重复点击，显示加载状态
   if (playingNavigate.value) {
-    toast.warning('正在打开播放页，请稍候');
+    toast.info('正在打开播放页，请稍候');
     return;
   }
   // AC-68：记录集号已下线时先给出明确提示，再从第 1 集开始，不静默跳集
@@ -656,7 +661,7 @@ function openCompliance(): void {
             :playing-navigate="prechecking || playingNavigate"
             @select="onEpisodeSelect"
             @unavailable="toast.error('该集暂无可播放地址')"
-            @playing="(ep) => { toast.warning('正在打开播放页，请稍候'); }"
+            @playing="onPlayingBlocked"
           />
         </section>
 

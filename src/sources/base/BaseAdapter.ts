@@ -59,6 +59,14 @@ export abstract class BaseAdapter implements SourceAdapter {
     return TIMEOUT_TEST_CONNECTION_MS;
   }
 
+  /**
+   * 按源取探活窗口（P0-3）。默认与 `probeTimeoutMs` 一致；
+   * 需要「冷/热不同窗口」的适配器（爬虫源的 jar 冷启动 vs 已加载句柄）覆盖本方法。
+   */
+  protected probeWindowMs(_source: Source): number {
+    return this.probeTimeoutMs;
+  }
+
   abstract listCategories(source: Source, signal?: AbortSignal): Promise<Category[]>;
   abstract browse(params: BrowseParams): Promise<PageResult<MediaItem>>;
   abstract search(params: SearchParams): Promise<MediaItem[]>;
@@ -80,10 +88,11 @@ export abstract class BaseAdapter implements SourceAdapter {
 
     const controller = new AbortController();
     let timedOut = false;
+    const windowMs = this.probeWindowMs(source);
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, this.probeTimeoutMs);
+    }, windowMs);
     const onAbort = (): void => controller.abort();
     signal?.addEventListener('abort', onAbort, { once: true });
 
@@ -104,7 +113,7 @@ export abstract class BaseAdapter implements SourceAdapter {
       const latencyMs = Date.now() - startedAt;
       const error: AppError =
         timedOut || (e instanceof AppError && e.code === 'E_ABORTED')
-          ? new AppError('E_TIMEOUT', undefined, { detail: `探测超过 ${this.probeTimeoutMs}ms` })
+          ? new AppError('E_TIMEOUT', undefined, { detail: `探测超过 ${windowMs}ms` })
           : e instanceof AppError
             ? e
             : new AppError('E_SOURCE_UNAVAILABLE', undefined, { detail: String(e) });
