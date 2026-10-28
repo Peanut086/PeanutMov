@@ -214,16 +214,20 @@ public class ExoPlayerPlugin extends Plugin {
 
     @PluginMethod
     public void progress(PluginCall call) {
-        JSObject result = new JSObject();
-        if (player != null) {
-            result.put("positionMs", player.getCurrentPosition());
-            result.put("durationMs", player.getDuration());
-        } else {
-            result.put("positionMs", 0);
-            result.put("durationMs", 0);
-        }
-        result.put("droppedFrames", droppedFrames);
-        call.resolve(result);
+        // ExoPlayer 只能在创建它的主线程访问：在 CapacitorPlugins 线程直接读
+        // getCurrentPosition() 会抛 IllegalStateException 并终止进程（真机实证）。
+        getBridge().executeOnMainThread(() -> {
+            JSObject result = new JSObject();
+            if (player != null) {
+                result.put("positionMs", player.getCurrentPosition());
+                result.put("durationMs", player.getDuration());
+            } else {
+                result.put("positionMs", 0);
+                result.put("durationMs", 0);
+            }
+            result.put("droppedFrames", droppedFrames);
+            call.resolve(result);
+        });
     }
 
     @PluginMethod
