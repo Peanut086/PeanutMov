@@ -35,6 +35,11 @@ export type PlayerEventMap = {
   enginechange: { kind: 'native' | 'hls' | 'video' };
   /** v1.8/CHG-25：非致命提示（如原生引擎回退），由 View 转 Toast */
   notice: { message: string };
+  /**
+   * 黑屏检测：码流在播（时间在走）但一帧画面都没解出来。
+   * 触发一次/每次加载，由 View 提示「只有声音没有画面」并给换线路/原生引擎入口。
+   */
+  novideo: { videoWidth: number; videoHeight: number; elapsedSec: number };
 };
 
 export type PlayerEventName = keyof PlayerEventMap;
@@ -103,6 +108,12 @@ export interface PlayableEngine {
   getCurrentTime(): number;
   getDuration(): number;
   getBuffered(): number;
+  /**
+   * 画面帧统计（黑屏检测）：`totalFrames === 0` 且 `videoWidth > 0` 表示
+   * 「解码器吃下了码流但一帧都没出」（多为 WebView 不支持该视频编码）。
+   * 原生 surface 引擎无法统计，返回 null。
+   */
+  getFrameStats?(): { videoWidth: number; videoHeight: number; totalFrames: number } | null;
   setQuality(quality: string): void;
   getQualities(): string[];
   /** 销毁并释放资源 */

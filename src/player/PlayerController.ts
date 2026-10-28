@@ -29,6 +29,7 @@ import {
   LOAD_METADATA_TIMEOUT_MS,
   NETWORK_RETRY_DELAY_MS,
   NETWORK_RETRY_TIMES,
+  NO_VIDEO_CHECK_DELAY_MS,
   QUALITY_AUTO,
   RESUME_MAX_RATIO,
   RESUME_MIN_RATIO,
@@ -43,6 +44,26 @@ import { ProgressReporter, type ProgressSnapshot } from '@/player/ProgressReport
 import { FullscreenController } from '@/player/FullscreenController';
 import { OrientationController } from '@/player/OrientationController';
 import { assertSourceSupported, preflightManifest } from '@/player/sourceGuard';
+
+/** 帧统计（`getFrameStats` 的返回；原生 surface 引擎为 null） */
+export interface FrameStats {
+  videoWidth: number;
+  videoHeight: number;
+  totalFrames: number;
+}
+
+/**
+ * 黑屏判定（纯函数，便于单测）：
+ * 有视频元数据、时间在走（>1s）、却一帧都没解出来 → 只有声音没有画面。
+ * `totalFrames < 0` 表示环境不支持统计（原生引擎），一律不判黑屏。
+ */
+export function isNoVideo(stats: FrameStats | null, elapsedSec: number): boolean {
+  if (!stats) return false;
+  if (stats.totalFrames < 0) return false;
+  if (stats.totalFrames > 0) return false;
+  if (stats.videoWidth === 0) return false;
+  return elapsedSec >= 1;
+}
 
 export interface PlayerControllerDeps {
   /** 进度写回调（由 View 注入 historyStore.save） */
@@ -153,6 +174,8 @@ export class PlayerController {
     this.resetPreflight();
     // 上一集的预载参数对新集已过期（CHG-21）
     this.clearPreload();
+    // 黑屏检测按「每次加载」重置
+    this.clearNoVideoCheck();
     this.setState('loading');
     this.options = opts;
     this.networkRetries = 0;
@@ -339,6 +362,8 @@ export class PlayerController {
   private handleTimeUpdate(currentTime: number, duration: number, buffered: number): void {
     this.progress.update(currentTime, duration);
     this.emit('timeupdate', { currentTime, duration, buffered });
+    // 黑屏检测：起播后 5s 仍一帧未出 → 上报一次（每次加载最多一次）
+    if (currentTime > 0) this.scheduleNoVideoCheck();
     if (this.subtitles.getActiveId()) {
       const text = this.subtitles.textAt(currentTime);
       this.emit('subtitlechange', {
@@ -363,6 +388,48 @@ export class PlayerController {
     this.setState('ended');
     void this.progress.finish();
     this.emit('ended', undefined);
+  }
+
+  /* ---------- 黑屏检测（码流在播但无画面） ---------- */
+
+  private noVideoTimer: ReturnType<typeof setTimeout> | null = null;
+  private noVideoReported = false;
+
+  private clearNoVideoCheck(): void {
+    if (this.noVideoTimer !== null) {
+      clearTimeout(this.noVideoTimer);
+      this.noVideoTimer = null;
+    }
+    this.noVideoReported = false;
+  }
+
+  private scheduleNoVideoCheck(): void {
+    if (this.noVideoReported || this.noVideoTimer !== null) return;
+    this.noVideoTimer = setTimeout(() => {
+      this.noVideoTimer = null;
+      this.checkNoVideo();
+    }, NO_VIDEO_CHECK_DELAY_MS);
+  }
+
+  /**
+   * 一帧都没解出来 → 上报 `novideo`（每次加载最多一次）。
+   *
+   * 判据三条同时成立才算：有视频元数据（videoWidth > 0）、时间在推进（>1s）、
+   * `totalFrames === 0`。原生 surface 引擎拿不到帧统计（返回 null）直接跳过，
+   * 避免误报。
+   */
+  private checkNoVideo(): void {
+    if (this.destroyed || this.noVideoReported) return;
+    const stats = this.engine?.getFrameStats?.() ?? null;
+    const elapsedSec = this.engine?.getCurrentTime() ?? 0;
+    if (!isNoVideo(stats, elapsedSec)) return;
+    if (!stats) return;
+    this.noVideoReported = true;
+    this.emit('novideo', {
+      videoWidth: stats.videoWidth,
+      videoHeight: stats.videoHeight,
+      elapsedSec,
+    });
   }
 
   private handleEngineError(error: AppErrorShape): void {
@@ -710,6 +777,7 @@ export class PlayerController {
     if (this.hideTimer !== null) clearTimeout(this.hideTimer);
     this.hideTimer = null;
     this.clearRetryTimer();
+    this.clearNoVideoCheck();
     this.progress.stop();
     await this.progress.flush();
     this.progress.dispose();

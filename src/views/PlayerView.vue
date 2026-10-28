@@ -172,6 +172,10 @@ const gestureSettings = computed<GestureSettings>(() => settings.gesture ?? GEST
 
 /** v1.8/CHG-25：实验性原生引擎（ExoPlayer）开关——注入 PlayerLoadOptions，控制器不读设置 */
 const nativeEngineEnabled = computed(() => settings.settings?.experimentalNativePlayer === true);
+/** 黑屏兜底：本次会话强制原生引擎（不改用户设置，仅本页有效） */
+const forceNativeEngine = ref(false);
+/** 黑屏提示是否已被用户关掉（换线路/继续听声音） */
+const noVideoDismissed = ref(false);
 
 const defaultRate = computed<PlaybackRate>(() => playerSettings.value.defaultRate ?? 1);
 const autoPlayNext = computed(() => playerSettings.value.autoPlayNext);
@@ -213,6 +217,7 @@ const playerCtl = usePlayerController({
 
 const {
   player,
+  noVideo,
   hud,
   controlsVisible,
   countdown,
@@ -363,6 +368,7 @@ async function resolveAndLoad(): Promise<boolean> {
   pageLoading.value = true;
   loadError.value = null;
   loadErrorShape.value = null;
+  noVideoDismissed.value = false;
   startLoadingHint();
   // v1.7/CHG-21：记录起播时刻——失败自动兜底只在窗口期内触发
   failoverStartedAt.value = Date.now();
@@ -395,7 +401,7 @@ async function resolveAndLoad(): Promise<boolean> {
       totalEpisodes: episodes.value.length > 0 ? episodes.value.length : null,
       episodes: episodeRefs,
       preferLocal: prepared.isLocal,
-      preferNativeEngine: nativeEngineEnabled.value,
+      preferNativeEngine: nativeEngineEnabled.value || forceNativeEngine.value,
       resolveEpisode: async (targetEpisodeId) => {
         const target = episodes.value.find((e) => e.id === targetEpisodeId);
         if (!target) throw new Error('剧集不存在');
@@ -412,7 +418,7 @@ async function resolveAndLoad(): Promise<boolean> {
           totalEpisodes: episodes.value.length,
           episodes: episodeRefs,
           preferLocal: nextPrepared.isLocal,
-          preferNativeEngine: nativeEngineEnabled.value,
+          preferNativeEngine: nativeEngineEnabled.value || forceNativeEngine.value,
         };
       },
     };
@@ -615,6 +621,24 @@ const loadErrorGuidance = computed(() => (loadErrorShape.value ? guidanceOf(load
 
 /** 磁力地址：有值时给「用外部应用打开」，否则重试没有任何意义 */
 const loadErrorMagnet = computed(() => magnetUrlOf(loadErrorShape.value));
+
+/**
+ * 黑屏兜底：用原生引擎（ExoPlayer）重试当前集。
+ * 不写设置——只在本次页面会话内强制，退出重进恢复默认。
+ */
+async function retryWithNativeEngine(): Promise<void> {
+  forceNativeEngine.value = true;
+  toast.info('已切换原生引擎重试');
+  await resolveAndLoad();
+  if (player.error || loadError.value) {
+    forceNativeEngine.value = false;
+    toast.info('原生引擎也没能解码，建议换线路');
+  }
+}
+
+function dismissNoVideo(): void {
+  noVideoDismissed.value = true;
+}
 
 /** 外部应用打开（磁力交给下载器/播放器；失败给明确 Toast） */
 async function openExternalUrl(url: string): Promise<void> {
@@ -909,34 +933,45 @@ const danmakuSettings = computed(
 const danmakuReady = computed(() => danmakuSettings.value.enabled && currentEpisode.value !== null && !pageLoading.value);
 
 /** 按当前媒体/集号拉取弹幕（缓存命中离线可用；关闭开关不发请求） */
-async function loadDanmaku(): Promise<void> {
+/**
+ * 加载本集弹幕。返回是否真的拿到了弹幕（0 条也算没拿到）——
+ * 调用方据此给反馈，避免「点了弹幕按钮什么都不发生」。
+ */
+async function loadDanmaku(): Promise<boolean> {
   const it = item.value;
   const ep = currentEpisode.value;
   if (!it || !ep || !danmakuSettings.value.enabled) {
     danmakuOverlay.value?.clear();
-    return;
+    return false;
   }
   try {
     const match = await danmakuService.match(it.title, it.year, ep.number);
-    if (match === null) return;
+    if (match === null || match.comments.length === 0) return false;
     const comments = danmakuSettings.value.merge ? danmakuService.dedupe(match.comments) : match.comments;
     danmakuOverlay.value?.load(comments);
+    return true;
   } catch {
     /* 弹幕失败静默：不影响播放 */
+    return false;
   }
 }
 
-function toggleDanmaku(): void {
+async function toggleDanmaku(): Promise<void> {
   // v1.8/CHG-25：原生引擎 surface 覆盖 WebView，弹幕层不可见——PoC 期互斥
   if (player.engineKind === 'native') {
-    toast.info('实验引擎暂不支持弹幕', 2400);
+    toast.info('实验引擎暂不支持弹幕，可切回内置引擎', 2400);
     return;
   }
   const next = !danmakuSettings.value.enabled;
-  void settings.update({ danmaku: { ...danmakuSettings.value, enabled: next } });
-  if (!next) danmakuOverlay.value?.clear();
-  else void loadDanmaku();
-  toast.info(next ? '弹幕已开启' : '弹幕已关闭');
+  await settings.update({ danmaku: { ...danmakuSettings.value, enabled: next } });
+  if (!next) {
+    danmakuOverlay.value?.clear();
+    toast.info('弹幕已关闭');
+    return;
+  }
+  const loaded = await loadDanmaku();
+  // 开关生效但没弹幕可放：明确告诉用户原因，而不是静默无反应
+  toast.info(loaded ? '弹幕已开启' : '当前集没有匹配到弹幕（可换弹幕源或稍后再试）', loaded ? 1800 : 2800);
 }
 
 /** v1.8/CHG-25：进入原生引擎时关闭弹幕/外挂字幕（surface 覆盖 WebView，DOM 层不可见） */
@@ -1132,6 +1167,7 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             :downloading="downloading"
             :cast-disabled="castSupported === false"
             :immersive="immersive"
+            :compact="!immersive"
             @back="goBack"
             @toggle-play="togglePlay"
             @prev="prevEpisode"
@@ -1227,6 +1263,36 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
 
       <!-- 竖屏下方信息区（全屏时隐藏） -->
       <div v-if="!immersive" class="player-info">
+        <!-- 黑屏检测：声音在播但一帧画面都没解出来（多为 WebView 不支持该编码） -->
+        <div
+          v-if="noVideo && !noVideoDismissed && !pageLoading && !player.error"
+          class="player-novideo"
+          role="alert"
+          data-test="player-novideo"
+        >
+          <p class="player-novideo__title">当前线路只有声音，没有画面</p>
+          <p class="player-novideo__hint">
+            该视频编码（常见 HEVC）WebView 解不出来，换线路或改用原生引擎通常可解。
+          </p>
+          <div class="player-novideo__actions">
+            <button class="btn btn--primary btn--sm" type="button" @click="retryWithNativeEngine">
+              用原生引擎重试
+            </button>
+            <button
+              v-if="lines.length > 1"
+              class="btn btn--secondary btn--sm"
+              type="button"
+              @click="onSwitchLine"
+            >
+              换线路
+            </button>
+            <button class="btn btn--ghost btn--sm" type="button" @click="dismissNoVideo">
+              继续听声音
+            </button>
+          </div>
+        </div>
+
+
         <h1 class="player-info__title">{{ titleText }}</h1>
         <p v-if="episodeLabel" class="player-info__episode">{{ episodeLabel }}</p>
         <p
@@ -1447,6 +1513,38 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
 .player-loading__text {
   font: var(--text-label);
   color: rgba(255, 255, 255, 0.86);
+}
+
+/* 黑屏检测提示条：放在竖屏信息区顶部（不覆盖画面，排版不受画面尺寸影响） */
+.player-novideo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-warning);
+  text-align: left;
+}
+
+.player-novideo__title {
+  font: var(--text-body-strong);
+  color: var(--color-text-primary);
+  line-height: 1.5;
+}
+
+.player-novideo__hint {
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.player-novideo__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
 }
 
 /* P0-1：解析失败的可行动原因（分类建议），比错误标题低一级 */

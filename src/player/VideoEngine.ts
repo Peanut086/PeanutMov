@@ -133,6 +133,24 @@ export class VideoEngine implements PlayableEngine {
     return ranges.end(ranges.length - 1);
   }
 
+  /**
+   * 画面帧统计（P0-播放黑屏）：
+   *
+   * Android WebView 上 HEVC / 部分封装会出现「能读元数据、能出声、但一帧都不解」的
+   * 情况——`videoWidth > 0`、`currentTime` 正常推进、`error` 为 null，用户看到的是
+   * 黑屏 + 声音，以为播放器坏了。`totalVideoFrames` 是唯一可靠的判据。
+   */
+  getFrameStats(): { videoWidth: number; videoHeight: number; totalFrames: number } | null {
+    const v = this.video;
+    if (!v) return null;
+    const quality = v.getVideoPlaybackQuality?.();
+    return {
+      videoWidth: v.videoWidth,
+      videoHeight: v.videoHeight,
+      totalFrames: quality ? quality.totalVideoFrames : -1,
+    };
+  }
+
   /** 原生引擎无多码率，返回空数组 */
   getQualities(): string[] {
     return [];

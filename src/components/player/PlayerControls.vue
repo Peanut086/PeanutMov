@@ -48,8 +48,14 @@ const props = withDefaults(
     /** 当前平台不支持投屏（AC-84）：渲染为禁用态 */
     castDisabled?: boolean;
     immersive?: boolean;
+    /**
+     * 紧凑模式（竖屏 16:9 画面内）：进度条与时间同排、倍速/清晰度/全屏并入主控制行，
+     * 底部总高从 ~180px 收到 ~100px（设计规范 6.6 竖屏口径）。
+     * 横屏/全屏空间充足，保持原布局。
+     */
+    compact?: boolean;
   }>(),
-  { downloading: false, castDisabled: false, immersive: false },
+  { downloading: false, castDisabled: false, immersive: false, compact: false },
 );
 
 const emit = defineEmits<{
@@ -77,6 +83,7 @@ const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
     :class="{
       'player-controls--hidden': !visible,
       'player-controls--immersive': immersive,
+      'player-controls--compact': compact,
     }"
   >
     <div class="player-scrim player-scrim--top" aria-hidden="true" />
@@ -124,6 +131,7 @@ const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
         :duration="duration"
         :buffered="buffered"
         :disabled="waiting && duration === 0"
+        :inline="compact"
         @seek="emit('seek', $event)"
         @seeking="emit('seeking', $event)"
       />
@@ -169,10 +177,37 @@ const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
               <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5.6v12.8L14.6 12Z" /><rect x="16.8" y="5.6" width="2.2" height="12.8" rx="1" /></svg>
             </span>
           </button>
+
+          <!-- 紧凑模式：倍速 / 清晰度 / 字幕 / 全屏并进本行，省掉独立 secondary 行 -->
+          <template v-if="compact">
+            <button class="controls-mini" type="button" :aria-label="`倍速 ${rateLabel}`" @click="emit('open-speed')">
+              {{ rateLabel }}
+            </button>
+            <button class="controls-mini" type="button" aria-label="清晰度" @click="emit('open-quality')">
+              {{ qualityLabel }}
+            </button>
+            <button
+              class="controls-mini controls-mini--icon"
+              :class="{ 'controls-mini--active': subtitleActive }"
+              type="button"
+              aria-label="字幕"
+              @click="emit('open-subtitle')"
+            >
+              <IconSubtitle :size="18" />
+            </button>
+            <button
+              class="controls-mini controls-mini--icon"
+              type="button"
+              :aria-label="fullscreen ? '退出全屏' : '全屏'"
+              @click="emit('toggle-fullscreen')"
+            >
+              <IconFullscreen :size="18" :exit="fullscreen" />
+            </button>
+          </template>
         </div>
       </div>
 
-      <div class="controls-secondary">
+      <div v-if="!compact" class="controls-secondary">
         <button class="controls-secondary__btn" type="button" aria-label="倍速" @click="emit('open-speed')">
           <IconSpeed :size="18" />
           <span class="controls-secondary__text">{{ rateLabel }}</span>
@@ -222,6 +257,32 @@ const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
 .player-controls--hidden {
   opacity: 0;
   pointer-events: none;
+}
+
+/*
+ * 紧凑模式（竖屏 16:9）：顶部 88→52、底部 120→96。
+ * 目的：把画面可见高度从 50px 提到 ~110px，进度条回到画面最底部而不是"半腰"。
+ */
+.player-controls--compact .controls-top {
+  min-height: 52px;
+  padding-top: var(--space-1);
+  padding-bottom: var(--space-1);
+}
+
+.player-controls--compact .controls-bottom {
+  gap: 0;
+  padding: var(--space-1) max(var(--space-3), var(--safe-right))
+    calc(var(--space-1) + var(--safe-bottom)) max(var(--space-3), var(--safe-left));
+}
+
+.player-controls--compact .controls-play {
+  width: 48px;
+  height: 48px;
+}
+
+.player-controls--compact .controls-btn--nav {
+  width: 40px;
+  height: 40px;
 }
 
 .controls-top {
@@ -360,6 +421,34 @@ const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
   align-items: center;
   gap: var(--space-2);
   padding-bottom: 2px;
+}
+
+/* 紧凑模式：一行内的小号文字按钮（倍速/清晰度）+ 图标按钮（字幕/全屏） */
+.controls-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0 var(--space-1);
+  font: var(--text-caption);
+  color: rgba(255, 255, 255, 0.9);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.controls-mini--icon {
+  width: 36px;
+  padding: 0;
+}
+
+.controls-mini--active {
+  color: var(--color-brand);
+}
+
+.controls-mini:active {
+  background-color: rgba(255, 255, 255, 0.12);
 }
 
 .controls-secondary__btn {

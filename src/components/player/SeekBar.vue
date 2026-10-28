@@ -19,8 +19,10 @@ const props = withDefaults(
     buffered?: number;
     /** 是否禁用（loading/error） */
     disabled?: boolean;
+    /** 时间与轨道同排（竖屏紧凑模式，省掉独立时间行） */
+    inline?: boolean;
   }>(),
-  { buffered: 0, disabled: false },
+  { buffered: 0, disabled: false, inline: false },
 );
 
 const emit = defineEmits<{
@@ -99,7 +101,10 @@ const ariaText = computed(() => `${formatClock(displaySec.value)} / ${formatCloc
 </script>
 
 <template>
-  <div class="seekbar" :class="{ 'seekbar--dragging': dragging, 'seekbar--disabled': disabled }">
+  <div
+    class="seekbar"
+    :class="{ 'seekbar--dragging': dragging, 'seekbar--disabled': disabled, 'seekbar--inline': inline }"
+  >
     <div
       ref="trackRef"
       class="seekbar__hit"
@@ -204,6 +209,25 @@ const ariaText = computed(() => `${formatClock(displaySec.value)} / ${formatCloc
   display: flex;
   justify-content: space-between;
   padding: 0 2px;
+}
+
+/* 紧凑模式：轨道占满，时间跟在右侧（进度条 + 时间同排，省 20px 高度） */
+.seekbar--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.seekbar--inline .seekbar__hit {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.seekbar--inline .seekbar__times {
+  flex: 0 0 auto;
+  gap: var(--space-1);
+  padding: 0;
+  white-space: nowrap;
 }
 
 .seekbar__time {

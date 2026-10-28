@@ -62,6 +62,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   const backgroundPaused = ref(false);
   const localSubtitles = ref(options.subtitle);
   const resolvedQuality = ref<'auto' | string>('auto');
+  /** 黑屏检测结果（码流在播但一帧画面都没解出来）；null = 正常 */
+  const noVideo = ref<{ videoWidth: number; videoHeight: number; elapsedSec: number } | null>(null);
 
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   let hudTimer: ReturnType<typeof setTimeout> | null = null;
@@ -146,6 +148,12 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       setControlsVisible(true);
     });
 
+    c.on('novideo', (info) => {
+      // 不当作 error：声音还在播，用户可能想继续听，或换线路/换引擎
+      noVideo.value = info;
+      setControlsVisible(true);
+    });
+
     c.on('subtitlechange', ({ activeId, tracks, text, failedIds }) => {
       player.patch({
         activeSubtitleId: activeId,
@@ -220,6 +228,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   async function load(opts: PlayerLoadOptions): Promise<void> {
     const c = controller.value;
     if (!c) return;
+    noVideo.value = null;
     currentOptions.value = opts;
     player.patch({
       mediaId: opts.mediaId,
@@ -501,6 +510,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     backgroundPaused,
     localSubtitles,
     resolvedQuality,
+    noVideo,
     currentOptions,
     canNext,
     canPrev,

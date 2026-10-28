@@ -60,5 +60,14 @@ export const DIM_MAX_OPACITY = 0.8;
 export const RESUME_MIN_RATIO = 0.05;
 export const RESUME_MAX_RATIO = 0.95;
 
+/**
+ * 黑屏检测延迟（秒级）：起播后观察这么久仍一帧未解 → 判定「只有声音没有画面」。
+ *
+ * 实测 Android WebView 播放 HEVC 的 HLS 时：`videoWidth=1920`、`currentTime` 正常推进、
+ * `error=null`，但 `getVideoPlaybackQuality().totalVideoFrames === 0`——用户看到的是
+ * 黑屏 + 声音，App 却以为在正常播放。5s 足够区分「慢起播」与「解不出帧」。
+ */
+export const NO_VIDEO_CHECK_DELAY_MS = 5000;
+
 /** 清晰度自动档标签 */
 export const QUALITY_AUTO = 'auto';

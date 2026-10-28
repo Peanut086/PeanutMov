@@ -121,6 +121,18 @@ export class HlsEngine implements PlayableEngine {
       backBufferLength: 30,
       maxBufferLength: 30,
       capLevelToPlayerSize: true,
+      /*
+       * 起播优化（真机实测：黑屏/转圈主要耗在「清单解析完到第一帧」）：
+       * - startFragPrefetch：解析清单的同时就预取首个分片，省掉一次串行等待
+       * - testBandwidth:false：VOD 首片不做带宽探测（默认会多下一次）
+       * - abrEwmaDefaultEstimate：把默认带宽估计提到 1.2Mbps，避免首帧先给 240p 再跳
+       * - maxStarvationDelay/maxLoadingDelay：卡顿容忍从 4s 收紧到 2s，尽快切档/追帧
+       */
+      startFragPrefetch: true,
+      testBandwidth: false,
+      abrEwmaDefaultEstimate: 1_200_000,
+      maxStarvationDelay: 2,
+      maxLoadingDelay: 2,
       xhrSetup: (xhr: XMLHttpRequest, url: string) => {
         // 仅对跨域或同源请求注入自定义头；CORS 预检由源站决定
         void url;
@@ -197,6 +209,11 @@ export class HlsEngine implements PlayableEngine {
 
   async play(): Promise<void> {
     await this.videoEngine.play();
+  }
+
+  /** 黑屏检测：hls.js 最终仍由 <video> 解码，帧统计口径与 VideoEngine 一致 */
+  getFrameStats(): { videoWidth: number; videoHeight: number; totalFrames: number } | null {
+    return this.videoEngine.getFrameStats();
   }
 
   pause(): void {
