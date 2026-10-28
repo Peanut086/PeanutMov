@@ -9,6 +9,7 @@ import {
   magnetUrlOf,
   RULE_SCRIPT_MESSAGE,
   sanitizeSourceMessage,
+  SOURCE_INTERNAL_MESSAGE,
 } from '@/shared/sourceFailure';
 
 /** 构造最小 AppErrorShape（分类只看 code / message / detail） */
@@ -39,6 +40,26 @@ describe('isRuleScriptMessage / sanitizeSourceMessage（P1-5）', () => {
     );
     expect(sanitizeSourceMessage(null)).toBe('');
   });
+
+  it('爬虫/插件 Java 异常同样收敛（真机 detail 明细实测形态）', () => {
+    expect(
+      sanitizeSourceMessage(
+        "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.detailContent(java.util.List)' on a null object reference",
+      ),
+    ).toBe(SOURCE_INTERNAL_MESSAGE);
+    expect(
+      sanitizeSourceMessage(
+        '爬虫调用失败: JsonSyntaxException: java.lang.IllegalStateException: Expected BEGIN_OBJECT but was STRING at line 1 column 1 path $',
+      ),
+    ).toBe(SOURCE_INTERNAL_MESSAGE);
+    expect(sanitizeSourceMessage('爬虫调用失败: ArrayIndexOutOfBoundsException: length=1; index=1')).toBe(
+      SOURCE_INTERNAL_MESSAGE,
+    );
+    // 人话文案不误伤
+    expect(sanitizeSourceMessage('源可加载但没有内容（源站可能已失效）')).toBe(
+      '源可加载但没有内容（源站可能已失效）',
+    );
+  });
 });
 
 describe('classifySourceFailure（P0-1）', () => {
@@ -62,6 +83,14 @@ describe('classifySourceFailure（P0-1）', () => {
 
   it('空错误 → unknown', () => {
     expect(classifySourceFailure(null)).toBe('unknown');
+  });
+
+  it('爬虫 Java 异常归为「源侧执行异常」', () => {
+    expect(
+      classifySourceFailure(
+        shape('E_SOURCE_UNAVAILABLE', '爬虫调用失败: NullPointerException: Attempt to invoke virtual method'),
+      ),
+    ).toBe('source_internal');
   });
 });
 

@@ -1,0 +1,785 @@
+{
+  "seed": 20261027,
+  "total": 240,
+  "okPool": 117,
+  "badPool": 123,
+  "session": {
+    "restarts": 0,
+    "crashes": []
+  },
+  "results": [
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 631,
+          "items": 24,
+          "categories": [
+            "电影",
+            "剧集",
+            "榜单",
+            "片单"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "电影",
+          "state": "success",
+          "ms": 643,
+          "items": 24,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 857,
+          "title": "杯雪·一战成名",
+          "lines": [
+            {
+              "name": "gs线路",
+              "format": "hls"
+            },
+            {
+              "name": "xl线路",
+              "format": "hls"
+            },
+            {
+              "name": "js线路",
+              "format": "hls"
+            },
+            {
+              "name": "1080zyk",
+              "format": "hls"
+            },
+            {
+              "name": "bfzy线路",
+              "format": "hls"
+            },
+            {
+              "name": "lz线路",
+              "format": "hls"
+            },
+            {
+              "name": "wj线路",
+              "format": "hls"
+            },
+            {
+              "name": "dytt线路",
+              "format": "hls"
+            },
+            {
+              "name": "hh线路",
+              "format": "hls"
+            },
+            {
+              "name": "db线路",
+              "format": "hls"
+            },
+            {
+              "name": "kc线路",
+              "format": "hls"
+            },
+            {
+              "name": "sd线路",
+              "format": "hls"
+            },
+            {
+              "name": "ff线路",
+              "format": "hls"
+            },
+            {
+              "name": "db线路",
+              "format": "hls"
+            },
+            {
+              "name": "ik线路",
+              "format": "hls"
+            },
+            {
+              "name": "sn线路",
+              "format": "hls"
+            },
+            {
+              "name": "hy线路",
+              "format": "hls"
+            },
+            {
+              "name": "mt线路",
+              "format": "hls"
+            },
+            {
+              "name": "zuida线路",
+              "format": "hls"
+            },
+            {
+              "name": "jinying线路",
+              "format": "hls"
+            },
+            {
+              "name": "ry线路",
+              "format": "hls"
+            },
+            {
+              "name": "yy线路",
+              "format": "hls"
+            },
+            {
+              "name": "ok线路",
+              "format": "hls"
+            },
+            {
+              "name": "nn线路",
+              "format": "hls"
+            },
+            {
+              "name": "360zy",
+              "format": "hls"
+            },
+            {
+              "name": "iqy线路",
+              "format": "hls"
+            },
+            {
+              "name": "sub线路",
+              "format": "hls"
+            },
+            {
+              "name": "ty线路",
+              "format": "hls"
+            },
+            {
+              "name": "xigua线路",
+              "format": "hls"
+            },
+            {
+              "name": "yh线路",
+              "format": "hls"
+            },
+            {
+              "name": "uk线路",
+              "format": "hls"
+            }
+          ],
+          "episodes": 31,
+          "error": null
+        },
+        "resolve": {
+          "ok": true,
+          "ms": 705,
+          "format": "hls",
+          "isLocal": false,
+          "isLive": false,
+          "urlScheme": "https",
+          "urlHost": "v.gsuus.com",
+          "headers": [
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "30",
+            "31",
+            "32",
+            "33",
+            "34",
+            "35",
+            "36",
+            "37",
+            "38",
+            "39",
+            "40",
+            "41",
+            "42",
+            "43",
+            "44",
+            "45",
+            "46",
+            "47",
+            "48",
+            "49",
+            "50",
+            "51",
+            "52",
+            "53",
+            "54",
+            "55",
+            "56",
+            "57",
+            "58",
+            "59",
+            "60",
+            "61",
+            "62",
+            "63",
+            "64",
+            "65",
+            "66",
+            "67",
+            "68",
+            "69",
+            "70",
+            "71",
+            "72",
+            "73",
+            "74",
+            "75",
+            "76",
+            "77",
+            "78",
+            "79",
+            "80",
+            "81",
+            "82",
+            "83",
+            "84",
+            "85",
+            "86",
+            "87",
+            "88",
+            "89",
+            "90",
+            "91",
+            "92",
+            "93",
+            "94",
+            "95",
+            "96",
+            "97",
+            "98",
+            "99",
+            "100",
+            "101",
+            "102",
+            "103",
+            "104",
+            "105",
+            "106",
+            "107",
+            "108",
+            "109",
+            "110",
+            "111",
+            "112",
+            "113",
+            "114",
+            "115",
+            "116",
+            "117",
+            "118",
+            "119",
+            "120",
+            "121",
+            "122",
+            "123",
+            "124",
+            "125",
+            "126",
+            "127",
+            "128",
+            "129",
+            "130",
+            "131"
+          ],
+          "subtitles": 0,
+          "expiresAt": null
+        },
+        "search": {
+          "ok": true,
+          "keyword": "杯雪·一",
+          "state": "success",
+          "ms": 1796,
+          "results": 6,
+          "all": 8,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "playTarget": {
+        "mediaId": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97:/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}~1ton6u3",
+        "episodeId": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97-/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}-1ton6u3:61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97-/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}-1ton6u3-0-js1vwv:1~1tgkhs5",
+        "lineId": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97-/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}-1ton6u3:0~js1vwv"
+      },
+      "source": {
+        "id": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97",
+        "name": "爱看 • 影视",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 5031,
+      "player": {
+        "state": {
+          "loading": false,
+          "engineKind": "video",
+          "error": null,
+          "duration": 5862,
+          "currentTime": 2.75,
+          "playing": true,
+          "waiting": false,
+          "qualities": [],
+          "subtitles": 0,
+          "mediaId": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97:/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}~1ton6u3",
+          "lineId": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97-/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}-1ton6u3:0~js1vwv"
+        },
+        "vstate": {
+          "readyState": 4,
+          "networkState": 1,
+          "paused": false,
+          "currentSrc": "https://v.gsuus.com/play/eVO5QL1a/index.m3u8",
+          "errorCode": null,
+          "videoWidth": 1920,
+          "videoHeight": 800
+        },
+        "ready": true
+      }
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 1116,
+          "items": 120,
+          "categories": [
+            "娱乐",
+            "网游",
+            "单机",
+            "手游"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "娱乐",
+          "state": "success",
+          "ms": 356,
+          "items": 120,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 24,
+          "title": "片名",
+          "lines": [
+            {
+              "name": "道长在线",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 1,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 65,
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "规则脚本异常（源站问题）"
+          }
+        },
+        "search": {
+          "ok": false,
+          "keyword": "萧火火#",
+          "state": "error",
+          "ms": 355,
+          "results": 0,
+          "all": 0,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "规则脚本异常（源站问题）"
+          }
+        }
+      },
+      "source": {
+        "id": "d1f769f8-163e-474e-b2f7-9c38ce8890bf",
+        "name": "🐯虎牙┃直播",
+        "type": "spider",
+        "kind": "js",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/FTY/drpy2.min.js",
+        "subscriptionId": "https://qist.wyfc.qzz.io/fty.json",
+        "warning": "该源是 JS 爬虫（drpy），由内置引擎执行；规则兼容性问题可能导致部分功能不可用"
+      },
+      "ms": 1936
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 3137,
+          "items": 72,
+          "categories": [
+            "梅",
+            "兰",
+            "竹",
+            "菊",
+            "精",
+            "短"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "梅",
+          "state": "success",
+          "ms": 340,
+          "items": 72,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 2364,
+          "title": "黑色五叶草：魔法帝之剑",
+          "lines": [
+            {
+              "name": "夸克原画",
+              "format": "mp4"
+            },
+            {
+              "name": "百度原画",
+              "format": "mp4"
+            },
+            {
+              "name": "百度原画(无限)",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 3,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 1983,
+          "error": {
+            "code": "E_NO_PLAY_URL",
+            "message": "[quark](auth) 还没有配置夸克 Cookie，请先去配置中心登录夸克"
+          }
+        },
+        "search": {
+          "ok": true,
+          "keyword": "黑色五叶",
+          "state": "success",
+          "ms": 1137,
+          "results": 3,
+          "all": 3,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "932c38d0-3467-43f6-90fe-63c38edc59cb",
+        "name": "💓快影┃4K💓",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg",
+        "subscriptionId": "https://9280.kstore.space/newwex.json",
+        "warning": null
+      },
+      "ms": 8974
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 2649,
+          "items": 30,
+          "categories": [
+            "New新歌榜",
+            "TOP榜单",
+            "原创歌手",
+            "音乐歌单",
+            "主播电台",
+            "新碟上架",
+            "高清MV",
+            "🔍搜索"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "New新歌榜",
+          "state": "success",
+          "ms": 203,
+          "items": 30,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 454,
+          "title": "中文DJ榜最好听的歌",
+          "lines": [
+            {
+              "name": "易听",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 52,
+          "error": null
+        },
+        "resolve": {
+          "ok": true,
+          "ms": 952,
+          "format": "mp4",
+          "isLocal": false,
+          "isLive": false,
+          "urlScheme": "http",
+          "urlHost": "m701.music.126.net",
+          "headers": [],
+          "subtitles": 0,
+          "expiresAt": null
+        },
+        "search": {
+          "ok": true,
+          "keyword": "中文DJ",
+          "state": "success",
+          "ms": 507,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": null
+        }
+      },
+      "playTarget": {
+        "mediaId": "dcfef188-ca7c-4a40-a8d5-dfce28bb5187:/list/zwdj.html~19vn96u",
+        "episodeId": "dcfef188-ca7c-4a40-a8d5-dfce28bb5187-/list/zwdj.html-19vn96u:dcfef188-ca7c-4a40-a8d5-dfce28bb5187-/list/zwdj.html-19vn96u-0-hhgydc:1~ql8klp",
+        "lineId": "dcfef188-ca7c-4a40-a8d5-dfce28bb5187-/list/zwdj.html-19vn96u:0~hhgydc"
+      },
+      "source": {
+        "id": "dcfef188-ca7c-4a40-a8d5-dfce28bb5187",
+        "name": "🎙️易听┃音乐",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/jar/fan.txt",
+        "subscriptionId": "https://qist.wyfc.qzz.io/fty.json",
+        "warning": null
+      },
+      "ms": 4788,
+      "player": {
+        "state": {
+          "loading": false,
+          "engineKind": "video",
+          "error": null,
+          "duration": 130,
+          "currentTime": 0.36,
+          "playing": true,
+          "waiting": false,
+          "qualities": [],
+          "subtitles": 0,
+          "mediaId": "dcfef188-ca7c-4a40-a8d5-dfce28bb5187:/list/zwdj.html~19vn96u",
+          "lineId": "dcfef188-ca7c-4a40-a8d5-dfce28bb5187-/list/zwdj.html-19vn96u:0~hhgydc"
+        },
+        "vstate": {
+          "readyState": 4,
+          "networkState": 1,
+          "paused": false,
+          "currentSrc": "http://m801.music.126.net/20261028155253/d5e0d39d669d7e4617c7c9825dd85845/jdyyaac/obj/w5rDlsOJwrLDjj7CmsOj/79194299950/6",
+          "errorCode": null,
+          "videoWidth": 0,
+          "videoHeight": 0
+        },
+        "ready": true
+      }
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 696,
+          "items": 24,
+          "categories": [
+            "故事会",
+            "儿童文学",
+            "少年读物",
+            "文艺少年",
+            "青春励志",
+            "个人提升",
+            "育儿心经",
+            "心理哲学",
+            "家庭健康",
+            "历史小说",
+            "科技科普"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "故事会",
+          "state": "success",
+          "ms": 174,
+          "items": 24,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 178,
+          "title": "葵花向太阳",
+          "lines": [
+            {
+              "name": "博看听书",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 60,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 9,
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: ArrayIndexOutOfBoundsException: length=1; index=1"
+          }
+        },
+        "search": {
+          "ok": true,
+          "keyword": "葵花向太",
+          "state": "success",
+          "ms": 916,
+          "results": 1,
+          "all": 1,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "dd73467b-11b8-4c58-a18b-fac139c20bf2",
+        "name": "博看 • 听书",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 2184
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 86,
+          "items": 24,
+          "categories": [
+            "排行榜",
+            "韩剧",
+            "综艺",
+            "电影",
+            "明星"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "排行榜",
+          "state": "success",
+          "ms": 69,
+          "items": 24,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 924,
+          "title": "我的有罪之人",
+          "lines": [
+            {
+              "name": "正片",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 4,
+          "error": null
+        },
+        "resolve": {
+          "ok": false,
+          "ms": 15503,
+          "error": {
+            "code": "E_NO_PLAY_URL",
+            "message": "未能从解析页取得播放地址，请换线路"
+          }
+        },
+        "search": {
+          "ok": true,
+          "keyword": "我的有罪",
+          "state": "success",
+          "ms": 970,
+          "results": 2,
+          "all": 1,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "source": {
+        "id": "fd536a16-dd33-4bca-8ca6-491ec6240b11",
+        "name": "韩圈 • APP",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 17620
+    }
+  ],
+  "partial": true
+}

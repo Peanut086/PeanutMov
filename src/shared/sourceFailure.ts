@@ -19,6 +19,7 @@ export type SourceFailureKind =
   | 'timeout'
   | 'protocol_unsupported'
   | 'rule_script'
+  | 'source_internal'
   | 'auth'
   | 'unknown';
 
@@ -43,6 +44,8 @@ export interface SourceFailureGuidance {
 
 /** 脚本内部异常收敛后的统一文案（原文仅入日志/调试面板） */
 export const RULE_SCRIPT_MESSAGE = '规则脚本异常（源站问题）';
+/** 爬虫/插件内部异常（Java 侧 NPE、JSON 结构不符等）的统一文案 */
+export const SOURCE_INTERNAL_MESSAGE = '源侧执行异常（源站问题）';
 /** 磁力链接的统一文案（App 无种子下载链路，只能外部打开） */
 export const MAGNET_MESSAGE = '磁力链接需用外部下载器/播放器打开';
 
@@ -72,14 +75,36 @@ export function isRuleScriptMessage(raw: string | null | undefined): boolean {
 }
 
 /**
- * 用户可见文案收敛：命中脚本内部异常 → 统一文案，否则原样返回。
- * 空串返回空串（调用方自行回退到 `ERROR_MESSAGES`）。
+ * 判定是否来自爬虫/插件的 Java 侧内部异常。
+ *
+ * 真机明细里这类文案同样不可读，且暴露实现：
+ * `爬虫调用失败: NullPointerException: Attempt to invoke virtual method ...`、
+ * `JsonSyntaxException: Expected BEGIN_OBJECT but was STRING`。
+ */
+export function isSourceInternalMessage(raw: string | null | undefined): boolean {
+  if (typeof raw !== 'string' || raw.length === 0) return false;
+  return (
+    /\b(NullPointerException|ArrayIndexOutOfBoundsException|IndexOutOfBoundsException|ClassCastException|IllegalStateException|IllegalArgumentException|JsonSyntaxException|NumberFormatException|NoSuchMethodError|NoSuchFieldError|ClassNotFoundException|InvocationTargetException)\b/.test(
+      raw,
+    ) ||
+    /Attempt to invoke (virtual|interface) method|Expected BEGIN_(OBJECT|ARRAY)/.test(raw) ||
+    /\bat\s+(com|java|android|kotlin)\./.test(raw)
+  );
+}
+
+/**
+ * 用户可见文案收敛：
+ * - 脚本内部异常 → 「规则脚本异常（源站问题）」
+ * - 爬虫/插件内部异常 → 「源侧执行异常（源站问题）」
+ * - 其它原样返回；空串返回空串（调用方自行回退到 `ERROR_MESSAGES`）
  */
 export function sanitizeSourceMessage(raw: string | null | undefined): string {
   if (typeof raw !== 'string') return '';
   const trimmed = raw.trim();
   if (trimmed.length === 0) return '';
-  return isRuleScriptMessage(trimmed) ? RULE_SCRIPT_MESSAGE : trimmed;
+  if (isRuleScriptMessage(trimmed)) return RULE_SCRIPT_MESSAGE;
+  if (isSourceInternalMessage(trimmed)) return SOURCE_INTERNAL_MESSAGE;
+  return trimmed;
 }
 
 /** 从错误里取出磁力地址（detail 承载原始地址，避免 UI 重新解析） */
@@ -96,6 +121,7 @@ export function classifySourceFailure(error: AppErrorShape | null | undefined): 
   const text = `${error.message ?? ''} ${error.detail ?? ''}`;
   if (isMagnetUrl(error.detail) || isMagnetUrl(error.message)) return 'protocol_unsupported';
   if (isRuleScriptMessage(text) || error.message === RULE_SCRIPT_MESSAGE) return 'rule_script';
+  if (isSourceInternalMessage(text) || error.message === SOURCE_INTERNAL_MESSAGE) return 'source_internal';
 
   switch (error.code) {
     case 'E_UNSUPPORTED_FORMAT':
@@ -141,6 +167,11 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
     title: RULE_SCRIPT_MESSAGE,
     hint: '源自带的规则脚本执行失败，属于源站侧问题，本 App 无法修复。建议换源。',
     actions: ['switch-source', 'health-check'],
+  },
+  source_internal: {
+    title: SOURCE_INTERNAL_MESSAGE,
+    hint: '爬虫在源站侧执行出错（空指针、结构不符等），本 App 无法修复。建议换源或换线路。',
+    actions: ['switch-source', 'switch-line'],
   },
   auth: {
     title: '源鉴权失败',

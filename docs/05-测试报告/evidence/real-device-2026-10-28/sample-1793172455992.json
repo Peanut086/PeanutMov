@@ -1,0 +1,371 @@
+{
+  "seed": 20261027,
+  "total": 240,
+  "okPool": 117,
+  "badPool": 123,
+  "session": {
+    "restarts": 0,
+    "crashes": []
+  },
+  "results": [
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 631,
+          "items": 24,
+          "categories": [
+            "电影",
+            "剧集",
+            "榜单",
+            "片单"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "电影",
+          "state": "success",
+          "ms": 643,
+          "items": 24,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 857,
+          "title": "杯雪·一战成名",
+          "lines": [
+            {
+              "name": "gs线路",
+              "format": "hls"
+            },
+            {
+              "name": "xl线路",
+              "format": "hls"
+            },
+            {
+              "name": "js线路",
+              "format": "hls"
+            },
+            {
+              "name": "1080zyk",
+              "format": "hls"
+            },
+            {
+              "name": "bfzy线路",
+              "format": "hls"
+            },
+            {
+              "name": "lz线路",
+              "format": "hls"
+            },
+            {
+              "name": "wj线路",
+              "format": "hls"
+            },
+            {
+              "name": "dytt线路",
+              "format": "hls"
+            },
+            {
+              "name": "hh线路",
+              "format": "hls"
+            },
+            {
+              "name": "db线路",
+              "format": "hls"
+            },
+            {
+              "name": "kc线路",
+              "format": "hls"
+            },
+            {
+              "name": "sd线路",
+              "format": "hls"
+            },
+            {
+              "name": "ff线路",
+              "format": "hls"
+            },
+            {
+              "name": "db线路",
+              "format": "hls"
+            },
+            {
+              "name": "ik线路",
+              "format": "hls"
+            },
+            {
+              "name": "sn线路",
+              "format": "hls"
+            },
+            {
+              "name": "hy线路",
+              "format": "hls"
+            },
+            {
+              "name": "mt线路",
+              "format": "hls"
+            },
+            {
+              "name": "zuida线路",
+              "format": "hls"
+            },
+            {
+              "name": "jinying线路",
+              "format": "hls"
+            },
+            {
+              "name": "ry线路",
+              "format": "hls"
+            },
+            {
+              "name": "yy线路",
+              "format": "hls"
+            },
+            {
+              "name": "ok线路",
+              "format": "hls"
+            },
+            {
+              "name": "nn线路",
+              "format": "hls"
+            },
+            {
+              "name": "360zy",
+              "format": "hls"
+            },
+            {
+              "name": "iqy线路",
+              "format": "hls"
+            },
+            {
+              "name": "sub线路",
+              "format": "hls"
+            },
+            {
+              "name": "ty线路",
+              "format": "hls"
+            },
+            {
+              "name": "xigua线路",
+              "format": "hls"
+            },
+            {
+              "name": "yh线路",
+              "format": "hls"
+            },
+            {
+              "name": "uk线路",
+              "format": "hls"
+            }
+          ],
+          "episodes": 31,
+          "error": null
+        },
+        "resolve": {
+          "ok": true,
+          "ms": 705,
+          "format": "hls",
+          "isLocal": false,
+          "isLive": false,
+          "urlScheme": "https",
+          "urlHost": "v.gsuus.com",
+          "headers": [
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "30",
+            "31",
+            "32",
+            "33",
+            "34",
+            "35",
+            "36",
+            "37",
+            "38",
+            "39",
+            "40",
+            "41",
+            "42",
+            "43",
+            "44",
+            "45",
+            "46",
+            "47",
+            "48",
+            "49",
+            "50",
+            "51",
+            "52",
+            "53",
+            "54",
+            "55",
+            "56",
+            "57",
+            "58",
+            "59",
+            "60",
+            "61",
+            "62",
+            "63",
+            "64",
+            "65",
+            "66",
+            "67",
+            "68",
+            "69",
+            "70",
+            "71",
+            "72",
+            "73",
+            "74",
+            "75",
+            "76",
+            "77",
+            "78",
+            "79",
+            "80",
+            "81",
+            "82",
+            "83",
+            "84",
+            "85",
+            "86",
+            "87",
+            "88",
+            "89",
+            "90",
+            "91",
+            "92",
+            "93",
+            "94",
+            "95",
+            "96",
+            "97",
+            "98",
+            "99",
+            "100",
+            "101",
+            "102",
+            "103",
+            "104",
+            "105",
+            "106",
+            "107",
+            "108",
+            "109",
+            "110",
+            "111",
+            "112",
+            "113",
+            "114",
+            "115",
+            "116",
+            "117",
+            "118",
+            "119",
+            "120",
+            "121",
+            "122",
+            "123",
+            "124",
+            "125",
+            "126",
+            "127",
+            "128",
+            "129",
+            "130",
+            "131"
+          ],
+          "subtitles": 0,
+          "expiresAt": null
+        },
+        "search": {
+          "ok": true,
+          "keyword": "杯雪·一",
+          "state": "success",
+          "ms": 1796,
+          "results": 6,
+          "all": 8,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "playTarget": {
+        "mediaId": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97:/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}~1ton6u3",
+        "episodeId": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97-/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}-1ton6u3:61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97-/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}-1ton6u3-0-js1vwv:1~1tgkhs5",
+        "lineId": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97-/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}-1ton6u3:0~js1vwv"
+      },
+      "source": {
+        "id": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97",
+        "name": "爱看 • 影视",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 5031,
+      "player": {
+        "state": {
+          "loading": false,
+          "engineKind": "video",
+          "error": null,
+          "duration": 5862,
+          "currentTime": 2.75,
+          "playing": true,
+          "waiting": false,
+          "qualities": [],
+          "subtitles": 0,
+          "mediaId": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97:/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}~1ton6u3",
+          "lineId": "61c9107f-0f13-4e06-8f4d-f1d1a5ec4e97-/play/1028276$$$杯雪·一战成名$$$https-//img9.doubanio.com/view/photo/m_ratio_poster/public/p2936719035.jpg@headers={\"user-agent\"-\"mozilla\\/5.0 (windows nt 10.0; win64; x64) applewebkit\\/537.36 (khtml, like gecko) chrome\\/151.0.0.0 safari\\/537.36\",\"referer\"-\"https-\\/\\/www.douban.com\"}-1ton6u3:0~js1vwv"
+        },
+        "vstate": {
+          "readyState": 4,
+          "networkState": 1,
+          "paused": false,
+          "currentSrc": "https://v.gsuus.com/play/eVO5QL1a/index.m3u8",
+          "errorCode": null,
+          "videoWidth": 1920,
+          "videoHeight": 800
+        },
+        "ready": true
+      }
+    }
+  ],
+  "partial": true
+}

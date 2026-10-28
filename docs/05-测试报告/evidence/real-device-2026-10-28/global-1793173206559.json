@@ -1,0 +1,1092 @@
+{
+  "steps": {
+    "home": {
+      "state": "success",
+      "ms": 537,
+      "recent": 8,
+      "currentSource": "🏝奥特┃多线",
+      "error": null
+    },
+    "searchAll": {
+      "state": "success",
+      "settled": true,
+      "ms": 64499,
+      "results": 22,
+      "all": 551,
+      "groups": 283,
+      "candidates": 99,
+      "filteredOut": 125,
+      "failed": 40,
+      "failedByCode": {
+        "E_SOURCE_UNAVAILABLE": 34,
+        "E_PARSE": 5,
+        "E_TIMEOUT": 1
+      },
+      "failedBySource": [
+        {
+          "name": "🐟斗鱼┃直播",
+          "kind": "js",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "规则脚本异常（源站问题）"
+        },
+        {
+          "name": "🐯虎牙┃直播",
+          "kind": "js",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "规则脚本异常（源站问题）"
+        },
+        {
+          "name": "🧀奶酪┃秒播",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.searchContent(java.lang.String, boolean)' on a"
+        },
+        {
+          "name": "🌟立播┃不卡",
+          "kind": "jar",
+          "code": "E_PARSE",
+          "msg": "爬虫未返回数据"
+        },
+        {
+          "name": "🌸茉莉┃多线",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.searchContent(java.lang.String, boolean)' on a"
+        },
+        {
+          "name": "🍄比特┃不卡",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.searchContent(java.lang.String, boolean)' on a"
+        },
+        {
+          "name": "本地 • 视频",
+          "kind": "jar",
+          "code": "E_PARSE",
+          "msg": "爬虫未返回数据"
+        },
+        {
+          "name": "💓‍七味┃4K💓‍",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiQwMkvGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.qode"
+        },
+        {
+          "name": "💥韩剧┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexAiHanXiaoQuanGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0"
+        },
+        {
+          "name": "🅱哔哩┃影视🅱",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_BiliYsGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.qoder"
+        },
+        {
+          "name": "💓快影┃4K💓",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewKuaiYingGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/co"
+        },
+        {
+          "name": "🤡稀饭┃动漫🤡",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AnimeXiFanGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.q"
+        },
+        {
+          "name": "🍉漫短┃小红🍉",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_ManJuAiHongGuoGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/c"
+        },
+        {
+          "name": "🌐瓜子┃体育🌐",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_SportAiGuaZiGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com"
+        },
+        {
+          "name": "🍉漫剧┃小猫🍉",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_ManJuAiQiMaoGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com"
+        },
+        {
+          "name": "💓闪电┃4K💓",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewShanDianGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/co"
+        },
+        {
+          "name": "💓盘库┃4K💓",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewPianKuGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com."
+        },
+        {
+          "name": "🍉短剧┃小薇🍉",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_DuanJuAiWeiGuanGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/"
+        },
+        {
+          "name": "🅱‍哔哩┃戏曲🅱‍",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_BiliGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.qoder.c"
+        },
+        {
+          "name": "🤡次元┃动漫🤡",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AnimeCiYuanChengGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0"
+        },
+        {
+          "name": "🎃‍极品┃听书🎃",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_BookAiShiJieGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com"
+        },
+        {
+          "name": "💥文才┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexAiWenCaiGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com."
+        },
+        {
+          "name": "💓‍原盘┃4K💓‍",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewZhiNan4KGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/co"
+        },
+        {
+          "name": "🍉短剧┃好看🍉",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_DuanJuAiHaoKanGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/c"
+        },
+        {
+          "name": "💓剧透┃4K💓",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_AiNewJuTouGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.q"
+        },
+        {
+          "name": "🌐八八┃体育🌐",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_SportAiKanqiuGuard）：IllegalStateException: Init.init() 未初始化 DexClassLoader"
+        },
+        {
+          "name": "💥小枫┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexFengYe4KGuard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com."
+        },
+        {
+          "name": "💥师兄┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexAppV7Guard）：RuntimeException: java.lang.UnsatisfiedLinkError: dlopen failed: library \"/data/user/0/com.qod"
+        },
+        {
+          "name": "🍉短剧┃星星🍉",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_DuanJuAiXingYaGuard）：IllegalStateException: Init.init() 未初始化 DexClassLoader"
+        },
+        {
+          "name": "💥贱片┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexAiJianPianGuard）：IllegalStateException: Init.init() 未初始化 DexClassLoader"
+        },
+        {
+          "name": "💥零七┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫加载失败: IllegalStateException: guard 类型爬虫初始化失败（csp_WexAppV7Guard）：IllegalStateException: Init.init() 未初始化 DexClassLoader"
+        },
+        {
+          "name": "🅱‍哔哩┃合集🅱‍",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.searchContent(java.lang.String, boolean)' on a"
+        },
+        {
+          "name": "💥粉猪┃秒播💥",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.searchContent(java.lang.String, boolean)' on a"
+        },
+        {
+          "name": "🐳斗鱼┃直播🐳",
+          "kind": "jar",
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.searchContent(java.lang.String, boolean)' on a"
+        },
+        {
+          "name": "世界 • 听书",
+          "kind": null,
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "HTTP 405"
+        },
+        {
+          "name": "番社 • 动漫",
+          "kind": "jar",
+          "code": "E_PARSE",
+          "msg": "爬虫未返回数据"
+        },
+        {
+          "name": "红果 • 短剧",
+          "kind": null,
+          "code": "E_SOURCE_UNAVAILABLE",
+          "msg": "HTTP 405"
+        },
+        {
+          "name": "面包 • 影视",
+          "kind": "jar",
+          "code": "E_PARSE",
+          "msg": "爬虫未返回数据"
+        },
+        {
+          "name": "果果 • 短剧",
+          "kind": "jar",
+          "code": "E_PARSE",
+          "msg": "爬虫未返回数据"
+        },
+        {
+          "name": "📽推送",
+          "kind": "jar",
+          "code": "E_TIMEOUT",
+          "msg": "源响应超时（75 秒）"
+        }
+      ],
+      "error": null
+    },
+    "live": {
+      "ms": 3104,
+      "hash": "#/live"
+    },
+    "history": {
+      "hash": "#/history",
+      "records": null
+    },
+    "favorites": {
+      "hash": "#/favorites",
+      "records": null
+    },
+    "subscriptions": {
+      "hash": "#/settings/subscriptions",
+      "summaries": 7
+    },
+    "sources": {
+      "hash": "#/settings/sources",
+      "count": 241
+    }
+  },
+  "console": [
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685422) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685424) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#26685188) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685423) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685425) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#26685188) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685424) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685426) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685425) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685427) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#26685188) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#26685188) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685426) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685428) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685427) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685429) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685428) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685430) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685429) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685430) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 🤡稀饭┃动漫🤡 http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685352) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 📽推送 http://tv.nxog.top/m/jar.php?id=ou Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685204) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cScreenOrientation.lock (#26685431) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685432) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685433) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685434) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cScreenOrientation.lock (#26685431) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "undefined"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685434) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685435) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685433) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫 jar 加载失败（本次变体） 🅱‍哔哩┃戏曲🅱‍ http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#26685188) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685435) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685436) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cApp.addListener (#26685188) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.load (#26685436) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685437) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685438) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685439) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685438) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685440) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685437) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685441) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685440) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685442) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685443) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685443) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫调用失败 🧀奶酪┃秒播 homeContent Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685444) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685444) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫调用失败 🏀多多┃回放 homeContent Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685441) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685439) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685445) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685446) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685446) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫调用失败 ⚽八八┃看球 homeContent Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685442) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685447) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685445) font-style: italic; font-weight: lighter; color: gray font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685448) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685448) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫调用失败 🚀荐影┃预告片 homeContent Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685449) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685449) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫调用失败 🌸茉莉┃多线 homeContent Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.invoke (#26685450) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cresult %cSpider.invoke (#26685450) font-style: italic; font-weight: lighter; color: red font-style: italic; font-weight: bold; color: #444"
+    },
+    {
+      "level": "error",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    },
+    {
+      "level": "warning",
+      "text": "[app] 爬虫调用失败 🏐吃瓜┃看球 homeContent Object"
+    },
+    {
+      "level": "startGroupCollapsed",
+      "text": "%cnative %cSpider.load (#26685451) font-weight: lighter; color: gray font-weight: bold; color: #000"
+    },
+    {
+      "level": "dir",
+      "text": "Object"
+    },
+    {
+      "level": "endGroup",
+      "text": "console.groupEnd"
+    }
+  ]
+}

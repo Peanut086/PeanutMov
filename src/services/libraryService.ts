@@ -524,7 +524,8 @@ export const libraryService: LibraryService = {
         } catch (e) {
           done += 1;
           if (isCanceled(e)) return;
-          const shape = toErrorShape(e);
+          // P0-1：搜索失败同样走可读化（E_UNKNOWN → 具体源侧原因），否则明细只有「操作失败，请重试」
+          const shape = readableSourceError(e).toShape();
           failed.push({ sourceId: source.id, error: shape });
           params.onPartial?.({ sourceId: source.id, items: [], error: shape, done, total });
         }

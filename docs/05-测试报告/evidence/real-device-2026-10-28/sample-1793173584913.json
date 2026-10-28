@@ -1,0 +1,77 @@
+{
+  "seed": 20261027,
+  "total": 240,
+  "okPool": 105,
+  "badPool": 135,
+  "session": {
+    "restarts": 0,
+    "crashes": []
+  },
+  "results": [
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 311,
+          "items": 8,
+          "categories": [
+            "云盘配置"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "云盘配置",
+          "state": "success",
+          "ms": 15,
+          "items": 8,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 13,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: JsonSyntaxException: java.lang.IllegalStateException: Expected BEGIN_OBJECT but was STRING at line 1 column 1 path $"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "清除嘟嘟",
+          "state": "success",
+          "ms": 311,
+          "results": 1,
+          "all": 0,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: JsonSyntaxException: java.lang.IllegalStateException: Expected BEGIN_OBJECT but was STRING at line 1 column 1 path $"
+          }
+        }
+      },
+      "source": {
+        "id": "e2d6ab2c-43fb-4a67-9d37-31eb836b69ce",
+        "name": "🗂我的云盘┃配置",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/jar/fan.txt",
+        "subscriptionId": "https://qist.wyfc.qzz.io/fty.json",
+        "warning": null
+      },
+      "ms": 665
+    }
+  ],
+  "partial": true
+}

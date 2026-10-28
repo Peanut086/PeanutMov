@@ -1,0 +1,975 @@
+{
+  "seed": 20261027,
+  "total": 240,
+  "okPool": 105,
+  "badPool": 135,
+  "session": {
+    "restarts": 0,
+    "crashes": []
+  },
+  "results": [
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 311,
+          "items": 8,
+          "categories": [
+            "云盘配置"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "云盘配置",
+          "state": "success",
+          "ms": 15,
+          "items": 8,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 13,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: JsonSyntaxException: java.lang.IllegalStateException: Expected BEGIN_OBJECT but was STRING at line 1 column 1 path $"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "清除嘟嘟",
+          "state": "success",
+          "ms": 311,
+          "results": 1,
+          "all": 0,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: JsonSyntaxException: java.lang.IllegalStateException: Expected BEGIN_OBJECT but was STRING at line 1 column 1 path $"
+          }
+        }
+      },
+      "source": {
+        "id": "e2d6ab2c-43fb-4a67-9d37-31eb836b69ce",
+        "name": "🗂我的云盘┃配置",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/jar/fan.txt",
+        "subscriptionId": "https://qist.wyfc.qzz.io/fty.json",
+        "warning": null
+      },
+      "ms": 665
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 1162,
+          "items": 64,
+          "categories": [
+            "全部直播",
+            "篮球直播",
+            "足球直播",
+            "其他直播"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "全部直播",
+          "state": "success",
+          "ms": 470,
+          "items": 64,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 9,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "2026",
+          "state": "success",
+          "ms": 262,
+          "results": 49,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        }
+      },
+      "source": {
+        "id": "bced98a4-4152-4d4c-b7e0-9ff2adc8c897",
+        "name": "🐟斗鱼┃直播",
+        "type": "spider",
+        "kind": "js",
+        "health": "ok",
+        "baseUrl": "https://gh-proxy.net/https://raw.githubusercontent.com/fantaiying7/EXT/refs/heads/main/drpy2.min.js",
+        "subscriptionId": "https://github.com/ne7359/tvurl/blob/main/0821.json",
+        "warning": "该源是 JS 爬虫（drpy），由内置引擎执行；规则兼容性问题可能导致部分功能不可用"
+      },
+      "ms": 2383
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 282,
+          "items": 38,
+          "categories": [
+            "儿歌",
+            "故事",
+            "少儿",
+            "古诗",
+            "认知",
+            "习惯"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "儿歌",
+          "state": "success",
+          "ms": 117,
+          "items": 38,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 17,
+          "title": "捉泥鳅",
+          "lines": [
+            {
+              "name": "贝乐虎",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 1,
+          "error": null
+        },
+        "resolve": {
+          "ok": true,
+          "ms": 22,
+          "format": "mp4",
+          "isLocal": false,
+          "isLive": false,
+          "urlScheme": "https",
+          "urlHost": "resvd.ubestkid.com",
+          "headers": [
+            "0",
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "30",
+            "31",
+            "32",
+            "33",
+            "34",
+            "35",
+            "36",
+            "37",
+            "38",
+            "39",
+            "40",
+            "41",
+            "42",
+            "43",
+            "44",
+            "45",
+            "46",
+            "47",
+            "48",
+            "49",
+            "50",
+            "51",
+            "52",
+            "53",
+            "54",
+            "55",
+            "56",
+            "57",
+            "58",
+            "59",
+            "60",
+            "61",
+            "62",
+            "63",
+            "64",
+            "65",
+            "66",
+            "67",
+            "68",
+            "69",
+            "70",
+            "71",
+            "72",
+            "73",
+            "74",
+            "75",
+            "76",
+            "77",
+            "78",
+            "79",
+            "80",
+            "81",
+            "82",
+            "83",
+            "84",
+            "85",
+            "86",
+            "87",
+            "88",
+            "89",
+            "90",
+            "91",
+            "92",
+            "93",
+            "94",
+            "95",
+            "96",
+            "97",
+            "98",
+            "99",
+            "100",
+            "101",
+            "102",
+            "103",
+            "104",
+            "105",
+            "106",
+            "107",
+            "108",
+            "109",
+            "110",
+            "111",
+            "112",
+            "113",
+            "114",
+            "115",
+            "116",
+            "117",
+            "118",
+            "119",
+            "120",
+            "121",
+            "122",
+            "123",
+            "124",
+            "125",
+            "126",
+            "127"
+          ],
+          "subtitles": 0,
+          "expiresAt": null
+        },
+        "search": {
+          "ok": true,
+          "keyword": "捉泥鳅",
+          "state": "success",
+          "ms": 314,
+          "results": 1,
+          "all": 0,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "playTarget": {
+        "mediaId": "6e194d88-6da3-4aa2-b53b-54ca9d2e6157:https-//resvd.ubestkid.com/blk/m/20230504171841_zn.mp4@@捉泥鳅@@https-//res1.ubestkid.com/blk/t/046_zn.png@c_1,x_120,y_0,w_720,h_540%7cs_0,w_300,f_png~hhf007",
+        "episodeId": "6e194d88-6da3-4aa2-b53b-54ca9d2e6157-https-//resvd.ubestkid.com/blk/m/20230504171841_zn.mp4@@捉泥鳅@@https-//res1.ubestkid.com/blk/t/046_zn.png@c_1,x_120,y_0,w_720,h_540%7cs_0,w_300,f_png-hhf007:6e194d88-6da3-4aa2-b53b-54ca9d2e6157-https-//resvd.ubestkid.com/blk/m/20230504171841_zn.mp4@@捉泥鳅@@https-//res1.ubestkid.com/blk/t/046_zn.png@c_1,x_120,y_0,w_720,h_540%7cs_0,w_300,f_png-hhf007-0-17x1waq:1~169qb78",
+        "lineId": "6e194d88-6da3-4aa2-b53b-54ca9d2e6157-https-//resvd.ubestkid.com/blk/m/20230504171841_zn.mp4@@捉泥鳅@@https-//res1.ubestkid.com/blk/t/046_zn.png@c_1,x_120,y_0,w_720,h_540%7cs_0,w_300,f_png-hhf007:0~17x1waq"
+      },
+      "source": {
+        "id": "6e194d88-6da3-4aa2-b53b-54ca9d2e6157",
+        "name": "贝乐虎 • 儿童",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 766,
+      "player": {
+        "state": {
+          "loading": false,
+          "engineKind": "video",
+          "error": null,
+          "duration": 108,
+          "currentTime": 2.1,
+          "playing": true,
+          "waiting": false,
+          "qualities": [],
+          "subtitles": 0,
+          "mediaId": "6e194d88-6da3-4aa2-b53b-54ca9d2e6157:https-//resvd.ubestkid.com/blk/m/20230504171841_zn.mp4@@捉泥鳅@@https-//res1.ubestkid.com/blk/t/046_zn.png@c_1,x_120,y_0,w_720,h_540%7cs_0,w_300,f_png~hhf007",
+          "lineId": "6e194d88-6da3-4aa2-b53b-54ca9d2e6157-https-//resvd.ubestkid.com/blk/m/20230504171841_zn.mp4@@捉泥鳅@@https-//res1.ubestkid.com/blk/t/046_zn.png@c_1,x_120,y_0,w_720,h_540%7cs_0,w_300,f_png-hhf007:0~17x1waq"
+        },
+        "vstate": {
+          "readyState": 4,
+          "networkState": 1,
+          "paused": false,
+          "currentSrc": "http://127.0.0.1:37685/p/9fb5de2484e4419592025e4037f9c547",
+          "errorCode": null,
+          "videoWidth": 960,
+          "videoHeight": 540
+        },
+        "ready": true
+      }
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 315,
+          "items": 1,
+          "categories": [],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "skipped": "no-categories"
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 82,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.detailContent(java.util.List)' on a null object reference"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "宇宙Ma",
+          "state": "success",
+          "ms": 790,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.detailContent(java.util.List)' on a null object reference"
+          }
+        }
+      },
+      "source": {
+        "id": "0b7e8972-2df7-4cea-93b1-57023dbcbb65",
+        "name": "💥韩剧┃秒播💥",
+        "type": "spider",
+        "kind": "jar",
+        "health": "unreachable",
+        "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg",
+        "subscriptionId": "https://9280.kstore.space/newwex.json",
+        "warning": null
+      },
+      "ms": 1202
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 54,
+          "items": 20,
+          "categories": [],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "skipped": "no-categories"
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 11,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.detailContent(java.util.List)' on a null object reference"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "斗罗大陆",
+          "state": "success",
+          "ms": 19,
+          "results": 3,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.detailContent(java.util.List)' on a null object reference"
+          }
+        }
+      },
+      "source": {
+        "id": "64548abb-7180-4ba6-bec1-95488eec1828",
+        "name": "💥师兄┃秒播💥",
+        "type": "spider",
+        "kind": "jar",
+        "health": "unreachable",
+        "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg",
+        "subscriptionId": "https://9280.kstore.space/newwex.json",
+        "warning": null
+      },
+      "ms": 90
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 556,
+          "items": 24,
+          "categories": [
+            "剧集",
+            "动漫",
+            "综艺"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "剧集",
+          "state": "success",
+          "ms": 307,
+          "items": 24,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 251,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: ArrayIndexOutOfBoundsException: length=1; index=1"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "嫁金钗",
+          "state": "success",
+          "ms": 261,
+          "results": 4,
+          "all": 0,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: ArrayIndexOutOfBoundsException: length=1; index=1"
+          }
+        }
+      },
+      "source": {
+        "id": "b50e7cbd-16e0-4052-a58a-757cf44c19ea",
+        "name": "马猴 • APP",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 1393
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 283,
+          "items": 30,
+          "categories": [
+            "电影",
+            "微电影",
+            "记录片",
+            "晚会",
+            "独家",
+            "综艺"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "电影",
+          "state": "success",
+          "ms": 178,
+          "items": 30,
+          "error": null
+        },
+        "detail": {
+          "ok": true,
+          "state": "success",
+          "ms": 223,
+          "title": "我们家",
+          "lines": [
+            {
+              "name": "1905",
+              "format": "mp4"
+            }
+          ],
+          "episodes": 1,
+          "error": null
+        },
+        "resolve": {
+          "ok": true,
+          "ms": 603,
+          "format": "hls",
+          "isLocal": false,
+          "isLive": false,
+          "urlScheme": "https",
+          "urlHost": "m3u8ipay1.vodfile.m1905.com",
+          "headers": [],
+          "subtitles": 0,
+          "expiresAt": null
+        },
+        "search": {
+          "ok": true,
+          "keyword": "我们家",
+          "state": "success",
+          "ms": 2112,
+          "results": 1,
+          "all": 1,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": null
+        }
+      },
+      "playTarget": {
+        "mediaId": "ad30a8a8-4a0a-4536-9fce-98f86b32f712:918742~qgvohj",
+        "episodeId": "ad30a8a8-4a0a-4536-9fce-98f86b32f712-918742-qgvohj:ad30a8a8-4a0a-4536-9fce-98f86b32f712-918742-qgvohj-0-1uld4xa:1~jku6et",
+        "lineId": "ad30a8a8-4a0a-4536-9fce-98f86b32f712-918742-qgvohj:0~1uld4xa"
+      },
+      "source": {
+        "id": "ad30a8a8-4a0a-4536-9fce-98f86b32f712",
+        "name": "1905 • 影视",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 3429,
+      "player": {
+        "state": {
+          "loading": false,
+          "engineKind": "video",
+          "error": null,
+          "duration": 0,
+          "currentTime": 0,
+          "playing": true,
+          "waiting": false,
+          "qualities": [],
+          "subtitles": 0,
+          "mediaId": "ad30a8a8-4a0a-4536-9fce-98f86b32f712:918742~qgvohj",
+          "lineId": "ad30a8a8-4a0a-4536-9fce-98f86b32f712-918742-qgvohj:0~1uld4xa"
+        },
+        "vstate": {
+          "readyState": 4,
+          "networkState": 1,
+          "paused": false,
+          "currentSrc": "https://m3u8ipay1.vodfile.m1905.com/movie/2015/07/06/m201507062H39YMNHZD8YZIJO/m201507062H39YMNHZD8YZIJO.m3u8?tm=1793216",
+          "errorCode": null,
+          "videoWidth": 0,
+          "videoHeight": 0
+        },
+        "ready": true
+      }
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 199,
+          "items": 7,
+          "categories": [],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "skipped": "no-categories"
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 45,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.detailContent(java.util.List)' on a null object reference"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "【电影】",
+          "state": "success",
+          "ms": 585,
+          "results": 3,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_SOURCE_UNAVAILABLE",
+            "message": "爬虫调用失败: NullPointerException: Attempt to invoke virtual method 'java.lang.String com.github.catvod.crawler.Spider.detailContent(java.util.List)' on a null object reference"
+          }
+        }
+      },
+      "source": {
+        "id": "1936fc25-07eb-43e7-90b0-b84d0474345f",
+        "name": "💓剧透┃4K💓",
+        "type": "spider",
+        "kind": "jar",
+        "health": "unreachable",
+        "baseUrl": "http://oss4liview.moji.com/thd_file/2026/10/26/837a77b77fc98aba6b97856944e94d7c.jpg",
+        "subscriptionId": "https://9280.kstore.space/newwex.json",
+        "warning": null
+      },
+      "ms": 876
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 668,
+          "items": 20,
+          "categories": [
+            "电影",
+            "剧集",
+            "动漫"
+          ],
+          "hasMore": true,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "电影",
+          "state": "success",
+          "ms": 685,
+          "items": 20,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 615,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_PARSE",
+            "message": "爬虫未返回数据"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "生化危机",
+          "state": "success",
+          "ms": 1184,
+          "results": 13,
+          "all": 13,
+          "candidates": 1,
+          "filteredOut": 0,
+          "failed": [],
+          "error": {
+            "code": "E_PARSE",
+            "message": "爬虫未返回数据"
+          }
+        }
+      },
+      "source": {
+        "id": "64270d01-5da6-40f9-b09e-0064d4b3b833",
+        "name": "种子 • 4K",
+        "type": "spider",
+        "kind": "jar",
+        "health": "ok",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 3751
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 711,
+          "items": 64,
+          "categories": [
+            "全部直播",
+            "篮球直播",
+            "足球直播",
+            "其他直播"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "全部直播",
+          "state": "success",
+          "ms": 621,
+          "items": 64,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 56,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "2026",
+          "state": "success",
+          "ms": 301,
+          "results": 49,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        }
+      },
+      "source": {
+        "id": "0109fd30-503e-4be5-894c-f9732b36b064",
+        "name": "🏝奥特┃多线",
+        "type": "spider",
+        "kind": "jar",
+        "health": "unreachable",
+        "baseUrl": "https://qist.wyfc.qzz.io/jar/fan.txt",
+        "subscriptionId": "https://qist.wyfc.qzz.io/fty.json",
+        "warning": null
+      },
+      "ms": 2369
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": true,
+          "state": "success",
+          "ms": 1911,
+          "items": 64,
+          "categories": [
+            "全部直播",
+            "篮球直播",
+            "足球直播",
+            "其他直播"
+          ],
+          "hasMore": false,
+          "error": null
+        },
+        "category": {
+          "ok": true,
+          "name": "全部直播",
+          "state": "success",
+          "ms": 387,
+          "items": 64,
+          "error": null
+        },
+        "detail": {
+          "ok": false,
+          "state": "error",
+          "ms": 9,
+          "title": null,
+          "lines": [],
+          "episodes": 0,
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "2026",
+          "state": "success",
+          "ms": 238,
+          "results": 49,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 1,
+          "failed": [],
+          "error": {
+            "code": "E_NOT_FOUND",
+            "message": "资源不存在(404)"
+          }
+        }
+      },
+      "source": {
+        "id": "563d7f97-3eb9-4d2c-9e4a-472e33a3efc4",
+        "name": "红果 • 短剧",
+        "type": "alist",
+        "kind": null,
+        "health": "unknown",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/py/%E7%BA%A2%E6%9E%9C%E7%9F%AD%E5%89%A7.py",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 2943
+    },
+    {
+      "steps": {
+        "browse": {
+          "ok": false,
+          "state": "error",
+          "ms": 10,
+          "items": 0,
+          "categories": [],
+          "hasMore": false,
+          "error": {
+            "code": "E_SOURCE_DISABLED",
+            "message": "该源已禁用，请先在源管理中启用"
+          }
+        },
+        "category": {
+          "skipped": "no-categories"
+        },
+        "detail": {
+          "skipped": "no-items"
+        },
+        "resolve": {
+          "skipped": "no-line-or-episode"
+        },
+        "search": {
+          "ok": true,
+          "keyword": "测试",
+          "state": "success",
+          "ms": 278,
+          "results": 1,
+          "all": 0,
+          "candidates": 0,
+          "filteredOut": 0,
+          "failed": [],
+          "error": {
+            "code": "E_SOURCE_DISABLED",
+            "message": "该源已禁用，请先在源管理中启用"
+          }
+        }
+      },
+      "source": {
+        "id": "940cb913-b871-4ba4-98fb-ead00d930a20",
+        "name": "盘搜 • 搜索",
+        "type": "spider",
+        "kind": "jar",
+        "health": "bad_config",
+        "baseUrl": "https://qist.wyfc.qzz.io/xiaosa/spider.jar",
+        "subscriptionId": "https://qist.wyfc.qzz.io/xiaosa/api.json",
+        "warning": null
+      },
+      "ms": 293
+    }
+  ],
+  "partial": true
+}

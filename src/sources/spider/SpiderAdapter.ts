@@ -408,12 +408,18 @@ export class SpiderAdapter extends BaseAdapter {
     return out;
   }
 
-  /** 确保该源已加载，返回实例句柄 */
-  private async ensureLoaded(source: Source): Promise<string> {
+  /**
+   * 确保该源已加载，返回实例句柄。
+   *
+   * P1-6：无论这次加载由谁发起（预热、其它并发请求、本次调用），调用方的
+   * 取消/超时都必须生效。否则预热先起的 jar 加载（原生 75s）会让搜索的 20s
+   * 预算失效——真机实测「单个源把整轮聚合搜索拖到 75s」。
+   */
+  private async ensureLoaded(source: Source, signal?: AbortSignal): Promise<string> {
     this.assertEnabled(source);
     const existing = this.handles.get(source.id);
     if (existing) return existing;
-    return this.load(source);
+    return raceNative(() => this.load(source, signal), signal, NATIVE_LOAD_TIMEOUT_MS);
   }
 
   /**
@@ -450,25 +456,25 @@ export class SpiderAdapter extends BaseAdapter {
    * 预热（warmup）与真实调用可能同时触发加载，若各自跑一遍会出现两次 jar 下载/加载，
    * 既拖慢首屏也会让原生侧重复初始化。
    */
-  private async load(source: Source): Promise<string> {
+  private async load(source: Source, signal?: AbortSignal): Promise<string> {
     const existing = this.handles.get(source.id);
     if (existing) return existing;
     const inflight = this.loading.get(source.id);
     if (inflight) return inflight;
-    const task = this.loadInner(source).finally(() => {
+    const task = this.loadInner(source, signal).finally(() => {
       this.loading.delete(source.id);
     });
     this.loading.set(source.id, task);
     return task;
   }
 
-  private async loadInner(source: Source): Promise<string> {
+  private async loadInner(source: Source, signal?: AbortSignal): Promise<string> {
     const ext = extOf(source);
     if (!isNative()) {
       throw new AppError('E_NOT_IMPLEMENTED', '爬虫源仅支持在 App 内使用');
     }
     if (ext.kind === 'js') {
-      return this.loadJs(source, ext);
+      return this.loadJs(source, ext, signal);
     }
     if (ext.kind !== 'jar' || ext.jarUrl === null || ext.api === null) {
       throw new AppError('E_UNSUPPORTED_FORMAT', '该爬虫源缺少 jar 或爬虫类名');
@@ -491,7 +497,7 @@ export class SpiderAdapter extends BaseAdapter {
               initExt: ext.initExt,
               userAgent: source.headers['User-Agent'] ?? source.headers['user-agent'] ?? null,
             }),
-          undefined,
+          signal,
           NATIVE_LOAD_TIMEOUT_MS,
         );
         this.jarVariants.set(source.id, candidate);
@@ -511,7 +517,7 @@ export class SpiderAdapter extends BaseAdapter {
    * 候选地址按序尝试（GitHub 地址自动带镜像变体，与 jar 加载同口径）；
    * 命中的变体记入 jarVariants（js 源复用该映射存规则变体）。
    */
-  private async loadJs(source: Source, ext: SpiderSourceExt): Promise<string> {
+  private async loadJs(source: Source, ext: SpiderSourceExt, signal?: AbortSignal): Promise<string> {
     const candidates = this.ruleUrlCandidates(source, ext);
     if (candidates.length === 0) {
       throw new AppError('E_UNSUPPORTED_FORMAT', '该 drpy 源缺少规则地址');
@@ -529,7 +535,7 @@ export class SpiderAdapter extends BaseAdapter {
                 ruleUrl: variant,
                 initExt: ext.initExt,
               }),
-            undefined,
+            signal,
             NATIVE_LOAD_TIMEOUT_MS,
           );
           this.jarVariants.set(source.id, variant);
@@ -554,7 +560,7 @@ export class SpiderAdapter extends BaseAdapter {
     signal?: AbortSignal,
   ) {
     signal?.throwIfAborted();
-    const handle = await this.ensureLoaded(source);
+    const handle = await this.ensureLoaded(source, signal);
     try {
       let result: { json: string | null; logs?: string[] };
       if (extOf(source).kind === 'js') {
@@ -778,7 +784,7 @@ export class SpiderAdapter extends BaseAdapter {
     // P1-6：句柄已在内存（热）→ 10s 必须出结果；冷启动才给 30s 的下载/镜像余量
     const hot = this.handles.has(source.id);
     const invokeTimeout = hot ? NATIVE_INVOKE_TIMEOUT_HOT_MS : NATIVE_INVOKE_TIMEOUT_MS;
-    const handle = await this.ensureLoaded(source);
+    const handle = await this.ensureLoaded(source, signal);
     try {
       let result: { json: string | null; logs?: string[] };
       if (extOf(source).kind === 'js') {
@@ -821,7 +827,7 @@ export class SpiderAdapter extends BaseAdapter {
     signal?: AbortSignal,
   ): Promise<SpiderProxyResult> {
     signal?.throwIfAborted();
-    const handle = await this.ensureLoaded(source);
+    const handle = await this.ensureLoaded(source, signal);
     if (extOf(source).kind === 'js') {
       // drpy 规则没有 TVBox 的 proxy(Map) 契约；parse=1 的场景走 resolveViaParse
       throw new AppError('E_NO_PLAY_URL', 'drpy 源不支持爬虫代理地址');
