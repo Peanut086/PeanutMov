@@ -118,12 +118,20 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
 
   /* ---------- 事件绑定 ---------- */
 
+  /** timeupdate 节流：原生 ~4Hz(250ms)，但 patch 触发响应式更新过多会掉帧 */
+  let lastTimePatchAt = 0;
+  const TIME_PATCH_MIN_GAP_MS = 200;
+
   function bindController(c: PlayerController): void {
     c.on('ready', ({ duration }) => {
       player.patch({ duration, loading: false });
     });
 
     c.on('timeupdate', ({ currentTime, duration, buffered }) => {
+      // 节流：seek 时立即更新（拖动进度条需要即时响应），播放中 200ms 一次足够
+      const now = performance.now();
+      if (now - lastTimePatchAt < TIME_PATCH_MIN_GAP_MS) return;
+      lastTimePatchAt = now;
       player.patch({ currentTime, duration, buffered });
     });
 
@@ -273,6 +281,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   }
 
   async function seek(sec: number): Promise<void> {
+    // 先重置节流，确保 seek 触发的 timeupdate 不被跳过
+    lastTimePatchAt = 0;
     controller.value?.seek(sec);
     nudgeControls();
   }

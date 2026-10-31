@@ -4,8 +4,9 @@
  *
  * 显示：快进/后退目标时间、音量百分比、亮度百分比、长按倍速提示。
  * 仅做展示，pointer-events: none。
+ * 双击快进/快退时显示涟漪反馈动画，让用户感知操作生效。
  */
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 import { formatClock } from '@/shared/time';
 
@@ -21,6 +22,21 @@ const props = withDefaults(
     rate?: number;
   }>(),
   { value: 0, deltaSec: 0, rate: 2 },
+);
+
+/** 双击涟漪动画状态 */
+const rippleSide = ref<'left' | 'right' | null>(null);
+const rippleKey = ref(0);
+
+watch(
+  () => props.kind,
+  (kind, oldKind) => {
+    // 从非 seek 切到 seek（双击触发的快进/快退）时显示涟漪
+    if (kind === 'seek' && oldKind !== 'seek') {
+      rippleSide.value = props.deltaSec >= 0 ? 'right' : 'left';
+      rippleKey.value += 1;
+    }
+  },
 );
 
 const title = computed(() => {
@@ -63,6 +79,23 @@ const barPercent = computed(() => {
 </script>
 
 <template>
+  <!-- 双击涟漪反馈（左右两侧各一个，不影响 HUD 中心显示） -->
+  <Transition name="ripple">
+    <div
+      v-if="rippleSide"
+      :key="rippleKey"
+      class="player-ripple"
+      :class="`player-ripple--${rippleSide}`"
+      aria-hidden="true"
+      @transitionend="rippleSide = null"
+    >
+      <span class="player-ripple__circle" />
+      <span class="player-ripple__text">
+        {{ rippleSide === 'right' ? '≫' : '≪' }}
+      </span>
+    </div>
+  </Transition>
+
   <Transition name="hud">
     <div v-if="kind" class="player-hud" role="status" aria-live="polite">
       <!-- 图标 -->
@@ -202,6 +235,80 @@ const barPercent = computed(() => {
 
 .hud-enter-from,
 .hud-leave-to {
+  opacity: 0;
+}
+
+/* 双击涟漪反馈 */
+.player-ripple {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.player-ripple--left {
+  left: 12%;
+}
+
+.player-ripple--right {
+  right: 12%;
+}
+
+.player-ripple__circle {
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.15);
+  animation: ripple-expand 600ms var(--ease-standard) forwards;
+}
+
+.player-ripple__text {
+  position: relative;
+  font-size: 28px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.9);
+  animation: ripple-text 600ms var(--ease-standard) forwards;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+
+@keyframes ripple-expand {
+  0% {
+    transform: scale(0.5);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+@keyframes ripple-text {
+  0% {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  30% {
+    transform: scale(1.1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 0;
+  }
+}
+
+.ripple-enter-active,
+.ripple-leave-active {
+  transition: opacity 200ms var(--ease-standard);
+}
+
+.ripple-enter-from,
+.ripple-leave-to {
   opacity: 0;
 }
 </style>

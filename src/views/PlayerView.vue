@@ -1016,9 +1016,17 @@ watch(danmakuReady, (ready) => {
 watch(danmakuSettings, (next) => danmakuOverlay.value?.setSettings(next), { deep: true });
 
 // 播放进度驱动弹幕时间轴（store.currentTime 由 timeupdate 事件更新）
+// 用 rAF 合并：多次 currentTime 变化合并为一帧 tick，避免高频 watch 开销
+let danmakuRafId = 0;
 watch(
   () => player.currentTime,
-  (t) => danmakuOverlay.value?.tick(t),
+  (t) => {
+    if (danmakuRafId) return; // 已有 pending rAF，跳过
+    danmakuRafId = requestAnimationFrame(() => {
+      danmakuRafId = 0;
+      danmakuOverlay.value?.tick(t);
+    });
+  },
 );
 
 // 切集重新匹配弹幕
@@ -1028,6 +1036,10 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  if (danmakuRafId) {
+    cancelAnimationFrame(danmakuRafId);
+    danmakuRafId = 0;
+  }
   danmakuOverlay.value?.detach();
   danmakuOverlay.value = null;
 });

@@ -5,6 +5,7 @@
  * 顶部：返回 + 标题（片名 · 第 N 集）+ 右侧投屏/字幕。
  * 底部：进度条 + 时间 + 播放/暂停（56）/上下集 + 倍速/字幕/清晰度/全屏/下载。
  * 显隐由父级 `visible` 控制，300ms opacity 过渡（不位移，避免画面抖动）。
+ * 隐藏态：底部保留 2px 微进度条（类似 YouTube/B站），让用户感知播放进度。
  */
 import { computed } from 'vue';
 
@@ -75,6 +76,14 @@ const emit = defineEmits<{
 
 const rateLabel = computed(() => `${props.rate}x`);
 const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
+
+/** 微进度条百分比（控制条隐藏时显示） */
+const miniProgress = computed(() =>
+  props.duration > 0 ? Math.min(100, Math.max(0, (props.currentTime / props.duration) * 100)) : 0,
+);
+const miniBuffered = computed(() =>
+  props.duration > 0 ? Math.min(100, Math.max(0, (props.buffered / props.duration) * 100)) : 0,
+);
 </script>
 
 <template>
@@ -239,6 +248,12 @@ const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
         </button>
       </div>
     </footer>
+
+    <!-- 控制条隐藏时的微进度条（底部 2px，类似 YouTube/B站） -->
+    <div v-if="!visible && duration > 0" class="mini-progress" aria-hidden="true">
+      <div class="mini-progress__buffered" :style="{ width: `${miniBuffered}%` }" />
+      <div class="mini-progress__played" :style="{ width: `${miniProgress}%` }" />
+    </div>
   </div>
 </template>
 
@@ -484,5 +499,33 @@ const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
 
 .player-controls--immersive .controls-secondary {
   justify-content: flex-end;
+}
+
+/* 控制条隐藏时的微进度条 */
+.mini-progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background-color: rgba(255, 255, 255, 0.16);
+  pointer-events: none;
+  z-index: 4;
+}
+
+.mini-progress__buffered {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  background-color: rgba(255, 255, 255, 0.32);
+  transition: width 300ms linear;
+}
+
+.mini-progress__played {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  background-color: var(--color-brand);
+  transition: width 300ms linear;
 }
 </style>

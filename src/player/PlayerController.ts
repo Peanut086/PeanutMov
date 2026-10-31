@@ -103,6 +103,8 @@ export class PlayerController {
 
   private readonly subtitles: SubtitleManager;
   private readonly progress: ProgressReporter;
+  /** 缓存最近一次字幕文本，跳过同一 cue 内的重复 emit */
+  private lastSubtitleText = '';
   readonly fullscreen: FullscreenController;
   readonly orientation: OrientationController;
   private recognizer: GestureRecognizer | null = null;
@@ -179,6 +181,7 @@ export class PlayerController {
     this.setState('loading');
     this.options = opts;
     this.networkRetries = 0;
+    this.lastSubtitleText = '';
     this.subtitles.setTracks(opts.playback.subtitles);
     this.emit('subtitlechange', {
       activeId: this.subtitles.getActiveId(),
@@ -364,14 +367,18 @@ export class PlayerController {
     this.emit('timeupdate', { currentTime, duration, buffered });
     // 黑屏检测：起播后 5s 仍一帧未出 → 上报一次（每次加载最多一次）
     if (currentTime > 0) this.scheduleNoVideoCheck();
+    // 字幕：只在当前 cue 可能变化时才查找（跳过同一时间区间内的重复 timeupdate）
     if (this.subtitles.getActiveId()) {
       const text = this.subtitles.textAt(currentTime);
-      this.emit('subtitlechange', {
-        activeId: this.subtitles.getActiveId(),
-        tracks: this.subtitles.getTracks(),
-        text,
-        failedIds: this.subtitles.getFailedIds(),
-      });
+      if (text !== this.lastSubtitleText) {
+        this.lastSubtitleText = text;
+        this.emit('subtitlechange', {
+          activeId: this.subtitles.getActiveId(),
+          tracks: this.subtitles.getTracks(),
+          text,
+          failedIds: this.subtitles.getFailedIds(),
+        });
+      }
     }
     // v1.7/CHG-21：临近片尾（剩 90s）预载下一集，连播切换零等待
     if (duration > 0 && duration - currentTime <= 90 && this.canNext()) {

@@ -5,6 +5,7 @@
  * - 轨道 3px → 拖动/悬停 5px；滑块 12px → 16px
  * - 命中区 44px（透明包裹层）
  * - 拖动中只更新本地预览值，松手才 `seek`（AC-43：误差 ≤2s）
+ * - 拖动/hover 时在指针位置上方显示时间气泡
  * - `role="slider"` + aria-valuetext
  */
 import { computed, ref } from 'vue';
@@ -33,6 +34,8 @@ const emit = defineEmits<{
 const trackRef = ref<HTMLElement | null>(null);
 const dragging = ref(false);
 const previewSec = ref(0);
+/** 鼠标 hover 的 X 位置（相对轨道宽度百分比 0~100），用于显示 hover 预览 */
+const hoverPercent = ref<number | null>(null);
 
 const safeDuration = computed(() => (Number.isFinite(props.duration) && props.duration > 0 ? props.duration : 0));
 const displaySec = computed(() => (dragging.value ? previewSec.value : clamp(props.currentTime, 0, safeDuration.value)));
@@ -43,6 +46,25 @@ const percent = computed(() =>
 const bufferedPercent = computed(() =>
   safeDuration.value > 0 ? clamp((props.buffered / safeDuration.value) * 100, 0, 100) : 0,
 );
+
+/** 当前应该显示的时间（拖动 > hover > 实际播放位置） */
+const bubbleSec = computed(() => {
+  if (dragging.value) return previewSec.value;
+  if (hoverPercent.value !== null && safeDuration.value > 0) {
+    return (hoverPercent.value / 100) * safeDuration.value;
+  }
+  return null;
+});
+
+/** 气泡水平位置（百分比），限制在 5%~95% 避免溢出 */
+const bubbleLeft = computed(() => {
+  if (dragging.value) return clamp(percent.value, 5, 95);
+  if (hoverPercent.value !== null) return clamp(hoverPercent.value, 5, 95);
+  return 0;
+});
+
+/** 是否显示时间气泡 */
+const showBubble = computed(() => bubbleSec.value !== null && safeDuration.value > 0 && !props.disabled);
 
 function clamp(v: number, min: number, max: number): number {
   if (!Number.isFinite(v)) return min;
@@ -57,6 +79,13 @@ function positionToSec(clientX: number): number {
   return ratio * safeDuration.value;
 }
 
+function positionToPercent(clientX: number): number {
+  const el = trackRef.value;
+  if (!el) return 0;
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 ? clamp((clientX - rect.left) / rect.width * 100, 0, 100) : 0;
+}
+
 function onPointerDown(ev: PointerEvent): void {
   if (props.disabled || safeDuration.value <= 0) return;
   dragging.value = true;
@@ -66,6 +95,8 @@ function onPointerDown(ev: PointerEvent): void {
 }
 
 function onPointerMove(ev: PointerEvent): void {
+  // hover 预览（无论是否拖动都更新位置）
+  hoverPercent.value = positionToPercent(ev.clientX);
   if (!dragging.value) return;
   previewSec.value = positionToSec(ev.clientX);
   emit('seeking', previewSec.value);
@@ -77,6 +108,10 @@ function onPointerUp(ev: PointerEvent): void {
   const target = positionToSec(ev.clientX);
   previewSec.value = target;
   emit('seek', target);
+}
+
+function onPointerLeave(): void {
+  if (!dragging.value) hoverPercent.value = null;
 }
 
 function onKeydown(ev: KeyboardEvent): void {
@@ -120,11 +155,31 @@ const ariaText = computed(() => `${formatClock(displaySec.value)} / ${formatCloc
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
       @pointercancel="onPointerUp"
+      @pointerleave="onPointerLeave"
       @keydown="onKeydown"
     >
+      <!-- 时间预览气泡 -->
+      <Transition name="bubble">
+        <div
+          v-if="showBubble"
+          class="seekbar__bubble"
+          :style="{ left: `${bubbleLeft}%` }"
+        >
+          <span class="seekbar__bubble-text">{{ formatClock(bubbleSec) }}</span>
+          <span class="seekbar__bubble-arrow" aria-hidden="true" />
+        </div>
+      </Transition>
+
       <div class="seekbar__track">
         <div class="seekbar__buffered" :style="{ width: `${bufferedPercent}%` }" />
         <div class="seekbar__played" :style="{ width: `${percent}%` }" />
+        <!-- hover 指示线（非拖动时显示） -->
+        <div
+          v-if="hoverPercent !== null && !dragging && !disabled && safeDuration > 0"
+          class="seekbar__hover-line"
+          :style="{ left: `${hoverPercent}%` }"
+          aria-hidden="true"
+        />
       </div>
       <div class="seekbar__thumb" :style="{ left: `${percent}%` }" />
     </div>
@@ -186,6 +241,18 @@ const ariaText = computed(() => `${formatClock(displaySec.value)} / ${formatCloc
   background-color: var(--color-brand);
 }
 
+/* hover 指示线：细竖线标记鼠标位置 */
+.seekbar__hover-line {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background-color: rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+}
+
 .seekbar__thumb {
   position: absolute;
   top: 50%;
@@ -203,6 +270,48 @@ const ariaText = computed(() => `${formatClock(displaySec.value)} / ${formatCloc
   width: 16px;
   height: 16px;
   margin-left: -8px;
+}
+
+/* 时间预览气泡 */
+.seekbar__bubble {
+  position: absolute;
+  bottom: calc(100% - 6px);
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.seekbar__bubble-text {
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background-color: rgba(0, 0, 0, 0.85);
+  color: #ffffff;
+  font: var(--text-caption);
+  font-family: var(--font-family-number);
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.seekbar__bubble-arrow {
+  width: 0;
+  height: 0;
+  border: 4px solid transparent;
+  border-top-color: rgba(0, 0, 0, 0.85);
+  margin-top: -1px;
+}
+
+.bubble-enter-active,
+.bubble-leave-active {
+  transition: opacity var(--duration-fast) var(--ease-standard), transform var(--duration-fast) var(--ease-standard);
+}
+
+.bubble-enter-from,
+.bubble-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(4px);
 }
 
 .seekbar__times {

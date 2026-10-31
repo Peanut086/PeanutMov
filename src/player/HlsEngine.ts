@@ -113,28 +113,44 @@ export class HlsEngine implements PlayableEngine {
     this.mediaRetries = 0;
 
     const headers = source.headers ?? {};
+    const isLive = source.isLive === true;
     const hls = new HlsCtor({
       enableWorker: true,
-      // v1.7/CHG-21：直播用低延迟模式（liveSyncDurationCount=LIVE_SYNC_COUNT），点播关闭
-      lowLatencyMode: source.isLive === true,
-      liveSyncDurationCount: source.isLive === true ? LIVE_SYNC_COUNT : undefined,
-      backBufferLength: 30,
-      maxBufferLength: 30,
+      // 直播用低延迟模式（liveSyncDurationCount=LIVE_SYNC_COUNT），点播关闭
+      lowLatencyMode: isLive,
+      liveSyncDurationCount: isLive ? LIVE_SYNC_COUNT : undefined,
+      // 回看缓冲：点播 90s 够回退重看一段；直播保持 15s 控内存
+      backBufferLength: isLive ? 15 : 90,
+      // 初始前向缓冲：起播阶段只需要首帧，不需要大量预缓冲
+      maxBufferLength: isLive ? 10 : 30,
+      // 内存上限：高码率时 hls.js 会自行收窄到 maxBufferSize 以下
+      maxBufferSize: 60 * 1000 * 1000, // 60MB
+      maxMaxBufferLength: isLive ? 20 : 120,
       capLevelToPlayerSize: true,
       /*
        * 起播优化（真机实测：黑屏/转圈主要耗在「清单解析完到第一帧」）：
        * - startFragPrefetch：解析清单的同时就预取首个分片，省掉一次串行等待
        * - testBandwidth:false：VOD 首片不做带宽探测（默认会多下一次）
-       * - abrEwmaDefaultEstimate：把默认带宽估计提到 1.2Mbps，避免首帧先给 240p 再跳
+       * - abrEwmaDefaultEstimate：2Mbps 更贴近国内常见宽带，避免首帧选 240p 再跳档
        * - maxStarvationDelay/maxLoadingDelay：卡顿容忍从 4s 收紧到 2s，尽快切档/追帧
+       * - fragLoadingTimeOut：分片加载 20s 超时（默认太长，移动网络下用户早已等不及）
+       * - manifestLoadingTimeOut：清单加载 8s 超时（比默认 10s 更早触发重试）
        */
       startFragPrefetch: true,
       testBandwidth: false,
-      abrEwmaDefaultEstimate: 1_200_000,
+      abrEwmaDefaultEstimate: 2_000_000,
       maxStarvationDelay: 2,
       maxLoadingDelay: 2,
+      fragLoadingTimeOut: 20000,
+      fragLoadingMaxRetry: 4,
+      manifestLoadingTimeOut: 8000,
+      manifestLoadingMaxRetry: 3,
+      // ABR 平滑：避免码率频繁跳动（视觉上的清晰度闪烁）
+      abrBandWidthFactor: 0.95,
+      abrBandWidthUpFactor: 0.7,
+      // 元数据就绪即开始播放，不等缓冲填满
+      startLevel: -1,
       xhrSetup: (xhr: XMLHttpRequest, url: string) => {
-        // 仅对跨域或同源请求注入自定义头；CORS 预检由源站决定
         void url;
         for (const [key, value] of Object.entries(headers)) {
           try {
@@ -171,9 +187,12 @@ export class HlsEngine implements PlayableEngine {
         const level = hls.levels[hls.currentLevel];
         const quality = qualityOf(level);
         this.currentQuality = hls.currentLevel < 0 ? 'auto' : quality;
-        // v1.7/CHG-21：高码率（≥1080p）前向缓冲 30→60s，换卡顿为预缓冲；低码率维持默认控内存
+        // 高码率（≥1080p）前向缓冲扩大到 60s，换卡顿为预缓冲；低码率维持 30s 控内存
         const height = level?.height ?? 0;
-        hls.config.maxBufferLength = height >= 1080 ? HLS_MAX_BUFFER_HIGH_S : HLS_MAX_BUFFER_DEFAULT_S;
+        const isLive = this.pendingSource?.isLive === true;
+        if (!isLive) {
+          hls.config.maxBufferLength = height >= 1080 ? HLS_MAX_BUFFER_HIGH_S : HLS_MAX_BUFFER_DEFAULT_S;
+        }
         this.events.onQualityChange(this.currentQuality, this.qualities);
       });
 
