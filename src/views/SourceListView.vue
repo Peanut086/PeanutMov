@@ -368,23 +368,36 @@ async function retry(): Promise<void> {
       </button>
 
       <div class="sources-actions">
-        <button class="btn btn--secondary btn--md sources-actions__btn" type="button" @click="goNew">
-          新增源
+        <button class="sources-action" type="button" @click="goNew">
+          <svg class="sources-action__icon sources-action__icon--brand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          <span class="sources-action__label">新增源</span>
         </button>
-        <button class="btn btn--secondary btn--md sources-actions__btn" type="button" @click="goImport">
-          导入订阅
+        <button class="sources-action" type="button" @click="goImport">
+          <svg class="sources-action__icon sources-action__icon--info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13.6a4 4 0 0 0 5.7 0l2.8-2.8a4 4 0 0 0-5.7-5.7l-1.4 1.4" />
+            <path d="M14 10.4a4 4 0 0 0-5.7 0l-2.8 2.8a4 4 0 0 0 5.7 5.7l1.4-1.4" />
+          </svg>
+          <span class="sources-action__label">导入订阅</span>
         </button>
-        <button class="btn btn--ghost btn--md sources-actions__more" type="button" @click="goSubscriptions">
-          订阅管理
+        <button class="sources-action" type="button" @click="goSubscriptions">
+          <svg class="sources-action__icon sources-action__icon--violet" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3.2 7.2h5.6l2 2.2h10V19a1 1 0 0 1-1 1H4.2a1 1 0 0 1-1-1z" />
+          </svg>
+          <span class="sources-action__label">订阅管理</span>
         </button>
         <button
-          class="btn btn--ghost btn--md sources-actions__refresh"
+          class="sources-action"
           type="button"
           :disabled="healthChecking"
           @click="checkHealth"
         >
           <LoadingSpinner v-if="healthChecking" :size="16" />
-          {{ healthChecking ? progressText : '重新检测' }}
+          <svg v-else class="sources-action__icon sources-action__icon--ok" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 12a8 8 0 1 1-2.9-6.2M20 4.2v4.6h-4.6" />
+          </svg>
+          <span class="sources-action__label">{{ healthChecking ? progressText : '重新检测' }}</span>
         </button>
       </div>
 
@@ -538,10 +551,63 @@ async function retry(): Promise<void> {
 }
 
 .sources-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+/* 2×2 操作卡：图标带色相区分功能，比一排同形按钮更快被识别 */
+.sources-action {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-top: var(--space-4);
+  min-height: 46px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+  color: var(--color-text-primary);
+  transition: var(--transition-color), transform var(--duration-fast) var(--ease-standard);
+}
+
+.sources-action:active:not(:disabled) {
+  background-color: var(--color-bg-pressed);
+  transform: scale(0.99);
+}
+
+.sources-action:disabled {
+  color: var(--color-text-disabled);
+}
+
+.sources-action__icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: var(--color-text-secondary);
+}
+
+.sources-action__icon--brand {
+  color: var(--color-brand);
+}
+
+.sources-action__icon--info {
+  color: var(--color-info);
+}
+
+.sources-action__icon--violet {
+  color: var(--color-tier-fast);
+}
+
+.sources-action__icon--ok {
+  color: var(--color-success);
+}
+
+.sources-action__label {
+  font: var(--font-weight-semibold) 12.5px / 1.3 var(--font-family-base);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sources-restore {
@@ -554,7 +620,7 @@ async function retry(): Promise<void> {
   margin-top: var(--space-3);
   padding: 0 var(--space-3);
   border-radius: var(--radius-md);
-  border: var(--border-strong);
+  border: 1px solid rgba(240, 168, 46, 0.4);
   background-color: var(--color-brand-soft);
   color: var(--color-brand-text);
   font: var(--text-button-sm);
@@ -563,14 +629,7 @@ async function retry(): Promise<void> {
 .sources-restore:disabled {
   color: var(--color-text-disabled);
   background-color: var(--color-bg-surface);
-}
-
-.sources-actions__btn {
-  flex: 1 1 0;
-}
-
-.sources-actions__refresh {
-  flex: 0 0 auto;
+  border-color: var(--color-border);
 }
 
 /* 线路质量总览 + 排序切换（CHG-05） */

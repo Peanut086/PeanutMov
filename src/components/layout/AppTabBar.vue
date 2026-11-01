@@ -161,18 +161,24 @@ function go(tab: TabItem): void {
 </template>
 
 <style scoped>
+/* 悬浮玻璃胶囊（v2 重设计）：脱离屏幕边缘，浮在内容之上 */
 .tabbar {
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: var(--layout-tabbar-inset);
+  right: var(--layout-tabbar-inset);
+  bottom: calc(var(--layout-tabbar-gap) + var(--safe-bottom));
   z-index: var(--z-tabbar);
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  height: calc(var(--layout-tabbar-height) + var(--safe-bottom));
-  padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
-  background-color: var(--color-bg-surface);
-  border-top: var(--border-default);
+  align-items: center;
+  height: var(--layout-tabbar-height);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-xl);
+  background-color: var(--color-bg-glass);
+  -webkit-backdrop-filter: var(--blur-tabbar);
+  backdrop-filter: var(--blur-tabbar);
+  border: 1px solid var(--color-border-glass);
+  box-shadow: var(--shadow-float);
 }
 
 .tabbar__item {
@@ -182,7 +188,8 @@ function go(tab: TabItem): void {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
+  gap: 3px;
+  border-radius: var(--radius-md);
   color: var(--color-text-tertiary);
   transition: var(--transition-color);
 }
@@ -205,29 +212,36 @@ function go(tab: TabItem): void {
 }
 
 .tabbar__icon {
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
   transition: var(--transition-transform);
 }
 
 .tabbar__label {
-  font: var(--text-caption);
+  font: var(--font-weight-medium) 10px / 1 var(--font-family-base);
+  letter-spacing: 0.01em;
 }
 
+.tabbar__item--active .tabbar__label {
+  font-weight: var(--font-weight-semibold);
+}
+
+/* 角标：红色未读数，压在图标右上 */
 .tabbar__badge {
   position: absolute;
-  top: 0;
-  right: 0;
+  top: -2px;
+  right: -4px;
   transform: translate(6px, -4px);
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-full);
-  background-color: var(--color-brand);
-  color: var(--color-text-on-brand);
-  font: var(--font-weight-semibold) var(--font-size-12) / 1 var(--font-family-base);
+  background-color: var(--color-danger);
+  color: #ffffff;
+  font: var(--font-weight-bold) 9.5px / 1 var(--font-family-number);
+  box-shadow: 0 0 0 2px var(--color-bg-base);
 }
 </style>

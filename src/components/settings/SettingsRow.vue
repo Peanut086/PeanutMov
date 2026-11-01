@@ -94,7 +94,7 @@ function onClick(): void {
   gap: var(--space-3);
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 56px;
+  min-height: 52px;
   padding: var(--space-3) var(--space-4);
   text-align: left;
   transition: background-color var(--duration-fast) var(--ease-standard);
@@ -123,7 +123,7 @@ function onClick(): void {
 }
 
 .settings-row__label {
-  font: var(--text-label-strong);
+  font: var(--font-weight-medium) 13.5px / 1.4 var(--font-family-base);
   color: var(--color-text-primary);
 }
 
@@ -132,14 +132,14 @@ function onClick(): void {
 }
 
 .settings-row__desc {
-  font: var(--text-caption);
+  font: var(--font-weight-regular) 11.5px / 1.4 var(--font-family-base);
   color: var(--color-text-tertiary);
 }
 
 .settings-row__value {
   flex: 0 0 auto;
-  font: var(--text-label);
-  color: var(--color-text-secondary);
+  font: var(--font-weight-regular) 12.5px / 1.4 var(--font-family-number);
+  color: var(--color-text-tertiary);
 }
 
 .settings-row__chevron {

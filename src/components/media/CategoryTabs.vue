@@ -92,17 +92,19 @@ watch(
   height: 32px;
   padding: 0 var(--space-3);
   border-radius: var(--radius-full);
-  background-color: var(--color-bg-surface);
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
   color: var(--color-text-secondary);
-  font: var(--text-label-strong);
+  font: var(--font-weight-medium) 13px / 30px var(--font-family-base);
   scroll-snap-align: start;
   transition: var(--transition-color);
 }
 
 .category-tabs__item--active {
   background-color: var(--color-brand-soft);
+  border-color: rgba(240, 168, 46, 0.4);
   color: var(--color-brand-text);
-  font-weight: var(--font-weight-medium);
+  font-weight: var(--font-weight-semibold);
 }
 
 .category-tabs__item:active {

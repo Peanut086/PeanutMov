@@ -70,7 +70,7 @@ function onClick(): void {
 .favorite-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-2);
   width: 100%;
   min-width: 0;
   text-align: left;
@@ -78,13 +78,14 @@ function onClick(): void {
 }
 
 .favorite-card:active {
-  transform: scale(0.98);
+  transform: scale(0.985);
 }
 
 .favorite-card__frame {
   position: relative;
   border-radius: var(--radius-card);
   overflow: hidden;
+  background-color: var(--color-bg-surface);
 }
 
 .favorite-card__warning {
@@ -92,24 +93,24 @@ function onClick(): void {
   top: var(--space-2);
   left: var(--space-2);
   height: 20px;
-  padding: 0 6px;
+  padding: 0 7px;
   display: inline-flex;
   align-items: center;
-  border-radius: var(--radius-sm);
+  border-radius: 6px;
   background-color: var(--color-danger-soft);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   color: var(--color-danger);
-  font: var(--text-caption);
-  font-weight: var(--font-weight-medium);
+  font: var(--font-weight-semibold) 10.5px / 1 var(--font-family-number);
 }
 
 .favorite-card__title {
-  margin-top: var(--space-1);
-  font: var(--text-label);
+  font: var(--font-weight-semibold) 13px / 1.35 var(--font-family-base);
   color: var(--color-text-primary);
 }
 
 .favorite-card__meta {
-  font: var(--text-caption);
+  font: var(--font-weight-regular) 11px / 1.3 var(--font-family-number);
   color: var(--color-text-tertiary);
 }
 </style>

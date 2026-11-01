@@ -710,7 +710,7 @@ function openCompliance(): void {
   top: 0;
   left: 0;
   right: 0;
-  height: 320px;
+  height: 300px;
   overflow: hidden;
   pointer-events: none;
   /* 背景必须留在内容下方：`.detail__scroll` 提升到 z-index 1，
@@ -723,8 +723,8 @@ function openCompliance(): void {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  filter: blur(24px) brightness(0.5);
-  transform: scale(1.1);
+  filter: blur(22px) brightness(0.46) saturate(1.15);
+  transform: scale(1.12);
 }
 
 .detail__backdrop-fade {
@@ -745,15 +745,17 @@ function openCompliance(): void {
 }
 
 .detail__nav-btn {
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-full);
-  color: var(--color-text-primary);
-  background-color: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(6px);
+  border-radius: var(--radius-md);
+  color: #ffffff;
+  background-color: rgba(0, 0, 0, 0.34);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .detail__nav-btn svg {
@@ -778,8 +780,8 @@ function openCompliance(): void {
 
 .detail-hero__poster {
   flex: 0 0 auto;
-  width: 116px;
-  border-radius: var(--radius-card);
+  width: 96px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   box-shadow: var(--shadow-3);
 }
@@ -790,23 +792,23 @@ function openCompliance(): void {
   gap: var(--space-2);
   flex: 1 1 auto;
   min-width: 0;
-  padding-top: var(--space-2);
+  padding-top: var(--space-1);
 }
 
 .detail-hero__title {
-  font: var(--text-title-1);
+  font: var(--font-weight-bold) 21px / 1.25 var(--font-family-base);
   letter-spacing: var(--letter-spacing-tight);
   color: var(--color-text-primary);
   overflow-wrap: anywhere;
 }
 
 .detail-hero__original {
-  font: var(--text-caption);
+  font: var(--font-weight-regular) 11.5px / 1.4 var(--font-family-base);
   color: var(--color-text-secondary);
 }
 
 .detail-hero__progress {
-  font: var(--text-caption);
+  font: var(--font-weight-medium) 11.5px / 1.4 var(--font-family-number);
   color: var(--color-brand-text);
 }
 
@@ -814,7 +816,7 @@ function openCompliance(): void {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-top: var(--space-5);
+  margin-top: var(--space-4);
 }
 
 .detail-actions__main {
@@ -835,9 +837,9 @@ function openCompliance(): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-full);
-  background-color: var(--color-bg-surface);
-  border: var(--border-strong);
+  border-radius: var(--radius-card);
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-strong);
   color: var(--color-text-primary);
   transition: var(--transition-color), transform var(--duration-fast) var(--ease-standard);
 }
@@ -915,6 +917,8 @@ function openCompliance(): void {
 
 .detail-compliance-link {
   margin-left: var(--space-1);
+  flex: 0 0 auto;
+  white-space: nowrap;
   color: var(--color-brand-text);
   text-decoration: underline;
   text-underline-offset: 2px;

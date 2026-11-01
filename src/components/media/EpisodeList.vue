@@ -135,7 +135,8 @@ function onClick(ep: Episode): void {
 
 .episode-list__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+  /* 6 列：375 宽下每格约 48px，一屏可看 12–18 集 */
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
   gap: var(--space-2);
 }
 
@@ -144,14 +145,14 @@ function onClick(ep: Episode): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 56px;
+  min-width: 48px;
   height: 40px;
-  padding: 0 var(--space-3);
-  border-radius: var(--radius-sm);
-  background-color: var(--color-bg-surface);
-  border: 1.5px solid transparent;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
   color: var(--color-text-primary);
-  font: var(--text-label-strong);
+  font: var(--font-weight-semibold) 13px / 1 var(--font-family-number);
   transition: var(--transition-color);
 }
 
@@ -159,10 +160,13 @@ function onClick(ep: Episode): void {
   background-color: var(--color-overlay-press-strong);
 }
 
+/* 当前集：品牌渐变实心 + 深色字，一屏内最醒目的元素 */
 .episode-chip--current {
-  border-color: var(--color-brand);
-  background-color: var(--color-brand-soft);
-  color: var(--color-brand-text);
+  border-color: transparent;
+  background: var(--gradient-brand-cta);
+  color: var(--color-brand-ink);
+  font-weight: var(--font-weight-bold);
+  box-shadow: var(--shadow-brand);
 }
 
 /* 不可播（REV-20 / AC-33）：设计规范禁用色，删除线示意无地址 */

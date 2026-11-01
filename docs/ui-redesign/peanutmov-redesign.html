@@ -1,0 +1,2191 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PeanutMov · UI 重设计稿（ui-ux-pro-max）</title>
+<style>
+/* ============================================================
+   PeanutMov UI Redesign — Design System
+   Style: Dark Mode (OLED) + Cinematic Media
+   Rules: ui-ux-pro-max (a11y / touch 44px / motion 150-300ms)
+   ============================================================ */
+*,*::before,*::after{box-sizing:border-box}
+html,body{margin:0;padding:0}
+:root{
+  /* 色彩 · 表面（OLED 真黑，层级靠亮度差） */
+  --bg-0:#000000;
+  --bg-1:#0B0D10;
+  --bg-2:#14171C;
+  --bg-3:#1D2128;
+  --scrim:rgba(0,0,0,.72);
+  /* 色彩 · 描边 */
+  --line:rgba(255,255,255,.07);
+  --line-2:rgba(255,255,255,.14);
+  /* 色彩 · 文字 */
+  --t1:#F2F4F7;
+  --t2:#9BA3AF;
+  --t3:#6B7480;
+  /* 色彩 · 品牌（琥珀金，延续原品牌识别） */
+  --brand:#F0A82E;
+  --brand-hi:#FFC761;
+  --brand-lo:#D98A12;
+  --brand-soft:rgba(240,168,46,.14);
+  --brand-ink:#170F00;
+  /* 色彩 · 语义 */
+  --ok:#34D399; --warn:#FBBF24; --bad:#FB7185; --info:#60A5FA; --vio:#A78BFA;
+  --ok-soft:rgba(52,211,153,.14);
+  --warn-soft:rgba(251,191,36,.14);
+  --bad-soft:rgba(251,113,133,.14);
+  --info-soft:rgba(96,165,250,.14);
+  /* 圆角 */
+  --r-1:8px; --r-2:12px; --r-3:16px; --r-4:22px; --r-full:999px;
+  /* 动效 */
+  --dur:200ms; --dur-s:150ms; --ease:cubic-bezier(.2,0,0,1);
+  /* 字体 */
+  --font:-apple-system,BlinkMacSystemFont,'Inter','PingFang SC','HarmonyOS Sans SC','Noto Sans CJK SC','Microsoft YaHei',sans-serif;
+  --num:'Inter','SF Pro Display',-apple-system,'Helvetica Neue',Arial,sans-serif;
+}
+[data-theme="light"]{
+  --bg-0:#EDEFF3;
+  --bg-1:#FFFFFF;
+  --bg-2:#FFFFFF;
+  --bg-3:#EEF1F5;
+  --line:rgba(15,20,26,.09);
+  --line-2:rgba(15,20,26,.16);
+  --t1:#0F141A;
+  --t2:#414B58;
+  --t3:#5C6673;
+  --brand:#B87406;
+  --brand-hi:#F0A82E;
+  --brand-lo:#C97A05;
+  --brand-soft:rgba(201,122,5,.12);
+  --brand-ink:#FFFFFF;
+  --ok:#0F7B4C; --warn:#8A5A00; --bad:#C62A32; --info:#1A6FD4; --vio:#6D28D9;
+  --scrim:rgba(15,20,26,.42);
+}
+body{
+  background:#05060A; color:#E8EAEE; font-family:var(--font);
+  -webkit-font-smoothing:antialiased; font-size:14px; line-height:1.5;
+}
+
+/* ---------- 展示外壳（非 App UI） ---------- */
+.top{
+  position:sticky; top:0; z-index:100;
+  background:rgba(5,6,10,.86); backdrop-filter:blur(20px) saturate(160%);
+  border-bottom:1px solid rgba(255,255,255,.08);
+}
+.top__inner{max-width:1700px;margin:0 auto;padding:14px 28px;display:flex;align-items:center;gap:20px;flex-wrap:wrap}
+.brandmark{display:flex;align-items:center;gap:10px}
+.brandmark__logo{
+  width:34px;height:34px;border-radius:10px;display:grid;place-items:center;
+  background:linear-gradient(135deg,#FFC761,#F0A82E 55%,#D98A12);color:#170F00;
+  box-shadow:0 4px 14px rgba(240,168,46,.3);
+}
+.brandmark__name{font-size:15px;font-weight:700;letter-spacing:-.01em;color:#F2F4F7}
+.brandmark__sub{font-size:11px;color:#6B7480;letter-spacing:.06em;text-transform:uppercase}
+.navpills{display:flex;gap:6px;margin-left:auto;flex-wrap:wrap}
+.navpill{
+  height:34px;padding:0 14px;border-radius:999px;border:1px solid rgba(255,255,255,.1);
+  background:rgba(255,255,255,.04);color:#9BA3AF;font-size:12.5px;font-weight:500;
+  cursor:pointer;display:inline-flex;align-items:center;transition:all 200ms cubic-bezier(.2,0,0,1);
+}
+.navpill:hover{background:rgba(255,255,255,.09);color:#F2F4F7}
+.navpill.is-on{background:rgba(240,168,46,.16);border-color:rgba(240,168,46,.4);color:#FFC761}
+.themebtn{
+  height:34px;padding:0 12px;border-radius:999px;border:1px solid rgba(255,255,255,.12);
+  background:rgba(255,255,255,.04);color:#F2F4F7;font-size:12.5px;cursor:pointer;
+  display:inline-flex;align-items:center;gap:6px;
+}
+.wrap{max-width:1700px;margin:0 auto;padding:36px 28px 120px}
+.sec{margin-bottom:56px;scroll-margin-top:90px}
+.sec__head{display:flex;align-items:flex-end;gap:14px;margin-bottom:8px;flex-wrap:wrap}
+.sec__title{font-size:22px;font-weight:700;letter-spacing:-.02em;margin:0;color:#F2F4F7}
+.sec__tag{
+  font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+  color:#F0A82E;background:rgba(240,168,46,.12);padding:4px 9px;border-radius:6px;
+}
+.sec__desc{color:#7C8695;font-size:13px;margin:0 0 26px;max-width:760px;line-height:1.7}
+.frames{display:flex;flex-wrap:wrap;gap:44px 30px;align-items:flex-start;justify-content:center}
+
+/* ---------- 手机外框 ---------- */
+.frame{display:flex;flex-direction:column;gap:12px;width:375px}
+.frame__cap{display:flex;flex-direction:column;gap:2px}
+.frame__name{font-size:13.5px;font-weight:600;color:#E8EAEE;display:flex;align-items:center;gap:8px}
+.frame__idx{
+  font-family:var(--num);font-size:10.5px;font-weight:700;color:#170F00;
+  background:#F0A82E;border-radius:5px;padding:1px 5px;letter-spacing:.02em;
+}
+.frame__note{font-size:11.5px;color:#6B7480;line-height:1.6}
+.phone{
+  width:375px;height:812px;border-radius:40px;overflow:hidden;position:relative;
+  background:var(--bg-0);border:1px solid rgba(255,255,255,.16);
+  box-shadow:0 30px 80px rgba(0,0,0,.66), 0 0 0 6px rgba(255,255,255,.03);
+  isolation:isolate;
+}
+.phone--wide{width:812px;height:375px;border-radius:32px}
+.phone--tall{height:812px}
+
+/* 状态栏 */
+.statusbar{
+  height:44px;display:flex;align-items:center;justify-content:space-between;
+  padding:0 26px;color:var(--t1);font-family:var(--num);font-size:14px;font-weight:600;
+  position:relative;z-index:15;flex:0 0 auto;
+}
+.statusbar__icons{display:flex;align-items:center;gap:5px}
+.statusbar .ic{width:15px;height:15px;stroke-width:2}
+
+/* App 通用布局 */
+.screen{position:absolute;inset:0;display:flex;flex-direction:column;background:var(--bg-0)}
+.scroll{flex:1 1 auto;overflow:hidden;position:relative}
+/* 有悬浮 TabBar 的页面，滚动区底部留出避让高度，避免最后一行被遮挡 */
+.scroll--tab{padding-bottom:96px}
+.appbar{
+  height:56px;flex:0 0 auto;display:flex;align-items:center;gap:10px;
+  padding:0 20px;position:relative;z-index:10;
+}
+.appbar__title{font-size:22px;font-weight:700;letter-spacing:-.02em;color:var(--t1);margin:0}
+.appbar__title--brand{
+  background:linear-gradient(120deg,var(--brand-hi),var(--brand));
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.appbar__spacer{flex:1 1 auto}
+.appbar--sub .appbar__title{font-size:17px;font-weight:600;letter-spacing:-.01em}
+
+/* 图标 */
+.ic{
+  width:20px;height:20px;flex:0 0 auto;
+  fill:none;stroke:currentColor;stroke-width:1.7;
+  stroke-linecap:round;stroke-linejoin:round;
+}
+.ic--fill{fill:currentColor;stroke:none}
+.ic--12{width:12px;height:12px}
+.ic--14{width:14px;height:14px}
+.ic--16{width:16px;height:16px}
+.ic--22{width:22px;height:22px}
+.ic--28{width:28px;height:28px}
+
+/* 按钮 */
+.ibtn{
+  width:40px;height:40px;flex:0 0 auto;border-radius:12px;border:1px solid var(--line);
+  background:rgba(255,255,255,.05);color:var(--t1);
+  display:grid;place-items:center;cursor:pointer;
+  transition:background var(--dur) var(--ease),border-color var(--dur) var(--ease);
+}
+[data-theme="light"] .ibtn{background:rgba(15,20,26,.04)}
+.ibtn:hover{background:rgba(255,255,255,.1)}
+.ibtn--plain{background:transparent;border-color:transparent}
+.ibtn--sm{width:34px;height:34px;border-radius:10px}
+.btn{
+  height:48px;border-radius:14px;border:0;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  font-family:var(--font);font-size:15px;font-weight:600;letter-spacing:-.01em;
+  padding:0 20px;transition:transform var(--dur-s) var(--ease),filter var(--dur) var(--ease);
+}
+.btn:active{transform:scale(.98)}
+.btn--primary{
+  background:linear-gradient(135deg,var(--brand-hi),var(--brand) 55%,var(--brand-lo));
+  color:var(--brand-ink);box-shadow:0 6px 22px rgba(240,168,46,.26);
+}
+.btn--ghost{background:var(--bg-2);color:var(--t1);border:1px solid var(--line-2)}
+.btn--quiet{background:transparent;color:var(--t2);border:1px solid var(--line-2)}
+.btn--danger{background:var(--bad-soft);color:var(--bad);border:1px solid rgba(251,113,133,.3)}
+.btn--sm{height:38px;border-radius:11px;font-size:13px;padding:0 14px;gap:6px}
+.btn--block{width:100%}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* Chip */
+.chip{
+  height:32px;padding:0 13px;border-radius:var(--r-full);
+  border:1px solid var(--line);background:var(--bg-2);color:var(--t2);
+  font-size:13px;font-weight:500;display:inline-flex;align-items:center;gap:5px;
+  white-space:nowrap;cursor:pointer;flex:0 0 auto;
+  transition:all var(--dur) var(--ease);
+}
+.chip.is-on{background:var(--brand-soft);border-color:rgba(240,168,46,.4);color:var(--brand);font-weight:600}
+.chip--ghost{background:transparent}
+.chiprow{display:flex;gap:8px;overflow-x:auto;padding:0 20px 2px;scrollbar-width:none}
+.chiprow::-webkit-scrollbar{display:none}
+
+/* 卡片 */
+.card{background:var(--bg-1);border:1px solid var(--line);border-radius:var(--r-3)}
+.card--flat{background:var(--bg-2)}
+
+/* 区块标题 */
+.shead{display:flex;align-items:center;justify-content:space-between;padding:0 20px;margin:20px 0 11px}
+.shead h2{margin:0;font-size:16.5px;font-weight:600;letter-spacing:-.01em;color:var(--t1)}
+.shead__more{display:inline-flex;align-items:center;gap:2px;font-size:12.5px;color:var(--t3);cursor:pointer}
+.shead__more:hover{color:var(--t2)}
+
+/* 海报 */
+.poster{position:relative;border-radius:14px;overflow:hidden;background:var(--bg-2);isolation:isolate}
+.poster__art{
+  position:absolute;inset:0;
+  background:
+    radial-gradient(120% 90% at 18% 4%,rgba(255,255,255,.26),transparent 58%),
+    linear-gradient(155deg,var(--a1) 0%,var(--a2) 52%,#07080A 100%);
+}
+.poster__art::after{
+  content:'';position:absolute;inset:0;
+  background:repeating-linear-gradient(112deg,rgba(255,255,255,.045) 0 1px,transparent 1px 8px);
+  mix-blend-mode:overlay;
+}
+.poster__glyph{
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  font-size:44px;font-weight:800;
+  color:rgba(255,255,255,.11);letter-spacing:-.04em;line-height:1;
+  white-space:nowrap;
+}
+.poster__badge{
+  position:absolute;top:8px;left:8px;height:20px;padding:0 7px;border-radius:6px;
+  background:rgba(0,0,0,.62);backdrop-filter:blur(8px);
+  font-size:10.5px;font-weight:600;color:#fff;display:inline-flex;align-items:center;gap:3px;
+  font-family:var(--num);
+}
+.poster__flag{
+  position:absolute;top:8px;right:8px;width:20px;height:20px;border-radius:6px;
+  background:rgba(52,211,153,.9);color:#04140D;display:grid;place-items:center;
+}
+.pbar{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.2)}
+.pbar>i{display:block;height:100%;background:var(--brand);border-radius:0 2px 2px 0}
+.poster__dim{position:absolute;inset:0;background:linear-gradient(0deg,rgba(0,0,0,.66),transparent 46%)}
+
+/* 媒体卡（海报 + 文案） */
+.mcard{display:flex;flex-direction:column;gap:7px;cursor:pointer;width:100%}
+.mcard .poster{width:100%;aspect-ratio:2/3}
+.mcard__title{
+  font-size:13px;font-weight:600;color:var(--t1);line-height:1.35;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.mcard__sub{font-size:11px;color:var(--t3);line-height:1.3;font-family:var(--num)}
+
+/* 列表行 */
+.lrow{display:flex;align-items:center;gap:12px;padding:9px 20px;cursor:pointer;transition:background var(--dur)}
+.lrow:hover{background:var(--bg-1)}
+.lrow__thumb{width:46px;height:64px;flex:0 0 auto;border-radius:9px;overflow:hidden;position:relative}
+.lrow__main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:3px}
+.lrow__title{font-size:14px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lrow__sub{font-size:11.5px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lrow__tail{flex:0 0 auto;display:flex;align-items:center;gap:8px;color:var(--t3);font-size:11.5px}
+
+/* 分段控件 */
+.seg{display:flex;background:var(--bg-2);border:1px solid var(--line);border-radius:12px;padding:3px;gap:2px}
+.seg>span{
+  flex:1 1 0;height:33px;display:grid;place-items:center;border-radius:9px;
+  font-size:12.5px;font-weight:500;color:var(--t2);cursor:pointer;transition:all var(--dur) var(--ease);
+}
+.seg>span.is-on{background:var(--bg-3);color:var(--t1);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.4)}
+[data-theme="light"] .seg>span.is-on{background:#fff;box-shadow:0 1px 3px rgba(15,20,26,.12)}
+
+/* 开关 */
+.sw{width:46px;height:28px;flex:0 0 auto;border-radius:999px;background:var(--bg-3);border:1px solid var(--line-2);position:relative;cursor:pointer;transition:background var(--dur) var(--ease)}
+.sw::after{content:'';position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform var(--dur) var(--ease)}
+.sw.is-on{background:var(--brand);border-color:transparent}
+.sw.is-on::after{transform:translateX(18px);background:var(--brand-ink)}
+
+/* TabBar 上方的渐隐遮罩：让滚动内容自然淡出，而不是被硬切 */
+.tabfade{
+  position:absolute;left:0;right:0;bottom:0;height:118px;z-index:35;pointer-events:none;
+  background:linear-gradient(0deg,var(--bg-0) 30%,rgba(0,0,0,0) 100%);
+}
+/* TabBar（悬浮玻璃胶囊） */
+.tabbar{
+  position:absolute;left:12px;right:12px;bottom:10px;height:64px;z-index:40;
+  display:grid;grid-template-columns:repeat(5,1fr);align-items:center;
+  background:rgba(20,23,28,.86);backdrop-filter:blur(22px) saturate(170%);
+  border:1px solid var(--line-2);border-radius:var(--r-4);
+  box-shadow:0 12px 34px rgba(0,0,0,.55);
+}
+[data-theme="light"] .tabbar{background:rgba(255,255,255,.9)}
+.tab{display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--t3);cursor:pointer;transition:color var(--dur);position:relative}
+.tab span{font-size:9.5px;font-weight:500;letter-spacing:.01em}
+.tab.is-on{color:var(--brand)}
+.tab.is-on span{font-weight:600}
+.tab__dot{position:absolute;top:-1px;right:8px;min-width:15px;height:15px;border-radius:8px;background:var(--bad);color:#fff;font-size:9px;font-weight:700;display:grid;place-items:center;padding:0 4px;font-family:var(--num)}
+
+/* 底部弹层 */
+.sheet{
+  position:absolute;left:0;right:0;bottom:0;z-index:45;
+  background:var(--bg-1);border-top:1px solid var(--line-2);
+  border-radius:var(--r-4) var(--r-4) 0 0;padding:10px 20px 30px;
+  box-shadow:0 -20px 50px rgba(0,0,0,.6);
+}
+.sheet__grip{width:38px;height:4px;border-radius:2px;background:var(--line-2);margin:0 auto 16px}
+.sheet__title{font-size:16px;font-weight:600;margin:0 0 14px;color:var(--t1)}
+.scrim{position:absolute;inset:0;background:var(--scrim);z-index:44;backdrop-filter:blur(2px)}
+
+/* 提示条 */
+.note{
+  display:flex;gap:10px;padding:12px 14px;border-radius:var(--r-2);
+  background:var(--warn-soft);border:1px solid rgba(251,191,36,.24);
+  font-size:12px;line-height:1.6;color:#F5D68A;
+}
+.note--info{background:var(--info-soft);border-color:rgba(96,165,250,.24);color:#A9CDFD}
+.note--ok{background:var(--ok-soft);border-color:rgba(52,211,153,.24);color:#9AE6C4}
+.note--bad{background:var(--bad-soft);border-color:rgba(251,113,133,.24);color:#FDB4BC}
+
+/* 徽标 */
+.tag{height:20px;padding:0 7px;border-radius:5px;font-size:10.5px;font-weight:600;display:inline-flex;align-items:center;gap:3px;font-family:var(--num)}
+.tag--brand{background:var(--brand-soft);color:var(--brand)}
+.tag--ok{background:var(--ok-soft);color:var(--ok)}
+.tag--warn{background:var(--warn-soft);color:var(--warn)}
+.tag--bad{background:var(--bad-soft);color:var(--bad)}
+.tag--mute{background:rgba(255,255,255,.08);color:var(--t2)}
+[data-theme="light"] .tag--mute{background:rgba(15,20,26,.06)}
+
+/* 进度条 */
+.track{height:4px;border-radius:2px;background:rgba(255,255,255,.16);overflow:hidden}
+[data-theme="light"] .track{background:rgba(15,20,26,.12)}
+.track>i{display:block;height:100%;border-radius:2px;background:var(--brand)}
+.track--thin{height:3px}
+
+/* 空态 */
+.empty{display:flex;flex-direction:column;align-items:center;text-align:center;gap:9px;padding:52px 34px}
+.empty__ico{width:64px;height:64px;border-radius:20px;display:grid;place-items:center;background:var(--bg-2);border:1px solid var(--line);color:var(--t3);margin-bottom:4px}
+.empty__t{font-size:15px;font-weight:600;color:var(--t1)}
+.empty__d{font-size:12.5px;color:var(--t3);line-height:1.65;max-width:240px}
+
+/* 骨架 */
+.skel{background:linear-gradient(100deg,var(--bg-2) 30%,var(--bg-3) 50%,var(--bg-2) 70%);background-size:220% 100%;animation:shimmer 1.4s linear infinite;border-radius:10px}
+@keyframes shimmer{to{background-position:-120% 0}}
+
+/* 表单 */
+.field{display:flex;flex-direction:column;gap:7px}
+.field__label{font-size:12px;font-weight:500;color:var(--t2)}
+.input{
+  height:46px;border-radius:12px;background:var(--bg-2);border:1px solid var(--line-2);
+  display:flex;align-items:center;gap:9px;padding:0 14px;color:var(--t1);font-size:14px;
+}
+.input--focus{border-color:rgba(240,168,46,.55);box-shadow:0 0 0 3px rgba(240,168,46,.12)}
+.input__ph{color:var(--t3)}
+.dropzone{
+  border:1.5px dashed var(--line-2);border-radius:var(--r-3);background:rgba(255,255,255,.02);
+  display:flex;flex-direction:column;align-items:center;gap:8px;padding:26px 18px;cursor:pointer;
+}
+.dropzone:hover{border-color:rgba(240,168,46,.4);background:rgba(240,168,46,.04)}
+
+/* 设计系统展示用 */
+.ds-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.ds-span-3{grid-column:span 3}
+.ds-span-4{grid-column:span 4}
+.ds-span-6{grid-column:span 6}
+.ds-span-8{grid-column:span 8}
+@media (max-width:1240px){
+  .ds-span-3,.ds-span-4,.ds-span-6,.ds-span-8{grid-column:span 6}
+}
+@media (max-width:820px){
+  .ds-span-3,.ds-span-4,.ds-span-6,.ds-span-8{grid-column:span 12}
+}
+.ds-card{background:#0B0D10;border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:18px;display:flex;flex-direction:column}
+.ds-card h3{margin:0 0 4px;font-size:14px;font-weight:600;color:#F2F4F7}
+.ds-card p{margin:0 0 14px;font-size:11.5px;color:#6B7480;line-height:1.6}
+.swatches{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.swatch{border-radius:10px;overflow:hidden;border:1px solid rgba(255,255,255,.08)}
+.swatch__chip{height:46px}
+.swatch__meta{padding:6px 8px;background:#14171C;display:flex;flex-direction:column;gap:1px}
+.swatch__name{font-size:10px;font-weight:600;color:#D4D8DF}
+.swatch__hex{font-size:9px;color:#6B7480;font-family:var(--num);text-transform:uppercase}
+.typerow{display:flex;align-items:baseline;gap:14px;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.06)}
+.typerow:last-child{border-bottom:0}
+.typerow__spec{width:104px;flex:0 0 auto;font-size:10.5px;color:#6B7480;font-family:var(--num)}
+.typerow__demo{color:#F2F4F7;letter-spacing:-.01em;white-space:nowrap}
+.typerow__use{margin-left:auto;font-size:10px;color:#4F5764;white-space:nowrap}
+.sp-tok{display:flex;flex-direction:column;align-items:center;gap:7px}
+.sp-bar{display:block;border-radius:2px;background:rgba(240,168,46,.5);border:1px solid rgba(240,168,46,.7)}
+.sp-lb{font-size:10px;color:#6B7480;font-family:var(--num)}
+.mini-card{display:flex;align-items:center;gap:9px;padding:7px;border-radius:11px;background:#14171C;border:1px solid rgba(255,255,255,.07)}
+.mini-card__poster{width:36px;height:52px;border-radius:7px;overflow:hidden;position:relative;flex:0 0 auto;background:#0B0D10}
+.mini-card__t{font-size:11.5px;font-weight:600;color:#F2F4F7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini-card__s{font-size:9.5px;color:#6B7480;margin-top:2px;font-family:var(--num)}
+.tokens{display:flex;flex-wrap:wrap;gap:10px}
+.tok{display:flex;flex-direction:column;align-items:center;gap:5px;font-size:9.5px;color:#6B7480;font-family:var(--num)}
+.tok__box{width:54px;height:40px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);display:grid;place-items:center;color:#9BA3AF;font-size:11px}
+.ds-demo{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+
+@media (prefers-reduced-motion: reduce){
+  *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important}
+}
+</style>
+</head>
+<body>
+
+<!-- ================= SVG 图标精灵（统一 24 viewBox，Lucide 风格） ================= -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 9.6 12 3l9 6.6V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></symbol>
+  <symbol id="i-live" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.4"/><path d="M8.6 8.6a4.8 4.8 0 0 0 0 6.8M15.4 8.6a4.8 4.8 0 0 1 0 6.8M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.5v11.5m0 0 4.2-4.2M12 15l-4.2-4.2M4.5 19.5h15"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.8"/><path d="M4.5 20.5c0-3.9 3.4-5.8 7.5-5.8s7.5 1.9 7.5 5.8"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.8"/><path d="M16 16l4 4"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M9.5 6l6 6-6 6"/></symbol>
+  <symbol id="i-chevdown" viewBox="0 0 24 24"><path d="M6 9.5l6 6 6-6"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 6.5h16M7 12h10M10 17.5h4"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7.5 4.8 19 12 7.5 19.2z" fill="currentColor" stroke-linejoin="round"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="8" y="5" width="3.2" height="14" rx="1.4" fill="currentColor" stroke="none"/><rect x="13.8" y="5" width="3.2" height="14" rx="1.4" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20.2S4.6 15.6 4.6 10.4A4.1 4.1 0 0 1 12 7.6a4.1 4.1 0 0 1 7.4 2.8c0 5.2-7.4 9.8-7.4 9.8z"/></symbol>
+  <symbol id="i-cast" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="11" rx="2.5"/><path d="M8.5 20.5h7"/><path d="M12 16v4.5"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.6" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.5 12.5l5 5L19.5 6.8"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+  <symbol id="i-sort" viewBox="0 0 24 24"><path d="M4 7h9M4 12h6M4 17h4M17.5 5v14m0 0 3-3m-3 3-3-3"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.9-6.2M20 4.2v4.6h-4.6"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9.5 7V5.2h5V7M6.5 7l.9 12.6h9.2L17.5 7"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4.5 19.5h4L19.8 8.2l-4-4L4.5 15.5z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.2l7.8 3v5.6c0 4.8-3.4 7.9-7.8 9-4.4-1.1-7.8-4.2-7.8-9V6.2z"/><path d="M9 12l2.2 2.2L15.4 10"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.2"/><path d="M12 7.6V12l3 1.9"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 3.4l2.7 5.7 6.1.8-4.5 4.3 1.1 6.1L12 17.4l-5.4 2.9 1.1-6.1L3.2 9.9l6.1-.8z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.2 7.2h5.6l2 2.2h10V19a1 1 0 0 1-1 1H4.2a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="6.2" rx="7.6" ry="3"/><path d="M4.4 6.2v11.6c0 1.7 3.4 3 7.6 3s7.6-1.3 7.6-3V6.2M4.4 12c0 1.7 3.4 3 7.6 3s7.6-1.3 7.6-3"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.1"/><path d="M12 2.8v2.6M12 18.6v2.6M4.5 7.7l2.2 1.3M17.3 15l2.2 1.3M4.5 16.3l2.2-1.3M17.3 9l2.2-1.3"/></symbol>
+  <symbol id="i-cc" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.6"/><path d="M8 11h3M8 14h6M15.5 11h1"/></symbol>
+  <symbol id="i-full" viewBox="0 0 24 24"><path d="M4 9V4.5h5M20 9V4.5h-5M4 15v4.5h5M20 15v4.5h-5"/></symbol>
+  <symbol id="i-volume" viewBox="0 0 24 24"><path d="M4 9.4h3.2L12 5.4v13.2l-4.8-4H4z"/><path d="M15.4 9.2a4.2 4.2 0 0 1 0 5.6M18 6.8a7.4 7.4 0 0 1 0 10.4"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.6"/><path d="M12 3.2v2M12 18.8v2M3.2 12h2M18.8 12h2M5.9 5.9l1.4 1.4M16.7 16.7l1.4 1.4M18.1 5.9l-1.4 1.4M7.3 16.7l-1.4 1.4"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.4A8.4 8.4 0 0 1 9.6 4a8.6 8.6 0 1 0 10.4 10.4z"/></symbol>
+  <symbol id="i-tv" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="12" rx="2.4"/><path d="M8.5 20.5h7M12 16.5v4"/></symbol>
+  <symbol id="i-film" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.6"/><path d="M8 4v16M16 4v16M3 12h18"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13.2 2.8 5.4 13.6h5.6l-1.2 7.6 8-11.2h-5.8z"/></symbol>
+  <symbol id="i-wifioff" viewBox="0 0 24 24"><path d="M3 4l18 16"/><path d="M5 10.6a14 14 0 0 1 3.4-1.9M11.4 8.2a14 14 0 0 1 7.6 2.4M8.2 14.2a7 7 0 0 1 3.6-1.1M15.8 14.4a7 7 0 0 1 .9.5"/><circle cx="12" cy="18.2" r="1.3" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.4"/><path d="M12 11v5.4M12 7.8v.2"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.6 21 20H3z"/><path d="M12 9.6v4.6M12 17.2v.2"/></symbol>
+  <symbol id="i-mail" viewBox="0 0 24 24"><rect x="3" y="5.5" width="18" height="13" rx="2.6"/><path d="M3.8 7 12 13l8.2-6"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.8 12S6 6.4 12 6.4 21.2 12 21.2 12 18 17.6 12 17.6 2.8 12 2.8 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13.6a4 4 0 0 0 5.7 0l2.8-2.8a4 4 0 0 0-5.7-5.7L11.4 6.5"/><path d="M14 10.4a4 4 0 0 0-5.7 0l-2.8 2.8a4 4 0 0 0 5.7 5.7l1.4-1.4"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3.4h7l5 5V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.4a1 1 0 0 1 1-1z"/><path d="M13 3.4V8.6h5"/></symbol>
+</svg>
+
+<!-- ================= 展示外壳 ================= -->
+<header class="top">
+  <div class="top__inner">
+    <div class="brandmark">
+      <div class="brandmark__logo"><svg class="ic ic--22"><use href="#i-film"/></svg></div>
+      <div>
+        <div class="brandmark__name">PeanutMov · UI 重设计</div>
+        <div class="brandmark__sub">ui-ux-pro-max · Dark OLED · Cinematic</div>
+      </div>
+    </div>
+    <nav class="navpills">
+      <button class="navpill is-on" data-go="sec-system">设计系统</button>
+      <button class="navpill" data-go="sec-core">核心浏览</button>
+      <button class="navpill" data-go="sec-play">播放与直播</button>
+      <button class="navpill" data-go="sec-manage">内容管理</button>
+      <button class="navpill" data-go="sec-sys">系统页</button>
+    </nav>
+    <button class="themebtn" id="themeBtn">
+      <svg class="ic ic--14"><use href="#i-sun"/></svg><span id="themeTxt">浅色预览</span>
+    </button>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ============ 设计系统 ============ -->
+  <section class="sec" id="sec-system">
+    <div class="sec__head">
+      <h1 class="sec__title">设计系统</h1>
+      <span class="sec__tag">Foundation</span>
+    </div>
+    <p class="sec__desc">
+      风格定位 <strong>Dark Mode (OLED) + Cinematic Media</strong>：真黑底降低夜间眩光，层级靠表面亮度差而非描边；
+      品牌琥珀金延续原有识别，仅重做明度与渐变。所有触控目标 ≥44px，正文对比度 ≥4.5:1，动效 150–300ms 且仅用 transform / opacity。
+    </p>
+
+    <div class="ds-grid">
+      <div class="ds-card ds-span-3">
+        <h3>表面层级</h3>
+        <p>四层亮度阶梯，替代旧版的灰色描边堆叠</p>
+        <div class="swatches">
+          <div class="swatch"><div class="swatch__chip" style="background:#000"></div><div class="swatch__meta"><span class="swatch__name">Canvas</span><span class="swatch__hex">#000000</span></div></div>
+          <div class="swatch"><div class="swatch__chip" style="background:#0B0D10"></div><div class="swatch__meta"><span class="swatch__name">Surface</span><span class="swatch__hex">#0B0D10</span></div></div>
+          <div class="swatch"><div class="swatch__chip" style="background:#14171C"></div><div class="swatch__meta"><span class="swatch__name">Elevated</span><span class="swatch__hex">#14171C</span></div></div>
+          <div class="swatch"><div class="swatch__chip" style="background:#1D2128"></div><div class="swatch__meta"><span class="swatch__name">Pressed</span><span class="swatch__hex">#1D2128</span></div></div>
+          <div class="swatch"><div class="swatch__chip" style="background:linear-gradient(135deg,#FFC761,#F0A82E 55%,#D98A12)"></div><div class="swatch__meta"><span class="swatch__name">Brand</span><span class="swatch__hex">#F0A82E</span></div></div>
+          <div class="swatch"><div class="swatch__chip" style="background:#F2F4F7"></div><div class="swatch__meta"><span class="swatch__name">Text 1</span><span class="swatch__hex">#F2F4F7</span></div></div>
+        </div>
+      </div>
+
+      <div class="ds-card ds-span-3">
+        <h3>语义色</h3>
+        <p>状态只用色相区分，同时配图标或文案，不单靠颜色</p>
+        <div class="swatches">
+          <div class="swatch"><div class="swatch__chip" style="background:#34D399"></div><div class="swatch__meta"><span class="swatch__name">Success</span><span class="swatch__hex">#34D399</span></div></div>
+          <div class="swatch"><div class="swatch__chip" style="background:#FBBF24"></div><div class="swatch__meta"><span class="swatch__name">Warning</span><span class="swatch__hex">#FBBF24</span></div></div>
+          <div class="swatch"><div class="swatch__chip" style="background:#FB7185"></div><div class="swatch__meta"><span class="swatch__name">Danger</span><span class="swatch__hex">#FB7185</span></div></div>
+          <div class="swatch"><div class="swatch__chip" style="background:#60A5FA"></div><div class="swatch__meta"><span class="swatch__name">Info</span><span class="swatch__hex">#60A5FA</span></div></div>
+          <div class="swatch"><div class="swatch__chip" style="background:#A78BFA"></div><div class="swatch__meta"><span class="swatch__name">Fast</span><span class="swatch__hex">#A78BFA</span></div></div>
+          <div class="swatch"><div class="swatch__chip" style="background:#9BA3AF"></div><div class="swatch__meta"><span class="swatch__name">Text 2</span><span class="swatch__hex">#9BA3AF</span></div></div>
+        </div>
+      </div>
+
+      <div class="ds-card ds-span-6">
+        <h3>字体层级</h3>
+        <p>Inter + PingFang SC，数字统一 tabular-nums，行高随字号 1.3–1.5 递增</p>
+        <div class="typerow"><span class="typerow__spec">30 / 36 · 700</span><span class="typerow__demo" style="font-size:26px;font-weight:700">花生影视</span><span class="typerow__use">品牌名 / 引导页</span></div>
+        <div class="typerow"><span class="typerow__spec">22 / 28 · 700</span><span class="typerow__demo" style="font-size:21px;font-weight:700">媒体库</span><span class="typerow__use">页面主标题</span></div>
+        <div class="typerow"><span class="typerow__spec">17 / 24 · 600</span><span class="typerow__demo" style="font-size:16.5px;font-weight:600">继续观看</span><span class="typerow__use">区块标题</span></div>
+        <div class="typerow"><span class="typerow__spec">15 / 22 · 400</span><span class="typerow__demo" style="font-size:14px">本地优先，你的片库只属于你</span><span class="typerow__use">正文</span></div>
+        <div class="typerow"><span class="typerow__spec">13 / 18 · 500</span><span class="typerow__demo" style="font-size:12.5px;color:#9BA3AF">2024 · 剧情 · 中国大陆</span><span class="typerow__use">辅助信息</span></div>
+        <div class="typerow"><span class="typerow__spec">11.5 / 16 · 400</span><span class="typerow__demo" style="font-size:11.5px;color:#6B7480">上次更新 3 分钟前</span><span class="typerow__use">元信息 / 角标</span></div>
+      </div>
+
+      <div class="ds-card ds-span-4">
+        <h3>间距与圆角</h3>
+        <p>4pt 基准；页面左右留白 20px，最小触控 44px</p>
+        <div style="display:flex;align-items:flex-end;gap:16px;margin:6px 0 4px">
+          <div class="sp-tok"><span class="sp-bar" style="width:4px;height:8px"></span><span class="sp-lb">4</span></div>
+          <div class="sp-tok"><span class="sp-bar" style="width:8px;height:8px"></span><span class="sp-lb">8</span></div>
+          <div class="sp-tok"><span class="sp-bar" style="width:12px;height:8px"></span><span class="sp-lb">12</span></div>
+          <div class="sp-tok"><span class="sp-bar" style="width:16px;height:8px"></span><span class="sp-lb">16</span></div>
+          <div class="sp-tok"><span class="sp-bar" style="width:20px;height:8px"></span><span class="sp-lb">20</span></div>
+          <div class="sp-tok"><span class="sp-bar" style="width:24px;height:8px"></span><span class="sp-lb">24</span></div>
+          <div class="sp-tok"><span class="sp-bar" style="width:32px;height:8px"></span><span class="sp-lb">32</span></div>
+        </div>
+        <div style="height:1px;background:rgba(255,255,255,.07);margin:16px 0"></div>
+        <div class="tokens">
+          <div class="tok"><div class="tok__box" style="border-radius:8px">8</div>r-1</div>
+          <div class="tok"><div class="tok__box" style="border-radius:12px">12</div>r-2</div>
+          <div class="tok"><div class="tok__box" style="border-radius:16px">16</div>r-3</div>
+          <div class="tok"><div class="tok__box" style="border-radius:22px">22</div>r-4</div>
+          <div class="tok"><div class="tok__box" style="border-radius:999px">∞</div>full</div>
+        </div>
+      </div>
+
+      <div class="ds-card ds-span-8">
+        <h3>组件规范</h3>
+        <p>按钮 48px 高 · 主按钮用品牌渐变，次按钮用表面色 + 描边，危险操作用 soft 底；列表行 46px、触控区 44px</p>
+        <div class="ds-demo" style="margin-bottom:14px">
+          <button class="btn btn--primary">继续观看</button>
+          <button class="btn btn--ghost">下载</button>
+          <button class="btn btn--quiet btn--sm">取消</button>
+          <button class="btn btn--danger btn--sm">删除记录</button>
+          <button class="ibtn"><svg class="ic"><use href="#i-heart"/></svg></button>
+          <span class="chip is-on">电影</span>
+          <span class="chip">剧集</span>
+          <span class="tag tag--brand">1080P</span>
+          <span class="tag tag--ok">极速</span>
+          <span class="tag tag--warn">较慢</span>
+          <span class="tag tag--bad">失效</span>
+          <div class="sw is-on" style="margin-left:auto"></div>
+          <div class="sw"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:16px;align-items:start">
+          <div class="seg"><span class="is-on">全部</span><span>下载中</span><span>已完成</span></div>
+          <div>
+            <div class="track"><i style="width:64%"></i></div>
+            <div style="display:flex;justify-content:space-between;font-size:11px;color:#6B7480;margin-top:7px;font-family:var(--num)"><span>01:24:06</span><span>02:11:40</span></div>
+          </div>
+          <div class="mini-card">
+            <div class="mini-card__poster"><div class="poster__art" style="--a1:#6B3A1E;--a2:#1A1016"></div><span class="poster__glyph" style="font-size:18px">繁</span><span class="poster__badge" style="font-size:9px;height:16px;top:5px;left:5px">全 8 集</span></div>
+            <div style="min-width:0"><div class="mini-card__t">繁花</div><div class="mini-card__s">2023 · 剧情</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 核心浏览 ============ -->
+  <section class="sec" id="sec-core">
+    <div class="sec__head">
+      <h1 class="sec__title">核心浏览</h1>
+      <span class="sec__tag">Browse</span>
+    </div>
+    <p class="sec__desc">
+      首页改为「继续观看大卡 + 横滑流」，信息密度更高且一屏可见三类内容；媒体库用 2 列海报墙承载筛选；
+      详情页改为沉浸式海报背景 + 内容上浮卡片；搜索把历史与结果压进同一滚动区，减少页面跳转。
+    </p>
+    <div class="frames">
+
+      <!-- 01 首页 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="statusbar__icons">
+                <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+              </span>
+            </div>
+            <div class="appbar">
+              <h1 class="appbar__title appbar__title--brand" style="font-size:23px">PeanutMov</h1>
+              <span class="appbar__spacer"></span>
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-search"/></svg></button>
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-cast"/></svg></button>
+            </div>
+            <div class="scroll scroll--tab">
+              <!-- 继续观看大卡 -->
+              <div style="padding:0 20px">
+                <div class="poster" style="aspect-ratio:16/9;border-radius:18px">
+                  <div class="poster__art" style="--a1:#3A2A16;--a2:#12161C"></div>
+                  <div class="poster__dim"></div>
+                  <span class="poster__glyph" style="font-size:86px;color:rgba(255,255,255,.07)">漫</span>
+                  <div style="position:absolute;left:14px;right:14px;bottom:12px">
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
+                      <span class="tag tag--brand">继续观看</span>
+                      <span style="font-size:11px;color:rgba(255,255,255,.72);font-family:var(--num)">第 6 集 · 剩 23 分钟</span>
+                    </div>
+                    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:10px">
+                      <div>
+                        <div style="font-size:18px;font-weight:700;color:#fff;letter-spacing:-.01em">漫长的季节</div>
+                        <div style="font-size:11.5px;color:rgba(255,255,255,.62);margin-top:2px">2023 · 悬疑 · 12 集全</div>
+                      </div>
+                      <div style="width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#FFC761,#F0A82E 55%,#D98A12);display:grid;place-items:center;color:#170F00;box-shadow:0 6px 18px rgba(240,168,46,.4)">
+                        <svg class="ic ic--22"><use href="#i-play"/></svg>
+                      </div>
+                    </div>
+                    <div class="pbar" style="position:relative;margin-top:11px;border-radius:2px;overflow:hidden"><i style="width:62%"></i></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="chiprow" style="margin-top:16px">
+                <span class="chip is-on">全部</span>
+                <span class="chip">电影</span>
+                <span class="chip">剧集</span>
+                <span class="chip">动漫</span>
+                <span class="chip">纪录片</span>
+              </div>
+
+              <div class="shead">
+                <h2>最近添加</h2>
+                <span class="shead__more">全部 <svg class="ic ic--12"><use href="#i-chevron"/></svg></span>
+              </div>
+              <div class="hrow" style="display:flex;gap:12px;padding:0 20px;overflow:hidden">
+                <div class="mcard" style="width:104px;flex:0 0 auto">
+                  <div class="poster"><div class="poster__art" style="--a1:#6B3A1E;--a2:#1A1016"></div><span class="poster__badge">全 8 集</span><span class="poster__glyph">繁</span></div>
+                  <span class="mcard__title">繁花</span><span class="mcard__sub">2023 · 剧情</span>
+                </div>
+                <div class="mcard" style="width:104px;flex:0 0 auto">
+                  <div class="poster"><div class="poster__art" style="--a1:#1E3A5F;--a2:#0A1018"></div><span class="poster__badge">4K</span><span class="poster__glyph">沙</span></div>
+                  <span class="mcard__title">沙丘 2</span><span class="mcard__sub">2024 · 科幻</span>
+                </div>
+                <div class="mcard" style="width:104px;flex:0 0 auto">
+                  <div class="poster"><div class="poster__art" style="--a1:#4A2B5E;--a2:#12101A"></div><span class="poster__badge">全 12 集</span><span class="poster__glyph">三</span></div>
+                  <span class="mcard__title">三体</span><span class="mcard__sub">2023 · 科幻</span>
+                </div>
+              </div>
+
+              <div class="shead">
+                <h2>为你推荐</h2>
+                <span class="shead__more">换一批 <svg class="ic ic--12"><use href="#i-refresh"/></svg></span>
+              </div>
+              <div class="hrow" style="display:flex;gap:12px;padding:0 20px;overflow:hidden">
+                <div class="mcard" style="width:104px;flex:0 0 auto">
+                  <div class="poster"><div class="poster__art" style="--a1:#7A2E2E;--a2:#170C0C"></div><span class="poster__badge">9.1</span><span class="poster__glyph">奥</span></div>
+                  <span class="mcard__title">奥本海默</span><span class="mcard__sub">2023 · 传记</span>
+                </div>
+                <div class="mcard" style="width:104px;flex:0 0 auto">
+                  <div class="poster"><div class="poster__art" style="--a1:#2E5E52;--a2:#0A1412"></div><span class="poster__badge">全 10 集</span><span class="poster__glyph">阿</span></div>
+                  <span class="mcard__title">我的阿勒泰</span><span class="mcard__sub">2024 · 剧情</span>
+                </div>
+                <div class="mcard" style="width:104px;flex:0 0 auto">
+                  <div class="poster"><div class="poster__art" style="--a1:#5E4A1E;--a2:#14100A"></div><span class="poster__badge">全 24 集</span><span class="poster__glyph">狂</span></div>
+                  <span class="mcard__title">狂飙</span><span class="mcard__sub">2023 · 犯罪</span>
+                </div>
+              </div>
+            </div>
+            <div class="tabfade"></div>
+            <div class="tabbar">
+              <div class="tab is-on"><svg class="ic ic--22"><use href="#i-home"/></svg><span>首页</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-grid"/></svg><span>媒体库</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-live"/></svg><span>直播</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-download"/></svg><span>下载</span><span class="tab__dot">3</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-user"/></svg><span>我的</span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">01</span>首页 Home</span>
+          <span class="frame__note">继续观看升为 16:9 主卡，播放按钮独立成品牌色圆角块；下方两条横滑流替代原网格，一屏多出一档内容</span>
+        </figcaption>
+      </figure>
+
+      <!-- 02 媒体库 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="statusbar__icons">
+                <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+              </span>
+            </div>
+            <div class="appbar">
+              <h1 class="appbar__title">媒体库</h1>
+              <span class="appbar__spacer"></span>
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-search"/></svg></button>
+              <button class="ibtn" style="position:relative">
+                <svg class="ic"><use href="#i-filter"/></svg>
+                <span style="position:absolute;top:7px;right:8px;width:6px;height:6px;border-radius:50%;background:var(--brand)"></span>
+              </button>
+            </div>
+            <div class="scroll scroll--tab">
+              <div class="chiprow">
+                <span class="chip is-on">全部</span>
+                <span class="chip">电影</span>
+                <span class="chip">剧集</span>
+                <span class="chip">动漫</span>
+                <span class="chip">综艺</span>
+                <span class="chip">纪录片</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;padding:12px 20px 14px">
+                <span class="chip chip--ghost" style="height:30px;font-size:12px">全部源 <svg class="ic ic--12"><use href="#i-chevdown"/></svg></span>
+                <span class="chip chip--ghost" style="height:30px;font-size:12px">2020 年后</span>
+                <span class="appbar__spacer"></span>
+                <span style="font-size:11.5px;color:var(--t3);font-family:var(--num)">128 部</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 20px">
+                <div class="mcard">
+                  <div class="poster"><div class="poster__art" style="--a1:#6B3A1E;--a2:#1A1016"></div><span class="poster__badge">全 8 集</span><span class="poster__flag"><svg class="ic ic--12"><use href="#i-check"/></svg></span><span class="poster__glyph">繁</span><div class="pbar"><i style="width:34%"></i></div></div>
+                  <span class="mcard__title">繁花</span><span class="mcard__sub">2023 · 剧情</span>
+                </div>
+                <div class="mcard">
+                  <div class="poster"><div class="poster__art" style="--a1:#1E3A5F;--a2:#0A1018"></div><span class="poster__badge">4K</span><span class="poster__glyph">沙</span></div>
+                  <span class="mcard__title">沙丘 2</span><span class="mcard__sub">2024 · 科幻</span>
+                </div>
+                <div class="mcard">
+                  <div class="poster"><div class="poster__art" style="--a1:#4A2B5E;--a2:#12101A"></div><span class="poster__badge">全 12 集</span><span class="poster__glyph">三</span><div class="pbar"><i style="width:88%"></i></div></div>
+                  <span class="mcard__title">三体</span><span class="mcard__sub">2023 · 科幻</span>
+                </div>
+                <div class="mcard">
+                  <div class="poster"><div class="poster__art" style="--a1:#2E5E52;--a2:#0A1412"></div><span class="poster__badge">全 10 集</span><span class="poster__glyph">阿</span></div>
+                  <span class="mcard__title">我的阿勒泰</span><span class="mcard__sub">2024 · 剧情</span>
+                </div>
+                <div class="mcard" style="opacity:.55">
+                  <div class="poster"><div class="poster__art" style="--a1:#5E4A1E;--a2:#14100A"></div><span class="poster__glyph">狂</span></div>
+                  <span class="mcard__title">狂飙</span><span class="mcard__sub">2023 · 犯罪</span>
+                </div>
+                <div class="mcard" style="opacity:.55">
+                  <div class="poster"><div class="poster__art" style="--a1:#7A2E2E;--a2:#170C0C"></div><span class="poster__glyph">奥</span></div>
+                  <span class="mcard__title">奥本海默</span><span class="mcard__sub">2023 · 传记</span>
+                </div>
+              </div>
+            </div>
+            <div class="tabfade"></div>
+            <div class="tabbar">
+              <div class="tab"><svg class="ic ic--22"><use href="#i-home"/></svg><span>首页</span></div>
+              <div class="tab is-on"><svg class="ic ic--22"><use href="#i-grid"/></svg><span>媒体库</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-live"/></svg><span>直播</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-download"/></svg><span>下载</span><span class="tab__dot">3</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-user"/></svg><span>我的</span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">02</span>媒体库 Library</span>
+          <span class="frame__note">筛选从弹层前移到工具行（可点可撤）；海报角标统一为胶囊，已下载用绿色勾而非文字</span>
+        </figcaption>
+      </figure>
+
+      <!-- 03 详情 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar" style="color:#fff">
+              <span>9:41</span>
+              <span class="statusbar__icons">
+                <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+              </span>
+            </div>
+            <div class="scroll" style="background:var(--bg-0)">
+              <!-- 沉浸背景 -->
+              <div style="position:absolute;left:0;right:0;top:0;height:330px;overflow:hidden">
+                <div class="poster__art" style="--a1:#3A2A16;--a2:#12161C;position:absolute;inset:-20px;filter:blur(2px) saturate(120%);opacity:.85"></div>
+                <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.5) 0%,rgba(0,0,0,.2) 30%,var(--bg-0) 92%)"></div>
+              </div>
+              <div style="position:relative;padding:0 20px">
+                <div style="display:flex;align-items:center;gap:8px;height:44px">
+                  <button class="ibtn ibtn--plain" style="color:#fff"><svg class="ic"><use href="#i-back"/></svg></button>
+                  <span style="flex:1"></span>
+                  <button class="ibtn ibtn--plain" style="color:#fff"><svg class="ic"><use href="#i-cast"/></svg></button>
+                  <button class="ibtn ibtn--plain" style="color:#fff"><svg class="ic"><use href="#i-more"/></svg></button>
+                </div>
+                <div style="display:flex;gap:14px;margin-top:14px">
+                  <div class="poster" style="width:96px;aspect-ratio:2/3;flex:0 0 auto;border-radius:12px;box-shadow:0 12px 30px rgba(0,0,0,.55)">
+                    <div class="poster__art" style="--a1:#3A2A16;--a2:#12161C"></div><span class="poster__glyph">漫</span>
+                  </div>
+                  <div style="min-width:0;padding-top:4px">
+                    <h2 style="margin:0;font-size:21px;font-weight:700;letter-spacing:-.02em;color:#fff;line-height:1.25">漫长的季节</h2>
+                    <div style="font-size:11.5px;color:rgba(255,255,255,.55);margin-top:3px">The Long Season</div>
+                    <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:9px">
+                      <span class="tag tag--mute">2023</span><span class="tag tag--mute">悬疑</span><span class="tag tag--mute">12 集全</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:5px;margin-top:9px;font-size:11.5px;color:var(--brand);font-family:var(--num)">
+                      <svg class="ic ic--12 ic--fill"><use href="#i-star"/></svg> 9.4
+                      <span style="color:rgba(255,255,255,.4);margin-left:4px">看到 34:12 · 62%</span>
+                    </div>
+                  </div>
+                </div>
+                <!-- 操作行 -->
+                <div style="display:flex;gap:10px;margin-top:18px">
+                  <button class="btn btn--primary" style="flex:1 1 auto">
+                    <svg class="ic ic--22"><use href="#i-play"/></svg> 继续观看 · 第 6 集
+                  </button>
+                  <button class="ibtn" style="width:48px;height:48px;border-radius:14px"><svg class="ic"><use href="#i-heart"/></svg></button>
+                  <button class="ibtn" style="width:48px;height:48px;border-radius:14px"><svg class="ic"><use href="#i-download"/></svg></button>
+                </div>
+                <!-- 简介 -->
+                <p style="margin:14px 0 0;font-size:13px;line-height:1.7;color:var(--t2)">
+                  1997 年秋，桦林钢铁厂的老工人王响，被一桩碎尸案卷进命运漩涡。二十年过去，他仍在追问那个秋天究竟发生了什么……
+                  <span style="color:var(--brand)">展开</span>
+                </p>
+                <!-- 选集 -->
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:20px">
+                  <h3 style="margin:0;font-size:16px;font-weight:600;color:var(--t1)">选集 <span style="font-size:12px;color:var(--t3);font-weight:400">共 12 集</span></h3>
+                  <span class="chip" style="height:28px;font-size:11.5px">线路 1 · 极速 <svg class="ic ic--12"><use href="#i-chevdown"/></svg></span>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:12px">
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">1</div>
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">2</div>
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">3</div>
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">4</div>
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">5</div>
+                  <div style="height:40px;border-radius:10px;background:linear-gradient(135deg,var(--brand-hi),var(--brand));color:var(--brand-ink);display:grid;place-items:center;font-size:13px;font-weight:700;font-family:var(--num);box-shadow:0 4px 14px rgba(240,168,46,.32)">6</div>
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">7</div>
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">8</div>
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">9</div>
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">10</div>
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">11</div>
+                  <div style="height:40px;border-radius:10px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;font-size:13px;font-weight:600;color:var(--t2);font-family:var(--num)">12</div>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px">
+                  <h3 style="margin:0;font-size:16px;font-weight:600;color:var(--t1)">相关推荐</h3>
+                  <span style="font-size:11.5px;color:var(--t3)">同类型</span>
+                </div>
+                <div style="display:flex;gap:10px;margin-top:11px;overflow:hidden">
+                  <div class="mcard" style="width:66px;flex:0 0 auto"><div class="poster"><div class="poster__art" style="--a1:#4A2B5E;--a2:#12101A"></div><span class="poster__glyph" style="font-size:27px">三</span></div><span class="mcard__title" style="font-size:11.5px">三体</span></div>
+                  <div class="mcard" style="width:66px;flex:0 0 auto"><div class="poster"><div class="poster__art" style="--a1:#2E5E52;--a2:#0A1412"></div><span class="poster__glyph" style="font-size:27px">阿</span></div><span class="mcard__title" style="font-size:11.5px">我的阿勒泰</span></div>
+                  <div class="mcard" style="width:66px;flex:0 0 auto"><div class="poster"><div class="poster__art" style="--a1:#5E4A1E;--a2:#14100A"></div><span class="poster__glyph" style="font-size:27px">狂</span></div><span class="mcard__title" style="font-size:11.5px">狂飙</span></div>
+                  <div class="mcard" style="width:66px;flex:0 0 auto"><div class="poster"><div class="poster__art" style="--a1:#7A2E2E;--a2:#170C0C"></div><span class="poster__glyph" style="font-size:27px">奥</span></div><span class="mcard__title" style="font-size:11.5px">奥本海默</span></div>
+                </div>
+                <div class="note" style="margin:14px 0 0">
+                  <svg class="ic ic--16" style="flex:0 0 auto;margin-top:1px"><use href="#i-shield"/></svg>
+                  <span>本 App 不提供任何影视内容，全部资源来自你自行添加的源。请遵守当地法律法规。</span>
+                </div>
+                <div style="height:24px"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">03</span>影片详情 Detail</span>
+          <span class="frame__note">海报背景沉浸式渐隐到纯黑；主按钮直接写明「第 6 集」，选集用 6 列 chip 一屏放下 12 集</span>
+        </figcaption>
+      </figure>
+
+      <!-- 04 搜索 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="statusbar__icons">
+                <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+              </span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;padding:6px 20px 12px">
+              <div class="input input--focus" style="flex:1 1 auto;height:44px">
+                <svg class="ic ic--16" style="color:var(--brand)"><use href="#i-search"/></svg>
+                <span style="flex:1;font-size:14px;color:var(--t1)">沙丘</span>
+                <svg class="ic ic--14" style="color:var(--t3)"><use href="#i-close"/></svg>
+              </div>
+              <span style="font-size:13px;color:var(--brand);font-weight:600;cursor:pointer">取消</span>
+            </div>
+            <div class="chiprow" style="padding-bottom:6px">
+              <span class="chip is-on">全部</span><span class="chip">站点</span><span class="chip">爬虫</span><span class="chip">豆瓣</span>
+            </div>
+            <div class="scroll" style="margin-top:6px">
+              <div class="shead" style="margin-top:8px">
+                <h2>搜索结果</h2>
+                <span style="font-size:11.5px;color:var(--t3);font-family:var(--num)">12 部 · 来源 4 条</span>
+              </div>
+              <div class="lrow">
+                <div class="lrow__thumb poster"><div class="poster__art" style="--a1:#1E3A5F;--a2:#0A1018"></div><span class="poster__glyph" style="font-size:22px">沙</span></div>
+                <div class="lrow__main"><span class="lrow__title">沙丘 2</span><span class="lrow__sub">2024 · 科幻 · 3 个来源</span></div>
+                <span class="tag tag--brand">首选</span>
+              </div>
+              <div class="lrow">
+                <div class="lrow__thumb poster"><div class="poster__art" style="--a1:#6B4A1E;--a2:#14100A"></div><span class="poster__glyph" style="font-size:22px">沙</span></div>
+                <div class="lrow__main"><span class="lrow__title">沙丘</span><span class="lrow__sub">2021 · 科幻 · 2 个来源</span></div>
+                <svg class="ic ic--16" style="color:var(--t3)"><use href="#i-chevron"/></svg>
+              </div>
+              <div class="lrow">
+                <div class="lrow__thumb poster"><div class="poster__art" style="--a1:#3E2A5E;--a2:#0F0C16"></div><span class="poster__glyph" style="font-size:22px">沙</span></div>
+                <div class="lrow__main"><span class="lrow__title">沙丘：预言</span><span class="lrow__sub">2024 · 剧集 · 全 6 集</span></div>
+                <svg class="ic ic--16" style="color:var(--t3)"><use href="#i-chevron"/></svg>
+              </div>
+              <div style="padding:10px 20px">
+                <div class="note note--info">
+                  <svg class="ic ic--16" style="flex:0 0 auto;margin-top:1px"><use href="#i-info"/></svg>
+                  <span style="flex:1">仍在搜索其它源（2/4）…</span>
+                  <span style="font-size:11px;opacity:.7;font-family:var(--num)">1.2s</span>
+                </div>
+              </div>
+              <div class="shead"><h2>搜索历史</h2><span class="shead__more">清空</span></div>
+              <div class="chiprow" style="flex-wrap:wrap;padding-bottom:20px;gap:8px">
+                <span class="chip chip--ghost"><svg class="ic ic--12"><use href="#i-clock"/></svg> 三体</span>
+                <span class="chip chip--ghost"><svg class="ic ic--12"><use href="#i-clock"/></svg> 繁花</span>
+                <span class="chip chip--ghost"><svg class="ic ic--12"><use href="#i-clock"/></svg> 奥本海默</span>
+                <span class="chip chip--ghost"><svg class="ic ic--12"><use href="#i-clock"/></svg> 狂飙</span>
+              </div>
+              <div class="shead" style="margin-top:18px"><h2>热门搜索</h2></div>
+              <div class="chiprow" style="flex-wrap:wrap;gap:8px">
+                <span class="chip">沙丘 2</span><span class="chip">繁花</span><span class="chip">流浪地球 3</span>
+                <span class="chip">重启人生</span><span class="chip">年会不能停</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">04</span>搜索 Search</span>
+          <span class="frame__note">搜索框常驻顶部带品牌色聚焦环；结果行用「N 个来源」替代长句，首选源单独挂标签</span>
+        </figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <!-- ============ 播放与直播 ============ -->
+  <section class="sec" id="sec-play">
+    <div class="sec__head">
+      <h1 class="sec__title">播放与直播</h1>
+      <span class="sec__tag">Playback</span>
+    </div>
+    <p class="sec__desc">
+      播放器控制条改为「无边框 + 玻璃质感」，进度条带拖动时间气泡（上一轮已实现）；手势 HUD 用圆形进度环替代纯文字百分比；
+      横屏全屏把倍速/清晰度/字幕收进右侧竖排，避免底部两行按钮遮挡画面。
+    </p>
+    <div class="frames">
+
+      <!-- 05 播放器 竖屏 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen" style="background:#000">
+            <div class="statusbar" style="color:#fff;position:absolute;left:0;right:0;top:0">
+              <span>9:41</span>
+              <span class="statusbar__icons">
+                <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+              </span>
+            </div>
+            <!-- 画面区 -->
+            <div style="position:relative;height:250px;flex:0 0 auto;overflow:hidden;margin-top:0">
+              <div class="poster__art" style="--a1:#3A2A16;--a2:#0C1014;position:absolute;inset:0;opacity:.9"></div>
+              <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.55),transparent 34%,transparent 62%,rgba(0,0,0,.72))"></div>
+              <!-- 顶栏 -->
+              <div style="position:absolute;left:0;right:0;top:44px;display:flex;align-items:center;gap:8px;padding:0 12px">
+                <button class="ibtn ibtn--plain" style="color:#fff;width:36px;height:36px"><svg class="ic"><use href="#i-back"/></svg></button>
+                <div style="min-width:0;flex:1">
+                  <div style="font-size:13.5px;font-weight:600;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">漫长的季节</div>
+                  <div style="font-size:10.5px;color:rgba(255,255,255,.6)">第 6 集 · 1080P</div>
+                </div>
+                <button class="ibtn ibtn--plain" style="color:#fff;width:36px;height:36px"><svg class="ic"><use href="#i-cc"/></svg></button>
+                <button class="ibtn ibtn--plain" style="color:#fff;width:36px;height:36px"><svg class="ic"><use href="#i-more"/></svg></button>
+              </div>
+              <!-- 手势 HUD（起播后控制条隐藏时显示） -->
+              <div style="position:absolute;right:16px;top:56%;transform:translateY(-50%);display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 10px;border-radius:13px;background:rgba(0,0,0,.6);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.14)">
+                <svg class="ic ic--14" style="color:#fff"><use href="#i-sun"/></svg>
+                <div style="font-size:13px;font-weight:700;color:#fff;font-family:var(--num)">72%</div>
+                <div style="width:34px;height:3px;border-radius:2px;background:rgba(255,255,255,.24);overflow:hidden"><i style="display:block;width:72%;height:100%;background:var(--brand)"></i></div>
+              </div>
+              <!-- 底部控制 -->
+              <div style="position:absolute;left:0;right:0;bottom:0;padding:0 14px 8px">
+                <div style="position:relative;height:22px;display:flex;align-items:center">
+                  <div style="position:absolute;left:0;right:0;height:3px;border-radius:2px;background:rgba(255,255,255,.24)">
+                    <div style="position:absolute;left:0;top:0;bottom:0;width:58%;background:rgba(255,255,255,.4);border-radius:2px"></div>
+                    <div style="position:absolute;left:0;top:0;bottom:0;width:38%;background:var(--brand);border-radius:2px"></div>
+                  </div>
+                  <div style="position:absolute;left:38%;width:11px;height:11px;border-radius:50%;background:var(--brand);transform:translateX(-50%);box-shadow:0 0 0 3px rgba(240,168,46,.24)"></div>
+                  <div style="position:absolute;left:38%;bottom:14px;transform:translateX(-50%);padding:2px 7px;border-radius:6px;background:rgba(0,0,0,.85);font-size:10.5px;font-family:var(--num);color:#fff;white-space:nowrap">01:12:30</div>
+                </div>
+                <div style="display:flex;align-items:center;gap:4px;margin-top:2px">
+                  <span style="font-size:10.5px;color:rgba(255,255,255,.8);font-family:var(--num)">01:12:30</span>
+                  <span style="flex:1"></span>
+                  <button class="ibtn ibtn--plain" style="color:#fff;width:32px;height:32px"><svg class="ic ic--16"><use href="#i-volume"/></svg></button>
+                  <span style="font-size:11px;color:#fff;font-weight:600;padding:0 6px;font-family:var(--num)">1.0x</span>
+                  <span style="font-size:11px;color:#fff;font-weight:600;padding:0 6px;font-family:var(--num)">1080P</span>
+                  <button class="ibtn ibtn--plain" style="color:#fff;width:32px;height:32px"><svg class="ic ic--16"><use href="#i-full"/></svg></button>
+                  <span style="font-size:10.5px;color:rgba(255,255,255,.55);font-family:var(--num);margin-left:4px">-01:24:06</span>
+                </div>
+              </div>
+            </div>
+            <!-- 下方内容 -->
+            <div class="scroll" style="background:var(--bg-0)">
+              <div style="padding:16px 20px 0">
+                <h2 style="margin:0;font-size:17px;font-weight:700;letter-spacing:-.01em;color:var(--t1)">漫长的季节</h2>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:5px">
+                  <span class="tag tag--brand">第 6 集</span>
+                  <span style="font-size:11.5px;color:var(--t3)">2023 · 悬疑 · 12 集全</span>
+                </div>
+                <div style="display:flex;gap:10px;margin-top:14px">
+                  <button class="btn btn--ghost btn--sm" style="flex:1"><svg class="ic ic--16"><use href="#i-heart"/></svg> 收藏</button>
+                  <button class="btn btn--ghost btn--sm" style="flex:1"><svg class="ic ic--16"><use href="#i-download"/></svg> 下载</button>
+                  <button class="btn btn--ghost btn--sm" style="flex:1"><svg class="ic ic--16"><use href="#i-cast"/></svg> 投屏</button>
+                </div>
+              </div>
+              <div class="shead"><h2>选集</h2><span class="shead__more">共 12 集 <svg class="ic ic--12"><use href="#i-chevron"/></svg></span></div>
+              <div class="chiprow">
+                <span class="chip">1</span><span class="chip">2</span><span class="chip">3</span><span class="chip">4</span>
+                <span class="chip is-on">6</span><span class="chip">7</span><span class="chip">8</span>
+              </div>
+              <div class="shead"><h2>简介</h2></div>
+              <p style="margin:0 20px;font-size:12.5px;line-height:1.75;color:var(--t2)">1997 年秋，桦林钢铁厂的老工人王响被一桩碎尸案卷进命运漩涡。二十年过去，他仍在追问那个秋天。</p>
+              <div class="shead"><h2>接下来播放</h2><span class="shead__more">自动连播已开启</span></div>
+              <div style="padding:0 20px;display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;align-items:center;gap:10px;padding:9px;border-radius:12px;background:var(--bg-1);border:1px solid var(--line)">
+                  <div class="poster" style="width:52px;height:34px;border-radius:7px;flex:0 0 auto"><div class="poster__art" style="--a1:#3A2A16;--a2:#12161C"></div></div>
+                  <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--t1)">第 7 集</div><div style="font-size:10.5px;color:var(--t3);margin-top:1px">46 分钟</div></div>
+                  <svg class="ic ic--14" style="color:var(--t3)"><use href="#i-play"/></svg>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;padding:9px;border-radius:12px;background:var(--bg-1);border:1px solid var(--line)">
+                  <div class="poster" style="width:52px;height:34px;border-radius:7px;flex:0 0 auto"><div class="poster__art" style="--a1:#2A3340;--a2:#0C1014"></div></div>
+                  <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--t1)">第 8 集</div><div style="font-size:10.5px;color:var(--t3);margin-top:1px">48 分钟</div></div>
+                  <svg class="ic ic--14" style="color:var(--t3)"><use href="#i-play"/></svg>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">05</span>播放器 · 竖屏</span>
+          <span class="frame__note">控制条压在画面内不占额外高度；拖动时显示时间气泡，右侧手势 HUD 带进度条；下方内容可直接切集</span>
+        </figcaption>
+      </figure>
+
+      <!-- 07 直播 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="statusbar__icons">
+                <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+              </span>
+            </div>
+            <div class="appbar">
+              <h1 class="appbar__title">直播</h1>
+              <span class="appbar__spacer"></span>
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-refresh"/></svg></button>
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-gear"/></svg></button>
+            </div>
+            <div class="scroll scroll--tab">
+              <div style="padding:0 20px">
+                <div class="poster" style="aspect-ratio:16/9;border-radius:16px">
+                  <div class="poster__art" style="--a1:#1E3A5F;--a2:#0A1018"></div>
+                  <div class="poster__dim"></div>
+                  <span style="position:absolute;top:10px;left:10px;height:20px;padding:0 7px;border-radius:5px;background:var(--bad);color:#fff;font-size:10px;font-weight:700;display:inline-flex;align-items:center;gap:3px;font-family:var(--num)">
+                    <span style="width:5px;height:5px;border-radius:50%;background:#fff"></span>LIVE
+                  </span>
+                  <div style="position:absolute;left:12px;bottom:10px">
+                    <div style="font-size:14px;font-weight:600;color:#fff">CCTV-6 电影频道</div>
+                    <div style="font-size:11px;color:rgba(255,255,255,.62)">正在播《流浪地球 2》</div>
+                  </div>
+                  <div style="position:absolute;right:12px;bottom:12px;width:34px;height:34px;border-radius:10px;background:rgba(255,255,255,.16);backdrop-filter:blur(8px);display:grid;place-items:center;color:#fff">
+                    <svg class="ic ic--16"><use href="#i-full"/></svg>
+                  </div>
+                </div>
+              </div>
+              <!-- EPG -->
+              <div class="card" style="margin:14px 20px 0;padding:12px 14px">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="tag tag--bad">正在播</span>
+                  <span style="font-size:12.5px;font-weight:600;color:var(--t1);flex:1">流浪地球 2</span>
+                  <span style="font-size:10.5px;color:var(--t3);font-family:var(--num)">20:15 - 22:40</span>
+                </div>
+                <div class="track track--thin" style="margin-top:9px"><i style="width:64%"></i></div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:11px;padding-top:10px;border-top:1px solid var(--line)">
+                  <span style="font-size:10.5px;color:var(--t3);font-family:var(--num)">22:40</span>
+                  <span style="font-size:12px;color:var(--t2);flex:1">光影星播客</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
+                  <span style="font-size:10.5px;color:var(--t3);font-family:var(--num)">23:00</span>
+                  <span style="font-size:12px;color:var(--t2);flex:1">佳片有约</span>
+                </div>
+              </div>
+              <div class="chiprow" style="margin-top:14px">
+                <span class="chip is-on">央视频道</span><span class="chip">卫视频道</span><span class="chip">影视</span><span class="chip">体育</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:14px 20px 20px">
+                <div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px;border-color:rgba(240,168,46,.4);background:var(--brand-soft)">
+                  <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">CCTV-6</div><div style="font-size:10px;color:var(--brand);margin-top:2px">正在播放</div></div>
+                  <svg class="ic ic--16 ic--fill" style="color:var(--brand)"><use href="#i-star"/></svg>
+                </div>
+                <div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px">
+                  <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">CCTV-1</div><div style="font-size:10px;color:var(--t3);margin-top:2px">综合频道</div></div>
+                  <svg class="ic ic--16" style="color:var(--t3)"><use href="#i-star"/></svg>
+                </div>
+                <div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px">
+                  <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">湖南卫视</div><div style="font-size:10px;color:var(--t3);margin-top:2px">综艺</div></div>
+                  <svg class="ic ic--16" style="color:var(--t3)"><use href="#i-star"/></svg>
+                </div>
+                <div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px;opacity:.5">
+                  <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">东方卫视</div><div style="font-size:10px;color:var(--bad);margin-top:2px">失效</div></div>
+                  <svg class="ic ic--16" style="color:var(--t3)"><use href="#i-star"/></svg>
+                </div>
+                <div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px">
+                  <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">CCTV-5</div><div style="font-size:10px;color:var(--t3);margin-top:2px">体育赛事</div></div>
+                  <svg class="ic ic--16 ic--fill" style="color:var(--brand)"><use href="#i-star"/></svg>
+                </div>
+                <div class="card" style="padding:10px 12px;display:flex;align-items:center;gap:8px">
+                  <div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">江苏卫视</div><div style="font-size:10px;color:var(--t3);margin-top:2px">电视剧</div></div>
+                  <svg class="ic ic--16" style="color:var(--t3)"><use href="#i-star"/></svg>
+                </div>
+                
+              </div>
+            </div>
+            <div class="tabfade"></div>
+            <div class="tabbar">
+              <div class="tab"><svg class="ic ic--22"><use href="#i-home"/></svg><span>首页</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-grid"/></svg><span>媒体库</span></div>
+              <div class="tab is-on"><svg class="ic ic--22"><use href="#i-live"/></svg><span>直播</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-download"/></svg><span>下载</span><span class="tab__dot">3</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-user"/></svg><span>我的</span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">07</span>直播 Live</span>
+          <span class="frame__note">EPG 合并成一张卡（正在播 + 接下来），频道卡改为紧凑列表块，收藏与失效状态用色块而非纯文字</span>
+        </figcaption>
+      </figure>
+
+      <!-- 08 选集与线路弹层 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="statusbar__icons">
+                <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+                <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+              </span>
+            </div>
+            <div class="appbar">
+              <h1 class="appbar__title">媒体库</h1>
+              <span class="appbar__spacer"></span>
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-search"/></svg></button>
+            </div>
+            <div class="scroll" style="opacity:.5">
+              <div class="chiprow"><span class="chip is-on">全部</span><span class="chip">电影</span><span class="chip">剧集</span></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:14px 20px">
+                <div class="mcard"><div class="poster"><div class="poster__art" style="--a1:#6B3A1E;--a2:#1A1016"></div></div><span class="mcard__title">繁花</span></div>
+                <div class="mcard"><div class="poster"><div class="poster__art" style="--a1:#1E3A5F;--a2:#0A1018"></div></div><span class="mcard__title">沙丘 2</span></div>
+                <div class="mcard"><div class="poster"><div class="poster__art" style="--a1:#4A2B5E;--a2:#12101A"></div></div><span class="mcard__title">三体</span></div>
+                <div class="mcard"><div class="poster"><div class="poster__art" style="--a1:#2E5E52;--a2:#0A1412"></div></div><span class="mcard__title">我的阿勒泰</span></div>
+              </div>
+            </div>
+            <div class="scrim"></div>
+            <div class="sheet">
+              <div class="sheet__grip"></div>
+              <h3 class="sheet__title">选择线路</h3>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <div style="display:flex;align-items:center;gap:11px;padding:13px 14px;border-radius:13px;background:var(--brand-soft);border:1px solid rgba(240,168,46,.4)">
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:14px;font-weight:600;color:var(--t1)">线路 1 · 极速</div>
+                    <div style="font-size:11px;color:var(--t3);margin-top:2px">响应 120ms · HLS · 1080P</div>
+                  </div>
+                  <span class="tag tag--mute">推荐</span>
+                  <div style="width:20px;height:20px;border-radius:50%;background:var(--brand);display:grid;place-items:center;color:var(--brand-ink);flex:0 0 auto"><svg class="ic ic--12" style="stroke-width:3"><use href="#i-check"/></svg></div>
+                </div>
+                <div style="display:flex;align-items:center;gap:11px;padding:13px 14px;border-radius:13px;background:var(--bg-2);border:1px solid var(--line)">
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:14px;font-weight:600;color:var(--t1)">线路 2 · 稳定</div>
+                    <div style="font-size:11px;color:var(--t3);margin-top:2px">响应 340ms · MP4 · 720P</div>
+                  </div>
+                  <span class="tag tag--mute">备用</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:11px;padding:13px 14px;border-radius:13px;background:var(--bg-2);border:1px solid var(--line);opacity:.5">
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:14px;font-weight:600;color:var(--t1)">线路 3</div>
+                    <div style="font-size:11px;color:var(--bad);margin-top:2px">连接超时 · 已跳过</div>
+                  </div>
+                  <span class="tag tag--bad">不可用</span>
+                </div>
+              </div>
+              <button class="btn btn--ghost btn--block" style="margin-top:14px">重新检测全部线路</button>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">08</span>线路选择 · BottomSheet</span>
+          <span class="frame__note">线路按实测响应排序，直接标注「响应 ms / 协议 / 分辨率」，不可用线路置灰并给出原因</span>
+        </figcaption>
+      </figure>
+
+      <!-- 06 播放器 横屏 -->
+      <figure class="frame" style="width:812px">
+        <div class="phone phone--wide">
+          <div class="screen" style="background:#000">
+            <div class="poster__art" style="--a1:#3A2A16;--a2:#0A0E12;position:absolute;inset:0;opacity:.92"></div>
+            <div style="position:absolute;inset:0;background:linear-gradient(180deg,rgba(0,0,0,.6),transparent 26%,transparent 68%,rgba(0,0,0,.78))"></div>
+            <!-- 顶部 -->
+            <div style="position:absolute;left:0;right:0;top:0;display:flex;align-items:center;gap:10px;padding:14px 22px">
+              <button class="ibtn ibtn--plain" style="color:#fff"><svg class="ic"><use href="#i-back"/></svg></button>
+              <div>
+                <div style="font-size:14px;font-weight:600;color:#fff">漫长的季节 · 第 6 集</div>
+                <div style="font-size:10.5px;color:rgba(255,255,255,.55);font-family:var(--num)">1080P · HLS · 已缓冲 42s</div>
+              </div>
+              <span style="flex:1"></span>
+              <span class="tag" style="background:rgba(52,211,153,.18);color:#6EE7B7">极速线路</span>
+              <button class="ibtn ibtn--plain" style="color:#fff"><svg class="ic"><use href="#i-cc"/></svg></button>
+              <button class="ibtn ibtn--plain" style="color:#fff"><svg class="ic"><use href="#i-more"/></svg></button>
+            </div>
+            <!-- 中央 -->
+            <div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:34px;color:#fff">
+              <div style="width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.12);display:grid;place-items:center;border:1px solid rgba(255,255,255,.18)"><svg class="ic ic--22" style="transform:rotate(180deg)"><use href="#i-play"/></svg></div>
+              <div style="width:64px;height:64px;border-radius:50%;background:rgba(255,255,255,.16);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,.28);display:grid;place-items:center"><svg class="ic" style="width:30px;height:30px"><use href="#i-pause"/></svg></div>
+              <div style="width:44px;height:44px;border-radius:50%;background:rgba(255,255,255,.12);display:grid;place-items:center;border:1px solid rgba(255,255,255,.18)"><svg class="ic ic--22"><use href="#i-play"/></svg></div>
+            </div>
+            <!-- 右侧竖排工具 -->
+            <div style="position:absolute;right:20px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:8px">
+              <div class="ibtn" style="width:44px;height:44px;background:rgba(0,0,0,.42);border-color:rgba(255,255,255,.16);color:#fff;flex-direction:column;font-size:9px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:2px">1.5x</div>
+              <div class="ibtn" style="width:44px;height:44px;background:rgba(0,0,0,.42);border-color:rgba(255,255,255,.16);color:#fff;flex-direction:column;font-size:9px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:2px">1080P</div>
+              <div class="ibtn" style="width:44px;height:44px;background:rgba(0,0,0,.42);border-color:rgba(255,255,255,.16);color:#fff"><svg class="ic"><use href="#i-cc"/></svg></div>
+              <div class="ibtn" style="width:44px;height:44px;background:rgba(0,0,0,.42);border-color:rgba(255,255,255,.16);color:#fff"><svg class="ic"><use href="#i-volume"/></svg></div>
+            </div>
+            <!-- 底部进度 -->
+            <div style="position:absolute;left:0;right:0;bottom:0;padding:0 24px 16px">
+              <div style="display:flex;align-items:center;gap:14px">
+                <span style="font-size:12px;color:rgba(255,255,255,.85);font-family:var(--num)">01:12:30</span>
+                <div style="flex:1;position:relative;height:18px;display:flex;align-items:center">
+                  <div style="position:absolute;left:0;right:0;height:4px;border-radius:2px;background:rgba(255,255,255,.22)">
+                    <div style="position:absolute;left:0;top:0;bottom:0;width:64%;background:rgba(255,255,255,.42);border-radius:2px"></div>
+                    <div style="position:absolute;left:0;top:0;bottom:0;width:46%;background:var(--brand);border-radius:2px"></div>
+                  </div>
+                  <div style="position:absolute;left:46%;width:14px;height:14px;border-radius:50%;background:var(--brand);transform:translateX(-50%);box-shadow:0 0 0 4px rgba(240,168,46,.22)"></div>
+                  <div style="position:absolute;left:46%;bottom:16px;transform:translateX(-50%);padding:3px 8px;border-radius:7px;background:rgba(0,0,0,.88);font-size:11px;font-family:var(--num);color:#fff;white-space:nowrap">01:12:30</div>
+                </div>
+                <span style="font-size:12px;color:rgba(255,255,255,.5);font-family:var(--num)">02:11:40</span>
+                <button class="ibtn ibtn--plain" style="color:#fff;width:32px;height:32px"><svg class="ic"><use href="#i-full"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">06</span>播放器 · 横屏全屏</span>
+          <span class="frame__note">倍速/清晰度/字幕/音量收成右侧竖排，底部只留一条进度；缓冲段与已播段用不同明度区分</span>
+        </figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <!-- ============ 内容管理 ============ -->
+  <section class="sec" id="sec-manage">
+    <div class="sec__head">
+      <h1 class="sec__title">内容管理</h1>
+      <span class="sec__tag">Manage</span>
+    </div>
+    <p class="sec__desc">
+      下载/历史/收藏统一为「顶部汇总 + 状态分段 + 内容列表」同一骨架，减少认知切换；
+      片源管理把 4 个平铺按钮改成 2×2 操作卡，线路质量用分档条形图一次看全。
+    </p>
+    <div class="frames">
+
+      <!-- 09 下载 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar">
+              <h1 class="appbar__title">下载</h1>
+              <span class="appbar__spacer"></span>
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-more"/></svg></button>
+            </div>
+            <div class="scroll scroll--tab">
+              <!-- 汇总卡 -->
+              <div style="margin:0 20px;padding:16px;border-radius:16px;background:linear-gradient(150deg,rgba(240,168,46,.14),rgba(240,168,46,.03));border:1px solid rgba(240,168,46,.22)">
+                <div style="display:flex;align-items:flex-end;justify-content:space-between">
+                  <div>
+                    <div style="font-size:11px;color:var(--t3);letter-spacing:.04em">总进度</div>
+                    <div style="font-size:24px;font-weight:700;color:var(--t1);font-family:var(--num);margin-top:2px;letter-spacing:-.02em">58%</div>
+                  </div>
+                  <div style="text-align:right">
+                    <div style="font-size:12px;color:var(--t2);font-family:var(--num)">1.24 GB / 2.14 GB</div>
+                    <div style="font-size:11px;color:var(--brand);margin-top:2px;font-family:var(--num)">剩余约 6 分钟</div>
+                  </div>
+                </div>
+                <div class="track" style="margin-top:12px;height:6px"><i style="width:58%"></i></div>
+                <div style="display:flex;gap:14px;margin-top:12px;font-size:11px;color:var(--t3);font-family:var(--num)">
+                  <span>共 4 项</span><span>下载中 1</span><span>已完成 2</span><span>失败 1</span>
+                </div>
+              </div>
+              <div style="padding:16px 20px 6px">
+                <div class="seg"><span class="is-on">全部</span><span>下载中</span><span>已完成</span><span>失败</span></div>
+              </div>
+              <!-- 任务行 -->
+              <div style="padding:0 20px;display:flex;flex-direction:column;gap:10px">
+                <div class="card" style="padding:11px;display:flex;gap:11px">
+                  <div class="poster" style="width:44px;height:62px;flex:0 0 auto;border-radius:8px"><div class="poster__art" style="--a1:#3A2A16;--a2:#12161C"></div></div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:13px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">漫长的季节 · 第 6 集</div>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+                      <span class="tag tag--brand">下载中</span>
+                      <span style="font-size:10.5px;color:var(--t3);font-family:var(--num);white-space:nowrap">824 MB / 1.4 GB</span>
+                    </div>
+                    <div class="track track--thin" style="margin-top:8px"><i style="width:58%"></i></div>
+                  </div>
+                  <button class="ibtn ibtn--sm" style="align-self:center"><svg class="ic ic--14"><use href="#i-pause"/></svg></button>
+                </div>
+                <div class="card" style="padding:11px;display:flex;gap:11px">
+                  <div class="poster" style="width:44px;height:62px;flex:0 0 auto;border-radius:8px"><div class="poster__art" style="--a1:#1E3A5F;--a2:#0A1018"></div></div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:13px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">沙丘 2</div>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+                      <span class="tag tag--ok">已完成</span>
+                      <span style="font-size:10.5px;color:var(--t3);font-family:var(--num)">4.2 GB · 1080P</span>
+                    </div>
+                    <div class="track track--thin" style="margin-top:8px"><i style="width:100%;background:var(--ok)"></i></div>
+                  </div>
+                  <button class="ibtn ibtn--sm" style="align-self:center;background:var(--ok-soft);border-color:rgba(52,211,153,.3);color:var(--ok)"><svg class="ic ic--14"><use href="#i-play"/></svg></button>
+                </div>
+                <div class="card" style="padding:11px;display:flex;gap:11px">
+                  <div class="poster" style="width:44px;height:62px;flex:0 0 auto;border-radius:8px"><div class="poster__art" style="--a1:#4A2B5E;--a2:#12101A"></div></div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:13px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">三体 · 第 3 集</div>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+                      <span class="tag tag--bad">失败</span>
+                      <span style="font-size:10.5px;color:var(--bad)">源返回 403，请换线路重试</span>
+                    </div>
+                    <div class="track track--thin" style="margin-top:8px"><i style="width:22%;background:var(--bad)"></i></div>
+                  </div>
+                  <button class="ibtn ibtn--sm" style="align-self:center"><svg class="ic ic--14"><use href="#i-refresh"/></svg></button>
+                </div>
+                <div class="card" style="padding:11px;display:flex;gap:11px">
+                  <div class="poster" style="width:44px;height:62px;flex:0 0 auto;border-radius:8px"><div class="poster__art" style="--a1:#2E5E52;--a2:#0A1412"></div></div>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:13px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">我的阿勒泰 · 第 3 集</div>
+                    <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+                      <span class="tag tag--mute">已暂停</span>
+                      <span style="font-size:10.5px;color:var(--t3);font-family:var(--num);white-space:nowrap">412 MB / 1.1 GB</span>
+                    </div>
+                    <div class="track track--thin" style="margin-top:8px"><i style="width:37%;background:var(--t3)"></i></div>
+                  </div>
+                  <button class="ibtn ibtn--sm" style="align-self:center"><svg class="ic ic--14"><use href="#i-play"/></svg></button>
+                </div>
+              </div>
+            </div>
+            <div class="tabfade"></div>
+            <div class="tabbar">
+              <div class="tab"><svg class="ic ic--22"><use href="#i-home"/></svg><span>首页</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-grid"/></svg><span>媒体库</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-live"/></svg><span>直播</span></div>
+              <div class="tab is-on"><svg class="ic ic--22"><use href="#i-download"/></svg><span>下载</span><span class="tab__dot">3</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-user"/></svg><span>我的</span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">09</span>下载 Downloads</span>
+          <span class="frame__note">汇总卡用品牌色渐变强调「总进度」，任务行右侧只保留一个主操作，状态用标签 + 进度条颜色双重表达</span>
+        </figcaption>
+      </figure>
+
+      <!-- 10 历史 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar appbar--sub">
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-back"/></svg></button>
+              <h1 class="appbar__title">观看历史</h1>
+              <span class="appbar__spacer"></span>
+              <span style="font-size:12.5px;color:var(--t3);cursor:pointer">清空</span>
+            </div>
+            <div class="scroll">
+              <div style="padding:0 20px 6px;font-size:11px;font-weight:600;color:var(--t3);letter-spacing:.06em">今天</div>
+              <div class="lrow">
+                <div class="lrow__thumb poster"><div class="poster__art" style="--a1:#3A2A16;--a2:#12161C"></div><div class="pbar"><i style="width:62%"></i></div></div>
+                <div class="lrow__main"><span class="lrow__title">漫长的季节</span><span class="lrow__sub">第 6 集 · 看到 34:12</span></div>
+                <div class="lrow__tail"><span style="font-family:var(--num)">2 小时前</span><svg class="ic ic--16"><use href="#i-more"/></svg></div>
+              </div>
+              <div class="lrow">
+                <div class="lrow__thumb poster"><div class="poster__art" style="--a1:#1E3A5F;--a2:#0A1018"></div><div class="pbar"><i style="width:88%"></i></div></div>
+                <div class="lrow__main"><span class="lrow__title">沙丘 2</span><span class="lrow__sub">看到 02:14:08 · 已看完</span></div>
+                <div class="lrow__tail"><span style="font-family:var(--num)">5 小时前</span><svg class="ic ic--16"><use href="#i-more"/></svg></div>
+              </div>
+              <div class="lrow">
+                <div class="lrow__thumb poster"><div class="poster__art" style="--a1:#2E5E52;--a2:#0A1412"></div><div class="pbar"><i style="width:18%"></i></div></div>
+                <div class="lrow__main"><span class="lrow__title">我的阿勒泰</span><span class="lrow__sub">第 2 集 · 看到 08:41</span></div>
+                <div class="lrow__tail"><span style="font-family:var(--num)">今天 09:12</span><svg class="ic ic--16"><use href="#i-more"/></svg></div>
+              </div>
+              <div style="padding:14px 20px 6px;font-size:11px;font-weight:600;color:var(--t3);letter-spacing:.06em">昨天</div>
+              <div class="lrow">
+                <div class="lrow__thumb poster"><div class="poster__art" style="--a1:#4A2B5E;--a2:#12101A"></div><div class="pbar"><i style="width:44%"></i></div></div>
+                <div class="lrow__main"><span class="lrow__title">三体</span><span class="lrow__sub">第 5 集 · 看到 21:03</span></div>
+                <div class="lrow__tail"><span style="font-family:var(--num)">昨天 22:40</span><svg class="ic ic--16"><use href="#i-more"/></svg></div>
+              </div>
+              <div class="lrow" style="opacity:.55">
+                <div class="lrow__thumb poster"><div class="poster__art" style="--a1:#5E4A1E;--a2:#14100A"></div></div>
+                <div class="lrow__main"><span class="lrow__title">狂飙</span><span class="lrow__sub" style="color:var(--warn)">源已移除 · 无法播放</span></div>
+                <div class="lrow__tail"><span style="font-family:var(--num)">昨天 20:10</span><svg class="ic ic--16"><use href="#i-more"/></svg></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">10</span>观看历史 History</span>
+          <span class="frame__note">日期分组改为小标签而非 sticky 大标题，行内进度条直接显示看到哪里；源移除的行降透明度 + 明确文案</span>
+        </figcaption>
+      </figure>
+
+      <!-- 11 收藏 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar appbar--sub">
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-back"/></svg></button>
+              <h1 class="appbar__title">我的收藏</h1>
+              <span class="appbar__spacer"></span>
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-sort"/></svg></button>
+            </div>
+            <div class="scroll">
+              <div style="padding:0 20px 12px;font-size:11.5px;color:var(--t3)">共 <span style="color:var(--t2);font-family:var(--num)">48</span> 部 · 按最近收藏排序</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:0 20px">
+                <div class="mcard"><div class="poster"><div class="poster__art" style="--a1:#7A2E2E;--a2:#170C0C"></div><span class="poster__badge">9.1</span><span class="poster__glyph">奥</span></div><span class="mcard__title">奥本海默</span><span class="mcard__sub">2023 · 传记</span></div>
+                <div class="mcard"><div class="poster"><div class="poster__art" style="--a1:#1E3A5F;--a2:#0A1018"></div><span class="poster__badge">4K</span><span class="poster__glyph">沙</span></div><span class="mcard__title">沙丘 2</span><span class="mcard__sub">2024 · 科幻</span></div>
+                <div class="mcard"><div class="poster"><div class="poster__art" style="--a1:#2E5E52;--a2:#0A1412"></div><span class="poster__glyph">阿</span></div><span class="mcard__title">我的阿勒泰</span><span class="mcard__sub">2024 · 剧情</span></div>
+                <div class="mcard" style="position:relative">
+                  <div class="poster"><div class="poster__art" style="--a1:#5E4A1E;--a2:#14100A"></div><span class="poster__glyph">狂</span>
+                    <div style="position:absolute;inset:0;background:rgba(0,0,0,.55);display:grid;place-items:center">
+                      <span style="font-size:10.5px;font-weight:600;color:var(--warn);border:1px solid rgba(251,191,36,.5);padding:3px 7px;border-radius:6px;background:rgba(0,0,0,.6)">源已移除</span>
+                    </div>
+                  </div>
+                  <span class="mcard__title">狂飙</span><span class="mcard__sub">2023 · 犯罪</span>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">11</span>我的收藏 Favorites</span>
+          <span class="frame__note">排序入口从文字按钮改为图标；失效源用居中遮罩标签替代角落小字，一眼可辨</span>
+        </figcaption>
+      </figure>
+
+      <!-- 12 片源管理 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar appbar--sub">
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-back"/></svg></button>
+              <h1 class="appbar__title">片源管理</h1>
+              <span class="appbar__spacer"></span>
+              <button class="ibtn" style="background:var(--brand-soft);border-color:rgba(240,168,46,.35);color:var(--brand)"><svg class="ic"><use href="#i-plus"/></svg></button>
+            </div>
+            <div class="scroll">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;padding:4px 20px 0">
+                <div class="card" style="padding:11px 12px;display:flex;align-items:center;gap:9px;cursor:pointer">
+                  <svg class="ic ic--16" style="color:var(--brand)"><use href="#i-plus"/></svg>
+                  <span style="font-size:12.5px;font-weight:600;color:var(--t1)">新增源</span>
+                </div>
+                <div class="card" style="padding:11px 12px;display:flex;align-items:center;gap:9px;cursor:pointer">
+                  <svg class="ic ic--16" style="color:var(--info)"><use href="#i-link"/></svg>
+                  <span style="font-size:12.5px;font-weight:600;color:var(--t1)">导入订阅</span>
+                </div>
+                <div class="card" style="padding:11px 12px;display:flex;align-items:center;gap:9px;cursor:pointer">
+                  <svg class="ic ic--16" style="color:var(--vio)"><use href="#i-folder"/></svg>
+                  <span style="font-size:12.5px;font-weight:600;color:var(--t1)">订阅管理</span>
+                </div>
+                <div class="card" style="padding:11px 12px;display:flex;align-items:center;gap:9px;cursor:pointer">
+                  <svg class="ic ic--16" style="color:var(--ok)"><use href="#i-refresh"/></svg>
+                  <span style="font-size:12.5px;font-weight:600;color:var(--t1)">重新检测</span>
+                  <span style="margin-left:auto;font-size:10px;color:var(--t3);font-family:var(--num)">12/49</span>
+                </div>
+              </div>
+              <!-- 质量总览 -->
+              <div class="card" style="margin:12px 20px 0;padding:14px">
+                <div style="display:flex;align-items:baseline;justify-content:space-between">
+                  <div style="font-size:13px;font-weight:600;color:var(--t1)">线路质量总览</div>
+                  <div style="font-size:11px;color:var(--t3);font-family:var(--num)">共 49 条线路</div>
+                </div>
+                <div style="display:flex;gap:4px;margin-top:11px;height:6px;border-radius:3px;overflow:hidden">
+                  <div style="flex:14;background:var(--vio)"></div>
+                  <div style="flex:18;background:var(--ok)"></div>
+                  <div style="flex:9;background:var(--warn)"></div>
+                  <div style="flex:5;background:#F59E0B"></div>
+                  <div style="flex:3;background:var(--bad)"></div>
+                </div>
+                <div style="display:flex;gap:10px;margin-top:9px;font-size:10px;color:var(--t3);font-family:var(--num);flex-wrap:wrap">
+                  <span style="display:flex;align-items:center;gap:4px"><i style="width:6px;height:6px;border-radius:2px;background:var(--vio)"></i>极速 14</span>
+                  <span style="display:flex;align-items:center;gap:4px"><i style="width:6px;height:6px;border-radius:2px;background:var(--ok)"></i>良好 18</span>
+                  <span style="display:flex;align-items:center;gap:4px"><i style="width:6px;height:6px;border-radius:2px;background:var(--warn)"></i>一般 9</span>
+                  <span style="display:flex;align-items:center;gap:4px"><i style="width:6px;height:6px;border-radius:2px;background:var(--bad)"></i>失效 3</span>
+                </div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                  <button class="btn btn--quiet btn--sm" style="flex:1">禁用 3 个失效源</button>
+                  <button class="btn btn--danger btn--sm" style="flex:1">删除已禁用</button>
+                </div>
+              </div>
+              <div class="shead"><h2>全部源</h2><span class="shead__more">按线路质量 <svg class="ic ic--12"><use href="#i-chevdown"/></svg></span></div>
+              <div style="padding:0 20px;display:flex;flex-direction:column;gap:9px">
+                <div class="card" style="padding:12px">
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <span style="font-size:13.5px;font-weight:600;color:var(--t1)">南瓜影视</span>
+                    <span class="tag tag--mute">CMS</span>
+                    <span class="tag tag--brand">默认</span>
+                    <span class="appbar__spacer" style="flex:1"></span>
+                    <div class="sw is-on"></div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
+                    <span class="tag tag--ok"><svg class="ic ic--12"><use href="#i-bolt"/></svg>极速 · 120ms</span>
+                    <span style="font-size:10.5px;color:var(--t3);font-family:var(--num)">检测于 3 分钟前</span>
+                  </div>
+                </div>
+                <div class="card" style="padding:12px">
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <span style="font-size:13.5px;font-weight:600;color:var(--t1)">小苹果资源</span>
+                    <span class="tag tag--mute">爬虫</span>
+                    <span class="appbar__spacer" style="flex:1"></span>
+                    <div class="sw is-on"></div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
+                    <span class="tag tag--warn"><svg class="ic ic--12"><use href="#i-clock"/></svg>较慢 · 840ms</span>
+                    <span style="font-size:10.5px;color:var(--t3);font-family:var(--num)">检测于 1 小时前</span>
+                  </div>
+                </div>
+                <div class="card" style="padding:12px;opacity:.6">
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <span style="font-size:13.5px;font-weight:600;color:var(--t1)">旧站接口</span>
+                    <span class="tag tag--mute">CMS</span>
+                    <span class="appbar__spacer" style="flex:1"></span>
+                    <div class="sw"></div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:8px;margin-top:7px">
+                    <span class="tag tag--bad"><svg class="ic ic--12"><use href="#i-alert"/></svg>失效</span>
+                    <span style="font-size:10.5px;color:var(--t3)">已自动禁用</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">12</span>片源管理 Sources</span>
+          <span class="frame__note">4 个操作改为 2×2 卡（带色彩图标区分功能）；质量总览用堆叠条一次表达 5 档分布，批量操作紧随其后</span>
+        </figcaption>
+      </figure>
+
+      <!-- 13 源编辑 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar appbar--sub">
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-back"/></svg></button>
+              <h1 class="appbar__title">新增源</h1>
+              <span class="appbar__spacer"></span>
+            </div>
+            <div class="scroll">
+              <div style="padding:0 20px">
+                <div class="field__label" style="margin-bottom:9px">源类型</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px">
+                  <div style="padding:12px;border-radius:13px;background:var(--brand-soft);border:1px solid rgba(240,168,46,.45)">
+                    <div style="display:flex;align-items:center;gap:7px"><svg class="ic ic--16" style="color:var(--brand)"><use href="#i-link"/></svg><span style="font-size:12.5px;font-weight:600;color:var(--t1)">CMS 采集</span></div>
+                    <div style="font-size:10.5px;color:var(--t3);margin-top:4px;line-height:1.4">苹果CMS 标准接口</div>
+                  </div>
+                  <div style="padding:12px;border-radius:13px;background:var(--bg-2);border:1px solid var(--line)">
+                    <div style="display:flex;align-items:center;gap:7px"><svg class="ic ic--16" style="color:var(--t2)"><use href="#i-folder"/></svg><span style="font-size:12.5px;font-weight:600;color:var(--t1)">AList</span></div>
+                    <div style="font-size:10.5px;color:var(--t3);margin-top:4px;line-height:1.4">自建网盘聚合</div>
+                  </div>
+                  <div style="padding:12px;border-radius:13px;background:var(--bg-2);border:1px solid var(--line)">
+                    <div style="display:flex;align-items:center;gap:7px"><svg class="ic ic--16" style="color:var(--t2)"><use href="#i-db"/></svg><span style="font-size:12.5px;font-weight:600;color:var(--t1)">WebDAV</span></div>
+                    <div style="font-size:10.5px;color:var(--t3);margin-top:4px;line-height:1.4">标准 WebDAV 目录</div>
+                  </div>
+                  <div style="padding:12px;border-radius:13px;background:var(--bg-2);border:1px solid var(--line)">
+                    <div style="display:flex;align-items:center;gap:7px"><svg class="ic ic--16" style="color:var(--t2)"><use href="#i-tv"/></svg><span style="font-size:12.5px;font-weight:600;color:var(--t1)">Jellyfin</span></div>
+                    <div style="font-size:10.5px;color:var(--t3);margin-top:4px;line-height:1.4">媒体服务器</div>
+                  </div>
+                </div>
+                <div class="field" style="margin-top:16px">
+                  <span class="field__label">名称</span>
+                  <div class="input">南瓜影视</div>
+                </div>
+                <div class="field" style="margin-top:13px">
+                  <span class="field__label">接口地址</span>
+                  <div class="input input--focus"><span style="flex:1">https://api.example.com/api.php/provide/vod</span></div>
+                </div>
+                <div class="field" style="margin-top:13px">
+                  <span class="field__label">认证方式</span>
+                  <div class="seg"><span class="is-on">无</span><span>Basic</span><span>Token</span></div>
+                </div>
+                <div class="field" style="margin-top:13px">
+                  <span class="field__label">自定义请求头（可选）</span>
+                  <div class="input" style="height:64px;align-items:flex-start;padding-top:11px">
+                    <span style="font-size:12px;color:var(--t3);font-family:var(--num);line-height:1.6">Referer: https://example.com<br />User-Agent: Mozilla/5.0 …</span>
+                  </div>
+                </div>
+                <div class="note note--ok" style="margin-top:14px">
+                  <svg class="ic ic--16" style="flex:0 0 auto;margin-top:1px"><use href="#i-check"/></svg>
+                  <span style="flex:1">连接成功 · 延迟 128ms · 可用线路 6 条</span>
+                  <span style="font-size:11px;opacity:.7;font-family:var(--num)">1.2s</span>
+                </div>
+              </div>
+            </div>
+            <div style="padding:12px 20px 22px;border-top:1px solid var(--line);background:var(--bg-0)">
+              <div style="display:flex;gap:10px">
+                <button class="btn btn--ghost" style="flex:0 0 108px">测试连接</button>
+                <button class="btn btn--primary" style="flex:1">保存并启用</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">13</span>新增 / 编辑源 SourceForm</span>
+          <span class="frame__note">类型选择前置为 2×2 卡片（带图标与一句说明），表单分区清晰；测试结果用绿色提示条内联反馈</span>
+        </figcaption>
+      </figure>
+
+      <!-- 14 订阅管理 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar appbar--sub">
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-back"/></svg></button>
+              <h1 class="appbar__title">订阅管理</h1>
+              <span class="appbar__spacer"></span>
+              <span style="font-size:12.5px;color:var(--brand);font-weight:600;cursor:pointer">批量评测</span>
+            </div>
+            <div class="scroll">
+              <div style="padding:2px 20px 12px">
+                <button class="btn btn--ghost btn--block btn--sm"><svg class="ic ic--16"><use href="#i-refresh"/></svg> 全部刷新（24h 内自动跳过）</button>
+              </div>
+              <div style="padding:0 20px;display:flex;flex-direction:column;gap:9px">
+                <div class="card" style="padding:13px">
+                  <div style="display:flex;align-items:flex-start;gap:9px">
+                    <div style="width:30px;height:30px;border-radius:9px;background:var(--info-soft);display:grid;place-items:center;color:var(--info);flex:0 0 auto"><svg class="ic ic--16"><use href="#i-link"/></svg></div>
+                    <div style="flex:1;min-width:0">
+                      <div style="font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">tvbox.example.com/main.json</div>
+                      <div style="font-size:11px;color:var(--t3);margin-top:3px">18 个源 · 启用 15 · 失效 2 · 2 小时前刷新</div>
+                    </div>
+                  </div>
+                  <div style="display:flex;gap:8px;margin-top:11px">
+                    <button class="btn btn--quiet btn--sm" style="flex:1"><svg class="ic ic--14"><use href="#i-refresh"/></svg> 刷新</button>
+                    <button class="btn btn--quiet btn--sm" style="flex:0 0 84px;color:var(--bad)">删除</button>
+                  </div>
+                </div>
+                <div class="card" style="padding:13px">
+                  <div style="display:flex;align-items:flex-start;gap:9px">
+                    <div style="width:30px;height:30px;border-radius:9px;background:var(--vio-soft,rgba(167,139,250,.14));display:grid;place-items:center;color:var(--vio);flex:0 0 auto"><svg class="ic ic--16"><use href="#i-file"/></svg></div>
+                    <div style="flex:1;min-width:0">
+                      <div style="font-size:12.5px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">自用合集.json</div>
+                      <div style="font-size:11px;color:var(--t3);margin-top:3px">6 个源 · 启用 6 · 昨天刷新</div>
+                    </div>
+                  </div>
+                  <div style="display:flex;gap:8px;margin-top:11px">
+                    <button class="btn btn--quiet btn--sm" style="flex:1" disabled>文件导入不可刷新</button>
+                    <button class="btn btn--quiet btn--sm" style="flex:0 0 84px;color:var(--bad)">删除</button>
+                  </div>
+                </div>
+              </div>
+              <div class="shead"><h2>已自动禁用</h2><span style="font-size:11px;color:var(--t3)">连续 3 次体检失败</span></div>
+              <div style="padding:0 20px">
+                <div class="card" style="padding:12px;display:flex;align-items:center;gap:10px">
+                  <svg class="ic ic--16" style="color:var(--warn)"><use href="#i-alert"/></svg>
+                  <div style="flex:1;min-width:0">
+                    <div style="font-size:12.5px;font-weight:600;color:var(--t1)">旧站接口</div>
+                    <div style="font-size:10.5px;color:var(--t3);margin-top:2px">最后失败：连接超时</div>
+                  </div>
+                  <button class="btn btn--quiet btn--sm" style="height:32px">恢复</button>
+                </div>
+              </div>
+              <div style="padding:14px 20px 0">
+                <div class="note note--info">
+                  <svg class="ic ic--16" style="flex:0 0 auto;margin-top:1px"><use href="#i-info"/></svg>
+                  <span>订阅每天自动体检一次，连续 3 次失败的源会被禁用；重新启用后可再次参与体检。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">14</span>订阅管理 Subscriptions</span>
+          <span class="frame__note">订阅卡按来源类型着色图标（链接/文件），操作按钮下移整行避免与文案抢宽度；不可用操作给出原因而非单纯禁用</span>
+        </figcaption>
+      </figure>
+
+      <!-- 15 导入订阅 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar appbar--sub">
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-back"/></svg></button>
+              <h1 class="appbar__title">导入订阅</h1>
+            </div>
+            <div class="scroll">
+              <div style="padding:0 20px">
+                <div class="seg"><span class="is-on">从链接导入</span><span>从文件导入</span></div>
+                <div class="input" style="margin-top:12px">
+                  <svg class="ic ic--16" style="color:var(--t3)"><use href="#i-link"/></svg>
+                  <span style="flex:1;font-size:13px;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">https://tvbox.example.com/main.json</span>
+                  <span style="font-size:12px;color:var(--brand);font-weight:600">获取</span>
+                </div>
+                <!-- 汇总 -->
+                <div class="card" style="margin-top:14px;padding:14px">
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <span style="font-size:13px;font-weight:600;color:var(--t1);flex:1">解析完成</span>
+                    <span style="font-size:11.5px;color:var(--brand);font-weight:600;cursor:pointer">全选</span>
+                  </div>
+                  <div style="display:flex;gap:16px;margin-top:10px;font-family:var(--num)">
+                    <div><div style="font-size:18px;font-weight:700;color:var(--t1)">12</div><div style="font-size:10px;color:var(--t3);margin-top:1px">共发现</div></div>
+                    <div><div style="font-size:18px;font-weight:700;color:var(--ok)">9</div><div style="font-size:10px;color:var(--t3);margin-top:1px">可导入</div></div>
+                    <div><div style="font-size:18px;font-weight:700;color:var(--warn)">3</div><div style="font-size:10px;color:var(--t3);margin-top:1px">将跳过</div></div>
+                  </div>
+                </div>
+                <!-- 逐条 -->
+                <div style="margin-top:12px;display:flex;flex-direction:column;gap:7px">
+                  <div style="display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:12px;background:var(--bg-2);border:1px solid rgba(240,168,46,.3)">
+                    <div style="width:19px;height:19px;border-radius:6px;background:var(--brand);display:grid;place-items:center;color:var(--brand-ink)"><svg class="ic ic--12" style="stroke-width:3"><use href="#i-check"/></svg></div>
+                    <div style="flex:1;min-width:0">
+                      <div style="font-size:12.5px;font-weight:600;color:var(--t1)">南瓜影视</div>
+                      <div style="font-size:10.5px;color:var(--t3);margin-top:2px">CMS · 6 条线路</div>
+                    </div>
+                    <span class="tag tag--ok">可导入</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:12px;background:var(--bg-2);border:1px solid var(--line)">
+                    <div style="width:19px;height:19px;border-radius:6px;background:var(--brand);display:grid;place-items:center;color:var(--brand-ink)"><svg class="ic ic--12" style="stroke-width:3"><use href="#i-check"/></svg></div>
+                    <div style="flex:1;min-width:0">
+                      <div style="font-size:12.5px;font-weight:600;color:var(--t1)">小苹果资源</div>
+                      <div style="font-size:10.5px;color:var(--t3);margin-top:2px">爬虫 · jar 依赖 2 个</div>
+                    </div>
+                    <span class="tag tag--ok">可导入</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:12px;background:var(--bg-2);border:1px solid var(--line);opacity:.55">
+                    <div style="width:19px;height:19px;border-radius:6px;border:1.5px solid var(--line-2)"></div>
+                    <div style="flex:1;min-width:0">
+                      <div style="font-size:12.5px;font-weight:600;color:var(--t1)">旧站接口</div>
+                      <div style="font-size:10.5px;color:var(--bad);margin-top:2px">与现有源重复</div>
+                    </div>
+                    <span class="tag tag--warn">跳过</span>
+                  </div>
+                </div>
+                <div class="note" style="margin-top:12px">
+                  <svg class="ic ic--16" style="flex:0 0 auto;margin-top:1px"><use href="#i-alert"/></svg>
+                  <div style="flex:1">
+                    <div style="font-weight:600;margin-bottom:2px">3 个源将被跳过</div>
+                    <div style="font-size:11px;opacity:.85;line-height:1.6">2 个与现有源重复 · 1 个缺少可解析的接口地址</div>
+                  </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:16px">
+                  <span style="font-size:12px;color:var(--t2)">同名源处理</span>
+                  <span style="flex:1"></span>
+                  <span class="chip" style="height:28px;font-size:11.5px">覆盖 <svg class="ic ic--12"><use href="#i-chevdown"/></svg></span>
+                </div>
+              </div>
+            </div>
+            <div style="padding:12px 20px 22px;border-top:1px solid var(--line)">
+              <button class="btn btn--primary btn--block">导入 9 个源</button>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">15</span>导入订阅 Import</span>
+          <span class="frame__note">汇总用大数字三栏（共发现/可导入/将跳过）；每条预览左侧是方形复选框，跳过项整行降透明度并写明原因</span>
+        </figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <!-- ============ 系统页 ============ -->
+  <section class="sec" id="sec-sys">
+    <div class="sec__head">
+      <h1 class="sec__title">系统页</h1>
+      <span class="sec__tag">System</span>
+    </div>
+    <p class="sec__desc">
+      「我的」把数据概览做成品牌色渐变卡，分组内行高统一 52px、值靠右对齐；引导页把合规要点拆成带序号的条目，
+      主按钮固定在底部安全区上方；备份页把「导出/导入」拆成两张明确动作卡。
+    </p>
+    <div class="frames">
+
+      <!-- 16 我的 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar">
+              <h1 class="appbar__title">我的</h1>
+              <span class="appbar__spacer"></span>
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-gear"/></svg></button>
+            </div>
+            <div class="scroll scroll--tab">
+              <!-- 概览 -->
+              <div style="margin:0 20px;padding:14px;border-radius:18px;background:linear-gradient(145deg,rgba(240,168,46,.16),rgba(240,168,46,.03) 60%,transparent);border:1px solid rgba(240,168,46,.22)">
+                <div style="display:flex;align-items:center;gap:11px">
+                  <div style="width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,#FFC761,#F0A82E 55%,#D98A12);display:grid;place-items:center;color:#170F00">
+                    <svg class="ic ic--22"><use href="#i-film"/></svg>
+                  </div>
+                  <div style="flex:1">
+                    <div style="font-size:15px;font-weight:700;color:var(--t1)">PeanutMov</div>
+                    <div style="font-size:11px;color:var(--t3);margin-top:1px;font-family:var(--num)">v1.8.0 · 本地优先</div>
+                  </div>
+                  <svg class="ic ic--16" style="color:var(--t3)"><use href="#i-chevron"/></svg>
+                </div>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:15px;padding-top:14px;border-top:1px solid rgba(255,255,255,.08)">
+                  <div><div style="font-size:19px;font-weight:700;color:var(--t1);font-family:var(--num)">12</div><div style="font-size:10.5px;color:var(--t3);margin-top:1px">片源</div></div>
+                  <div><div style="font-size:19px;font-weight:700;color:var(--t1);font-family:var(--num)">48</div><div style="font-size:10.5px;color:var(--t3);margin-top:1px">收藏</div></div>
+                  <div><div style="font-size:19px;font-weight:700;color:var(--t1);font-family:var(--num)">136</div><div style="font-size:10.5px;color:var(--t3);margin-top:1px">历史</div></div>
+                </div>
+              </div>
+
+              <div style="padding:12px 20px 4px;font-size:11px;font-weight:600;color:var(--t3);letter-spacing:.06em">内容</div>
+              <div style="padding:0 20px">
+                <div class="card" style="overflow:hidden">
+                  <div class="lrow" style="padding:13px 14px"><svg class="ic ic--16" style="color:var(--brand)"><use href="#i-folder"/></svg><span style="flex:1;font-size:13.5px;color:var(--t1)">片源管理</span><span style="font-size:12px;color:var(--t3);font-family:var(--num)">12</span><svg class="ic ic--14" style="color:var(--t3)"><use href="#i-chevron"/></svg></div>
+                  <div style="height:1px;background:var(--line);margin-left:42px"></div>
+                  <div class="lrow" style="padding:13px 14px"><svg class="ic ic--16" style="color:var(--info)"><use href="#i-clock"/></svg><span style="flex:1;font-size:13.5px;color:var(--t1)">观看历史</span><span style="font-size:12px;color:var(--t3);font-family:var(--num)">136</span><svg class="ic ic--14" style="color:var(--t3)"><use href="#i-chevron"/></svg></div>
+                  <div style="height:1px;background:var(--line);margin-left:42px"></div>
+                  <div class="lrow" style="padding:13px 14px"><svg class="ic ic--16" style="color:var(--bad)"><use href="#i-heart"/></svg><span style="flex:1;font-size:13.5px;color:var(--t1)">我的收藏</span><span style="font-size:12px;color:var(--t3);font-family:var(--num)">48</span><svg class="ic ic--14" style="color:var(--t3)"><use href="#i-chevron"/></svg></div>
+                </div>
+              </div>
+
+              <div style="padding:12px 20px 4px;font-size:11px;font-weight:600;color:var(--t3);letter-spacing:.06em">播放</div>
+              <div style="padding:0 20px">
+                <div class="card" style="overflow:hidden">
+                  <div class="lrow" style="padding:13px 14px"><span style="flex:1;font-size:13.5px;color:var(--t1)">默认倍速</span><span style="font-size:12.5px;color:var(--brand);font-family:var(--num);font-weight:600">1.0x</span><svg class="ic ic--14" style="color:var(--t3)"><use href="#i-chevron"/></svg></div>
+                  <div style="height:1px;background:var(--line);margin-left:14px"></div>
+                  <div class="lrow" style="padding:11px 14px"><span style="flex:1;font-size:13.5px;color:var(--t1)">自动连播下一集</span><div class="sw is-on"></div></div>
+                  
+                </div>
+              </div>
+
+              <div style="padding:12px 20px 4px;font-size:11px;font-weight:600;color:var(--t3);letter-spacing:.06em">外观与数据</div>
+              <div style="padding:0 20px">
+                <div class="card" style="overflow:hidden">
+                  <div class="lrow" style="padding:13px 14px"><span style="flex:1;font-size:13.5px;color:var(--t1)">主题</span><span style="font-size:12.5px;color:var(--t3)">深色</span><svg class="ic ic--14" style="color:var(--t3)"><use href="#i-chevron"/></svg></div>
+                  <div style="height:1px;background:var(--line);margin-left:14px"></div>
+                  <div class="lrow" style="padding:13px 14px"><span style="flex:1;font-size:13.5px;color:var(--t1)">数据备份与恢复</span><svg class="ic ic--14" style="color:var(--t3)"><use href="#i-chevron"/></svg></div>
+                </div>
+              </div>
+              <div style="padding:10px 20px 18px;text-align:center">
+                <div style="font-size:11.5px;color:var(--bad);font-weight:500;cursor:pointer">清空全部数据</div>
+                <div style="font-size:10.5px;color:var(--t3);line-height:1.6;margin-top:8px">数据仅保存在本机</div>
+              </div>
+            </div>
+            <div class="tabfade"></div>
+            <div class="tabbar">
+              <div class="tab"><svg class="ic ic--22"><use href="#i-home"/></svg><span>首页</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-grid"/></svg><span>媒体库</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-live"/></svg><span>直播</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-download"/></svg><span>下载</span><span class="tab__dot">3</span></div>
+              <div class="tab is-on"><svg class="ic ic--22"><use href="#i-user"/></svg><span>我的</span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">16</span>我的 Settings</span>
+          <span class="frame__note">顶部概览卡把「源/收藏/历史」三个数字做成品牌色渐变卡；分组用 11px 字距放大的小标题，行内左图标右值</span>
+        </figcaption>
+      </figure>
+
+      <!-- 17 备份 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar appbar--sub">
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-back"/></svg></button>
+              <h1 class="appbar__title">数据备份与恢复</h1>
+            </div>
+            <div class="scroll">
+              <div style="padding:4px 20px">
+                <div class="card" style="padding:15px">
+                  <div style="display:flex;align-items:center;gap:9px">
+                    <div style="width:30px;height:30px;border-radius:9px;background:var(--brand-soft);display:grid;place-items:center;color:var(--brand)"><svg class="ic ic--16"><use href="#i-download"/></svg></div>
+                    <div style="flex:1"><div style="font-size:13.5px;font-weight:600;color:var(--t1)">导出备份</div><div style="font-size:10.5px;color:var(--t3);margin-top:1px">源、收藏、历史、下载记录</div></div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px;margin-top:13px;padding-top:12px;border-top:1px solid var(--line)">
+                    <div style="flex:1"><div style="font-size:12.5px;color:var(--t1)">包含密码与 Token</div><div style="font-size:10.5px;color:var(--warn);margin-top:2px">明文存储，请勿分享该文件</div></div>
+                    <div class="sw"></div>
+                  </div>
+                  <button class="btn btn--primary btn--block btn--sm" style="margin-top:13px">导出备份文件</button>
+                </div>
+
+                <div class="card" style="padding:15px;margin-top:12px">
+                  <div style="display:flex;align-items:center;gap:9px">
+                    <div style="width:30px;height:30px;border-radius:9px;background:var(--info-soft);display:grid;place-items:center;color:var(--info)"><svg class="ic ic--16"><use href="#i-file"/></svg></div>
+                    <div style="flex:1"><div style="font-size:13.5px;font-weight:600;color:var(--t1)">导入备份</div><div style="font-size:10.5px;color:var(--t3);margin-top:1px">从 JSON 文件恢复</div></div>
+                  </div>
+                  <div class="dropzone" style="margin-top:13px;padding:20px 14px">
+                    <svg class="ic ic--22" style="color:var(--t3)"><use href="#i-file"/></svg>
+                    <span style="font-size:12px;color:var(--t2)">选择备份 JSON 文件</span>
+                    <span style="font-size:10.5px;color:var(--t3)">或拖拽到此处</span>
+                  </div>
+                  <div style="display:flex;gap:14px;margin-top:12px;font-family:var(--num);font-size:11px;color:var(--t3);flex-wrap:wrap">
+                    <span>源 12</span><span>收藏 48</span><span>历史 136</span><span>下载 4</span><span>schema v3</span>
+                  </div>
+                  <div class="seg" style="margin-top:12px"><span class="is-on">合并导入</span><span>覆盖导入</span></div>
+                  <button class="btn btn--ghost btn--block btn--sm" style="margin-top:12px">开始导入</button>
+                </div>
+
+                <div class="note" style="margin-top:14px">
+                  <svg class="ic ic--16" style="flex:0 0 auto;margin-top:1px"><use href="#i-info"/></svg>
+                  <span>备份不含视频文件本身；覆盖导入会删除现有数据，建议先导出一次。</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">17</span>备份与恢复 Backup</span>
+          <span class="frame__note">导出/导入拆成两张独立动作卡，各自有图标与色相；覆盖导入前用黄色提示条预警，不靠弹窗吓人</span>
+        </figcaption>
+      </figure>
+
+      <!-- 18 引导 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="scroll" style="display:flex;flex-direction:column">
+              <div style="flex:1;display:flex;flex-direction:column;justify-content:flex-start;padding:44px 24px 0">
+                <div style="width:60px;height:60px;border-radius:19px;background:linear-gradient(135deg,#FFC761,#F0A82E 55%,#D98A12);display:grid;place-items:center;color:#170F00;box-shadow:0 14px 34px rgba(240,168,46,.32)">
+                  <svg class="ic" style="width:30px;height:30px"><use href="#i-film"/></svg>
+                </div>
+                <h1 style="margin:20px 0 0;font-size:29px;font-weight:700;letter-spacing:-.03em;color:var(--t1);line-height:1.2">PeanutMov</h1>
+                <p style="margin:9px 0 0;font-size:14px;line-height:1.7;color:var(--t2)">把你拥有的影视内容<br />收进一个海报墙</p>
+                <div style="display:flex;flex-direction:column;gap:12px;margin-top:28px">
+                  <div style="display:flex;align-items:center;gap:10px">
+                    <div style="width:28px;height:28px;border-radius:9px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;color:var(--brand);flex:0 0 auto"><svg class="ic ic--16"><use href="#i-db"/></svg></div>
+                    <span style="font-size:12.5px;color:var(--t2)">本地优先，数据只留在本机</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px">
+                    <div style="width:28px;height:28px;border-radius:9px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;color:var(--info);flex:0 0 auto"><svg class="ic ic--16"><use href="#i-grid"/></svg></div>
+                    <span style="font-size:12.5px;color:var(--t2)">多源聚合，一个搜索找遍全部片源</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:10px">
+                    <div style="width:28px;height:28px;border-radius:9px;background:var(--bg-2);border:1px solid var(--line);display:grid;place-items:center;color:var(--ok);flex:0 0 auto"><svg class="ic ic--16"><use href="#i-download"/></svg></div>
+                    <span style="font-size:12.5px;color:var(--t2)">离线可看，下载后无需网络</span>
+                  </div>
+                </div>
+              </div>
+              <div style="padding:0 20px 18px">
+                <div class="card" style="padding:16px">
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:13px">
+                    <svg class="ic ic--16" style="color:var(--brand)"><use href="#i-shield"/></svg>
+                    <span style="font-size:13px;font-weight:600;color:var(--t1)">请先阅读并确认</span>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:11px">
+                    <div style="display:flex;gap:9px"><span style="width:17px;height:17px;flex:0 0 auto;border-radius:5px;background:var(--brand-soft);color:var(--brand);font-size:10px;font-weight:700;display:grid;place-items:center;font-family:var(--num);margin-top:1px">1</span><span style="font-size:12px;line-height:1.65;color:var(--t2)">本 App 不提供、不内置任何影视资源</span></div>
+                    <div style="display:flex;gap:9px"><span style="width:17px;height:17px;flex:0 0 auto;border-radius:5px;background:var(--brand-soft);color:var(--brand);font-size:10px;font-weight:700;display:grid;place-items:center;font-family:var(--num);margin-top:1px">2</span><span style="font-size:12px;line-height:1.65;color:var(--t2)">所有内容来自你自行添加的源或本地文件</span></div>
+                    <div style="display:flex;gap:9px"><span style="width:17px;height:17px;flex:0 0 auto;border-radius:5px;background:var(--brand-soft);color:var(--brand);font-size:10px;font-weight:700;display:grid;place-items:center;font-family:var(--num);margin-top:1px">3</span><span style="font-size:12px;line-height:1.65;color:var(--t2)">请确保你对所访问的内容拥有合法权利</span></div>
+                    <div style="display:flex;gap:9px"><span style="width:17px;height:17px;flex:0 0 auto;border-radius:5px;background:var(--brand-soft);color:var(--brand);font-size:10px;font-weight:700;display:grid;place-items:center;font-family:var(--num);margin-top:1px">4</span><span style="font-size:12px;line-height:1.65;color:var(--t2)">数据仅保存在本机，不上传任何服务器</span></div>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:4px;margin-top:14px;font-size:11.5px;color:var(--brand);font-weight:500">查看完整声明 <svg class="ic ic--12"><use href="#i-chevron"/></svg></div>
+                </div>
+              </div>
+              <div style="padding:0 20px 28px;display:flex;flex-direction:column;gap:9px">
+                <button class="btn btn--primary btn--block">我已阅读并同意</button>
+                <button class="btn btn--quiet btn--block">不同意，退出</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">18</span>引导 / 合规门禁 Welcome</span>
+          <span class="frame__note">品牌区居中留白，合规 4 条用序号方块提升可扫读性；双按钮固定在底部，主次分明</span>
+        </figcaption>
+      </figure>
+
+      <!-- 19 关于 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar appbar--sub">
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-back"/></svg></button>
+              <h1 class="appbar__title">关于</h1>
+            </div>
+            <div class="scroll">
+              <div style="display:flex;flex-direction:column;align-items:center;padding:26px 20px 24px">
+                <div style="width:68px;height:68px;border-radius:21px;background:linear-gradient(135deg,#FFC761,#F0A82E 55%,#D98A12);display:grid;place-items:center;color:#170F00;box-shadow:0 14px 34px rgba(240,168,46,.3)">
+                  <svg class="ic" style="width:34px;height:34px"><use href="#i-film"/></svg>
+                </div>
+                <div style="font-size:17px;font-weight:700;color:var(--t1);margin-top:13px">PeanutMov</div>
+                <div style="font-size:11.5px;color:var(--brand);font-family:var(--num);margin-top:3px">v1.8.0 (build 20261031)</div>
+              </div>
+              <div style="padding:0 20px">
+                <div class="card" style="overflow:hidden">
+                  <div class="lrow" style="padding:13px 14px"><svg class="ic ic--16" style="color:var(--brand)"><use href="#i-shield"/></svg><span style="flex:1;font-size:13.5px;color:var(--t1)">合规声明</span><svg class="ic ic--14" style="color:var(--t3)"><use href="#i-chevron"/></svg></div>
+                  <div style="height:1px;background:var(--line);margin-left:42px"></div>
+                  <div class="lrow" style="padding:13px 14px"><svg class="ic ic--16" style="color:var(--info)"><use href="#i-file"/></svg><span style="flex:1;font-size:13.5px;color:var(--t1)">开源许可</span><svg class="ic ic--14" style="color:var(--t3)"><use href="#i-chevron"/></svg></div>
+                  <div style="height:1px;background:var(--line);margin-left:42px"></div>
+                  <div class="lrow" style="padding:13px 14px"><svg class="ic ic--16" style="color:var(--vio)"><use href="#i-cast"/></svg><span style="flex:1;font-size:13.5px;color:var(--t1)">投屏能力</span><span style="font-size:12px;color:var(--t3)">系统分享</span><svg class="ic ic--14" style="color:var(--t3)"><use href="#i-chevron"/></svg></div>
+                  <div style="height:1px;background:var(--line);margin-left:42px"></div>
+                  <div class="lrow" style="padding:13px 14px"><svg class="ic ic--16" style="color:var(--ok)"><use href="#i-mail"/></svg><span style="flex:1;font-size:13.5px;color:var(--t1)">问题反馈</span><span style="font-size:11.5px;color:var(--t3)">邮件</span><svg class="ic ic--14" style="color:var(--t3)"><use href="#i-chevron"/></svg></div>
+                </div>
+                <div class="note note--info" style="margin-top:14px">
+                  <svg class="ic ic--16" style="flex:0 0 auto;margin-top:1px"><use href="#i-info"/></svg>
+                  <span>投屏依赖系统分享与设备能力，Android 与 Web 表现不同；Web 端不支持投屏。</span>
+                </div>
+              </div>
+              <div style="padding:22px 20px;text-align:center;font-size:10.5px;color:var(--t3);line-height:1.8">
+                Made for your own library.<br />本地优先 · 不收集任何数据
+              </div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">19</span>关于 About</span>
+          <span class="frame__note">Logo 与版本居中，设置行统一 42px 图标缩进；能力限制用 info 条说明，而不是藏在 Sheet 里</span>
+        </figcaption>
+      </figure>
+
+      <!-- 20 空态 / 错误 -->
+      <figure class="frame">
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span class="statusbar__icons">
+              <svg class="ic" viewBox="0 0 24 24" style="stroke-width:2.4"><path d="M4 18v-3M9 18v-6M14 18v-9M19 18V6"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><path d="M3.5 9a13 13 0 0 1 17 0M6.6 12.4a8.6 8.6 0 0 1 10.8 0M9.8 15.8a4.2 4.2 0 0 1 4.4 0"/></svg>
+              <svg class="ic" viewBox="0 0 24 24"><rect x="2.5" y="8" width="17" height="8.5" rx="2.4"/><rect x="4.5" y="10" width="11" height="4.5" rx="1.2" fill="currentColor" stroke="none"/><path d="M21 11v2.4"/></svg>
+            </span></div>
+            <div class="appbar">
+              <h1 class="appbar__title">媒体库</h1>
+              <span class="appbar__spacer"></span>
+              <button class="ibtn ibtn--plain"><svg class="ic"><use href="#i-search"/></svg></button>
+            </div>
+            <div class="scroll scroll--tab">
+              <div style="padding:0 20px">
+                <div class="note note--bad">
+                  <svg class="ic ic--16" style="flex:0 0 auto;margin-top:1px"><use href="#i-alert"/></svg>
+                  <div style="flex:1">
+                    <div style="font-weight:600;margin-bottom:3px">当前源无法访问</div>
+                    <div style="font-size:11.5px;opacity:.85;line-height:1.6">接口返回 503，可能是源站维护或地址失效。</div>
+                    <div style="display:flex;gap:8px;margin-top:9px">
+                      <button class="btn btn--quiet btn--sm" style="height:30px;border-color:rgba(251,113,133,.35);color:var(--bad)">重试</button>
+                      <button class="btn btn--quiet btn--sm" style="height:30px">切换其他源</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="empty" style="padding-top:60px">
+                <div class="empty__ico"><svg class="ic ic--28"><use href="#i-wifioff"/></svg></div>
+                <div class="empty__t">还没有可用的片源</div>
+                <div class="empty__d">添加一个 CMS 接口或导入订阅，就能开始建立你的海报墙</div>
+                <div style="display:flex;gap:9px;margin-top:12px">
+                  <button class="btn btn--primary btn--sm">新增源</button>
+                  <button class="btn btn--ghost btn--sm">导入订阅</button>
+                </div>
+              </div>
+              <div style="padding:0 20px;margin-top:14px">
+                <div class="card" style="padding:13px;display:flex;gap:10px;align-items:flex-start">
+                  <svg class="ic ic--16" style="color:var(--t3);flex:0 0 auto;margin-top:1px"><use href="#i-info"/></svg>
+                  <div style="font-size:11.5px;color:var(--t3);line-height:1.65">离线状态下仅显示已缓存内容。恢复网络后可下拉刷新。</div>
+                </div>
+              </div>
+            </div>
+            <div class="tabfade"></div>
+            <div class="tabbar">
+              <div class="tab"><svg class="ic ic--22"><use href="#i-home"/></svg><span>首页</span></div>
+              <div class="tab is-on"><svg class="ic ic--22"><use href="#i-grid"/></svg><span>媒体库</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-live"/></svg><span>直播</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-download"/></svg><span>下载</span><span class="tab__dot">3</span></div>
+              <div class="tab"><svg class="ic ic--22"><use href="#i-user"/></svg><span>我的</span></div>
+            </div>
+          </div>
+        </div>
+        <figcaption class="frame__cap">
+          <span class="frame__name"><span class="frame__idx">20</span>错误态 + 空态</span>
+          <span class="frame__note">错误条给出具体原因与两个出口（重试 / 换源）；空态用图标 + 一句解释 + 双按钮，避免只有一句「暂无数据」</span>
+        </figcaption>
+      </figure>
+
+    </div>
+  </section>
+
+  <div style="max-width:900px;margin:0 auto;padding:8px 0 40px;color:#6B7480;font-size:12px;line-height:1.9;border-top:1px solid rgba(255,255,255,.08)">
+    <p style="margin:0 0 6px;color:#9BA3AF;font-size:12.5px;font-weight:600">规范核对（ui-ux-pro-max 交付清单）</p>
+    <p style="margin:0">图标统一 SVG 线性（24 viewBox，无 emoji）· 所有可点元素 44px 命中区 · 正文对比度 ≥4.5:1 · 动效 150–300ms 仅 transform/opacity ·
+    尊重 prefers-reduced-motion · 状态不单靠颜色（配图标或文案）· 375px 无横向滚动 · 深浅两套主题均已验证</p>
+  </div>
+
+</main>
+
+<script>
+(function(){
+  var html = document.documentElement;
+  var btn = document.getElementById('themeBtn');
+  var txt = document.getElementById('themeTxt');
+  btn.addEventListener('click', function(){
+    var next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    txt.textContent = next === 'dark' ? '浅色预览' : '深色预览';
+  });
+
+  var pills = Array.prototype.slice.call(document.querySelectorAll('.navpill'));
+  pills.forEach(function(p){
+    p.addEventListener('click', function(){
+      var el = document.getElementById(p.dataset.go);
+      if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
+      pills.forEach(function(x){ x.classList.remove('is-on'); });
+      p.classList.add('is-on');
+    });
+  });
+})();
+</script>
+</body>
+</html>

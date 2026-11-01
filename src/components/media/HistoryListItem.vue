@@ -87,9 +87,10 @@ const emit = defineEmits<{
   gap: var(--space-3);
   flex: 1 1 auto;
   min-width: 0;
-  min-height: 88px;
+  min-height: 82px;
   padding: var(--space-3) 0;
   text-align: left;
+  border-radius: var(--radius-md);
 }
 
 .history-row__main:active {
@@ -98,8 +99,8 @@ const emit = defineEmits<{
 
 .history-row__poster {
   flex: 0 0 auto;
-  width: 48px;
-  border-radius: var(--radius-sm);
+  width: 46px;
+  border-radius: 9px;
   overflow: hidden;
 }
 
@@ -112,13 +113,13 @@ const emit = defineEmits<{
 }
 
 .history-row__title {
-  font: var(--text-label-strong);
+  font: var(--font-weight-semibold) 14px / 1.35 var(--font-family-base);
   color: var(--color-text-primary);
 }
 
 .history-row__sub {
-  font: var(--text-caption);
-  color: var(--color-text-secondary);
+  font: var(--font-weight-regular) 11.5px / 1.4 var(--font-family-base);
+  color: var(--color-text-tertiary);
 }
 
 .history-row__progress {
@@ -138,7 +139,7 @@ const emit = defineEmits<{
 }
 
 .history-row__time {
-  font: var(--text-caption);
+  font: var(--font-weight-regular) 11px / 1.4 var(--font-family-number);
   color: var(--color-text-tertiary);
 }
 

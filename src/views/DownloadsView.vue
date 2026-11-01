@@ -326,7 +326,7 @@ function goLibrary(): void {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-3) var(--layout-page-padding-x) var(--space-6);
+  padding: var(--space-3) var(--layout-page-padding-x) var(--layout-tabbar-safe);
 }
 
 .summary-skeleton {

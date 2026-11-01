@@ -413,7 +413,7 @@ async function removeRecord(record: LiveRecord): Promise<void> {
 
 .live-body {
   flex: 1 1 auto;
-  padding-bottom: calc(var(--space-6) + var(--safe-bottom));
+  padding-bottom: var(--layout-tabbar-safe);
 }
 
 .live-loading {

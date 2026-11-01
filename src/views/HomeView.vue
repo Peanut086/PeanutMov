@@ -18,9 +18,12 @@ import AppHeader from '@/components/layout/AppHeader.vue';
 import SafeArea from '@/components/layout/SafeArea.vue';
 import OfflineBanner from '@/components/common/OfflineBanner.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
-import PosterGrid from '@/components/media/PosterGrid.vue';
+import PosterImage from '@/components/common/PosterImage.vue';
+import PosterCard from '@/components/media/PosterCard.vue';
 import ContinueWatchingRow from '@/components/media/ContinueWatchingRow.vue';
 import SkeletonPoster from '@/components/media/SkeletonPoster.vue';
+import IconPlay from '@/components/icons/IconPlay.vue';
+import { formatClock } from '@/shared/time';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
@@ -49,6 +52,27 @@ const errorMessage = computed(() => localError.value ?? library.homeError?.messa
 
 const continueItems = computed(() => history.continueWatching.slice(0, 10));
 const recentItems = computed(() => library.homeRecent);
+
+/** 继续观看第一项升为 16:9 主卡（一屏内最醒目的入口） */
+const heroItem = computed(() => continueItems.value[0] ?? null);
+const restContinue = computed(() => continueItems.value.slice(1));
+const heroProgress = computed(() => {
+  const rec = heroItem.value;
+  if (!rec || !rec.durationSec) return 0;
+  return Math.min(1, Math.max(0, rec.positionSec / rec.durationSec));
+});
+const heroMeta = computed(() => {
+  const rec = heroItem.value;
+  if (!rec) return '';
+  const parts: string[] = [];
+  if (rec.episodeNumber !== null) parts.push(`第 ${rec.episodeNumber} 集`);
+  const remain = Math.max(0, rec.durationSec - rec.positionSec);
+  if (remain > 0) parts.push(`剩 ${formatClock(remain)}`);
+  return parts.join(' · ');
+});
+
+/** 首页横滑流：取前 12 条，避免一次性渲染过多 */
+const recentRow = computed(() => recentItems.value.slice(0, 12));
 
 const downloadedIds = computed(() =>
   downloads.tasks.filter((t) => t.status === 'completed').map((t) => t.mediaId),
@@ -142,17 +166,16 @@ async function retry(): Promise<void> {
 
       <!-- loading 骨架 -->
       <template v-if="initialLoading">
+        <div class="home-hero home-hero--skeleton">
+          <SkeletonPoster />
+        </div>
         <section class="home-section">
-          <h2 class="section-title">继续观看</h2>
-          <div class="home-skeleton-row">
-            <div v-for="n in 3" :key="`cw-${n}`" class="home-skeleton-card">
+          <h2 class="section-title">最近添加</h2>
+          <div class="home-rail">
+            <div v-for="n in 3" :key="`sk-${n}`" class="home-rail__item">
               <SkeletonPoster />
             </div>
           </div>
-        </section>
-        <section class="home-section">
-          <h2 class="section-title">最近添加</h2>
-          <PosterGrid :items="[]" loading :skeleton-count="6" />
         </section>
       </template>
 
@@ -176,13 +199,39 @@ async function retry(): Promise<void> {
 
       <!-- success -->
       <template v-else>
-        <section v-if="continueItems.length > 0" class="home-section" aria-labelledby="home-continue">
+        <!-- 继续观看大卡：海报 + 渐变遮罩 + 进度 + 播放按钮 -->
+        <button
+          v-if="heroItem"
+          class="home-hero"
+          type="button"
+          :aria-label="`继续观看 ${heroItem.title}`"
+          @click="continuePlay(heroItem)"
+        >
+          <PosterImage :src="heroItem.posterUrl" :alt="heroItem.title" :rounded="false" eager />
+          <span class="home-hero__scrim" aria-hidden="true" />
+
+          <span class="home-hero__tag">继续观看</span>
+          <span class="home-hero__body">
+            <span class="home-hero__text">
+              <span class="home-hero__title truncate-1">{{ heroItem.title }}</span>
+              <span class="home-hero__meta">{{ heroMeta }}</span>
+            </span>
+            <span class="home-hero__play" aria-hidden="true">
+              <IconPlay :size="22" />
+            </span>
+          </span>
+          <span class="home-hero__progress" aria-hidden="true">
+            <span :style="{ width: `${heroProgress * 100}%` }" />
+          </span>
+        </button>
+
+        <section v-if="restContinue.length > 0" class="home-section" aria-labelledby="home-continue">
           <div class="home-section__head">
             <h2 id="home-continue" class="section-title">继续观看</h2>
             <RouterLink class="home-section__link" to="/history">全部历史</RouterLink>
           </div>
           <ContinueWatchingRow
-            :items="continueItems"
+            :items="restContinue"
             @select="continuePlay"
             @remove="removeContinue"
           />
@@ -193,12 +242,15 @@ async function retry(): Promise<void> {
             <h2 id="home-recent" class="section-title">最近添加</h2>
             <RouterLink class="home-section__link" to="/library">全部内容</RouterLink>
           </div>
-          <PosterGrid
-            :items="recentItems"
-            :downloaded-ids="downloadedIds"
-            :progress-map="{}"
-            @select="openDetail"
-          />
+          <div class="home-rail">
+            <div v-for="item in recentRow" :key="item.id" class="home-rail__item">
+              <PosterCard
+                :item="item"
+                :downloaded="downloadedIds.includes(item.id)"
+                @select="openDetail"
+              />
+            </div>
+          </div>
           <p v-if="library.homeState === 'refreshing'" class="home-refreshing">
             <LoadingSpinner :size="16" />
             正在刷新…
@@ -216,7 +268,7 @@ async function retry(): Promise<void> {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-3) var(--layout-page-padding-x) var(--space-6);
+  padding: var(--space-3) var(--layout-page-padding-x) var(--layout-tabbar-safe);
 }
 
 .home-error {
@@ -264,15 +316,146 @@ async function retry(): Promise<void> {
   align-items: center;
 }
 
-.home-skeleton-row {
-  display: flex;
-  gap: var(--space-3);
+/* ---------- 继续观看大卡 ---------- */
+.home-hero {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 18px;
   overflow: hidden;
+  text-align: left;
+  background-color: var(--color-bg-surface);
+  box-shadow: var(--shadow-2);
+  transition: transform var(--duration-fast) var(--ease-standard);
 }
 
-.home-skeleton-card {
+.home-hero:active {
+  transform: scale(0.99);
+}
+
+/* 海报组件默认 2:3，这里改成铺满 16:9 容器 */
+.home-hero :deep(.poster-image) {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+}
+
+.home-hero--skeleton {
+  background-color: var(--color-bg-skeleton);
+}
+
+.home-hero--skeleton :deep(.poster-image) {
+  position: absolute;
+  inset: 0;
+  aspect-ratio: auto;
+  height: 100%;
+}
+
+.home-hero__scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.18) 46%, transparent 72%);
+  pointer-events: none;
+}
+
+.home-hero__tag {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+  height: 20px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  background-color: var(--color-brand-soft);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  color: var(--color-brand-strong);
+  font: var(--font-weight-semibold) 10.5px / 1 var(--font-family-number);
+}
+
+.home-hero__body {
+  position: absolute;
+  left: var(--space-4);
+  right: var(--space-4);
+  bottom: var(--space-4);
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.home-hero__text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.home-hero__title {
+  font: var(--font-weight-bold) 18px / 1.25 var(--font-family-base);
+  letter-spacing: var(--letter-spacing-tight);
+  color: #ffffff;
+}
+
+.home-hero__meta {
+  font: var(--font-weight-regular) 11.5px / 1.3 var(--font-family-number);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.home-hero__play {
   flex: 0 0 auto;
-  width: 132px;
+  width: 42px;
+  height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-card);
+  background: var(--gradient-brand-cta);
+  color: var(--color-brand-ink);
+  box-shadow: var(--shadow-brand);
+}
+
+.home-hero__progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background-color: rgba(255, 255, 255, 0.22);
+}
+
+.home-hero__progress > span {
+  display: block;
+  height: 100%;
+  background-color: var(--color-brand);
+  border-radius: 0 2px 2px 0;
+}
+
+/* ---------- 横滑流 ---------- */
+.home-rail {
+  display: flex;
+  gap: var(--space-3);
+  overflow-x: auto;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  /* 让首尾卡片贴到页面边缘，滚动时不出白边 */
+  margin: 0 calc(var(--layout-page-padding-x) * -1);
+  padding: 0 var(--layout-page-padding-x);
+}
+
+.home-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.home-rail__item {
+  flex: 0 0 auto;
+  width: 104px;
+  scroll-snap-align: start;
 }
 
 .home-empty {

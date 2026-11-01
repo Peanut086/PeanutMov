@@ -116,7 +116,8 @@ function recover(): void {
 }
 
 .app-content--tabbar {
-  padding-bottom: calc(var(--layout-tabbar-height) + var(--safe-bottom));
+  /* 底部避让由各 Tab 页滚动容器负责（--layout-tabbar-safe），此处不再叠加 */
+  padding-bottom: 0;
 }
 
 /* 进入动画定义在 global.css 的 .route-view（两处同步，二选一改） */

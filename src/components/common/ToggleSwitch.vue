@@ -41,45 +41,51 @@ function toggle(): void {
 </template>
 
 <style scoped>
+/* v2：46×28 轨道 + 20 滑块，开启态用品牌色轨道 + 深色滑块 */
 .switch {
   position: relative;
   flex: 0 0 auto;
-  width: 44px;
-  height: 24px;
+  width: 46px;
+  height: 28px;
   border-radius: var(--radius-full);
-  background-color: var(--color-overlay-track);
-  transition: background-color var(--duration-base) var(--ease-standard);
+  background-color: var(--color-bg-pressed);
+  border: 1px solid var(--color-border-strong);
+  transition: background-color var(--duration-base) var(--ease-standard),
+    border-color var(--duration-base) var(--ease-standard);
 }
 
 /* 命中区 44×44（不改变轨道视觉尺寸） */
 .switch::after {
   content: '';
   position: absolute;
-  inset: -10px 0;
+  inset: -8px 0;
 }
 
 .switch__thumb {
   position: absolute;
-  top: 2px;
-  left: 2px;
+  top: 3px;
+  left: 3px;
   width: 20px;
   height: 20px;
   border-radius: var(--radius-full);
-  background-color: var(--color-text-primary);
-  transition: transform var(--duration-base) var(--ease-standard);
+  background-color: var(--color-text-secondary);
+  transition: transform var(--duration-base) var(--ease-standard),
+    background-color var(--duration-base) var(--ease-standard);
 }
 
 .switch--on {
   background-color: var(--color-brand);
+  border-color: transparent;
 }
 
 .switch--on .switch__thumb {
-  transform: translateX(20px);
-  background-color: #ffffff;
+  transform: translateX(18px);
+  background-color: var(--color-brand-ink);
 }
 
 .switch--disabled {
   background-color: var(--color-overlay-press-strong);
+  border-color: transparent;
 }
 
 .switch--disabled .switch__thumb {

@@ -50,14 +50,16 @@ function choose(opt: SegmentedOption): void {
 </template>
 
 <style scoped>
+/* v2：由胶囊改为圆角矩形（12），选中块用按压层 + 细阴影，更贴近系统分段控件 */
 .segmented {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  height: 36px;
+  height: 38px;
   padding: 3px;
-  border-radius: var(--radius-full);
-  background-color: var(--color-bg-sunken);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-elevated);
+  border: var(--border-default);
 }
 
 .segmented--block {
@@ -72,15 +74,15 @@ function choose(opt: SegmentedOption): void {
 
 .segmented__item {
   min-width: 72px;
-  height: 30px;
+  height: 32px;
   padding: 0 var(--space-3);
-  border-radius: var(--radius-full);
+  border-radius: 9px;
   color: var(--color-text-secondary);
   font: var(--text-label-strong);
   font-family: var(--font-family-base);
   font-size: var(--font-size-14);
   font-weight: var(--font-weight-medium);
-  line-height: 30px;
+  line-height: 32px;
   transition: var(--transition-color);
   white-space: nowrap;
   overflow: hidden;
@@ -88,9 +90,10 @@ function choose(opt: SegmentedOption): void {
 }
 
 .segmented__item--active {
-  background-color: var(--color-bg-elevated);
+  background-color: var(--color-bg-pressed);
   box-shadow: var(--shadow-1);
   color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
 }
 
 .segmented__item:disabled {

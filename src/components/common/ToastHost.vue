@@ -53,7 +53,10 @@ const iconPath: Record<'info' | 'success' | 'error', string> = {
 .toast-host {
   position: fixed;
   left: 50%;
-  bottom: calc(var(--layout-tabbar-height) + var(--safe-bottom) + var(--space-4));
+  /* 悬浮胶囊口径：胶囊高 + 底部间距 + 一点呼吸 */
+  bottom: calc(
+    var(--layout-tabbar-height) + var(--layout-tabbar-gap) + var(--safe-bottom) + var(--space-4)
+  );
   z-index: var(--z-toast);
   width: min(88vw, 420px);
   transform: translateX(-50%);
@@ -72,14 +75,16 @@ const iconPath: Record<'info' | 'success' | 'error', string> = {
   align-items: flex-start;
   gap: var(--space-2);
   width: 100%;
-  min-height: 40px;
+  min-height: 44px;
   padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
-  background-color: var(--color-bg-elevated);
+  border-radius: var(--radius-card);
+  background-color: var(--color-bg-glass-strong);
+  -webkit-backdrop-filter: var(--blur-sheet);
+  backdrop-filter: var(--blur-sheet);
   box-shadow: var(--shadow-3);
-  border: var(--border-default);
+  border: 1px solid var(--color-border-glass);
   color: var(--color-text-primary);
-  font: var(--text-label);
+  font: var(--font-weight-medium) 13px / 1.5 var(--font-family-base);
   text-align: left;
   pointer-events: auto;
 }

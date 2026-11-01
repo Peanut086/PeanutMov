@@ -125,25 +125,27 @@ const advice = computed(() => {
   gap: var(--space-1);
   max-width: 300px;
   margin: 0 auto;
-  padding: var(--space-7) var(--space-4);
+  padding: var(--space-8) var(--space-5);
   text-align: center;
 }
 
 .error-state__art {
-  width: 96px;
-  height: 96px;
-  margin-bottom: var(--space-3);
+  width: 76px;
+  height: 76px;
+  margin-bottom: var(--space-4);
 }
 
 .error-state__title {
-  font: var(--text-body-strong);
+  font: var(--text-title-3);
+  font-size: 15px;
   color: var(--color-text-primary);
 }
 
 .error-state__advice {
   font: var(--text-caption);
+  font-size: 12.5px;
   color: var(--color-text-tertiary);
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 .error-state__detail {
@@ -157,6 +159,6 @@ const advice = computed(() => {
 .error-state__actions {
   display: flex;
   gap: var(--space-3);
-  margin-top: var(--space-4);
+  margin-top: var(--space-5);
 }
 </style>

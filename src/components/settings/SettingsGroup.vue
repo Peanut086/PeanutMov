@@ -26,7 +26,7 @@ withDefaults(defineProps<{ title?: string }>(), { title: '' });
 
 .settings-group__title {
   padding-left: var(--space-1);
-  font: var(--text-caption);
+  font: var(--font-weight-semibold) 11px / 16px var(--font-family-base);
   letter-spacing: var(--letter-spacing-wide);
   color: var(--color-text-tertiary);
 }

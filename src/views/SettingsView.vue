@@ -230,14 +230,35 @@ function go(path: string): void {
       />
 
       <template v-else>
-        <!-- 数据概览 -->
+        <!-- 数据概览：品牌渐变卡，一屏看清规模 -->
         <section class="overview">
-          <p class="overview__line">
-            源 {{ sources.sources.length }} · 收藏 {{ favorites.items.length }} · 历史 {{ history.items.length }}
-          </p>
-          <p class="overview__sub">
-            下载占用 {{ formatBytes(downloads.summary.downloadedBytes) }} · 版本 {{ APP_VERSION }}
-          </p>
+          <div class="overview__head">
+            <div class="overview__logo" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+                <rect x="3" y="4" width="18" height="16" rx="3" />
+                <path d="M8 4v16M16 4v16M3 12h18" />
+              </svg>
+            </div>
+            <div class="overview__id">
+              <span class="overview__name">PeanutMov</span>
+              <span class="overview__version">v{{ APP_VERSION }} · 本地优先</span>
+            </div>
+          </div>
+          <div class="overview__stats">
+            <div class="overview__stat">
+              <span class="overview__num">{{ sources.sources.length }}</span>
+              <span class="overview__label">片源</span>
+            </div>
+            <div class="overview__stat">
+              <span class="overview__num">{{ favorites.items.length }}</span>
+              <span class="overview__label">收藏</span>
+            </div>
+            <div class="overview__stat">
+              <span class="overview__num">{{ history.items.length }}</span>
+              <span class="overview__label">历史</span>
+            </div>
+          </div>
+          <p class="overview__sub">下载占用 {{ formatBytes(downloads.summary.downloadedBytes) }}</p>
         </section>
 
         <SettingsGroup title="内容">
@@ -392,7 +413,7 @@ function go(path: string): void {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 var(--layout-page-padding-x) var(--space-6);
+  padding: 0 var(--layout-page-padding-x) var(--layout-tabbar-safe);
 }
 
 .settings-loading {
@@ -408,21 +429,83 @@ function go(path: string): void {
 .overview {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-3);
   margin-top: var(--space-3);
   padding: var(--space-4);
-  border-radius: var(--radius-lg);
-  background-color: var(--color-bg-surface);
-  border: var(--border-default);
+  border-radius: 18px;
+  background:
+    linear-gradient(145deg, rgba(240, 168, 46, 0.16), rgba(240, 168, 46, 0.03) 58%, transparent),
+    var(--color-bg-surface);
+  border: 1px solid rgba(240, 168, 46, 0.22);
 }
 
-.overview__line {
-  font: var(--text-label-strong);
+.overview__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.overview__logo {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-card);
+  background: var(--gradient-brand-cta);
+  color: var(--color-brand-ink);
+  box-shadow: var(--shadow-brand);
+}
+
+.overview__logo svg {
+  width: 22px;
+  height: 22px;
+}
+
+.overview__id {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.overview__name {
+  font: var(--font-weight-bold) 15px / 1.3 var(--font-family-base);
+  letter-spacing: var(--letter-spacing-tight);
   color: var(--color-text-primary);
 }
 
+.overview__version {
+  font: var(--font-weight-regular) 11px / 1.3 var(--font-family-number);
+  color: var(--color-text-tertiary);
+}
+
+.overview__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.overview__stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.overview__num {
+  font: var(--font-weight-bold) 19px / 1.1 var(--font-family-number);
+  color: var(--color-text-primary);
+}
+
+.overview__label {
+  font: var(--font-weight-regular) 10.5px / 1.3 var(--font-family-base);
+  color: var(--color-text-tertiary);
+}
+
 .overview__sub {
-  font: var(--text-caption);
+  font: var(--font-weight-regular) 11px / 1.4 var(--font-family-number);
   color: var(--color-text-tertiary);
 }
 

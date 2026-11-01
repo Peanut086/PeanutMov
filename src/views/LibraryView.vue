@@ -583,7 +583,7 @@ function openSettings(): void {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 var(--layout-page-padding-x) var(--space-4);
+  padding: 0 var(--layout-page-padding-x) var(--layout-tabbar-safe);
 }
 
 .library-inline-error {

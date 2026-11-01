@@ -120,7 +120,7 @@ const checkedText = computed(() => {
   display: flex;
   align-items: stretch;
   gap: var(--space-2);
-  padding: var(--space-4);
+  padding: var(--space-3);
   border-radius: var(--radius-lg);
   background-color: var(--color-bg-surface);
   border: var(--border-default);
@@ -131,7 +131,7 @@ const checkedText = computed(() => {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-2);
   text-align: left;
 }
 
@@ -139,36 +139,36 @@ const checkedText = computed(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-1);
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .source-card__name {
-  font: var(--text-body-strong);
+  font: var(--font-weight-semibold) 13.5px / 1.35 var(--font-family-base);
   color: var(--color-text-primary);
   max-width: 100%;
 }
 
 .source-card__type {
   height: 20px;
-  padding: 0 6px;
+  padding: 0 7px;
   display: inline-flex;
   align-items: center;
-  border-radius: var(--radius-sm);
+  border-radius: 5px;
   background-color: var(--color-overlay-neutral);
   color: var(--color-text-secondary);
-  font: var(--text-caption);
+  font: var(--font-weight-semibold) 10.5px / 1 var(--font-family-number);
 }
 
 .source-card__flag {
   height: 20px;
-  padding: 0 6px;
+  padding: 0 7px;
   display: inline-flex;
   align-items: center;
-  border-radius: var(--radius-sm);
+  border-radius: 5px;
   background-color: var(--color-overlay-neutral);
   color: var(--color-text-tertiary);
-  font: var(--text-caption);
+  font: var(--font-weight-semibold) 10.5px / 1 var(--font-family-number);
 }
 
 .source-card__flag--brand {

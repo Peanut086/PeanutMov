@@ -127,7 +127,11 @@ function goBack(): void {
 }
 
 .app-header__title--brand {
-  letter-spacing: var(--letter-spacing-normal);
+  letter-spacing: var(--letter-spacing-tight);
+  background: linear-gradient(120deg, var(--color-brand-strong), var(--color-brand));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .app-header__actions {
@@ -143,7 +147,7 @@ function goBack(): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   color: var(--color-text-primary);
   transition: var(--transition-color);
 }

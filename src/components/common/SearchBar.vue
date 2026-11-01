@@ -93,21 +93,27 @@ defineExpose({ focus });
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  height: 40px;
-  padding: 0 var(--space-2) 0 var(--space-3);
-  border-radius: var(--radius-full);
-  background-color: var(--color-bg-surface);
-  border: 1px solid transparent;
-  transition: var(--transition-color);
+  height: 46px;
+  padding: 0 var(--space-2) 0 var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-strong);
+  transition: var(--transition-color), box-shadow var(--duration-fast) var(--ease-standard);
 }
 
 .search-bar:focus-within {
-  border-color: var(--color-border-strong);
+  border-color: var(--color-brand);
+  box-shadow: var(--shadow-focus);
 }
 
 .search-bar__icon {
   flex: 0 0 auto;
   color: var(--color-text-tertiary);
+  transition: var(--transition-color);
+}
+
+.search-bar:focus-within .search-bar__icon {
+  color: var(--color-brand);
 }
 
 .search-bar__input {

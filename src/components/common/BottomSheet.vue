@@ -196,9 +196,10 @@ onBeforeUnmount(() => {
   flex-direction: column;
   width: 100%;
   max-width: 560px;
-  max-height: 80vh;
+  max-height: 82vh;
   border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-  background-color: var(--color-bg-elevated);
+  background-color: var(--color-bg-surface);
+  border-top: 1px solid var(--color-border-strong);
   box-shadow: var(--shadow-4);
   outline: none;
 }
@@ -206,12 +207,12 @@ onBeforeUnmount(() => {
 .sheet__handle-area {
   display: flex;
   justify-content: center;
-  padding: var(--space-2) 0 var(--space-1);
+  padding: var(--space-3) 0 var(--space-2);
   touch-action: none;
 }
 
 .sheet__handle {
-  width: 36px;
+  width: 38px;
   height: 4px;
   border-radius: var(--radius-full);
   background-color: var(--color-overlay-handle);
@@ -221,14 +222,15 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 52px;
-  padding: 0 var(--space-2) 0 var(--space-4);
+  min-height: 44px;
+  padding: 0 var(--space-2) 0 var(--layout-page-padding-x);
 }
 
 .sheet__title {
   flex: 1 1 auto;
   min-width: 0;
   font: var(--text-title-3);
+  letter-spacing: var(--letter-spacing-tight);
   color: var(--color-text-primary);
 }
 
@@ -238,7 +240,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   color: var(--color-text-secondary);
 }
 
@@ -247,12 +249,12 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 0 var(--space-4) calc(var(--space-4) + var(--safe-bottom));
+  padding: var(--space-1) var(--layout-page-padding-x) calc(var(--space-5) + var(--safe-bottom));
 }
 
 .sheet__footer {
   flex: 0 0 auto;
-  padding: var(--space-3) var(--space-4) calc(var(--space-4) + var(--safe-bottom));
+  padding: var(--space-3) var(--layout-page-padding-x) calc(var(--space-4) + var(--safe-bottom));
   border-top: var(--border-default);
 }
 

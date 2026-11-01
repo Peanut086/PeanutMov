@@ -102,12 +102,13 @@ function chooseFromSheet(id: string): void {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  min-height: 32px;
+  min-height: 30px;
   padding: 0 var(--space-3);
   border-radius: var(--radius-full);
-  background-color: var(--color-bg-surface);
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
   color: var(--color-text-secondary);
-  font: var(--text-label-strong);
+  font: var(--font-weight-medium) 12px / 1 var(--font-family-base);
 }
 
 .line-selector__trigger svg {

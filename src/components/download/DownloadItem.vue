@@ -178,8 +178,8 @@ const canPlay = computed(() => props.task.status === 'completed');
 
 .download-item__poster {
   flex: 0 0 auto;
-  width: 48px;
-  border-radius: var(--radius-sm);
+  width: 44px;
+  border-radius: 8px;
   overflow: hidden;
 }
 
@@ -192,7 +192,7 @@ const canPlay = computed(() => props.task.status === 'completed');
 }
 
 .download-item__title {
-  font: var(--text-label-strong);
+  font: var(--font-weight-semibold) 13px / 1.35 var(--font-family-base);
   color: var(--color-text-primary);
 }
 

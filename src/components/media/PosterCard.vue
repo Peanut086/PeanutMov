@@ -125,7 +125,7 @@ function onClick(): void {
 .poster-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-2);
   width: 100%;
   min-width: 0;
   text-align: left;
@@ -133,7 +133,7 @@ function onClick(): void {
 }
 
 .poster-card:active {
-  transform: scale(0.98);
+  transform: scale(0.985);
 }
 
 .poster-card__frame {
@@ -141,21 +141,25 @@ function onClick(): void {
   width: 100%;
   border-radius: var(--radius-card);
   overflow: hidden;
+  background-color: var(--color-bg-surface);
 }
 
+/* 角标统一为半透明胶囊，压在海报上不抢画面 */
 .poster-card__badge {
   position: absolute;
   top: var(--space-2);
   left: var(--space-2);
   height: 20px;
-  padding: 0 6px;
+  padding: 0 7px;
   display: inline-flex;
   align-items: center;
-  border-radius: var(--radius-sm);
-  background-color: rgba(0, 0, 0, 0.65);
+  border-radius: 6px;
+  background-color: rgba(0, 0, 0, 0.62);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   color: #ffffff;
-  font: var(--text-caption);
-  font-weight: var(--font-weight-medium);
+  font: var(--font-weight-semibold) 10.5px / 1 var(--font-family-number);
+  letter-spacing: 0.01em;
 }
 
 .poster-card__badge--demo,
@@ -166,10 +170,13 @@ function onClick(): void {
   color: var(--color-brand-text);
 }
 
+/* 已下载：实心绿底 + 深色对勾，比文字更易扫读 */
 .poster-card__badge--done {
-  background-color: var(--color-success-soft);
-  color: var(--color-success);
-  padding: 0 4px;
+  width: 20px;
+  padding: 0;
+  justify-content: center;
+  background-color: var(--color-success);
+  color: #04140d;
 }
 
 .poster-card__progress {
@@ -178,23 +185,23 @@ function onClick(): void {
   right: 0;
   bottom: 0;
   height: 3px;
-  background-color: rgba(255, 255, 255, 0.24);
+  background-color: rgba(255, 255, 255, 0.22);
 }
 
 .poster-card__progress-fill {
   display: block;
   height: 100%;
+  border-radius: 0 2px 2px 0;
   background-color: var(--color-brand);
 }
 
 .poster-card__title {
-  margin-top: var(--space-1);
-  font: var(--text-label);
+  font: var(--font-weight-semibold) 13px / 1.35 var(--font-family-base);
   color: var(--color-text-primary);
 }
 
 .poster-card__meta {
-  font: var(--text-caption);
+  font: var(--font-weight-regular) 11px / 1.3 var(--font-family-number);
   color: var(--color-text-tertiary);
 }
 </style>

@@ -89,28 +89,32 @@ const emit = defineEmits<{ (e: 'action'): void }>();
   gap: var(--space-1);
   max-width: 280px;
   margin: 0 auto;
-  padding: var(--space-7) var(--space-4);
+  padding: var(--space-8) var(--space-5);
   text-align: center;
 }
 
 .empty-state__art {
-  width: 96px;
-  height: 96px;
-  margin-bottom: var(--space-3);
+  width: 76px;
+  height: 76px;
+  margin-bottom: var(--space-4);
+  opacity: 0.92;
 }
 
 .empty-state__title {
-  font: var(--text-body-strong);
-  color: var(--color-text-secondary);
+  font: var(--text-title-3);
+  font-size: 15px;
+  color: var(--color-text-primary);
 }
 
 .empty-state__desc {
   font: var(--text-caption);
+  font-size: 12.5px;
+  line-height: 1.65;
   color: var(--color-text-tertiary);
 }
 
 .empty-state__action {
-  margin-top: var(--space-4);
+  margin-top: var(--space-5);
   min-width: 120px;
 }
 </style>

@@ -81,7 +81,7 @@ const emit = defineEmits<{
 .continue-card {
   position: relative;
   flex: 0 0 auto;
-  width: 132px;
+  width: 112px;
   scroll-snap-align: start;
 }
 
@@ -131,13 +131,12 @@ const emit = defineEmits<{
 }
 
 .continue-card__title {
-  margin-top: var(--space-1);
-  font: var(--text-label-strong);
+  font: var(--font-weight-semibold) 13px / 1.35 var(--font-family-base);
   color: var(--color-text-primary);
 }
 
 .continue-card__meta {
-  font: var(--text-caption);
+  font: var(--font-weight-regular) 11px / 1.3 var(--font-family-number);
   color: var(--color-text-tertiary);
 }
 
@@ -145,15 +144,16 @@ const emit = defineEmits<{
   position: absolute;
   top: var(--space-1);
   right: var(--space-1);
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-full);
-  background-color: rgba(0, 0, 0, 0.55);
+  background-color: rgba(0, 0, 0, 0.58);
   color: #ffffff;
-  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 
 .continue-card__remove::after {
