@@ -640,8 +640,10 @@ export class SpiderAdapter extends BaseAdapter {
     this.assertEnabled(source);
     const kw = keyword.trim();
     if (kw.length === 0) return [];
-    // P2-8：只有 drpy（js）编排吃页码；jar 的 searchContent(String, boolean) 形参固定，
-    // 多传一个参数会让反射找不到方法，故按 kind 分别组参。
+    // P2-8/P2-9：drpy（js）编排吃页码；
+    // jar 的 searchContent 可能是 2 参 (String, boolean) 或 3 参 (String, boolean, String)。
+    // 新版 catvod Guard jar（饭太硬系）只覆写 3 参版本——传 2 参会命中基类 stub 返回 null。
+    // 原生侧已做 null 回退（P2-9），但主动传 3 参可避免一次无效反射调用。
     const args: Array<string | number | boolean> =
       extOf(source).kind === 'js' ? [kw, true, params.page ?? 1] : [kw, true];
     const response = await this.invoke(source, 'searchContent', args, undefined, params.signal);

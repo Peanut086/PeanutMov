@@ -419,6 +419,14 @@ function emptyPreview(opts: ParseOptions, name: string | null, globalIssues: Imp
 /**
  * 多仓索引识别：顶层 `urls[]`（TVBox 多仓）或整份内容是逐行 URL 的文本。
  * 只做识别与去重，不发起网络请求（展开由 `importService` 负责，保持解析器纯函数）。
+ *
+ * 三层提取（逐层兜底）：
+ *   ① JSON payload 的 `urls[]`（合法 JSON 但无 sites/sources）；
+ *   ② 逐行纯 URL（dc.txt 风格，每行一个 http(s) 地址）；
+ *   ③ 正则扫描 `"url":"..."` / `'url':'...'`（JSON 结构损坏但仍可提取 URL）。
+ *
+ * 第 ③ 层解决 iptv365.org/tvbox.txt 类问题——`urls[]` 被提前 `]` 关闭，
+ * JSON.parse 与容错链都失败，但 URL 仍嵌在文本里可用正则提出。
  */
 function reposOf(payload: unknown, rawText: string): string[] {
   const urlOf = (item: unknown): string => {
@@ -434,9 +442,20 @@ function reposOf(payload: unknown, rawText: string): string[] {
   const fromPayload = isRecord(payload) ? collect(payload['urls']) : [];
   const fromText = fromPayload.length > 0 ? fromPayload : collect(rawText.split(/\r?\n/));
 
+  // ③ 正则兜底：从损坏的 JSON 文本中扫描 `"url":"http..."` 形态的地址
+  const fromRegex: string[] = [];
+  if (fromText.length === 0) {
+    const URL_IN_JSON = /["']url["']\s*:\s*["'](https?:\/\/[^"']+)["']/gi;
+    for (const match of rawText.matchAll(URL_IN_JSON)) {
+      const url = (match[1] ?? '').trim();
+      if (url.length > 0 && isValidHttpUrl(url)) fromRegex.push(url);
+    }
+  }
+
+  const all = fromText.length > 0 ? fromText : fromRegex;
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const url of fromText) {
+  for (const url of all) {
     if (seen.has(url)) continue;
     seen.add(url);
     out.push(url);

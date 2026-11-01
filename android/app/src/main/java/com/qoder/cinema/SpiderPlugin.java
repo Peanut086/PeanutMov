@@ -952,7 +952,35 @@ public class SpiderPlugin extends Plugin {
 
         Object[] converted = convertArgs(matched.getParameterTypes(), args);
         Object result = matched.invoke(spider, converted);
-        return result == null ? null : String.valueOf(result);
+        String json = result == null ? null : String.valueOf(result);
+
+        // P2-9：searchContent 兼容——新版 catvod jar（饭太硬/潇洒系 Guard）只覆写了
+        // 3 参 searchContent(String, boolean, String)，旧版宿主调 2 参版本时命中基类
+        // stub 返回 null。这里在 null 时自动补 pg="1" 重试 3 参重载，避免一大批源
+        // 在搜索时全军覆没（实测 21 个失败源里 13 个是这条原因）。
+        if (json == null && method.equals("searchContent") && args.length == 2) {
+            Method threeArg = null;
+            for (Method candidate : clazz.getMethods()) {
+                if (!candidate.getName().equals("searchContent")) continue;
+                if (candidate.getParameterCount() != 3) continue;
+                Class<?>[] params = candidate.getParameterTypes();
+                if (params[0] == String.class && (params[1] == boolean.class || params[1] == Boolean.class)
+                        && params[2] == String.class) {
+                    threeArg = candidate;
+                    break;
+                }
+            }
+            if (threeArg != null) {
+                threeArg.setAccessible(true);
+                Object result2 = threeArg.invoke(spider, converted[0], converted[1], "1");
+                json = result2 == null ? null : String.valueOf(result2);
+                if (json != null) {
+                    Log.i(TAG, "searchContent fallback to 3-arg version succeeded for " + target.api);
+                }
+            }
+        }
+
+        return json;
     }
     private Object[] callProxy(LoadedSpider target, String url) throws Exception {
         Map<String, String> params = new HashMap<>();

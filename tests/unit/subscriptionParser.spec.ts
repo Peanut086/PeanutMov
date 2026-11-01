@@ -234,6 +234,33 @@ describe('订阅解析（AC-09 / AC-10 / AC-13 / AC-104）', () => {
     expect(preview.globalIssues[0]?.code).toBe('MULTI_REPO');
   });
 
+  it('损坏 JSON 的多仓索引（urls[] 被提前 ] 关闭）→ 正则兜底提取 URL', () => {
+    // 模拟 iptv365.org/tvbox.txt：urls[] 数组在第 N 条后被误写 ] 关闭，
+    // 后续条目散落在数组外，JSON.parse 与容错链都失败。
+    const malformed = [
+      '{ "urls": [',
+      '    { "url": "https://a.example.com/a.json", "name": "A" },',
+      '    { "url": "https://b.example.com/b.json", "name": "B" },',
+      '    { "url": "https://c.example.com/c.json", "name": "C" }]',
+      '',
+      '    { "url": "https://d.example.com/d.json", "name": "D" },',
+      '    { "url": "https://e.example.com/e.json", "name": "E" }',
+      '',
+      ']}',
+    ].join('\n');
+    const preview = subscriptionParser.parse(malformed, OPTS);
+
+    expect(preview.repos).toHaveLength(5);
+    expect(preview.repos).toEqual([
+      'https://a.example.com/a.json',
+      'https://b.example.com/b.json',
+      'https://c.example.com/c.json',
+      'https://d.example.com/d.json',
+      'https://e.example.com/e.json',
+    ]);
+    expect(preview.globalIssues[0]?.code).toBe('MULTI_REPO');
+  });
+
   it('普通订阅的 repos 为空', () => {
     const preview = parseJson({
       sources: [{ key: 'a', name: 'A', type: 'alist', api: 'https://a.com' }],
