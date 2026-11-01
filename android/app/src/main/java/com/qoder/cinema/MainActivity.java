@@ -2,10 +2,8 @@ package com.qoder.cinema;
 
 import android.content.Intent;
 import android.os.Bundle;
-import android.view.KeyEvent;
 
 import com.getcapacitor.BridgeActivity;
-import com.getcapacitor.Plugin;
 
 /**
  * App 入口 Activity。
@@ -56,15 +54,4 @@ public class MainActivity extends BridgeActivity {
         super.startActivityForResult(intent, requestCode);
     }
 
-    /**
-     * 拦截物理/手势返回键，防止直接退出应用
-     * 
-     * v1.9/RET-01：侧滑返回和物理按键都会触发 onBackPressed()
-     * 不调用 super.onBackPressed() 会阻止默认的后退行为（由 Capacitor 处理）
-     */
-    @Override
-    public void onBackPressed() {
-        // 不调用 super.onBackPressed()，让 Capacitor 通过 JavaScript 事件处理
-        // 前端已有 useBackButton 监听器，可以正确处理全屏/退出逻辑
-    }
 }

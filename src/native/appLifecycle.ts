@@ -14,6 +14,13 @@ type BackListener = () => boolean;
 
 const stateListeners = new Set<StateListener>();
 const backListeners = new Set<BackListener>();
+/**
+ * 全局兜底：业务监听器都没消费返回键时调用。
+ *
+ * 由 App.vue 注入"能否回退路由"的判断（原生层不依赖 vue-router）。
+ * 返回 true 表示已处理（例如 router.back()），否则退出 App。
+ */
+let backFallback: BackListener | null = null;
 let webAttached = false;
 let nativeAttached = false;
 let sourceRefCount = 0;
@@ -58,7 +65,19 @@ async function attachNative(): Promise<void> {
       emitState(isActive ? 'active' : 'background');
     });
     await App.addListener('backButton', () => {
-      const handled = emitBack();
+      /*
+       * 返回键优先级：
+       * 1. 页面自己注册的监听（弹层 / 播放器全屏）先消费；
+       * 2. 未消费时走全局兜底：有可回退路由 → router.back()；
+       * 3. 都没有才退出 App（首页再按返回才退，避免二级页误退）。
+       */
+      if (emitBack()) return;
+      let handled = false;
+      try {
+        handled = backFallback?.() === true;
+      } catch (e) {
+        logger.warn('返回键兜底处理异常', e);
+      }
       if (!handled) void App.exitApp();
     });
   } catch (e) {
@@ -90,6 +109,16 @@ export function onBackButton(cb: BackListener): () => void {
   return () => {
     backListeners.delete(cb);
   };
+}
+
+/**
+ * 注册返回键全局兜底（由 App.vue 注入路由回退判断）。
+ *
+ * 只有业务监听器全部未消费时才会被调用；返回 true 表示已处理，
+ * 返回 false 则退出 App。传 null 可解除。
+ */
+export function setBackFallback(cb: BackListener | null): void {
+  backFallback = cb;
 }
 
 /** 退出 App（Web 下 no-op） */

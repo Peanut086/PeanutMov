@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onErrorCaptured, onMounted, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 import AppTabBar from '@/components/layout/AppTabBar.vue';
 import ToastHost from '@/components/common/ToastHost.vue';
@@ -8,6 +8,7 @@ import ConfirmDialog from '@/components/common/ConfirmDialog.vue';
 import { useTheme } from '@/composables/useTheme';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { setBackFallback } from '@/native/appLifecycle';
 
 /**
  * 根组件：
@@ -26,6 +27,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
  * 动画由浏览器保证结束，不会因为连续导航而卡住。
  */
 const route = useRoute();
+const router = useRouter();
 const showTabBar = computed(() => route.meta.requiresLayout === true);
 
 const fatal = ref<Error | null>(null);
@@ -35,6 +37,29 @@ const settings = useSettingsStore();
 useOnlineStatus();
 
 onMounted(async () => {
+  /*
+   * 返回键全局兜底（v1.9/RET-01 修正）：
+   * 页面监听器（播放器全屏、弹层）都没消费时，先判断能否回退路由——
+   * 详情/设置等二级页按返回应回到上一页，只有栈底（首页等）才退出 App。
+   * 历史栈的上一项由 vue-router 存在 history.state.back（无历史时为 ''）。
+   */
+  setBackFallback(() => {
+    const back = router.options.history.state.back;
+    if (typeof back === 'string' && back.length > 0) {
+      router.back();
+      return true;
+    }
+    /*
+     * 无历史但停在二级页（如冷启动恢复到详情/订阅页）：回首页而不是退出。
+     * 只有一级 Tab 页（requiresLayout）在栈底时才退出 App。
+     */
+    if (router.currentRoute.value.meta.requiresLayout !== true) {
+      void router.replace('/');
+      return true;
+    }
+    return false;
+  });
+
   try {
     if (!settings.ready) await settings.load();
     theme.setMode(settings.settings?.theme ?? 'dark');
