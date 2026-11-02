@@ -37,6 +37,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import com.google.gson.Gson;
 
 /**
  * Spider —— TVBox jar 爬虫运行时
@@ -59,7 +60,10 @@ public class SpiderPlugin extends Plugin {
 
     private static final String TAG = "SpiderPlugin";
     /** 是否启用详细调试日志（仅开发调试用） */
-    private static final boolean ENABLE_DEBUG_LOG = true;
+    private static boolean ENABLE_DEBUG_LOG = true;
+    
+    /** Gson 实例用于 JSON 序列化 */
+    private static final Gson GSON = new Gson();
     private static final String SPIDER_PACKAGE = "com.github.catvod.spider.";
     private static final int CONNECT_TIMEOUT_MS = 20000;
     private static final int READ_TIMEOUT_MS = 30000;
@@ -72,12 +76,14 @@ public class SpiderPlugin extends Plugin {
     /**
      * 条件日志：根据开关决定是否输出详细信息，减少生产环境的日志噪音。
      * 用法：d("key=value", optionalExtraInfo)
+     * 
+     * 注意：日志会自动清理 1 天前的数据（在 runSpider 方法中处理）
      */
-    private static void d(String message) {
+    private void d(String message) {
         if (ENABLE_DEBUG_LOG) Log.d(TAG, message);
     }
 
-    private static void d(String format, Object... args) {
+    private void d(String format, Object... args) {
         if (ENABLE_DEBUG_LOG) Log.d(TAG, String.format(format, args));
     }
 
@@ -106,6 +112,13 @@ public class SpiderPlugin extends Plugin {
     private void runSpider(PluginCall call, String op, long timeoutMs, SpiderTask task) {
         final AtomicBoolean settled = new AtomicBoolean(false);
         final String label = "爬虫" + op;
+        
+        // 自动清理过期日志（只在空闲时）
+        Context ctx = getContext();
+        if (ctx != null && loaded.isEmpty()) {
+            autoCleanOldLogs(ctx);
+        }
+        
         final Runnable timeoutTask = () -> {
             if (settled.compareAndSet(false, true)) {
                 Log.w(TAG, op + " timeout after " + timeoutMs + "ms");
@@ -235,6 +248,47 @@ public class SpiderPlugin extends Plugin {
     public void isSupported(PluginCall call) {
         JSObject ret = new JSObject();
         ret.put("supported", true);
+        call.resolve(ret);
+    }
+
+    /**
+     * 设置详细日志开关（可通过前端调用）
+     */
+    @PluginMethod
+    public void setDebugLog(PluginCall call) {
+        boolean enabled = call.getBoolean("enabled", true);
+        setDebugLogEnabled(enabled);
+        
+        JSObject ret = new JSObject();
+        ret.put("enabled", isDebugLogEnabled());
+        call.resolve(ret);
+    }
+
+    /**
+     * 获取当前详细日志开关状态
+     */
+    @PluginMethod
+    public void getDebugLogStatus(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("enabled", isDebugLogEnabled());
+        call.resolve(ret);
+    }
+
+    /**
+     * 手动清理过期日志（可通过前端调用）
+     */
+    @PluginMethod
+    public void cleanLogs(PluginCall call) {
+        Context ctx = getContext();
+        if (ctx == null) {
+            call.reject("No context available");
+            return;
+        }
+        
+        int cleanedCount = cleanOldLogs(ctx);
+        
+        JSObject ret = new JSObject();
+        ret.put("cleanedCount", cleanedCount);
         call.resolve(ret);
     }
 
@@ -706,7 +760,6 @@ public class SpiderPlugin extends Plugin {
             if (dir.exists()) continue;
             if (dir.mkdirs()) {
                 Log.i(TAG, "created guard work dir: " + rel);
-                d("created guard work directory: %s", rel);
             } else {
                 Log.w(TAG, "cannot create guard work dir: " + rel);
             }
@@ -1501,5 +1554,75 @@ public class SpiderPlugin extends Plugin {
             sb.append(Character.forDigit(b & 0xF, 16));
         }
         return sb.toString();
+    }
+
+    /* ---------------- 日志管理 ---------------- */
+
+    /**
+     * 设置详细调试日志开关。
+     * 
+     * @param enabled true 启用详细日志，false 禁用
+     */
+    public void setDebugLogEnabled(boolean enabled) {
+        ENABLE_DEBUG_LOG = enabled;
+        Log.i(TAG, "Debug log enabled: " + enabled);
+    }
+
+    /**
+     * 获取当前详细日志开关状态。
+     * 
+     * @return true 如果启用了详细日志，false 如果禁用了
+     */
+    public boolean isDebugLogEnabled() {
+        return ENABLE_DEBUG_LOG;
+    }
+
+    /**
+     * 清理超过 1 天的日志文件（spider-logs/*.log）。
+     * 调用此方法来手动触发日志清理。
+     * 
+     * @return 清理的文件数量
+     */
+    public int cleanOldLogs(Context context) {
+        long oneDayAgo = System.currentTimeMillis() - 24 * 60 * 60 * 1000; // 24 小时前
+        
+        File logDir = new File(context.getFilesDir(), "spider-logs");
+        if (!logDir.exists() || !logDir.isDirectory()) {
+            Log.i(TAG, "No spider log directory found");
+            return 0;
+        }
+
+        File[] files = logDir.listFiles((dir, name) -> name.endsWith(".log"));
+        if (files == null || files.length == 0) {
+            Log.i(TAG, "No spider log files found");
+            return 0;
+        }
+
+        int cleanedCount = 0;
+        for (File file : files) {
+            if (file.lastModified() < oneDayAgo) {
+                if (file.delete()) {
+                    cleanedCount++;
+                    Log.i(TAG, "Cleaned old log file: " + file.getName());
+                } else {
+                    Log.w(TAG, "Failed to delete old log file: " + file.getName());
+                }
+            }
+        }
+
+        Log.i(TAG, "Cleaned " + cleanedCount + " old log file(s) from " + files.length + " total");
+        return cleanedCount;
+    }
+
+    /**
+     * 检查并自动清理过期日志。
+     * 建议在每次爬虫操作前调用，确保日志不会无限增长。
+     */
+    private void autoCleanOldLogs(Context context) {
+        try {
+            cleanOldLogs(context);
+        } catch (Exception e) {
+            Log.w(TAG, "Auto-clean logs failed", e);
+        }
     }
 }
