@@ -706,6 +706,7 @@ public class SpiderPlugin extends Plugin {
             if (dir.exists()) continue;
             if (dir.mkdirs()) {
                 Log.i(TAG, "created guard work dir: " + rel);
+                d("created guard work directory: %s", rel);
             } else {
                 Log.w(TAG, "cannot create guard work dir: " + rel);
             }
@@ -772,9 +773,11 @@ public class SpiderPlugin extends Plugin {
                 verifyGuardLoader(initClass, api);
                 guardInitDone.put(lockKey, Boolean.TRUE);
                 Log.i(TAG, "guard jar initialized: " + api);
+                d("guard jar initialized successfully: %s", api);
                 return;
             } catch (Throwable e) {
                 firstError = unwrap(e);
+                d("guard jar init first attempt failed: %s -> %s", api, describeFailure(firstError));
                 Log.w(TAG, "guard jar init first attempt failed: " + api + " -> " + describeFailure(firstError)
                         + ", retrying...");
             }
@@ -1003,9 +1006,13 @@ public class SpiderPlugin extends Plugin {
             if (loaderMethod != null) {
                 loaderMethod.setAccessible(true);
                 Object loaderObj = loaderMethod.invoke(null);
-                sb.append("Init.loader(): ")
-                        .append(loaderObj == null ? "NULL" : loaderObj.getClass().getName())
-                        .append("\n");
+                String loaderInfo = loaderObj == null ? "NULL" : loaderObj.getClass().getName();
+                sb.append("Init.loader(): ").append(loaderInfo).append("\n");
+                
+                // 如果不为 NULL，输出详细信息
+                if (loaderObj != null && ENABLE_DEBUG_LOG) {
+                    d("Init.loader() for %s: %s", api, loaderInfo);
+                }
                 
                 // 如果 loader 不为 null，尝试从它加载类
                 if (loaderObj instanceof dalvik.system.DexClassLoader) {
@@ -1174,6 +1181,7 @@ public class SpiderPlugin extends Plugin {
                 json = result2 == null ? null : String.valueOf(result2);
                 if (json != null) {
                     Log.i(TAG, "searchContent fallback to 3-arg version succeeded for " + target.api);
+                    d("searchContent fallback: %s -> 3-arg successful", target.api);
                 }
             }
         }
