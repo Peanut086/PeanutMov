@@ -50,6 +50,10 @@ const keepDemo = ref(true);
 const clearing = ref(false);
 const cacheCleared = ref(false);
 
+// v1.8: 调试日志开关
+const debugLogEnabled = ref(false);
+const cleanLogsLoading = ref(false);
+
 const loading = computed(() => !settings.ready && settings.settings === null);
 const loadError = ref<string | null>(null);
 
@@ -112,6 +116,13 @@ onMounted(async () => {
     theme.setMode(settings.settings?.theme ?? 'dark');
   } catch (e) {
     loadError.value = toErrorShape(e, 'E_DB').message;
+  }
+  
+  // v1.8: 获取日志状态
+  try {
+    await fetchDebugLogStatus();
+  } catch (e) {
+    Log.w('SettingsView', 'Failed to fetch debug log status:', e);
   }
 });
 
@@ -211,6 +222,57 @@ async function resetAll(): Promise<void> {
 function go(path: string): void {
   void router.push(path);
 }
+
+/* ---------- v1.8：调试日志管理（CHG-29）---------- */
+
+async function toggleDebugLog(enabled: boolean): Promise<void> {
+  try {
+    await navigator.spider.setDebugLog({ enabled });
+    debugLogEnabled.value = enabled;
+    if (enabled) {
+      toast.success('详细日志已启用');
+    } else {
+      toast.info('详细日志已关闭');
+    }
+  } catch (e) {
+    toast.error('设置日志失败：' + toErrorShape(e).message);
+  }
+}
+
+async function fetchDebugLogStatus(): Promise<void> {
+  try {
+    const result = await navigator.spider.getDebugLogStatus();
+    debugLogEnabled.value = result.enabled ?? false;
+  } catch (e) {
+    Log.w('SettingsView', 'Failed to fetch debug log status:', e);
+  }
+}
+
+async function manualCleanLogs(): Promise<void> {
+  if (cleanLogsLoading.value) return;
+  
+  const ok = await ui.confirm({
+    title: '清理过期日志？',
+    message: '将删除超过 24 小时的调试日志文件',
+    confirmText: '清理',
+  });
+  if (!ok) return;
+  
+  cleanLogsLoading.value = true;
+  try {
+    const result = await navigator.spider.cleanLogs();
+    toast.success(`已清理 ${result.cleanedCount} 个日志文件`);
+  } catch (e) {
+    toast.error('清理日志失败：' + toErrorShape(e).message);
+  } finally {
+    cleanLogsLoading.value = false;
+  }
+}
+
+onMounted(async () => {
+  // 在原有加载逻辑后，获取日志状态
+  fetchDebugLogStatus();
+});
 </script>
 
 <template>
@@ -298,6 +360,18 @@ function go(path: string): void {
             @click="clearCache"
           />
           <SettingsRow label="清空全部数据" danger chevron @click="clearDataOpen = true" />
+          <!-- v1.8 新增：调试日志管理 -->
+          <SettingsRow
+            label="详细日志"
+            description="用于问题诊断，自动清理 1 天前数据"
+            :switch-value="debugLogEnabled"
+            @update:switch-value="toggleDebugLog"
+          />
+          <SettingsRow
+            label="立即清理过期日志"
+            description="删除超过 24 小时的调试日志"
+            @click="manualCleanLogs"
+          />
         </SettingsGroup>
 
         <!-- v1.7（CHG-24 / CHG-21 PoC） -->
