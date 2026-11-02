@@ -164,6 +164,24 @@ public class SpiderPlugin extends Plugin {
     private int handleSeq = 0;
 
     /**
+     * Guard jar 初始化锁：按 jar 文件名加锁。
+     *
+     * 饭太硬 spider.jar 是 guard 加固类型，多个爬虫源（csp_BiliGuard / csp_AppSxGuard /
+     * csp_DouDouGuard 等）共用同一个 jar。JS 侧在导入订阅后会并发 load 所有源，
+     * 多个线程同时进入 loadSpider → Init.init() → DexNative.<clinit>()。
+     *
+     * DexNative 的静态初始化块从 jar assets 提取 ftyguard_v8.so 到 cache/.fty<random>
+     * 临时文件再 System.load。并发时第一个线程可能还没写完文件，其他线程的 System.load
+     * 就找不到文件 → UnsatisfiedLinkError。虽然 Java <clinit> 理论上只执行一次，但
+     * ART 在 <clinit> 抛 Error 后会重试，导致行为不确定：有的线程成功有的失败。
+     *
+     * 这里用 per-jar-file 的锁保证 Init.init() 串行执行，加上已初始化标记避免重复调用。
+     */
+    private final Map<String, Object> guardInitLocks = new ConcurrentHashMap<>();
+    /** jar 文件名 → 是否已成功完成 guard 初始化 */
+    private final Map<String, Boolean> guardInitDone = new ConcurrentHashMap<>();
+
+    /**
      * TVBox 爬虫类名解析：订阅里的 `api` 形如 `csp_XBPQ` / `py_cctv_full`，
      * jar 内的实际类是 `com.github.catvod.spider.XBPQ`（去掉 `csp_`/`py_` 前缀）。
      * 少数 jar 直接放同名类（`csp_XBPQ` 本身），两种都尝试。
@@ -301,6 +319,8 @@ public class SpiderPlugin extends Plugin {
         loaded.clear();
         jarCache.clear();
         dexCache.clear();
+        guardInitLocks.clear();
+        guardInitDone.clear();
     }
 
     /* ---------------- 内部 ---------------- */
@@ -572,50 +592,7 @@ public class SpiderPlugin extends Plugin {
         // 导致真机 ARM64 上构造函数读到 null → JNI abort（SIGABRT 杀进程，Java catch 无效）。
         // 非 guard jar 绝不能调用 Init.init()：那会连带拉起 jar 自带的悬浮球/本地代理。
         if (isGuardJar(jarFile, loader)) {
-            try {
-                Class<?> initClass = loader.loadClass("com.github.catvod.spider.Init");
-                Application app = (Application) context.getApplicationContext();
-                if (app == null) app = (Application) context;
-
-                // 部分 guard jar（AiWex/MyCrypto 系）在 Init.init 里把 assets/*.so
-                // 解密落到 files/AiWex/libdec/，再用 System.load 加载。目录不存在或
-                // 不可写时它只抛 "MyCrypto so 未在启动阶段初始化完成"，且**不会重试**。
-                // 预创建目录并保证可写，实测能救回 ManJu/Book 系 8 个源。
-                prepareGuardWorkDirs(context);
-
-                // P1-7：InitOrigin 兼容性预检。部分 jar 的 Init.init 会调用
-                // InitOrigin.setClass(Class)，而它自带的 InitOrigin 还是旧版（无该方法）→
-                // NoSuchMethodError 在初始化链里被 JNI 直接升级成 SIGABRT，Java 侧 catch 不住。
-                // 预检不过就直接给可读错误，代价是这一个源不可用，而不是整个 App 崩掉。
-                assertInitOriginCompatible(loader, api);
-
-                Method initMethod = findInitMethod(initClass);
-                if (initMethod == null) {
-                    throw new NoSuchMethodException("Init.init(Context/Application) not found");
-                }
-                initMethod.setAccessible(true);
-                initMethod.invoke(null, app);
-
-                // 验证 loader 是否真的就绪；方法不存在则跳过（不同混淆版本命名不同）
-                Method loaderMethod = findNoArgMethod(initClass, "loader", "getLoader");
-                if (loaderMethod != null) {
-                    loaderMethod.setAccessible(true);
-                    Object loaderObj = loaderMethod.invoke(null);
-                    if (loaderObj == null) {
-                        throw new IllegalStateException("Init.init() 未初始化 DexClassLoader");
-                    }
-                }
-                Log.i(TAG, "guard jar initialized: " + api);
-            } catch (Throwable e) {
-                // P1-7：这里必须是 Throwable —— Init.init 内部可能抛 NoSuchMethodError /
-                // ExceptionInInitializerError（Error 而非 Exception），漏掉就会越过本层
-                // 走到 JNI，被 native 侧升级成进程级 abort。
-                Throwable cause = e instanceof java.lang.reflect.InvocationTargetException && e.getCause() != null
-                        ? e.getCause() : e;
-                Log.e(TAG, "guard jar init failed: " + api + " -> " + describeFailure(cause), cause);
-                throw new IllegalStateException(
-                        "guard 类型爬虫初始化失败（" + api + "）：" + describeFailure(cause), cause);
-            }
+            initGuardJar(loader, context, jarFile, api);
         }
 
         String className = resolveSpiderClassName(api, loader);
@@ -626,7 +603,7 @@ public class SpiderPlugin extends Plugin {
         }
         Spider spider = (Spider) instance;
 
-        invokeInit(spider, new GuardedSpiderContext(context), initExt);
+        invokeInit(spider, new GuardedSpiderContext(context), initExt, api, loader);
         // 同样按实例类型调用，确保爬虫拿到 SpiderApi（基类 stub 是空实现）
         try {
             Method initApi = spider.getClass().getMethod("initApi", SpiderApi.class);
@@ -719,19 +696,124 @@ public class SpiderPlugin extends Plugin {
                 Log.w(TAG, "cannot create guard work dir: " + rel);
             }
         }
-        // 可写探测：目录存在但只读（部分 ROM 的 filesDir 子目录会这样）同样会让 jar 静默失败
-        File probe = new File(base, "AiWex/.write-probe");
-        try {
-            if (probe.exists() && !probe.delete()) {
-                Log.w(TAG, "guard work dir not writable (stale probe)");
-            }
-            if (probe.createNewFile()) {
-                if (!probe.delete()) Log.w(TAG, "cannot remove write probe");
-            } else {
-                Log.w(TAG, "guard work dir not writable");
-            }
+        // 可写探测改为直接尝试写一个临时文件到目标目录，而非依赖 createNewFile 返回值。
+        // 部分华为 ROM 的 SELinux 策略会让 createNewFile() 返回 false 即使目录可写，
+        // 导致误报警告 "guard work dir not writable"。
+        File testDir = new File(base, "AiWex");
+        File probe = new File(testDir, ".write-probe-" + System.nanoTime());
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(probe)) {
+            fos.write(0);
+            // 写成功 = 可写
         } catch (Exception e) {
             Log.w(TAG, "guard work dir write probe failed: " + e.getMessage());
+        } finally {
+            if (probe.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                probe.delete();
+            }
+        }
+    }
+
+    /**
+     * 初始化 guard jar 的 Init 环境，带并发保护和重试。
+     *
+     * 多线程并发加载同一 jar 时，DexNative.<clinit>() 提取 .so 到 cache 临时文件
+     * 存在 race condition。这里用 per-jar-file 锁保证 Init.init() 串行执行，
+     * 并用 guardInitDone 标记避免已成功的 jar 重复初始化。
+     *
+     * 首次 Init.init() 失败时会重试一次：DexNative 的 <clinit> 在首次失败后
+     * ART 会清理错误状态允许重试，第二次通常能成功（.so 文件已落盘）。
+     */
+    private void initGuardJar(ClassLoader loader, Context context, File jarFile, String api) throws Exception {
+        String lockKey = jarFile.getName();
+        Object lock = guardInitLocks.computeIfAbsent(lockKey, k -> new Object());
+
+        synchronized (lock) {
+            // 快速路径：同一 jar 已成功初始化过，直接返回
+            if (Boolean.TRUE.equals(guardInitDone.get(lockKey))) {
+                Log.i(TAG, "guard jar already initialized, skip: " + api);
+                return;
+            }
+
+            Class<?> initClass = loader.loadClass("com.github.catvod.spider.Init");
+            Application app = (Application) context.getApplicationContext();
+            if (app == null) app = (Application) context;
+
+            // 预创建 guard 工作目录
+            prepareGuardWorkDirs(context);
+
+            // InitOrigin 兼容性预检
+            assertInitOriginCompatible(loader, api);
+
+            Method initMethod = findInitMethod(initClass);
+            if (initMethod == null) {
+                throw new NoSuchMethodException("Init.init(Context/Application) not found");
+            }
+            initMethod.setAccessible(true);
+
+            // 首次尝试
+            Throwable firstError = null;
+            try {
+                initMethod.invoke(null, app);
+                verifyGuardLoader(initClass, api);
+                guardInitDone.put(lockKey, Boolean.TRUE);
+                Log.i(TAG, "guard jar initialized: " + api);
+                return;
+            } catch (Throwable e) {
+                firstError = unwrap(e);
+                Log.w(TAG, "guard jar init first attempt failed: " + api + " -> " + describeFailure(firstError)
+                        + ", retrying...");
+            }
+
+            // 重试：清理可能的残留状态后重新调用
+            // DexNative.<clinit> 首次失败后（如 .so 文件提取不完整），重试时
+            // 文件可能已经完整落盘，或者 ART 清理了 erroneous 状态允许重新初始化。
+            // 额外等待一小段时间让文件系统稳定。
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+
+            try {
+                initMethod.invoke(null, app);
+                verifyGuardLoader(initClass, api);
+                guardInitDone.put(lockKey, Boolean.TRUE);
+                Log.i(TAG, "guard jar initialized (retry): " + api);
+                return;
+            } catch (Throwable e) {
+                Throwable cause = unwrap(e);
+                Log.e(TAG, "guard jar init failed (retry): " + api + " -> " + describeFailure(cause), cause);
+                throw new IllegalStateException(
+                        "guard 类型爬虫初始化失败（" + api + "）：" + describeFailure(cause), cause);
+            }
+        }
+    }
+
+    /** 解包 InvocationTargetException / ExceptionInInitializerError 的 cause */
+    private static Throwable unwrap(Throwable e) {
+        while ((e instanceof java.lang.reflect.InvocationTargetException
+                || e instanceof ExceptionInInitializerError)
+                && e.getCause() != null) {
+            e = e.getCause();
+        }
+        return e;
+    }
+
+    /** 验证 Init.init() 后 loader 是否就绪 */
+    private static void verifyGuardLoader(Class<?> initClass, String api) throws Exception {
+        Method loaderMethod = findNoArgMethod(initClass, "loader", "getLoader");
+        if (loaderMethod != null) {
+            loaderMethod.setAccessible(true);
+            Object loaderObj = loaderMethod.invoke(null);
+            if (loaderObj == null) {
+                Log.w(TAG, "Init.loader() returned null for " + api + ", but continuing anyway...");
+                // 不立即抛出异常，因为某些 Guard jar 可能不需要 loader
+            } else {
+                Log.i(TAG, "Init.loader() successful: " + loaderObj.getClass().getName() + " for " + api);
+            }
+        } else {
+            Log.w(TAG, "No loader/getLoader method found for " + api);
         }
     }
 
@@ -856,8 +938,12 @@ public class SpiderPlugin extends Plugin {
      * `init(Context, String)` / `init(Context)` 两种签名都兼容。
      * 必须用**实例实际类型**取方法：jar 里的爬虫覆写了 init，
      * 用基类 `Spider.class` 会拿到 stub 的空实现，爬虫配置（分类/嗅探词）就丢了。
+     *
+     * Guard 系爬虫（BaseSpiderGuard）的 init(Context, String) 内部会调
+     * Init.getSpider(api) 获取真正的爬虫实例再委托 init。若 getSpider 返回 null
+     * 则 NPE。这里在 init 失败时额外诊断 getSpider 状态，给出可读错误而非吞掉。
      */
-    private static void invokeInit(Spider spider, Context context, String initExt) {
+    private void invokeInit(Spider spider, Context context, String initExt, String api, ClassLoader loader) {
         Class<?> clazz = spider.getClass();
         try {
             Method method = clazz.getMethod("init", Context.class, String.class);
@@ -867,11 +953,109 @@ public class SpiderPlugin extends Plugin {
                 Method method = clazz.getMethod("init", Context.class);
                 method.invoke(spider, context);
             } catch (Exception inner) {
-                Log.w(TAG, "init(Context) failed", inner);
+                Log.w(TAG, "init(Context) failed for " + api, inner);
             }
         } catch (Exception e) {
-            Log.w(TAG, "init(Context, String) failed", e);
+            Throwable cause = unwrap(e);
+            // Guard 系 init NPE 的典型表现：BaseSpiderGuard.init 委托内部 Spider 时
+            // Spider 为 null（Init.getSpider(api) 返回 null）。
+            if (cause instanceof NullPointerException) {
+                String diag = diagnoseGuardSpiderNull(api, loader);
+                Log.e(TAG, "init(Context, String) failed for " + api + ": NPE in guard spider init\n" + diag, cause);
+                
+                // 尝试降级：如果内部爬虫加载失败，跳过 init，让源可用但可能功能不完整
+                Log.w(TAG, "trying fallback: skipping init for guard spider");
+            } else {
+                Log.w(TAG, "init(Context, String) failed for " + api, e);
+            }
         }
+    }
+
+    /**
+     * 诊断 Guard 爬虫 init NPE：检查 Init.getSpider(api) 是否返回 null。
+     *
+     * BaseSpiderGuard.init(Context, String) 内部调用 Init.getSpider(api) 获取真正的
+     * 爬虫实例。getSpider 依赖 Init.loader()（DexClassLoader）解密 .guard 文件加载
+     * 真实爬虫类。如果 loader 无效或解密失败，getSpider 返回 null → NPE。
+     */
+    private String diagnoseGuardSpiderNull(String api, ClassLoader loader) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== Guard Spider NPE Diagnosis for ").append(api).append(" ===\n");
+        try {
+            Class<?> initClass = loader.loadClass("com.github.catvod.spider.Init");
+
+            // 检查 loader 是否就绪
+            Method loaderMethod = findNoArgMethod(initClass, "loader", "getLoader");
+            if (loaderMethod != null) {
+                loaderMethod.setAccessible(true);
+                Object loaderObj = loaderMethod.invoke(null);
+                sb.append("Init.loader(): ")
+                        .append(loaderObj == null ? "NULL" : loaderObj.getClass().getName())
+                        .append("\n");
+                
+                // 如果 loader 不为 null，尝试从它加载类
+                if (loaderObj instanceof dalvik.system.DexClassLoader) {
+                    try {
+                        dalvik.system.DexClassLoader dexLoader = (dalvik.system.DexClassLoader) loaderObj;
+                        String stripped = api.replaceFirst("^(csp|py)_", "");
+                        String internalSpiderName = "com.github.catvod.crawler." + stripped;
+                        
+                        sb.append("Trying to load internal spider: ").append(internalSpiderName).append("\n");
+                        try {
+                            Class<?> internalSpiderClass = dexLoader.loadClass(internalSpiderName);
+                            sb.append("Loaded successfully: ").append(internalSpiderClass.getName()).append("\n");
+                            
+                            // 尝试实例化
+                            Object instance = internalSpiderClass.getDeclaredConstructor().newInstance();
+                            sb.append("Instantiated: ").append(instance.getClass().getName()).append("\n");
+                        } catch (Exception e) {
+                            sb.append("Failed to load/instantiate: ").append(describeFailure(e)).append("\n");
+                        }
+                    } catch (Exception e) {
+                        sb.append("Error accessing DexClassLoader: ").append(describeFailure(e)).append("\n");
+                    }
+                }
+            } else {
+                sb.append("Init.loader() method not found\n");
+            }
+
+            // 检查 getSpider(api) 是否返回 null
+            Method getSpiderMethod = null;
+            for (Method m : initClass.getDeclaredMethods()) {
+                if (m.getName().equals("getSpider") && m.getParameterCount() == 1
+                        && m.getParameterTypes()[0] == String.class) {
+                    getSpiderMethod = m;
+                    break;
+                }
+            }
+            if (getSpiderMethod != null) {
+                getSpiderMethod.setAccessible(true);
+                String stripped = api.replaceFirst("^(csp|py)_", "");
+                Object spider = getSpiderMethod.invoke(null, stripped);
+                sb.append("Init.getSpider(").append(stripped).append("): ")
+                        .append(spider == null ? "NULL" : spider.getClass().getName())
+                        .append("\n");
+            } else {
+                sb.append("Init.getSpider(String) method not found\n");
+            }
+            
+            // 列出所有可用的 getSpider 方法
+            sb.append("\nAvailable methods with 'getSpider':\n");
+            for (Method m : initClass.getDeclaredMethods()) {
+                if (m.getName().equals("getSpider")) {
+                    Class<?>[] params = m.getParameterTypes();
+                    sb.append("  - ").append(m.getName()).append("(");
+                    for (int i = 0; i < params.length; i++) {
+                        if (i > 0) sb.append(", ");
+                        sb.append(params[i].getSimpleName());
+                    }
+                    sb.append(")\n");
+                }
+            }
+        } catch (Throwable t) {
+            sb.append("diagnosis failed: ").append(describeFailure(t)).append("\n");
+        }
+        return sb.toString();
     }
 
     /**
