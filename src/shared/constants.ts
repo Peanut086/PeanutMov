@@ -11,12 +11,14 @@ export const APP_NAME = 'PeanutMov';
 export const APP_ID = 'com.qoder.cinema';
 
 /** 由 vite define 注入；未注入时兜底为 '未知版本' 的场景由 UI 判定 */
-export const APP_VERSION: string =
-  typeof __APP_VERSION__ === 'string' && __APP_VERSION__.length > 0 ? __APP_VERSION__ : '未知版本';
+export const APP_VERSION: string = (typeof __APP_VERSION__ === 'string' && __APP_VERSION__.length > 0)
+  ? __APP_VERSION__
+  : '未知版本';
 
 /** 构建时间戳（毫秒）；未注入时为 null，UI 不展示构建日期（REV-19） */
-export const BUILD_TIME: number | null =
-  typeof __BUILD_TIME__ === 'string' && __BUILD_TIME__.length > 0 ? Date.parse(__BUILD_TIME__) : null;
+export const BUILD_TIME: number | null = (typeof __BUILD_TIME__ === 'string' && __BUILD_TIME__.length > 0)
+  ? Date.parse(__BUILD_TIME__)
+  : null;
 
 /* ---------- IndexedDB ---------- */
 export const DB_NAME = 'cinema-db';

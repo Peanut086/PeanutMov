@@ -122,7 +122,7 @@ onMounted(async () => {
   try {
     await fetchDebugLogStatus();
   } catch (e) {
-    Log.w('SettingsView', 'Failed to fetch debug log status:', e);
+    // 日志获取失败不影响主流程
   }
 });
 
@@ -244,7 +244,7 @@ async function fetchDebugLogStatus(): Promise<void> {
     const result = await navigator.spider.getDebugLogStatus();
     debugLogEnabled.value = result.enabled ?? false;
   } catch (e) {
-    Log.w('SettingsView', 'Failed to fetch debug log status:', e);
+    // 日志获取失败不影响主流程
   }
 }
 
