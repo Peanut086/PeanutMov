@@ -58,6 +58,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class SpiderPlugin extends Plugin {
 
     private static final String TAG = "SpiderPlugin";
+    /** 是否启用详细调试日志（仅开发调试用） */
+    private static final boolean ENABLE_DEBUG_LOG = true;
     private static final String SPIDER_PACKAGE = "com.github.catvod.spider.";
     private static final int CONNECT_TIMEOUT_MS = 20000;
     private static final int READ_TIMEOUT_MS = 30000;
@@ -66,6 +68,18 @@ public class SpiderPlugin extends Plugin {
     private static final int JAR_DOWNLOAD_ATTEMPTS = 3;
     /** 重试退避基数，第 n 次重试等 n × 该值 */
     private static final long JAR_RETRY_BACKOFF_MS = 800;
+
+    /**
+     * 条件日志：根据开关决定是否输出详细信息，减少生产环境的日志噪音。
+     * 用法：d("key=value", optionalExtraInfo)
+     */
+    private static void d(String message) {
+        if (ENABLE_DEBUG_LOG) Log.d(TAG, message);
+    }
+
+    private static void d(String format, Object... args) {
+        if (ENABLE_DEBUG_LOG) Log.d(TAG, String.format(format, args));
+    }
 
     /**
      * 爬虫调用（下载 jar / DexClassLoader / 爬虫内部 HTTP）必须跑在独立线程池：
