@@ -957,11 +957,6 @@ async function loadDanmaku(): Promise<boolean> {
 }
 
 async function toggleDanmaku(): Promise<void> {
-  // v1.8/CHG-25：原生引擎 surface 覆盖 WebView，弹幕层不可见——PoC 期互斥
-  if (player.engineKind === 'native') {
-    toast.info('实验引擎暂不支持弹幕，可切回内置引擎', 2400);
-    return;
-  }
   const next = !danmakuSettings.value.enabled;
   await settings.update({ danmaku: { ...danmakuSettings.value, enabled: next } });
   if (!next) {
@@ -970,29 +965,13 @@ async function toggleDanmaku(): Promise<void> {
     return;
   }
   const loaded = await loadDanmaku();
-  // 开关生效但没弹幕可放：明确告诉用户原因，而不是静默无反应
   toast.info(loaded ? '弹幕已开启' : '当前集没有匹配到弹幕（可换弹幕源或稍后再试）', loaded ? 1800 : 2800);
 }
 
-/** v1.8/CHG-25：进入原生引擎时关闭弹幕/外挂字幕（surface 覆盖 WebView，DOM 层不可见） */
-watch(
-  () => player.engineKind,
-  (kind) => {
-    if (kind !== 'native') return;
-    if (danmakuSettings.value.enabled) {
-      void settings.update({ danmaku: { ...danmakuSettings.value, enabled: false } });
-      toast.info('实验引擎暂不支持弹幕，已自动关闭', 2400);
-    }
-    if (player.activeSubtitleId !== null) void selectSubtitle(null);
-  },
-);
+/** v1.8 修复：原生引擎 surface 移到 WebView 之下，DOM 层（弹幕/字幕）可见，无需互斥 */
 
-/** v1.8/CHG-25：字幕面板入口——原生引擎下外挂字幕 DOM 被 surface 遮挡，互斥 */
+/** v1.8 修复：字幕面板入口——原生引擎下 DOM 层可见，无需互斥 */
 function openSubtitlePanel(): void {
-  if (player.engineKind === 'native') {
-    toast.info('实验引擎暂不支持外挂字幕', 2400);
-    return;
-  }
   subtitleOpen.value = true;
 }
 
@@ -1111,7 +1090,7 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
 <template>
   <main
     class="player-root"
-    :class="{ 'player-root--landscape': immersive }"
+    :class="{ 'player-root--landscape': immersive, 'player-root--native': player.engineKind === 'native' }"
     data-route="player"
   >
     <!-- 竖屏顶部占位（保持返回按钮可见） -->
@@ -1495,6 +1474,23 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
   inset: 0;
   z-index: var(--z-player);
   background-color: #000;
+}
+
+/* v1.8 修复：原生引擎 surface 在 WebView 之下，播放器背景需透明让视频透出 */
+.player-root--native {
+  background-color: transparent;
+}
+
+.player-root--native .player-stage {
+  background-color: transparent;
+}
+
+.player-root--native.player-root--landscape {
+  background-color: transparent;
+}
+
+.player-root--native :deep(.player-surface) {
+  background-color: transparent;
 }
 
 .player-root--landscape .player-page {

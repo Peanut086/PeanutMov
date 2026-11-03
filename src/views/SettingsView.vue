@@ -168,8 +168,8 @@ async function setShowRecommended(value: boolean): Promise<void> {
 }
 
 async function setExperimentalNativePlayer(value: boolean): Promise<void> {
-  if (value) {
-    toast.info('实验功能：仅用于验证原生硬解，随时可能失效');
+  if (!value) {
+    toast.info('已切回内置引擎（WebView 软解），部分源可能因 CORS 限制无法播放', 2800);
   }
   await update({ experimentalNativePlayer: value });
 }
@@ -383,9 +383,9 @@ onMounted(async () => {
             @update:switch-value="setShowRecommended"
           />
           <SettingsRow
-            label="原生播放引擎（实验）"
-            description="Media3 ExoPlayer 硬解 PoC，仅新设备 4K 场景测试用"
-            :switch-value="settings.settings?.experimentalNativePlayer ?? false"
+            label="原生播放引擎"
+            description="Media3 ExoPlayer 硬解（默认推荐），低端设备或特殊源可切回内置引擎"
+            :switch-value="settings.settings?.experimentalNativePlayer ?? true"
             @update:switch-value="setExperimentalNativePlayer"
           />
         </SettingsGroup>

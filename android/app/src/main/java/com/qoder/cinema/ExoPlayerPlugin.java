@@ -1,6 +1,8 @@
 package com.qoder.cinema;
 
+import android.graphics.Color;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import androidx.annotation.OptIn;
@@ -134,6 +136,8 @@ public class ExoPlayerPlugin extends Plugin {
 
                 playerView.setPlayer(player);
                 player.prepare();
+                // v1.8 修复：WebView 背景透明，让下层 surface 透出
+                getBridge().getWebView().setBackgroundColor(Color.TRANSPARENT);
                 call.resolve();
             } catch (Exception e) {
                 call.reject("prepare failed: " + e.getMessage());
@@ -236,6 +240,8 @@ public class ExoPlayerPlugin extends Plugin {
             releasePlayerQuietly();
             if (playerView != null) playerView.setPlayer(null);
             if (overlay != null) overlay.setVisibility(View.GONE);
+            // v1.8 修复：恢复 WebView 不透明背景
+            getBridge().getWebView().setBackgroundColor(Color.WHITE);
             call.resolve();
         });
     }
@@ -272,7 +278,9 @@ public class ExoPlayerPlugin extends Plugin {
         overlay.setFocusable(false);
         overlay.addView(view);
         playerView = view;
-        // 盖在 WebView 之上；Activity 内容视图根为 CoordinatorLayout（Capacitor 默认）
-        ((android.view.ViewGroup) getBridge().getWebView().getParent()).addView(overlay);
+        // v1.8 修复：surface 放到 WebView 之下（z 序最低），HTML 控件叠在视频之上
+        // WebView 背景透明后，视频从下层透出；控件/字幕/弹幕在 WebView 里渲染，自然可见
+        ViewGroup parent = (ViewGroup) getBridge().getWebView().getParent();
+        parent.addView(overlay, 0);
     }
 }

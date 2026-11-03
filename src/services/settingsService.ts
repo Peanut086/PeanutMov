@@ -57,7 +57,7 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
     searchHistory: [],
     /* v1.7 增量（CHG-22/24/21） */
     showRecommendedSubscriptions: true,
-    experimentalNativePlayer: false,
+    experimentalNativePlayer: true,
     danmaku: {
       enabled: false,
       fontSize: 16,
