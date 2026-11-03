@@ -4,8 +4,6 @@ import android.app.PictureInPictureParams;
 import android.graphics.Color;
 import android.os.Build;
 import android.util.Rational;
-import android.view.SurfaceView;
-import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -148,11 +146,11 @@ public class ExoPlayerPlugin extends Plugin {
                         // v1.8 优化：提取视频轨列表（清晰度切换）
                         videoTracks.clear();
                         textTracks.clear();
-                        for (TrackGroup group : tracks.getGroups()) {
-                            Format format = group.getTrackFormat(0);
-                            if (format.sampleMimeType != null) {
-                                if (format.sampleMimeType.startsWith("video/")) {
-                                    for (int i = 0; i < group.length; i++) {
+                        for (int groupIndex = 0; groupIndex < tracks.getGroups().size(); groupIndex++) {
+                            Tracks.Group group = tracks.getGroups().get(groupIndex);
+                            if (group.getMediaTrackGroup().type == androidx.media3.common.C.TRACK_TYPE_VIDEO) {
+                                for (int i = 0; i < group.length; i++) {
+                                    if (group.isTrackSupported(i)) {
                                         Format f = group.getTrackFormat(i);
                                         if (f.height > 0 && f.bitrate > 0) {
                                             JSObject track = new JSObject();
@@ -164,10 +162,10 @@ public class ExoPlayerPlugin extends Plugin {
                                             videoTracks.add(track);
                                         }
                                     }
-                                } else if (format.sampleMimeType.startsWith("text/") ||
-                                          format.sampleMimeType.equals("application/x-subtitle-rip") ||
-                                          format.sampleMimeType.equals("application/ttml+xml")) {
-                                    for (int i = 0; i < group.length; i++) {
+                                }
+                            } else if (group.getMediaTrackGroup().type == androidx.media3.common.C.TRACK_TYPE_TEXT) {
+                                for (int i = 0; i < group.length; i++) {
+                                    if (group.isTrackSupported(i)) {
                                         Format f = group.getTrackFormat(i);
                                         JSObject track = new JSObject();
                                         track.put("id", textTracks.size());
@@ -195,25 +193,6 @@ public class ExoPlayerPlugin extends Plugin {
                     @Override
                     public void onDroppedVideoFrames(AnalyticsListener.EventTime eventTime, int droppedFrames, long droppedToKeyframes) {
                         ExoPlayerPlugin.this.droppedFrames += droppedFrames;
-                    }
-
-                    @Override
-                    public void onBufferingStateChanged(AnalyticsListener.EventTime eventTime, boolean isLoading) {
-                        if (isLoading) {
-                            bufferEvents++;
-                        }
-                    }
-
-                    @Override
-                    public void onDownstreamFormatChanged(AnalyticsListener.EventTime eventTime, androidx.media3.exoplayer.source.MediaLoadData eventData) {
-                        currentBitrate = eventData.bitrate;
-                    }
-
-                    @Override
-                    public void onDecoderInitialized(AnalyticsListener.EventTime eventTime, int trackType, androidx.media3.exoplayer.DecoderInitializationException decoderInitializationException) {
-                        if (eventTime.trackFormat != null && eventTime.trackFormat.decoderName != null) {
-                            decoderName = eventTime.trackFormat.decoderName;
-                        }
                     }
                 });
 
@@ -341,12 +320,18 @@ public class ExoPlayerPlugin extends Plugin {
     public void setTextTrack(PluginCall call) {
         Integer id = call.getInt("id");
         getBridge().executeOnMainThread(() -> {
-            if (player != null) {
-                androidx.media3.common.TrackSelectionParameters params = player.getTrackSelectionParameters()
-                        .buildUpon()
-                        .setTextTrackTypeIds(id != null && id >= 0 ? new int[]{androidx.media3.common.C.TRACK_TYPE_TEXT} : new int[]{})
-                        .build();
-                player.setTrackSelectionParameters(params);
+            if (player != null && id != null && id >= 0 && id < textTracks.size()) {
+                // 简化实现：通过 TrackSelectionParameters 选择字幕轨
+                // 注意：Media3 的字幕轨选择 API 较复杂，这里只做基础实现
+                try {
+                    androidx.media3.common.TrackSelectionParameters params = player.getTrackSelectionParameters()
+                            .buildUpon()
+                            .setPreferredTextLanguage(textTracks.get(id).getString("label", "zh"))
+                            .build();
+                    player.setTrackSelectionParameters(params);
+                } catch (Exception e) {
+                    // 字幕轨切换失败不影响播放
+                }
             }
             call.resolve();
         });
@@ -451,9 +436,6 @@ public class ExoPlayerPlugin extends Plugin {
         overlay = new FrameLayout(getContext());
         PlayerView view = new PlayerView(getContext());
         view.setUseController(false);
-        // v1.8 优化：使用 TextureView 替代 SurfaceView，透明合成更稳
-        TextureView textureView = new TextureView(getContext());
-        view.setVideoTextureView(textureView);
         // v1.8/CHG-25：不消费触摸——事件回落到下层 WebView（手势/HUD 由 JS 层处理）
         view.setClickable(false);
         view.setLongClickable(false);
