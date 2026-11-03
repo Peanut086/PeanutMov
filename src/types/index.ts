@@ -415,6 +415,14 @@ export interface DownloadTask {
   filePath: string | null;
   /** IndexedDB blobs 的 key；Android 为 null */
   blobKey: string | null;
+  /** 字幕文件本地路径列表（Android 相对 Data 目录；Web 为 blob key） */
+  subtitlePaths?: Array<{ path: string; lang: string; format: 'vtt' | 'srt' }> | null;
+  /** 封面图本地路径（Android 相对 Data 目录；Web 为 blob key） */
+  coverPath?: string | null;
+  /** 待下载的字幕 URL 列表（创建时传入，下载完成后清空） */
+  pendingSubtitleUrls?: Array<{ url: string; lang: string; format: 'vtt' | 'srt' }>;
+  /** 待下载的封面 URL（创建时传入，下载完成后清空） */
+  pendingCoverUrl?: string;
   errorCode: ErrorCode | null;
   errorMessage: string | null;
   createdAt: Timestamp;
@@ -434,6 +442,10 @@ export interface CreateDownloadInput {
   headers?: Record<string, string>;
   format: MediaFormat;
   quality?: string | null;
+  /** 字幕文件 URL 列表（随视频一起下载） */
+  subtitleUrls?: Array<{ url: string; lang: string; format: 'vtt' | 'srt' }>;
+  /** 封面图 URL（随视频一起下载） */
+  coverUrl?: string;
 }
 
 export interface DownloadSummary {
@@ -481,10 +493,14 @@ export interface GestureSettings {
   seekMaxSec: number;
 }
 
+export type DownloadSpeedLimit = 'low' | 'medium' | 'high' | 'unlimited';
+
 export interface DownloadSettings {
   concurrency: 1 | 2 | 3;
   wifiOnly: boolean;
   autoResume: boolean;
+  /** 下载限速档位（low=512KB/s, medium=2MB/s, high=5MB/s, unlimited=不限速） */
+  speedLimit: DownloadSpeedLimit;
 }
 
 export interface AppSettings {

@@ -53,7 +53,7 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       lastBrightness: 100,
     },
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
-    download: { concurrency: 2, wifiOnly: false, autoResume: true },
+    download: { concurrency: 2, wifiOnly: false, autoResume: true, speedLimit: 'unlimited' },
     searchHistory: [],
     /* v1.7 增量（CHG-22/24/21） */
     showRecommendedSubscriptions: true,

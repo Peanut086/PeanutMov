@@ -287,7 +287,7 @@ function defaultSettings(): AppSettings {
       lastBrightness: 100,
     },
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
-    download: { concurrency: 2, wifiOnly: false, autoResume: true },
+    download: { concurrency: 2, wifiOnly: false, autoResume: true, speedLimit: 'unlimited' },
     searchHistory: [],
     updatedAt: NOW,
   };

@@ -9,9 +9,11 @@
  */
 import { AppError, toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
-import { DOWNLOAD_PROGRESS_PERSIST_MS, DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/shared/constants';
+import { DOWNLOAD_PROGRESS_PERSIST_MS, DOWNLOAD_WEB_SIZE_WARN_BYTES, DOWNLOAD_SPEED_LIMITS } from '@/shared/constants';
 import { createSink, type DownloadSink } from '@/services/downloadSink';
+import { createHlsDownloader } from '@/services/hlsDownloader';
 import { appEvents } from '@/services/events';
+import { settingsService } from '@/services/settingsService';
 import type { DownloadTask } from '@/types';
 
 export interface DownloadEngineDeps {
@@ -60,6 +62,19 @@ export class DownloadEngine {
    * `signal` 来自队列，暂停/取消时会 abort。
    */
   async run(task: DownloadTask, signal: AbortSignal): Promise<void> {
+    // HLS 分片下载：委托给 HlsDownloader
+    if (task.format === 'hls') {
+      const hlsDownloader = createHlsDownloader({
+        load: this.deps.load,
+        saveProgress: this.deps.saveProgress,
+        fetchImpl: this.deps.fetchImpl,
+        createSinkImpl: this.deps.createSinkImpl,
+        now: this.deps.now,
+      });
+      await hlsDownloader.run(task, signal);
+      return;
+    }
+
     const fetchImpl = this.deps.fetchImpl ?? fetch.bind(globalThis);
     const sinkFactory = this.deps.createSinkImpl ?? createSink;
     const now = this.deps.now ?? Date.now;
@@ -132,6 +147,15 @@ export class DownloadEngine {
     let lastSampleAt = now();
     let lastSampleBytes = downloaded;
 
+    // 获取限速设置
+    let speedLimitBytesPerSec = Infinity;
+    try {
+      const settings = await settingsService.get();
+      speedLimitBytesPerSec = DOWNLOAD_SPEED_LIMITS[settings.download.speedLimit];
+    } catch (e) {
+      logger.debug('获取限速设置失败，使用不限速', e);
+    }
+
     await this.deps.saveProgress(task.id, {
       status: 'downloading',
       downloadedBytes: downloaded,
@@ -150,6 +174,8 @@ export class DownloadEngine {
         downloaded += buffer.byteLength;
       } else {
         const reader = body.getReader();
+        let throttleStart = now();
+        let throttleBytes = 0;
         for (;;) {
           if (signal.aborted) throw new AppError('E_ABORTED');
           const { done, value } = await reader.read();
@@ -162,6 +188,22 @@ export class DownloadEngine {
             await sink.write(slice);
             downloaded += slice.byteLength;
             offset = end;
+
+            // 限速控制：如果超过限速，等待一段时间
+            if (speedLimitBytesPerSec < Infinity) {
+              throttleBytes += slice.byteLength;
+              const elapsed = now() - throttleStart;
+              const expectedMs = (throttleBytes / speedLimitBytesPerSec) * 1000;
+              if (expectedMs > elapsed) {
+                const sleepMs = Math.min(expectedMs - elapsed, 1000); // 最多等 1 秒
+                await new Promise((resolve) => setTimeout(resolve, sleepMs));
+                if (elapsed > 1000) {
+                  // 超过 1 秒重置计数
+                  throttleStart = now();
+                  throttleBytes = 0;
+                }
+              }
+            }
           }
           const currentTime = now();
           if (currentTime - lastPersist >= persistInterval) {

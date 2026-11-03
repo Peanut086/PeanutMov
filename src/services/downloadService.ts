@@ -7,7 +7,7 @@
  * 关键语义：
  * - 同一 `mediaId+episodeId` 只保留一个"有效任务"（canceled 视为历史记录，不阻止新建）；
  * - 重复创建不抛错，返回 `{ existed: true }`（AC-70）；
- * - HLS 仅支持直链（二期做分片合并）；创建时对 `.m3u8` 给出明确错误；
+ * - HLS 分片下载：解析 m3u8 清单，顺序下载 .ts 分片并合并；
  * - 移动网络超过 500MB 前置提示（Q-03）由 `needsCellularConfirm` 提供。
  */
 import { downloadRepo } from '@/db/repositories/downloadRepo';
@@ -81,9 +81,6 @@ function validateInput(input: CreateDownloadInput): void {
   if (!input.url || !/^https?:\/\//i.test(input.url)) {
     throw new AppError('E_INVALID_INPUT', '下载地址必须是 http(s) 直链');
   }
-  if (input.format === 'hls') {
-    throw new AppError('E_UNSUPPORTED_FORMAT', 'HLS 分片下载暂不支持，请改用直链 MP4/TS');
-  }
 }
 
 async function persist(task: DownloadTask): Promise<void> {
@@ -131,6 +128,30 @@ async function ensureQueue(): Promise<DownloadQueue> {
     onStatus: (task, previous) => {
       emitDownload({ type: 'status', task, previous });
       void emitQueueSummary();
+      // 下载完成后，下载关联的字幕和封面
+      if (task.status === 'completed' && previous !== 'completed') {
+        void downloadService.downloadAttachments(task, {
+          sourceId: task.sourceId,
+          mediaId: task.mediaId,
+          episodeId: task.episodeId,
+          episodeNumber: task.episodeNumber,
+          title: task.title,
+          episodeTitle: task.episodeTitle,
+          posterUrl: task.posterUrl,
+          url: task.url,
+          headers: task.headers,
+          format: task.format,
+          quality: task.quality,
+          subtitleUrls: task.pendingSubtitleUrls,
+          coverUrl: task.pendingCoverUrl,
+        }).catch((e) => {
+          logger.warn('下载附件失败（忽略）', { taskId: task.id, error: toAppError(e).message });
+        });
+        // 发送下载完成通知
+        void sendDownloadCompleteNotification(task).catch((e) => {
+          logger.warn('发送下载完成通知失败（忽略）', { taskId: task.id, error: e });
+        });
+      }
     },
     concurrency,
     sleep: (ms, signal) =>
@@ -177,12 +198,44 @@ async function requeuePending(): Promise<void> {
   await emitQueueSummary();
 }
 
+/**
+ * HEAD 预检：检查服务器是否支持断点续传（Range 请求）
+ */
+async function checkResumable(url: string, headers: Record<string, string>): Promise<boolean> {
+  // HLS 分片下载不支持断点续传
+  if (/\.m3u8?(?:[?#]|$)/i.test(url)) return false;
+
+  try {
+    const response = await fetch(url, {
+      method: 'HEAD',
+      headers: { ...headers, Range: 'bytes=0-0' },
+      cache: 'no-store',
+    });
+    // 206 Partial Content 表示服务器支持 Range
+    return response.status === 206;
+  } catch (e) {
+    // 网络错误或 CORS 限制，保守起见假设支持（让下载引擎在实际下载时再判断）
+    logger.debug('HEAD 预检失败，假设支持续传', { url, error: e });
+    return true;
+  }
+}
+
 export const downloadService = {
   async create(input: CreateDownloadInput): Promise<{ task: DownloadTask; existed: boolean }> {
     validateInput(input);
     const existing = await this.findActiveByEpisode(input.mediaId, input.episodeId);
     if (existing) {
       return { task: existing, existed: true };
+    }
+
+    // HEAD 预检：检查服务器是否支持断点续传
+    const resumable = await checkResumable(input.url, input.headers ?? {});
+    if (!resumable) {
+      logger.debug('服务器不支持断点续传', { url: input.url });
+      appEvents.emit('toast', {
+        text: '该源不支持断点续传，中断后需重新下载',
+        type: 'info',
+      });
     }
 
     const now = Date.now();
@@ -206,10 +259,14 @@ export const downloadService = {
       speedBps: 0,
       retries: 0,
       maxRetries: DOWNLOAD_MAX_RETRIES,
-      resumable: true,
+      resumable,
       sink: sinkKindFor(),
       filePath: null,
       blobKey: null,
+      subtitlePaths: null,
+      coverPath: null,
+      pendingSubtitleUrls: input.subtitleUrls,
+      pendingCoverUrl: input.coverUrl,
       errorCode: null,
       errorMessage: null,
       createdAt: now,
@@ -329,6 +386,46 @@ export const downloadService = {
     return next;
   },
 
+  /**
+   * 使用备选 URL 重试下载（多源 fallback）
+   *
+   * 当任务失败后，用新的 URL 创建新任务（替换旧任务）。
+   * UI 负责从其他源获取备选 URL。
+   */
+  async retryWithAlternativeUrl(id: string, alternativeUrl: string, alternativeHeaders?: Record<string, string>): Promise<DownloadTask> {
+    const task = await downloadRepo.get(id);
+    if (!task) throw new AppError('E_NOT_FOUND');
+    if (task.status !== 'failed') {
+      throw new AppError('E_INVALID_STATE', '只有失败的任务才能尝试备选 URL');
+    }
+
+    // 删除旧任务
+    await this.remove(id, { deleteFile: true });
+
+    // 创建新任务
+    const newTask = await this.create({
+      sourceId: task.sourceId,
+      mediaId: task.mediaId,
+      episodeId: task.episodeId,
+      episodeNumber: task.episodeNumber,
+      title: task.title,
+      episodeTitle: task.episodeTitle,
+      posterUrl: task.posterUrl,
+      url: alternativeUrl,
+      headers: alternativeHeaders ?? task.headers,
+      format: task.format,
+      quality: task.quality,
+    });
+
+    logger.debug('备选 URL 任务已创建', {
+      oldTaskId: id,
+      newTaskId: newTask.task.id,
+      newUrl: alternativeUrl,
+    });
+
+    return newTask.task;
+  },
+
   async remove(id: string, opts?: { deleteFile?: boolean }): Promise<void> {
     const task = await downloadRepo.get(id);
     if (!task) return;
@@ -387,6 +484,83 @@ export const downloadService = {
         }
       },
     };
+  },
+
+  /**
+   * 导出已下载文件到公共目录（用户可访问的位置）
+   * - Android：使用 Share API 分享文件
+   * - Web：触发浏览器下载（showSaveFilePicker 或 a 标签）
+   */
+  async exportFile(id: string): Promise<void> {
+    const task = await downloadRepo.get(id);
+    if (!task) throw new AppError('E_NOT_FOUND');
+    if (task.status !== 'completed') throw new AppError('E_FILE_MISSING', '任务尚未下载完成');
+
+    const filename = `${task.title}${task.episodeTitle ? ` - ${task.episodeTitle}` : ''}.${task.format}`;
+
+    if (isNative()) {
+      // Android：使用 Share API
+      const path = task.filePath ?? nativeFilePathOf(task);
+      const info = await stat(path);
+      if (!info.exists || info.size === 0) {
+        throw new AppError('E_FILE_MISSING');
+      }
+      const { Share } = await import('@capacitor/share');
+      const uri = await toPlayableUrl(path);
+      await Share.share({
+        title: '分享视频',
+        text: task.title,
+        url: uri,
+        dialogTitle: '导出视频',
+      });
+      logger.debug('Android 文件已分享', { path });
+    } else {
+      // Web：触发浏览器下载
+      const key = task.blobKey ?? task.id;
+      const blob = await readBlob(key);
+      if (!blob || blob.size === 0) throw new AppError('E_FILE_MISSING');
+
+      // 尝试使用 showSaveFilePicker（Chrome/Edge 支持）
+      if ('showSaveFilePicker' in window) {
+        try {
+          const handle = await (window as any).showSaveFilePicker({
+            suggestedName: filename,
+            types: [
+              {
+                description: '视频文件',
+                accept: { [blob.type || 'video/mp4']: ['.mp4', '.ts', '.webm'] },
+              },
+            ],
+          });
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          logger.debug('Web 文件已导出（showSaveFilePicker）', { filename });
+          return;
+        } catch (e) {
+          // 用户取消或不支持，降级到 a 标签下载
+          if ((e as Error).name === 'AbortError') {
+            logger.debug('用户取消导出');
+            return;
+          }
+          logger.debug('showSaveFilePicker 失败，降级到 a 标签', e);
+        }
+      }
+
+      // 降级：a 标签下载
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+        a.remove();
+      }, 1000);
+      logger.debug('Web 文件已导出（a 标签）', { filename });
+    }
   },
 
   /**
@@ -461,7 +635,8 @@ export const downloadService = {
 
   /**
    * 订阅前后台切换（AC-72 / REV-22）：
-   * - 进后台：所有"下载中"转"已暂停"，进度保留（abort 传输但不清进度）；
+   * - Android（原生）：进后台不暂停，继续下载（前台 Service 保活）
+   * - Web：进后台时暂停下载（WebView 可能被冻结），并尝试 Wake Lock 防止屏幕休眠
    * - 回前台：`settings.download.autoResume` 为 true 时自动恢复，否则等用户手动继续。
    * 重复调用幂等（`bootstrap()` 可能被多次触发）。
    */
@@ -471,10 +646,28 @@ export const downloadService = {
       if (state === lastLifecycleState) return;
       lastLifecycleState = state;
       if (state === 'background') {
-        void downloadService.pauseAll('background').catch((e: unknown) => {
-          logger.warn('切后台暂停下载失败', toAppError(e));
-        });
+        if (isNative()) {
+          // Android：不暂停，继续下载
+          logger.debug('进入后台，Android 继续下载');
+        } else {
+          // Web：暂停下载（WebView 可能被冻结）
+          void downloadService.pauseAll('background').catch((e: unknown) => {
+            logger.warn('切后台暂停下载失败', toAppError(e));
+          });
+          // 尝试 Wake Lock 防止屏幕休眠（用户回前台时可以继续）
+          void acquireWakeLock().catch((e) => {
+            logger.debug('Wake Lock 获取失败（忽略）', e);
+          });
+          appEvents.emit('toast', {
+            text: '下载已暂停，切回前台可继续',
+            type: 'info',
+          });
+        }
         return;
+      }
+      // 回前台：释放 Wake Lock
+      if (!isNative()) {
+        releaseWakeLock();
       }
       void downloadService.resumeAll().catch((e: unknown) => {
         logger.warn('回前台恢复下载失败', toAppError(e));
@@ -507,6 +700,120 @@ export const downloadService = {
     const settings = await settingsService.get();
     if (!settings.download.autoResume) return;
     await requeuePending();
+  },
+
+  /**
+   * 下载字幕文件（辅助函数）
+   */
+  async downloadSubtitle(
+    url: string,
+    lang: string,
+    format: 'vtt' | 'srt',
+    task: DownloadTask,
+    headers: Record<string, string>
+  ): Promise<string> {
+    const response = await fetch(url, { headers, cache: 'no-store' });
+    if (!response.ok) throw new AppError('E_NETWORK', `下载字幕失败：${url}`);
+    const data = new Uint8Array(await response.arrayBuffer());
+
+    if (isNative()) {
+      // Android：写入文件系统
+      const { arrayBufferToBase64, writeBase64, ensureDir } = await import('@/native/fs');
+      const subtitlePath = `${nativeFilePathOf(task).replace(/\.[^.]+$/, '')}.${lang}.${format}`;
+      const dir = subtitlePath.slice(0, subtitlePath.lastIndexOf('/'));
+      await ensureDir(dir);
+      const base64 = arrayBufferToBase64(data.buffer);
+      await writeBase64(subtitlePath, base64);
+      return subtitlePath;
+    } else {
+      // Web：写入 IndexedDB
+      const blob = new Blob([data], { type: format === 'vtt' ? 'text/vtt' : 'application/x-subrip' });
+      const subtitleKey = `${task.id}.subtitle.${lang}`;
+      await blobRepo.put({
+        key: subtitleKey,
+        blob,
+        size: blob.size,
+        mime: blob.type,
+        createdAt: Date.now(),
+      });
+      return subtitleKey;
+    }
+  },
+
+  /**
+   * 下载封面图（辅助函数）
+   */
+  async downloadCover(url: string, task: DownloadTask, headers: Record<string, string>): Promise<string> {
+    const response = await fetch(url, { headers, cache: 'no-store' });
+    if (!response.ok) throw new AppError('E_NETWORK', `下载封面失败：${url}`);
+    const data = new Uint8Array(await response.arrayBuffer());
+
+    if (isNative()) {
+      // Android：写入文件系统
+      const { arrayBufferToBase64, writeBase64, ensureDir } = await import('@/native/fs');
+      const coverPath = `${nativeFilePathOf(task).replace(/\.[^.]+$/, '')}.cover.jpg`;
+      const dir = coverPath.slice(0, coverPath.lastIndexOf('/'));
+      await ensureDir(dir);
+      const base64 = arrayBufferToBase64(data.buffer);
+      await writeBase64(coverPath, base64);
+      return coverPath;
+    } else {
+      // Web：写入 IndexedDB
+      const blob = new Blob([data], { type: 'image/jpeg' });
+      const coverKey = `${task.id}.cover`;
+      await blobRepo.put({
+        key: coverKey,
+        blob,
+        size: blob.size,
+        mime: blob.type,
+        createdAt: Date.now(),
+      });
+      return coverKey;
+    }
+  },
+
+  /**
+   * 下载完视频后，下载关联的字幕和封面
+   */
+  async downloadAttachments(task: DownloadTask, input: CreateDownloadInput): Promise<void> {
+    const subtitlePaths: Array<{ path: string; lang: string; format: 'vtt' | 'srt' }> = [];
+
+    // 下载字幕
+    if (input.subtitleUrls && input.subtitleUrls.length > 0) {
+      for (const sub of input.subtitleUrls) {
+        try {
+          const path = await this.downloadSubtitle(sub.url, sub.lang, sub.format, task, input.headers ?? {});
+          subtitlePaths.push({ path, lang: sub.lang, format: sub.format });
+          logger.debug('字幕已下载', { lang: sub.lang, path });
+        } catch (e) {
+          logger.warn('字幕下载失败（忽略）', { lang: sub.lang, error: toAppError(e).message });
+        }
+      }
+    }
+
+    // 下载封面
+    let coverPath: string | null = null;
+    if (input.coverUrl) {
+      try {
+        coverPath = await this.downloadCover(input.coverUrl, task, input.headers ?? {});
+        logger.debug('封面已下载', { path: coverPath });
+      } catch (e) {
+        logger.warn('封面下载失败（忽略）', { error: toAppError(e).message });
+      }
+    }
+
+    // 更新任务记录
+    if (subtitlePaths.length > 0 || coverPath) {
+      const updated = await downloadRepo.get(task.id);
+      if (updated) {
+        await downloadRepo.save({
+          ...updated,
+          subtitlePaths: subtitlePaths.length > 0 ? subtitlePaths : null,
+          coverPath,
+          updatedAt: Date.now(),
+        });
+      }
+    }
   },
 
   on(event: 'download', handler: DownloadListener): () => void {
@@ -562,6 +869,7 @@ export const downloadService = {
     lifecycleUnbind?.();
     lifecycleUnbind = null;
     lastLifecycleState = 'active';
+    releaseWakeLock();
     queue?.dispose();
     queue = null;
     listeners.clear();
@@ -569,6 +877,112 @@ export const downloadService = {
     setDownloadEngine(null);
   },
 };
+
+/* ---------------- Wake Lock（Web 端防止屏幕休眠） ---------------- */
+
+let wakeLockSentinel: WakeLockSentinel | null = null;
+
+async function acquireWakeLock(): Promise<void> {
+  if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) {
+    logger.debug('Wake Lock API 不可用');
+    return;
+  }
+  if (wakeLockSentinel) return;
+  try {
+    wakeLockSentinel = await navigator.wakeLock.request('screen');
+    logger.debug('Wake Lock 已获取');
+    wakeLockSentinel.addEventListener('release', () => {
+      logger.debug('Wake Lock 已释放');
+      wakeLockSentinel = null;
+    });
+  } catch (e) {
+    logger.warn('获取 Wake Lock 失败', e);
+    wakeLockSentinel = null;
+  }
+}
+
+function releaseWakeLock(): void {
+  if (wakeLockSentinel) {
+    wakeLockSentinel.release().catch(() => undefined);
+    wakeLockSentinel = null;
+  }
+}
+
+interface WakeLockSentinel extends EventTarget {
+  release(): Promise<void>;
+}
+
+/* ---------------- 下载完成通知 ---------------- */
+
+async function sendDownloadCompleteNotification(task: DownloadTask): Promise<void> {
+  const title = task.episodeTitle ? `${task.title} - ${task.episodeTitle}` : task.title;
+  const body = '下载完成';
+
+  if (isNative()) {
+    // Android：使用 Local Notifications 插件
+    try {
+      const { LocalNotifications } = await import('@capacitor/local-notifications');
+      // 请求权限
+      const permission = await LocalNotifications.requestPermissions();
+      if (permission.display !== 'granted') {
+        logger.debug('通知权限未授予');
+        return;
+      }
+      // 发送通知
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            id: task.id.hashCode(),
+            title,
+            body,
+            sound: 'default',
+            smallIcon: 'ic_stat_icon_config_sample',
+            iconColor: '#488AFF',
+          },
+        ],
+      });
+      logger.debug('下载完成通知已发送', { taskId: task.id });
+    } catch (e) {
+      logger.warn('发送通知失败', e);
+    }
+  } else {
+    // Web：使用 Notification API
+    if (typeof Notification === 'undefined') {
+      logger.debug('Notification API 不可用');
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        logger.debug('通知权限未授予');
+        return;
+      }
+      new Notification(title, { body, silent: false });
+      logger.debug('Web 通知已发送', { taskId: task.id });
+    } catch (e) {
+      logger.warn('发送 Web 通知失败', e);
+    }
+  }
+}
+
+// 简单的字符串 hash 函数（用于生成通知 ID）
+declare global {
+  interface String {
+    hashCode(): number;
+  }
+}
+
+if (!String.prototype.hashCode) {
+  String.prototype.hashCode = function (): number {
+    let hash = 0;
+    for (let i = 0; i < this.length; i++) {
+      const char = this.charCodeAt(i);
+      hash = (hash << 5) - hash + char;
+      hash |= 0;
+    }
+    return Math.abs(hash);
+  };
+}
 
 function cryptoRandomId(): string {
   const cryptoObj = typeof globalThis.crypto !== 'undefined' ? globalThis.crypto : undefined;

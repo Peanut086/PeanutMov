@@ -125,6 +125,13 @@ export const DOWNLOAD_WEB_SIZE_WARN_BYTES = 1024 * 1024 * 1024;
 export const DOWNLOAD_CELLULAR_WARN_BYTES = 500 * 1024 * 1024;
 /** 下载进度落库间隔 */
 export const DOWNLOAD_PROGRESS_PERSIST_MS = 2000;
+/** 下载限速档位对应的字节/秒 */
+export const DOWNLOAD_SPEED_LIMITS = {
+  low: 512 * 1024,      // 512 KB/s
+  medium: 2 * 1024 * 1024,  // 2 MB/s
+  high: 5 * 1024 * 1024,    // 5 MB/s
+  unlimited: Infinity,
+} as const;
 
 /* ---------- 导入 / 备份 ---------- */
 /** 订阅文件与响应体大小上限 2MB（FR-05 / API-05） */
