@@ -13,7 +13,7 @@ import { logger } from '@/shared/logger';
 
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 import { assertSourceSupported } from '@/player/sourceGuard';
-import { ExoPlayer, exoHeadersOf } from '@/native/exoPlayerPlugin';
+import { ExoPlayer, exoHeadersOf, type ExoQuality, type ExoTextTrack } from '@/native/exoPlayerPlugin';
 
 const PROGRESS_POLL_MS = 500;
 const RECT_SYNC_DEBOUNCE_MS = 150;
@@ -24,6 +24,10 @@ export interface NativeEngineEvents {
   onWaiting: () => void;
   onEnded: () => void;
   onError: (error: AppErrorShape) => void;
+  /** v1.8 优化：清晰度列表更新 */
+  onQualitiesChange?: (qualities: string[]) => void;
+  /** v1.8 优化：字幕轨列表更新 */
+  onTextTracksChange?: (tracks: Array<{ id: number; label: string }>) => void;
 }
 
 type ExoStateData = { state: string; message?: string; duration?: number };
@@ -45,6 +49,10 @@ export class NativeEngine implements PlayableEngine {
   private durationSec = 0;
   private droppedFrames = 0;
   private ready = false;
+  /** v1.8 优化：当前清晰度列表 */
+  private qualities: ExoQuality[] = [];
+  /** v1.8 优化：当前字幕轨列表 */
+  private textTracks: ExoTextTrack[] = [];
 
   constructor(private readonly events: NativeEngineEvents) {}
 
@@ -125,11 +133,16 @@ export class NativeEngine implements PlayableEngine {
   }
 
   getQualities(): string[] {
-    return [];
+    return this.qualities.map((q) => q.label);
   }
 
-  setQuality(): void {
-    /* PoC 边界：不支持清晰度切换 */
+  setQuality(quality: string): void {
+    const track = this.qualities.find((q) => q.label === quality);
+    if (track) {
+      void ExoPlayer.setQuality({ id: track.id }).catch((e: unknown) =>
+        logger.debug('ExoPlayer setQuality 失败', e),
+      );
+    }
   }
 
   /** 本次会话累计丢帧（AC-125 帧率采样用） */
@@ -149,7 +162,7 @@ export class NativeEngine implements PlayableEngine {
 
   /* ---------- 内部 ---------- */
 
-  private onState(data: ExoStateData): void {
+  private onState(data: { state: string; message?: string; duration?: number; qualities?: ExoQuality[]; textTracks?: ExoTextTrack[] }): void {
     switch (data.state) {
       case 'ready': {
         if (typeof data.duration === 'number' && data.duration > 0) {
@@ -168,6 +181,22 @@ export class NativeEngine implements PlayableEngine {
         this.ready = false;
         this.events.onEnded();
         break;
+      case 'qualities': {
+        // v1.8 优化：清晰度列表更新
+        if (data.qualities) {
+          this.qualities = data.qualities;
+          this.events.onQualitiesChange?.(this.qualities.map((q) => q.label));
+        }
+        break;
+      }
+      case 'textTracks': {
+        // v1.8 优化：字幕轨列表更新
+        if (data.textTracks) {
+          this.textTracks = data.textTracks;
+          this.events.onTextTracksChange?.(this.textTracks.map((t) => ({ id: t.id, label: t.label })));
+        }
+        break;
+      }
       case 'error': {
         const error = toPlayError(data.message);
         if (this.pending) {

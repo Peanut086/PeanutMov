@@ -18,11 +18,17 @@ export interface LocalProxyPlugin {
 
 export const LocalProxy = registerPlugin<LocalProxyPlugin>('LocalProxy');
 
-/** 是否需要走本地代理：原生环境 + 非本地文件 + 有注入头 + 非 HLS（HLS 由 hls.js 注入头） */
+/**
+ * 是否需要走本地代理：原生环境 + 非本地文件 + (有注入头 OR HLS 格式)
+ * v1.8 优化：HLS 也走代理，解决 WebView CORS 限制
+ */
 export function needsHeaderProxy(playback: PlaybackSource): boolean {
   if (!isNative() || playback.isLocal) return false;
-  if (playback.format === 'hls') return false;
-  return Object.keys(playback.headers ?? {}).length > 0;
+  // 有自定义头：必须代理（注入 Referer/UA）
+  if (Object.keys(playback.headers ?? {}).length > 0) return true;
+  // HLS 格式：代理解决 CORS（即使无自定义头）
+  if (playback.format === 'hls') return true;
+  return false;
 }
 
 /**

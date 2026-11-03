@@ -1,6 +1,11 @@
 package com.qoder.cinema;
 
+import android.app.PictureInPictureParams;
 import android.graphics.Color;
+import android.os.Build;
+import android.util.Rational;
+import android.view.SurfaceView;
+import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -11,6 +16,9 @@ import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.common.Format;
+import androidx.media3.common.TrackGroup;
+import androidx.media3.common.Tracks;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
@@ -50,6 +58,15 @@ public class ExoPlayerPlugin extends Plugin {
     private FrameLayout overlay;
     /** v1.8/CHG-25：本次会话累计丢帧（AnalyticsListener 累加，progress() 上报 AC-125 采样） */
     private long droppedFrames = 0;
+    /** v1.8 优化：视频轨列表（清晰度切换） */
+    private java.util.List<JSObject> videoTracks = new java.util.ArrayList<>();
+    /** v1.8 优化：字幕轨列表 */
+    private java.util.List<JSObject> textTracks = new java.util.ArrayList<>();
+    /** v1.8 优化：播放质量指标 */
+    private long bufferEvents = 0;
+    private long bufferDurationMs = 0;
+    private int currentBitrate = 0;
+    private String decoderName = "";
 
     @PluginMethod
     public void isSupported(PluginCall call) {
@@ -125,12 +142,78 @@ public class ExoPlayerPlugin extends Plugin {
                         data.put("message", error.getMessage());
                         notifyListeners("exostate", data);
                     }
+
+                    @Override
+                    public void onTracksChanged(Tracks tracks) {
+                        // v1.8 优化：提取视频轨列表（清晰度切换）
+                        videoTracks.clear();
+                        textTracks.clear();
+                        for (TrackGroup group : tracks.getGroups()) {
+                            Format format = group.getTrackFormat(0);
+                            if (format.sampleMimeType != null) {
+                                if (format.sampleMimeType.startsWith("video/")) {
+                                    for (int i = 0; i < group.length; i++) {
+                                        Format f = group.getTrackFormat(i);
+                                        if (f.height > 0 && f.bitrate > 0) {
+                                            JSObject track = new JSObject();
+                                            track.put("id", videoTracks.size());
+                                            track.put("label", f.height + "p");
+                                            track.put("width", f.width);
+                                            track.put("height", f.height);
+                                            track.put("bitrate", f.bitrate);
+                                            videoTracks.add(track);
+                                        }
+                                    }
+                                } else if (format.sampleMimeType.startsWith("text/") ||
+                                          format.sampleMimeType.equals("application/x-subtitle-rip") ||
+                                          format.sampleMimeType.equals("application/ttml+xml")) {
+                                    for (int i = 0; i < group.length; i++) {
+                                        Format f = group.getTrackFormat(i);
+                                        JSObject track = new JSObject();
+                                        track.put("id", textTracks.size());
+                                        track.put("label", f.language != null ? f.language : "字幕 " + (textTracks.size() + 1));
+                                        track.put("mimeType", f.sampleMimeType);
+                                        textTracks.add(track);
+                                    }
+                                }
+                            }
+                        }
+                        // 通知 JS 侧清晰度列表更新
+                        JSObject data = new JSObject();
+                        data.put("state", "qualities");
+                        data.put("qualities", new JSArray(videoTracks));
+                        notifyListeners("exostate", data);
+                        // 通知 JS 侧字幕列表更新
+                        JSObject subData = new JSObject();
+                        subData.put("state", "textTracks");
+                        subData.put("textTracks", new JSArray(textTracks));
+                        notifyListeners("exostate", subData);
+                    }
                 });
                 // v1.8/CHG-25：丢帧计数（AC-125 转正门槛的量化指标）
                 player.addAnalyticsListener(new AnalyticsListener() {
                     @Override
                     public void onDroppedVideoFrames(AnalyticsListener.EventTime eventTime, int droppedFrames, long droppedToKeyframes) {
                         ExoPlayerPlugin.this.droppedFrames += droppedFrames;
+                    }
+
+                    @Override
+                    public void onBufferingStateChanged(AnalyticsListener.EventTime eventTime, boolean isLoading) {
+                        if (isLoading) {
+                            bufferEvents++;
+                        }
+                    }
+
+                    @Override
+                    public void onDownstreamFormatChanged(AnalyticsListener.EventTime eventTime, androidx.media3.exoplayer.source.MediaLoadData eventData) {
+                        currentBitrate = eventData.bitrate;
+                    }
+
+                    @Override
+                    public void onDecoderInitialized(AnalyticsListener.EventTime eventTime, int trackType, androidx.media3.exoplayer.DecoderInitializationException decoderInitializationException) {
+                        if (eventTime.trackFormat != null && eventTime.trackFormat.decoderName != null) {
+                            decoderName = eventTime.trackFormat.decoderName;
+                        }
                     }
                 });
 
@@ -216,6 +299,104 @@ public class ExoPlayerPlugin extends Plugin {
         });
     }
 
+    /** v1.8 优化：获取视频轨列表（清晰度） */
+    @PluginMethod
+    public void getQualities(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("qualities", new JSArray(videoTracks));
+        call.resolve(result);
+    }
+
+    /** v1.8 优化：切换视频轨（清晰度） */
+    @PluginMethod
+    public void setQuality(PluginCall call) {
+        Integer id = call.getInt("id");
+        getBridge().executeOnMainThread(() -> {
+            if (player != null && id != null && id >= 0 && id < videoTracks.size()) {
+                JSObject track = videoTracks.get(id);
+                int height = track.getInteger("height", 0);
+                int bitrate = track.getInteger("bitrate", 0);
+                // 设置轨道选择参数：限制最大分辨率和码率
+                androidx.media3.common.TrackSelectionParameters params = player.getTrackSelectionParameters()
+                        .buildUpon()
+                        .setMaxVideoSize(Integer.MAX_VALUE, height)
+                        .setMaxVideoBitrate(bitrate)
+                        .build();
+                player.setTrackSelectionParameters(params);
+            }
+            call.resolve();
+        });
+    }
+
+    /** v1.8 优化：获取字幕轨列表 */
+    @PluginMethod
+    public void getTextTracks(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("textTracks", new JSArray(textTracks));
+        call.resolve(result);
+    }
+
+    /** v1.8 优化：切换字幕轨（-1 表示关闭） */
+    @PluginMethod
+    public void setTextTrack(PluginCall call) {
+        Integer id = call.getInt("id");
+        getBridge().executeOnMainThread(() -> {
+            if (player != null) {
+                androidx.media3.common.TrackSelectionParameters params = player.getTrackSelectionParameters()
+                        .buildUpon()
+                        .setTextTrackTypeIds(id != null && id >= 0 ? new int[]{androidx.media3.common.C.TRACK_TYPE_TEXT} : new int[]{})
+                        .build();
+                player.setTrackSelectionParameters(params);
+            }
+            call.resolve();
+        });
+    }
+
+    /** v1.8 优化：获取播放质量指标 */
+    @PluginMethod
+    public void getPlaybackStats(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("bufferEvents", bufferEvents);
+        result.put("bufferDurationMs", bufferDurationMs);
+        result.put("currentBitrate", currentBitrate);
+        result.put("decoderName", decoderName);
+        result.put("droppedFrames", droppedFrames);
+        if (player != null) {
+            result.put("currentPosition", player.getCurrentPosition());
+            result.put("duration", player.getDuration());
+            result.put("playbackSpeed", player.getPlaybackParameters().speed);
+        }
+        call.resolve(result);
+    }
+
+    /** v1.8 优化：进入画中画模式 */
+    @PluginMethod
+    public void enterPip(PluginCall call) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            getBridge().executeOnMainThread(() -> {
+                try {
+                    Rational aspectRatio = new Rational(16, 9);
+                    PictureInPictureParams params = new PictureInPictureParams.Builder()
+                            .setAspectRatio(aspectRatio)
+                            .build();
+                    getActivity().enterPictureInPictureMode(params);
+                    call.resolve();
+                } catch (Exception e) {
+                    call.reject("进入画中画失败: " + e.getMessage());
+                }
+            });
+        } else {
+            call.reject("设备不支持画中画");
+        }
+    }
+
+    /** v1.8 优化：退出画中画模式 */
+    @PluginMethod
+    public void exitPip(PluginCall call) {
+        // Android 没有直接的 exitPip API，用户按返回键或切换到其他 App 会自动退出
+        call.resolve();
+    }
+
     @PluginMethod
     public void progress(PluginCall call) {
         // ExoPlayer 只能在创建它的主线程访问：在 CapacitorPlugins 线程直接读
@@ -270,6 +451,9 @@ public class ExoPlayerPlugin extends Plugin {
         overlay = new FrameLayout(getContext());
         PlayerView view = new PlayerView(getContext());
         view.setUseController(false);
+        // v1.8 优化：使用 TextureView 替代 SurfaceView，透明合成更稳
+        TextureView textureView = new TextureView(getContext());
+        view.setVideoTextureView(textureView);
         // v1.8/CHG-25：不消费触摸——事件回落到下层 WebView（手势/HUD 由 JS 层处理）
         view.setClickable(false);
         view.setLongClickable(false);

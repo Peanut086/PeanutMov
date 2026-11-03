@@ -215,28 +215,25 @@ export class PlayerController {
   private async attachEngine(playback: PlaybackSource): Promise<void> {
     const format = playback.format === 'other' ? guessFormatFromUrl(playback.url) ?? 'mp4' : playback.format;
 
-    /*
-     * AC-40 / FR-17：DASH 与 DRM 流**明确拒绝且不尝试绕过**。
-     *
-     * 必须在 `destroyEngine()` 与任何引擎实例创建**之前**判断：`.mpd` 不创建 video/hls、
-     * 不发任何请求。`.mpd` 在 `guessFormatFromUrl` 里返回 null（SCF 冻结，不改），
-     * 旧行为会当普通视频试播并最终显示「视频解码失败」，与此 AC 不符。
-     */
-    assertSourceSupported(playback.url);
-
     this.destroyEngine();
 
     const host = this.videoHost ?? this.container;
     if (!host) throw new AppError('E_INVALID_STATE', '播放器容器未挂载');
 
-    if (format === 'hls') {
-      // AC-40：m3u8 清单 DRM 预检——可取消、失败即放行（不把网络抖动当 DRM）。
-      // 原生 HLS 与 hls.js 两条路径共用同一判定，行为一致。
-      const manifest = await preflightManifest(playback.url, {
-        signal: this.preflightAbort?.signal,
-        headers: playback.headers,
-      });
-      assertSourceSupported(playback.url, manifest);
+    // v1.8 优化：原生引擎支持 DASH/DRM，只在 WebView 引擎路径上做前置检查
+    const useNativeEngine = this.options?.preferNativeEngine === true && await isExoPlayerAvailable();
+
+    if (!useNativeEngine) {
+      // WebView 引擎路径：DASH/DRM 明确拒绝（AC-40 / FR-17）
+      if (format === 'hls') {
+        const manifest = await preflightManifest(playback.url, {
+          signal: this.preflightAbort?.signal,
+          headers: playback.headers,
+        });
+        assertSourceSupported(playback.url, manifest);
+      } else {
+        assertSourceSupported(playback.url);
+      }
     }
 
     /*
@@ -244,8 +241,9 @@ export class PlayerController {
      * 开关由 View 经 PlayerLoadOptions 注入（本层不读 Service/设置，保持分层约束）；
      * 不可用或加载失败时**静默回退**下方 WebView 分支并发 notice——
      * 不计为播放失败，避免误触发 PlayerView 的换线/换源兜底（FR-53）。
+     * v1.8 优化：原生引擎支持 DASH/DRM，跳过前置检查
      */
-    if (this.options?.preferNativeEngine === true && await isExoPlayerAvailable()) {
+    if (useNativeEngine) {
       const nativeEngine = new NativeEngine({
         onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
         onTimeUpdate: (currentTime, duration, buffered) =>
@@ -253,6 +251,7 @@ export class PlayerController {
         onWaiting: () => this.emit('statechange', { playing: true, waiting: true }),
         onEnded: () => this.handleEnded(),
         onError: (error) => this.handleEngineError(error),
+        onQualitiesChange: (qualities) => this.emit('qualitychange', { quality: this.quality, levels: qualities }),
       });
       nativeEngine.attach(host);
       try {
@@ -277,6 +276,9 @@ export class PlayerController {
     }
 
     const useHls = format === 'hls' && !canPlayNativeHls();
+    // v1.8 优化：WebView 引擎加载失败时自动降级到原生引擎（如果可用且未尝试过）
+    let webviewFailed = false;
+    let webviewError: unknown = null;
     if (useHls) {
       const supported = await isHlsSupported();
       if (!supported) {
@@ -303,32 +305,78 @@ export class PlayerController {
       hlsEngine.attach(host);
       this.engine = hlsEngine;
       this.setEngineKind('hls');
-      await hlsEngine.load(playback);
-      this.progress.update(0, hlsEngine.getDuration());
-      return;
+      try {
+        await hlsEngine.load(playback);
+        this.progress.update(0, hlsEngine.getDuration());
+        return;
+      } catch (e) {
+        webviewFailed = true;
+        webviewError = e;
+        this.destroyEngine();
+      }
+    } else {
+      const videoEngine = new VideoEngine({
+        onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
+        onTimeUpdate: (currentTime, duration, buffered) =>
+          this.handleTimeUpdate(currentTime, duration, buffered),
+        onPlay: () => this.setState('playing'),
+        onPause: () => this.handlePause(),
+        onWaiting: () => this.emit('statechange', { playing: true, waiting: true }),
+        onPlaying: () => {
+          this.emit('statechange', { playing: true, waiting: false });
+          this.setState('playing');
+        },
+        onEnded: () => this.handleEnded(),
+        onError: (error) => this.handleEngineError(error),
+      });
+      videoEngine.attach(host);
+      this.engine = videoEngine;
+      this.setEngineKind('video');
+      this.quality = QUALITY_AUTO;
+      this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
+      try {
+        await this.withMetadataTimeout(videoEngine.load(playback));
+        return;
+      } catch (e) {
+        webviewFailed = true;
+        webviewError = e;
+        this.destroyEngine();
+      }
     }
 
-    const videoEngine = new VideoEngine({
-      onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
-      onTimeUpdate: (currentTime, duration, buffered) =>
-        this.handleTimeUpdate(currentTime, duration, buffered),
-      onPlay: () => this.setState('playing'),
-      onPause: () => this.handlePause(),
-      onWaiting: () => this.emit('statechange', { playing: true, waiting: true }),
-      onPlaying: () => {
-        this.emit('statechange', { playing: true, waiting: false });
-        this.setState('playing');
-      },
-      onEnded: () => this.handleEnded(),
-      onError: (error) => this.handleEngineError(error),
-    });
-    videoEngine.attach(host);
-    this.engine = videoEngine;
-    this.setEngineKind('video');
-    this.quality = QUALITY_AUTO;
-    this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
+    // v1.8 优化：WebView 引擎失败后自动降级到原生引擎
+    if (webviewFailed && this.options?.preferNativeEngine !== true && await isExoPlayerAvailable()) {
+      this.emit('notice', { message: '内置引擎加载失败，自动切换到原生引擎' });
+      const nativeEngine = new NativeEngine({
+        onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
+        onTimeUpdate: (currentTime, duration, buffered) =>
+          this.handleTimeUpdate(currentTime, duration, buffered),
+        onWaiting: () => this.emit('statechange', { playing: true, waiting: true }),
+        onEnded: () => this.handleEnded(),
+        onError: (error) => this.handleEngineError(error),
+      });
+      nativeEngine.attach(host);
+      try {
+        await this.withMetadataTimeout(nativeEngine.load(playback));
+        this.engine = nativeEngine;
+        this.setEngineKind('native');
+        this.quality = QUALITY_AUTO;
+        this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
+        this.progress.update(0, nativeEngine.getDuration());
+        return;
+      } catch {
+        try {
+          nativeEngine.destroy();
+        } catch {
+          /* 回退路径上的清理失败可忽略 */
+        }
+        // 原生也失败，抛出原始 WebView 错误
+        throw webviewError;
+      }
+    }
 
-    await this.withMetadataTimeout(videoEngine.load(playback));
+    // 原生引擎不可用或已尝试过，抛出 WebView 错误
+    throw webviewError;
   }
 
   private withMetadataTimeout(promise: Promise<void>): Promise<void> {

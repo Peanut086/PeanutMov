@@ -133,13 +133,34 @@ public class LocalProxyPlugin extends Plugin {
                 }
             }
             String path = requestLine != null ? requestLine.split(" ")[1] : "";
-            String token = path.startsWith("/p/") ? path.substring(3) : "";
+            // v1.8 优化：支持 /p/{token} 和 /p/{token}/{encoded_url} 两种格式
+            String token;
+            String segmentUrl = null;
+            if (path.startsWith("/p/")) {
+                String rest = path.substring(3);
+                int slash = rest.indexOf('/');
+                if (slash > 0) {
+                    token = rest.substring(0, slash);
+                    String encoded = rest.substring(slash + 1);
+                    try {
+                        segmentUrl = java.net.URLDecoder.decode(encoded, "UTF-8");
+                    } catch (Exception e) {
+                        segmentUrl = null;
+                    }
+                } else {
+                    token = rest;
+                }
+            } else {
+                token = "";
+            }
             Target target = token.isEmpty() ? null : targets.get(token);
             if (target == null) {
                 writeSimple(c, 404, "not found");
                 return;
             }
-            forward(c, target, range);
+            // 如果是分片请求，用分片 URL；否则用原 URL
+            Target actualTarget = segmentUrl != null ? new Target(segmentUrl, target.headers) : target;
+            forward(c, actualTarget, range);
         } catch (Exception e) {
             Log.w(TAG, "proxy connection failed", e);
         }
@@ -174,6 +195,8 @@ public class LocalProxyPlugin extends Plugin {
                 .append(conn.getResponseMessage() == null ? "" : conn.getResponseMessage())
                 .append("\r\n");
         boolean hasLength = false;
+        boolean isM3u8 = target.url.toLowerCase().contains(".m3u8");
+        StringBuilder body = null;
         for (Map.Entry<String, java.util.List<String>> entry : conn.getHeaderFields().entrySet()) {
             String name = entry.getKey();
             if (name == null) continue; // 状态行
@@ -184,6 +207,10 @@ public class LocalProxyPlugin extends Plugin {
                 if (lower.equals("content-length")) hasLength = true;
             }
         }
+        // v1.8 优化：所有代理响应补 ACAO 头，解决 WebView CORS 限制
+        head.append("Access-Control-Allow-Origin: *\r\n");
+        head.append("Access-Control-Allow-Methods: GET, HEAD, Range\r\n");
+        head.append("Access-Control-Allow-Headers: *\r\n");
         if (!hasLength) {
             head.append("Connection: close\r\n");
         }
@@ -191,10 +218,22 @@ public class LocalProxyPlugin extends Plugin {
         out.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
         try (InputStream in = status >= 400 ? conn.getErrorStream() : conn.getInputStream()) {
             if (in != null) {
-                byte[] buffer = new byte[32 * 1024];
-                int read;
-                while ((read = in.read(buffer)) != -1) {
-                    out.write(buffer, 0, read);
+                // v1.8 优化：m3u8 清单需要重写相对 URL 为代理 URL
+                if (isM3u8 && status < 400) {
+                    body = new StringBuilder();
+                    byte[] buffer = new byte[32 * 1024];
+                    int read;
+                    while ((read = in.read(buffer)) != -1) {
+                        body.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
+                    }
+                    String rewritten = rewriteM3u8(body.toString(), target.url, getTokenFromUrl(target.url));
+                    out.write(rewritten.getBytes(StandardCharsets.UTF_8));
+                } else {
+                    byte[] buffer = new byte[32 * 1024];
+                    int read;
+                    while ((read = in.read(buffer)) != -1) {
+                        out.write(buffer, 0, read);
+                    }
                 }
             }
         } finally {
@@ -240,6 +279,79 @@ public class LocalProxyPlugin extends Plugin {
             }
         }
         return out;
+    }
+
+    /** v1.8 优化：重写 m3u8 清单中的相对 URL 为代理绝对 URL */
+    private String rewriteM3u8(String manifest, String baseUrl, String token) {
+        try {
+            URL base = new URL(baseUrl);
+            String baseDir = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
+            StringBuilder result = new StringBuilder();
+            String[] lines = manifest.split("\n");
+            for (String line : lines) {
+                String trimmed = line.trim();
+                // 跳过注释和空行
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                    // 处理 #EXT-X-MAP 等带 URI= 的标签
+                    if (trimmed.startsWith("#EXT-X-MAP:URI=\"")) {
+                        int start = trimmed.indexOf("URI=\"") + 5;
+                        int end = trimmed.indexOf("\"", start);
+                        if (end > start) {
+                            String uri = trimmed.substring(start, end);
+                            if (!uri.startsWith("http")) {
+                                String absolute = resolveUrl(baseDir, uri);
+                                String proxyUrl = "http://127.0.0.1:" + port + "/p/" + token + "/" + java.net.URLEncoder.encode(absolute, "UTF-8");
+                                result.append(trimmed.substring(0, start)).append(proxyUrl).append(trimmed.substring(end));
+                            } else {
+                                result.append(line);
+                            }
+                        } else {
+                            result.append(line);
+                        }
+                    } else {
+                        result.append(line);
+                    }
+                } else if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+                    // 绝对 URL：直接代理
+                    String proxyUrl = "http://127.0.0.1:" + port + "/p/" + token + "/" + java.net.URLEncoder.encode(trimmed, "UTF-8");
+                    result.append(proxyUrl);
+                } else {
+                    // 相对 URL：解析为绝对后代理
+                    String absolute = resolveUrl(baseDir, trimmed);
+                    String proxyUrl = "http://127.0.0.1:" + port + "/p/" + token + "/" + java.net.URLEncoder.encode(absolute, "UTF-8");
+                    result.append(proxyUrl);
+                }
+                result.append("\n");
+            }
+            return result.toString();
+        } catch (Exception e) {
+            Log.w(TAG, "rewriteM3u8 failed, returning original", e);
+            return manifest;
+        }
+    }
+
+    private String resolveUrl(String baseDir, String relative) {
+        if (relative.startsWith("/")) {
+            // 绝对路径：取域名为 base
+            try {
+                URL base = new URL(baseDir);
+                return base.getProtocol() + "://" + base.getHost() + (base.getPort() > 0 ? ":" + base.getPort() : "") + relative;
+            } catch (Exception e) {
+                return baseDir + relative;
+            }
+        } else {
+            return baseDir + relative;
+        }
+    }
+
+    private String getTokenFromUrl(String url) {
+        // 从 targets 中找到对应的 token
+        for (Map.Entry<String, Target> entry : targets.entrySet()) {
+            if (entry.getValue().url.equals(url)) {
+                return entry.getKey();
+            }
+        }
+        return UUID.randomUUID().toString().replace("-", "");
     }
 
     @Override

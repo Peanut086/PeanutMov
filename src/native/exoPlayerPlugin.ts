@@ -27,6 +27,20 @@ export interface ExoPrepareOptions {
   autoPlay?: boolean;
 }
 
+export interface ExoQuality {
+  id: number;
+  label: string;
+  width: number;
+  height: number;
+  bitrate: number;
+}
+
+export interface ExoTextTrack {
+  id: number;
+  label: string;
+  mimeType: string;
+}
+
 export interface ExoPlayerPlugin {
   isSupported(): Promise<{ supported: boolean }>;
   prepare(options: ExoPrepareOptions): Promise<void>;
@@ -40,10 +54,33 @@ export interface ExoPlayerPlugin {
   /** v1.8/CHG-25：droppedFrames 为本次会话累计丢帧（AC-125 帧率采样） */
   progress(): Promise<{ positionMs: number; durationMs: number; droppedFrames?: number }>;
   release(): Promise<void>;
-  /** 状态监听（ready / buffering / ended / error）；返回解绑函数 */
+  /** v1.8 优化：获取视频轨列表（清晰度） */
+  getQualities(): Promise<{ qualities: ExoQuality[] }>;
+  /** v1.8 优化：切换视频轨（清晰度） */
+  setQuality(options: { id: number }): Promise<void>;
+  /** v1.8 优化：获取字幕轨列表 */
+  getTextTracks(): Promise<{ textTracks: ExoTextTrack[] }>;
+  /** v1.8 优化：切换字幕轨（-1 表示关闭） */
+  setTextTrack(options: { id: number }): Promise<void>;
+  /** v1.8 优化：获取播放质量指标 */
+  getPlaybackStats(): Promise<{
+    bufferEvents: number;
+    bufferDurationMs: number;
+    currentBitrate: number;
+    decoderName: string;
+    droppedFrames: number;
+    currentPosition: number;
+    duration: number;
+    playbackSpeed: number;
+  }>;
+  /** v1.8 优化：进入画中画模式 */
+  enterPip(): Promise<void>;
+  /** v1.8 优化：退出画中画模式 */
+  exitPip(): Promise<void>;
+  /** 状态监听（ready / buffering / ended / error / qualities / textTracks）；返回解绑函数 */
   addListener(
     eventName: 'exostate',
-    cb: (data: { state: string; message?: string; duration?: number }) => void,
+    cb: (data: { state: string; message?: string; duration?: number; qualities?: ExoQuality[]; textTracks?: ExoTextTrack[] }) => void,
   ): Promise<() => void>;
 }
 
