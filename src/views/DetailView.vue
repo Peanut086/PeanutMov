@@ -34,9 +34,11 @@ import { useLibraryStore } from '@/stores/libraryStore';
 import { useCacheStore } from '@/stores/cacheStore';
 import { useUiStore } from '@/stores/uiStore';
 import { castService } from '@/services/castService';
+import { libraryService } from '@/services/libraryService';
 import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { toErrorShape } from '@/shared/errors';
+import { logger } from '@/shared/logger';
 import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
 import { formatBytes } from '@/components/common/format';
 
@@ -261,6 +263,39 @@ function isSourceFault(): boolean {
 
 function openSourceManage(): void {
   void router.push({ name: 'sources' });
+}
+
+/** B2：跨源换源——在其它启用源里找同名同年的可播条目 */
+const switchingSource = ref(false);
+async function switchToAlternateSource(): Promise<void> {
+  if (switchingSource.value) return;
+  switchingSource.value = true;
+  try {
+    // 错误态下 detail 为空，从缓存取条目信息
+    const cachedItem = await libraryService.getItem(mediaId.value);
+    if (!cachedItem) {
+      toast.error('无法获取当前条目信息');
+      return;
+    }
+    toast.info('正在查找其它来源…');
+    const alternate = await libraryService.findAlternateByTitle(
+      cachedItem.title,
+      cachedItem.year,
+      cachedItem.sourceId,
+    );
+    if (!alternate) {
+      toast.error('未找到可播放的其它来源');
+      return;
+    }
+    toast.success(`已切换到「${alternate.sourceName}」`);
+    await router.replace({ name: 'detail', params: { mediaId: alternate.mediaId } });
+    await library.loadDetail(alternate.mediaId);
+  } catch (e) {
+    toast.error('换源失败');
+    logger.warn('详情页换源失败', e);
+  } finally {
+    switchingSource.value = false;
+  }
 }
 
 async function playEpisode(ep: Episode | null, restart = false): Promise<void> {
@@ -546,12 +581,20 @@ function openCompliance(): void {
       <ErrorState
         v-else-if="isError"
         :error="library.error"
-        title="详情加载失败"
         back-text="返回"
         @retry="load(true)"
         @back="goBack"
       >
         <template #extra>
+          <button
+            v-if="isSourceFault() && !isOffline"
+            class="btn btn--primary btn--md"
+            type="button"
+            :disabled="switchingSource"
+            @click="switchToAlternateSource"
+          >
+            {{ switchingSource ? '查找中…' : '换源' }}
+          </button>
           <button v-if="isSourceFault()" class="btn btn--ghost btn--md" type="button" @click="openSourceManage">
             去源管理
           </button>

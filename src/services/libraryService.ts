@@ -103,6 +103,12 @@ export interface LibraryService {
     lineId?: string | null;
     signal?: AbortSignal;
   }): Promise<{ inputs: CreateDownloadInput[]; failed: Array<{ episodeId: string; error: AppErrorShape }> }>;
+  /** B2：跨源同名搜索——在其它启用源里找同名同年的可播条目 */
+  findAlternateByTitle(
+    title: string,
+    year: number | null,
+    excludeSourceId: string,
+  ): Promise<{ mediaId: string; sourceName: string } | null>;
 }
 
 /** 首屏缓存有效期（技术方案 6 章：cachedAt < 5min） */
@@ -722,6 +728,48 @@ export const libraryService: LibraryService = {
       }
     }
     return { inputs, failed };
+  },
+
+  /**
+   * B2：跨源同名搜索——在其它启用源里找同名同年的可播条目
+   *
+   * 供 DetailView / PlayerView 的「换源」按钮复用。返回候选 mediaId 与源名，
+   * 由调用方决定导航行为（router.replace + loadDetail）。
+   */
+  async findAlternateByTitle(
+    title: string,
+    year: number | null,
+    excludeSourceId: string,
+  ): Promise<{ mediaId: string; sourceName: string } | null> {
+    if (!title || !navigator.onLine) return null;
+    try {
+      const { pickPlayCandidates } = await import('@/sources/douban/playMatch');
+      const { sourceService } = await import('@/services/sourceService');
+      const [result, allSources] = await Promise.all([
+        libraryService.search({ keyword: title }),
+        sourceService.list(),
+      ]);
+      const sourceById = new Map(allSources.map((s) => [s.id, s]));
+      const candidates = pickPlayCandidates(
+        title,
+        year,
+        result.items,
+        sourceById,
+        (id) => healthService.latencyOf(id),
+      ).filter((candidate) => candidate.source.id !== excludeSourceId);
+      for (const candidate of candidates) {
+        try {
+          // 验证候选源详情可加载
+          await libraryService.getDetail(candidate.item.id);
+          return { mediaId: candidate.item.id, sourceName: candidate.source.name };
+        } catch {
+          continue; // 候选源也失败 → 顺延下一个
+        }
+      }
+    } catch {
+      /* 搜索失败：按无候选处理 */
+    }
+    return null;
   },
 
 };

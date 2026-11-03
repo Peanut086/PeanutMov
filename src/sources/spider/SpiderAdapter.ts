@@ -79,10 +79,21 @@ function extOf(source: Source): SpiderSourceExt {
   };
 }
 
-/** 爬虫返回的 JSON 字符串 → TVBox 结构；非法 JSON 抛 E_PARSE */
-function parseSpiderJson(json: string | null | undefined): TvboxListResponse {
+/**
+ * 爬虫返回的 JSON 字符串 → TVBox 结构；非法 JSON 抛 E_PARSE
+ *
+ * `op` / `sourceName` 仅用于错误文案定位：空返回时用户能看到是哪个方法、哪个源出了问题，
+ * 避免「详情加载失败」这种笼统提示（B1 / 奥特多线诊断）。
+ */
+function parseSpiderJson(
+  json: string | null | undefined,
+  op?: string,
+  sourceName?: string,
+): TvboxListResponse {
   if (typeof json !== 'string' || json.trim().length === 0) {
-    throw new AppError('E_PARSE', '爬虫未返回数据');
+    const who = sourceName ? `「${sourceName}」` : '该源';
+    const what = op ? `${op} 返回空` : '未返回数据';
+    throw new AppError('E_PARSE', `${who}${what}，源站结构可能已变更`);
   }
   let parsed: unknown;
   try {
@@ -110,8 +121,8 @@ export interface SpiderPlayerResult {
   msg?: string | null;
 }
 
-function parsePlayerJson(json: string | null | undefined): SpiderPlayerResult {
-  const base = parseSpiderJson(json) as SpiderPlayerResult;
+function parsePlayerJson(json: string | null | undefined, sourceName?: string): SpiderPlayerResult {
+  const base = parseSpiderJson(json, 'playerContent', sourceName) as SpiderPlayerResult;
   return base;
 }
 
@@ -582,7 +593,7 @@ export class SpiderAdapter extends BaseAdapter {
           NATIVE_INVOKE_TIMEOUT_MS,
         );
       }
-      return parseSpiderJson(result.json);
+      return parseSpiderJson(result.json, method, source.name);
     } catch (e) {
       if (e instanceof AppError) throw e;
       logger.warn('爬虫调用失败', source.name, method, e);
@@ -851,7 +862,7 @@ export class SpiderAdapter extends BaseAdapter {
           invokeTimeout,
         );
       }
-      return parsePlayerJson(result.json);
+      return parsePlayerJson(result.json, source.name);
     } catch (e) {
       if (e instanceof AppError) throw e;
       throw nativeErrorOf(e, new AppError('E_SOURCE_UNAVAILABLE', '爬虫取播放地址失败'));

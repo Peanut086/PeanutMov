@@ -573,6 +573,20 @@ export const useLibraryStore = defineStore('library', () => {
       detail.value = null;
       detailState.value = 'error';
       error.value = toErrorShape(e);
+      // B3：详情失败也落健康态（与 browse 一致），让源管理可见异常源
+      const code = error.value.code;
+      if (
+        code === 'E_PARSE' ||
+        code === 'E_SOURCE_UNAVAILABLE' ||
+        code === 'E_NOT_FOUND' ||
+        code === 'E_HTTP_404' ||
+        code === 'E_HTTP_5XX'
+      ) {
+        const cachedItem = await libraryService.getItem(mediaId);
+        if (cachedItem) {
+          await markSourceFailedByError(cachedItem.sourceId, e);
+        }
+      }
     }
   }
 
