@@ -797,13 +797,24 @@ public class SpiderPlugin extends Plugin {
         Object lock = guardInitLocks.computeIfAbsent(lockKey, k -> new Object());
 
         synchronized (lock) {
-            // 快速路径：同一 jar 已成功初始化过，直接返回
+            Class<?> initClass = loader.loadClass("com.github.catvod.spider.Init");
+
+            // 快速路径：done 标记只说明**某个** DexClassLoader 初始化成功过。
+            // loadSpider 每次调用都 new DexClassLoader，Init 单例（Init$Loader.<clinit>）
+            // 是 per-classloader 的——当前 loader 的 Init.loader() 未就绪时必须继续
+            // 完整 init，否则构造函数里 Init.getSpider() → DexNative.getSpider(null)
+            // → SIGABRT（Mate 50 Pro 实证：同 jar 的第二个源必崩 2026-11-03）。
             if (Boolean.TRUE.equals(guardInitDone.get(lockKey))) {
-                Log.i(TAG, "guard jar already initialized, skip: " + api);
-                return;
+                try {
+                    verifyGuardLoader(initClass, api);
+                    Log.i(TAG, "guard jar already initialized, skip: " + api);
+                    return;
+                } catch (Throwable e) {
+                    d("guardInitDone stale for fresh classloader, re-init: %s", api);
+                    // 落入下方完整 init
+                }
             }
 
-            Class<?> initClass = loader.loadClass("com.github.catvod.spider.Init");
             Application app = (Application) context.getApplicationContext();
             if (app == null) app = (Application) context;
 
@@ -870,21 +881,26 @@ public class SpiderPlugin extends Plugin {
         return e;
     }
 
-    /** 验证 Init.init() 后 loader 是否就绪 */
+    /** 验证 Init.init() 后 loader 是否就绪；loader 为 null 时必须抛异常终止加载 */
     private static void verifyGuardLoader(Class<?> initClass, String api) throws Exception {
         Method loaderMethod = findNoArgMethod(initClass, "loader", "getLoader");
-        if (loaderMethod != null) {
-            loaderMethod.setAccessible(true);
-            Object loaderObj = loaderMethod.invoke(null);
-            if (loaderObj == null) {
-                Log.w(TAG, "Init.loader() returned null for " + api + ", but continuing anyway...");
-                // 不立即抛出异常，因为某些 Guard jar 可能不需要 loader
-            } else {
-                Log.i(TAG, "Init.loader() successful: " + loaderObj.getClass().getName() + " for " + api);
-            }
-        } else {
+        if (loaderMethod == null) {
             Log.w(TAG, "No loader/getLoader method found for " + api);
+            return;
         }
+        loaderMethod.setAccessible(true);
+        Object loaderObj = loaderMethod.invoke(null);
+        if (loaderObj == null) {
+            // 不能"continuing anyway"：guard 爬虫构造函数会走 Init.getSpider() →
+            // DexNative.getSpider(null, ...)，native 层对 null ClassLoader 调
+            // loadClass 触发 JNI DETECTED ERROR → SIGABRT 杀进程（Java catch 无效，
+            // Mate 50 Pro / EMUI 14.2 实证 2026-11-03）。必须在此拒绝，让源级
+            // 失败由 runSpider 的 catch 转成 reject。
+            throw new IllegalStateException(
+                    "guard 爬虫 loader 未就绪（Init.init 后 Init.loader() 仍为 null，"
+                            + "native DexNative 将崩溃，拒绝加载）: " + api);
+        }
+        Log.i(TAG, "Init.loader() successful: " + loaderObj.getClass().getName() + " for " + api);
     }
 
     /** guard 系 jar 的特征字符串（在 classes.dex 字节里出现即认定） */    private static final byte[][] GUARD_DEX_MARKERS = {
