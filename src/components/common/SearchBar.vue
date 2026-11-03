@@ -14,12 +14,10 @@ const props = withDefaults(
   defineProps<{
     modelValue: string;
     placeholder?: string;
-    /** 是否自动聚焦（搜索页） */
-    autofocus?: boolean;
     /** 只读时点击整体触发 click 事件（首页跳转用） */
     readonly?: boolean;
   }>(),
-  { placeholder: '搜索片名…', autofocus: false, readonly: false },
+  { placeholder: '搜索片名…', readonly: false },
 );
 
 const emit = defineEmits<{
@@ -51,12 +49,6 @@ function clear(): void {
   emit('clear');
   inputRef.value?.focus();
 }
-
-function focus(): void {
-  inputRef.value?.focus();
-}
-
-defineExpose({ focus });
 </script>
 
 <template>
@@ -69,7 +61,6 @@ defineExpose({ focus });
       enterkeyhint="search"
       :value="modelValue"
       :placeholder="placeholder"
-      :autofocus="autofocus && !readonly"
       :readonly="readonly"
       aria-label="搜索"
       @input="onInput"

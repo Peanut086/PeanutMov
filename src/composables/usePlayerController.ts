@@ -7,7 +7,7 @@
  * - 手势 intent → 控制器动作 + HUD 状态
  * - 控制条自动隐藏、切集、后台暂停、进度写回
  */
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 
 import type { PlaybackRate, ResizeMode, SaveProgressInput, SubtitleSettings } from '@/types';
 import type { PlayerLoadOptions } from '@/player/types';
@@ -28,6 +28,11 @@ export interface UsePlayerControllerOptions {
    * 不传时播放器不做任何状态栏操作（Web/测试环境天然 no-op）。
    */
   setStatusBarVisible?: (visible: boolean) => void | Promise<void>;
+  /**
+   * 播放时保持屏幕常亮（AC-53）：由 View 注入 `deviceService.keepAwake`。
+   * 不传时 no-op（Web/测试环境）。
+   */
+  setKeepAwake?: (on: boolean) => void | Promise<void>;
   /** 初始字幕设置 */
   subtitle: SubtitleSettings;
   /** 默认倍速 */
@@ -196,6 +201,24 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       ui.toast(message, 'info');
     });
   }
+
+  /* ---------- 屏幕常亮（AC-53） ---------- */
+
+  /** 记录当前 keep-awake 状态，避免重复调用 */
+  let awakeActive = false;
+
+  function syncKeepAwake(): void {
+    const shouldAwake = player.playing || player.waiting;
+    if (shouldAwake === awakeActive) return;
+    awakeActive = shouldAwake;
+    options.setKeepAwake?.(shouldAwake);
+  }
+
+  // 播放/缓冲状态变化时同步 keep-awake
+  watch(
+    () => player.playing || player.waiting,
+    syncKeepAwake,
+  );
 
   /** 创建并挂载控制器 */
   function createController(container: HTMLElement): PlayerController {
@@ -508,6 +531,11 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     void controller.value?.destroy();
     controller.value = null;
     player.reset();
+    // AC-53：离开播放页释放屏幕常亮
+    if (awakeActive) {
+      awakeActive = false;
+      options.setKeepAwake?.(false);
+    }
   });
 
   /* ---------- 派生状态 ---------- */

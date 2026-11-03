@@ -48,7 +48,6 @@ const { isOffline } = useOnlineStatus();
 const queryKeyword = typeof route.query.q === 'string' && route.query.q.trim().length > 0 ? route.query.q : '';
 const keyword = ref(queryKeyword || library.searchKeyword);
 const failedDetailOpen = ref(false);
-const searchBarRef = ref<{ focus: () => void } | null>(null);
 
 const history = computed(() => settings.settings?.searchHistory ?? []);
 const isSearching = computed(() => library.searchState === 'loading');
@@ -127,8 +126,6 @@ onMounted(async () => {
     if (keyword.value.trim().length > 0 && !hasSessionResults) await runSearch(keyword.value, false);
   } catch (e) {
     toast.error(toErrorShape(e).message);
-  } finally {
-    searchBarRef.value?.focus();
   }
 });
 
@@ -249,10 +246,8 @@ function openSourceManage(): void {
 
       <div class="search-head__bar">
         <SearchBar
-          ref="searchBarRef"
           v-model="keyword"
           placeholder="搜索片名…"
-          autofocus
           @search="submitSearch"
         />
       </div>

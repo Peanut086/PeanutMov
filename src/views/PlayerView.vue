@@ -200,6 +200,11 @@ const playerCtl = usePlayerController({
     import('@/services/deviceService')
       .then((m) => m.deviceService.setStatusBarVisible(visible))
       .catch(() => undefined),
+  // AC-53：播放时保持屏幕常亮；Web 下 no-op。
+  setKeepAwake: (on) =>
+    import('@/services/deviceService')
+      .then((m) => m.deviceService.keepAwake(on))
+      .catch(() => undefined),
   subtitle: subtitleSettings.value,
   defaultRate: defaultRate.value,
   autoPlayNext: autoPlayNext.value,

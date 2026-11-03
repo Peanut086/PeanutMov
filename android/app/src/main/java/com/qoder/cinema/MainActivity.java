@@ -2,8 +2,13 @@ package com.qoder.cinema;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.WebView;
+import android.widget.Toast;
 
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.WebViewListener;
+import com.getcapacitor.community.keepawake.KeepAwakePlugin;
 
 /**
  * App 入口 Activity。
@@ -24,6 +29,9 @@ import com.getcapacitor.BridgeActivity;
  */
 public class MainActivity extends BridgeActivity {
 
+    /** 渲染进程崩溃后 recreate 时用于恢复崩溃前的 URL，避免回到空白页 */
+    private static String pendingRestoreUrl;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(CastSharePlugin.class);
@@ -33,7 +41,36 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(LocalProxyPlugin.class);
         // v1.8/CHG-25：ExoPlayer PoC 类自 v1.7 就存在但漏注册，接线后才暴露（插件桥 404）
         registerPlugin(ExoPlayerPlugin.class);
+        // Phase 1：Native 下载器插件
+        registerPlugin(DownloadPlugin.class);
+        // AC-53：屏幕常亮插件（播放视频时防止熄屏）
+        registerPlugin(KeepAwakePlugin.class);
         super.onCreate(savedInstanceState);
+
+        // 华为 WebView 132 在特定场景（冷启动 + 程序化 focus）下渲染进程会 SIGSEGV，
+        // Capacitor BridgeWebViewClient.onRenderProcessGone 默认返回 false → Activity 被
+        // crashpad 以 SIGTRAP 终止（闪退）。注册 listener 返回 true 拦截默认行为，
+        // 用 recreate 重建 WebView 进程，恢复崩溃前 URL。
+        getBridge().addWebViewListener(new WebViewListener() {
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                pendingRestoreUrl = view.getUrl();
+                Toast.makeText(
+                    MainActivity.this,
+                    "渲染进程异常，正在恢复…",
+                    Toast.LENGTH_SHORT
+                ).show();
+                recreate();
+                return true;
+            }
+        });
+
+        // recreate 恢复：把崩溃前的 URL 回灌给 WebView
+        if (pendingRestoreUrl != null) {
+            final String url = pendingRestoreUrl;
+            pendingRestoreUrl = null;
+            getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(url));
+        }
     }
 
     @Override
