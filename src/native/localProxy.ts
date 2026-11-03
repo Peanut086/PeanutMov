@@ -19,16 +19,15 @@ export interface LocalProxyPlugin {
 export const LocalProxy = registerPlugin<LocalProxyPlugin>('LocalProxy');
 
 /**
- * 是否需要走本地代理：原生环境 + 非本地文件 + (有注入头 OR HLS 格式)
- * v1.8 优化：HLS 也走代理，解决 WebView CORS 限制
+ * 是否需要走本地代理：原生环境 + 非本地文件 + 有注入头。
+ * 无头 HLS 不走代理（v1.8 的「HLS 也走代理」已撤）：hls.js 的 XHR 由
+ * CapacitorHttp 原生兜住（无 CORS 问题）；而华为 WebView 的 `<video>` 走平台
+ * NuPlayer 播 HLS，播放列表被改写成 127.0.0.1 分段地址后反而解析失败
+ * （真机实证 2026-11-03：改写后 MEDIA_ERROR 死循环，原始地址可播）。
  */
 export function needsHeaderProxy(playback: PlaybackSource): boolean {
   if (!isNative() || playback.isLocal) return false;
-  // 有自定义头：必须代理（注入 Referer/UA）
-  if (Object.keys(playback.headers ?? {}).length > 0) return true;
-  // HLS 格式：代理解决 CORS（即使无自定义头）
-  if (playback.format === 'hls') return true;
-  return false;
+  return Object.keys(playback.headers ?? {}).length > 0;
 }
 
 /**

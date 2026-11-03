@@ -27,6 +27,8 @@ const props = withDefaults(
     batchSize?: number;
     /** 正在打开播放页的标志，由父级传入 */
     playingNavigate?: boolean;
+    /** 正在解析播放地址的剧集 id（父级预检 resolvePlay 期间显示加载态） */
+    resolvingId?: string | null;
   }>(),
   {
     currentId: null,
@@ -35,6 +37,7 @@ const props = withDefaults(
     unavailableIds: () => [],
     batchSize: 50,
     playingNavigate: false,
+    resolvingId: null,
   },
 );
 
@@ -96,15 +99,19 @@ function onClick(ep: Episode): void {
         :class="{
           'episode-chip--current': ep.id === currentId,
           'episode-chip--unavailable': isUnavailable(ep),
+          'episode-chip--resolving': ep.id === resolvingId,
         }"
         type="button"
         role="listitem"
         :aria-current="ep.id === currentId ? 'true' : undefined"
         :aria-disabled="isUnavailable(ep) ? 'true' : undefined"
+        :aria-busy="ep.id === resolvingId ? 'true' : undefined"
         :aria-label="
-          isUnavailable(ep)
-            ? `第 ${ep.number} 集（暂无可播放地址）`
-            : `第 ${ep.number} 集${ep.title && ep.title !== `第 ${ep.number} 集` ? ` ${ep.title}` : ''}`
+          ep.id === resolvingId
+            ? `第 ${ep.number} 集（正在解析播放地址）`
+            : isUnavailable(ep)
+              ? `第 ${ep.number} 集（暂无可播放地址）`
+              : `第 ${ep.number} 集${ep.title && ep.title !== `第 ${ep.number} 集` ? ` ${ep.title}` : ''}`
         "
         :title="isUnavailable(ep) ? '该集暂无可播放地址' : undefined"
         @click="onClick(ep)"
@@ -177,6 +184,22 @@ function onClick(ep: Episode): void {
 
 .episode-chip--unavailable .episode-chip__number {
   text-decoration: line-through;
+}
+
+/* 解析中（AC-92 补充）：呼吸提示，明确"点了、在解析"，不再静默干等 */
+.episode-chip--resolving {
+  animation: episode-chip-resolving 1.1s var(--ease-in-out, ease-in-out) infinite;
+  cursor: progress;
+}
+
+@keyframes episode-chip-resolving {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }
 
 .episode-chip__check {

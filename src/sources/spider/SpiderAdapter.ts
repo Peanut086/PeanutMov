@@ -758,13 +758,21 @@ export class SpiderAdapter extends BaseAdapter {
 
   /**
    * 解析页 → 直链（parse=1 / jx 解析器地址）。
-   * WebView 嗅探页面加载过程中的媒体请求（m3u8/mp4），拿到直链；失败给明确错误。
+   * 先按普通请求抓一次：App 系爬虫的解析中转接口（getM3u8 之类）响应体就是 m3u8
+   * 清单本身，页面里不会有媒体子请求，WebView 嗅探只能干等超时（真机实证
+   * 2026-11-03：热播|多线/AppTT 15s 超时报「无播放地址」）；抓到清单 → 该地址直接可播。
+   * HTML 解析页（靠 JS 发起媒体请求）维持 WebView 嗅探。
    */
   private async resolveViaParse(source: Source, pageUrl: string, signal?: AbortSignal): Promise<string> {
     signal?.throwIfAborted();
     if (!isNative()) {
       throw new AppError('E_NO_PLAY_URL', '该线路需要解析接口，暂不支持');
     }
+    const direct = await this.fetchIfPlaylist(pageUrl, source, signal).catch((e: unknown) => {
+      logger.warn('解析地址直抓失败', source.name, pageUrl, e);
+      return null;
+    });
+    if (direct) return direct;
     const sniffed = await sniffPlayUrl(pageUrl, this.headersWith(source)).catch((e: unknown) => {
       logger.warn('嗅探解析失败', source.name, pageUrl, e);
       return null;
@@ -773,6 +781,34 @@ export class SpiderAdapter extends BaseAdapter {
       throw new AppError('E_NO_PLAY_URL', '未能从解析页取得播放地址，请换线路');
     }
     return sniffed;
+  }
+
+  /** 解析地址的响应即 m3u8 清单 → 该地址本身可播；其余（HTML/错误页）返回 null 走嗅探 */
+  private async fetchIfPlaylist(url: string, source: Source, signal?: AbortSignal): Promise<string | null> {
+    const response = await httpClient.requestWithMeta<string>(url, {
+      method: 'GET',
+      headers: this.headersWith(source),
+      signal,
+      throwOnHttpError: false,
+      retries: 0,
+      // 冷启动经本地代理首抓 CDN 可达 ~7s（真机实证），8s 曾把成功响应判成超时
+      timeoutMs: 15_000,
+      responseType: 'text',
+    });
+    const contentType = response.headers.get('content-type') ?? '';
+    if (/mpegurl/i.test(contentType)) return url;
+    const body = (response.data ?? '').trimStart();
+    if (!body.startsWith('#EXTM3U')) {
+      logger.warn(
+        '解析地址响应不是清单',
+        source.name,
+        `status=${response.status}`,
+        `ct=${contentType}`,
+        `head=${body.slice(0, 96).replace(/\s+/g, ' ')}`,
+      );
+      return null;
+    }
+    return url;
   }
 
   /** playerContent 的返回可能是 JSON 字符串，也可能被爬虫包装成其它结构 */

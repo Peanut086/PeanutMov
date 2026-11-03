@@ -155,6 +155,8 @@ const downloadedIds = computed(() => {
 const downloading = ref(false);
 /** 播放前置预检进行中（AC-33①）：阻止重复点击 */
 const prechecking = ref(false);
+/** 预检中的集（EpisodeList 渲染解析中加载态，不再静默干等） */
+const resolvingEpisodeId = ref<string | null>(null);
 /** 已确认解析不到播放地址的集（REV-20）：EpisodeList 渲染禁用态 */
 const unavailableIds = ref<string[]>([]);
 /** 投屏能力探测结果（AC-84）：null=探测中，false=禁用投屏按钮 */
@@ -183,6 +185,7 @@ async function ensurePlayable(ep: Episode): Promise<boolean> {
   const it = item.value;
   if (!it || prechecking.value) return false;
   prechecking.value = true;
+  resolvingEpisodeId.value = ep.id;
   try {
     const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
     // 预检只判断"能否播"，随后播放页会重新解析；本地源在这里产生的 blob URL 立即释放，避免泄漏
@@ -211,6 +214,7 @@ async function ensurePlayable(ep: Episode): Promise<boolean> {
     return true;
   } finally {
     prechecking.value = false;
+    resolvingEpisodeId.value = null;
   }
 }
 
@@ -659,6 +663,7 @@ function openCompliance(): void {
             :downloaded-ids="downloadedIds"
             :unavailable-ids="unavailableIds"
             :playing-navigate="prechecking || playingNavigate"
+            :resolving-id="resolvingEpisodeId"
             @select="onEpisodeSelect"
             @unavailable="toast.error('该集暂无可播放地址')"
             @playing="onPlayingBlocked"
