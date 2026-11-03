@@ -127,3 +127,14 @@
   left: max(12%, var(--safe-left));
   right: max(12%, var(--safe-right));
 }
+
+/* 原生引擎（ExoPlayer）surface 位于 WebView 之下：html/body/.app-root 任一
+   不透明都会盖住画面，native 引擎播放期间整条绘制链必须透明（PlayerView 挂/卸切换） */
+html.native-underlay,
+html.native-underlay body {
+  background-color: transparent !important;
+}
+
+html.native-underlay .app-root {
+  background-color: transparent !important;
+}

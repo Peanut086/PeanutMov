@@ -79,6 +79,7 @@ export class OrientationController {
   }
 
   destroy(): void {
-    void this.unlock();
+    // CHG-29：销毁时锁定竖屏而非 unlock，避免把方向控制权交还给传感器。
+    void this.lock('portrait');
   }
 }

@@ -16,6 +16,7 @@ import type { GestureIntent } from '@/player/GestureRecognizer';
 import { ProgressReporter } from '@/player/ProgressReporter';
 import { AUTO_NEXT_COUNTDOWN_SEC, CONTROLS_HIDE_DELAY_MS } from '@/player/constants';
 import { toErrorShape } from '@/shared/errors';
+import { logger } from '@/shared/logger';
 import { usePlayerStore } from '@/stores/playerStore';
 import { useUiStore } from '@/stores/uiStore';
 
@@ -492,6 +493,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   });
 
   onBeforeUnmount(() => {
+    logger.info('播放器卸载：销毁 controller', { hasController: controller.value != null });
     document.removeEventListener('visibilitychange', handleVisibility);
     if (hideTimer !== null) clearTimeout(hideTimer);
     if (hudTimer !== null) clearTimeout(hudTimer);

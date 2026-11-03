@@ -10,6 +10,7 @@
 import type { AppErrorShape, PlaybackSource } from '@/types';
 import { AppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
+import type { PluginListenerHandle } from '@capacitor/core';
 
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 import { assertSourceSupported } from '@/player/sourceGuard';
@@ -36,7 +37,7 @@ export class NativeEngine implements PlayableEngine {
   readonly capabilities: EngineCapabilities = { kind: 'hls', supportsHeaders: true };
 
   private host: HTMLElement | null = null;
-  private detachState: (() => void) | null = null;
+  private detachState: PluginListenerHandle | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private observer: ResizeObserver | null = null;
   private rectSyncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -69,7 +70,10 @@ export class NativeEngine implements PlayableEngine {
     this.positionSec = 0;
     this.durationSec = 0;
 
-    this.detachState?.();
+    // PluginListenerHandle 是 { remove } 对象不是函数（Capacitor 7）：
+    // 旧代码 `this.detachState?.()` 每次抛 TypeError，release 被跳过 →
+    // 离开播放页后原生引擎继续出声（真机实证 2026-11-03）
+    void this.detachState?.remove().catch(() => undefined);
     this.detachState = await ExoPlayer.addListener('exostate', (data: ExoStateData) =>
       this.onState(data),
     );
@@ -81,6 +85,9 @@ export class NativeEngine implements PlayableEngine {
       await ExoPlayer.prepare({
         url: source.url,
         headers: exoHeadersOf(source.headers ?? {}),
+        // format 由 URL 路径推不出来的（中转/代理地址）必须显式带过去，否则 ExoPlayer
+        // 按 progressive 嗅探 m3u8 → UnrecognizedInputFormatException（真机实证）
+        mime: source.format === 'hls' ? 'application/x-mpegURL' : undefined,
         rect: rectOf(host),
       });
     } catch (e) {
@@ -151,13 +158,25 @@ export class NativeEngine implements PlayableEngine {
   }
 
   destroy(): void {
-    this.stopPolling();
-    this.teardownRectWatch();
-    this.detachState?.();
+    logger.info('NativeEngine.destroy: release 播放器');
+    try {
+      this.stopPolling();
+      this.teardownRectWatch();
+      void this.detachState?.remove().catch(() => undefined);
+    } catch (e) {
+      // 清理步骤异常不得拦住 release：否则原生引擎成孤儿，声音关不掉
+      logger.warn('NativeEngine.destroy: teardown 异常', (e as Error)?.message ?? String(e));
+    }
     this.detachState = null;
     this.pending = null;
     this.ready = false;
-    void ExoPlayer.release().catch((e: unknown) => logger.debug('ExoPlayer release 失败', e));
+    try {
+      const p = ExoPlayer.release();
+      logger.info('NativeEngine.destroy: release 桥接已发出');
+      void p.catch((e: unknown) => logger.debug('ExoPlayer release 失败', e));
+    } catch (e) {
+      logger.warn('NativeEngine.destroy: release 同步异常', (e as Error)?.message ?? String(e));
+    }
   }
 
   /* ---------- 内部 ---------- */

@@ -3,6 +3,10 @@ package com.qoder.cinema;
 import android.app.PictureInPictureParams;
 import android.graphics.Color;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+import android.util.Log;
 import android.util.Rational;
 import android.view.View;
 import android.view.ViewGroup;
@@ -66,6 +70,16 @@ public class ExoPlayerPlugin extends Plugin {
     private int currentBitrate = 0;
     private String decoderName = "";
 
+    /**
+     * 心跳看门狗：JS 每 500ms 轮询 progress() 即心跳；页面被系统重建（渲染进程
+     * 回收，真机实证 2026-11-03）或桥接丢失后心跳停止，超时自动暂停，防止
+     * 「离开播放页后声音不停」。正常播放时轮询密集，看门狗永不触发。
+     */
+    private static final long PROGRESS_WATCHDOG_MS = 6_000;
+    private long lastHeartbeatAt = 0;
+    private Runnable watchdogRunnable;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
     @PluginMethod
     public void isSupported(PluginCall call) {
         JSObject result = new JSObject();
@@ -106,14 +120,21 @@ public class ExoPlayerPlugin extends Plugin {
                     httpFactory.setDefaultRequestProperties(headers);
                 }
 
-                boolean isHls = url.contains(".m3u8");
-                DefaultMediaSourceFactory factory = new DefaultMediaSourceFactory(httpFactory);
-                if (isHls) factory.setDataSourceFactory(httpFactory);
+                // 内容类型必须显式标注：DefaultMediaSourceFactory 只按 URI 路径推断，
+                // 中转地址（.m3u8 在 query）与本地代理 hash 地址都会被误判成 progressive，
+                // 把 m3u8 当渐进流嗅探 → UnrecognizedInputFormatException（真机实证）。
+                String mime = call.getString("mime");
+                boolean isHls = androidx.media3.common.MimeTypes.APPLICATION_M3U8.equalsIgnoreCase(mime)
+                        || url.contains(".m3u8");
+                MediaItem mediaItem = isHls
+                        ? new MediaItem.Builder().setUri(url)
+                                .setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8).build()
+                        : MediaItem.fromUri(url);
 
                 player = new ExoPlayer.Builder(getContext())
-                        .setMediaSourceFactory(factory)
+                        .setMediaSourceFactory(new DefaultMediaSourceFactory(httpFactory))
                         .build();
-                player.setMediaItem(MediaItem.fromUri(url));
+                player.setMediaItem(mediaItem);
                 player.addListener(new Player.Listener() {
                     @Override
                     public void onPlaybackStateChanged(int playbackState) {
@@ -198,6 +219,7 @@ public class ExoPlayerPlugin extends Plugin {
 
                 playerView.setPlayer(player);
                 player.prepare();
+                startWatchdog();
                 // v1.8 修复：WebView 背景透明，让下层 surface 透出
                 getBridge().getWebView().setBackgroundColor(Color.TRANSPARENT);
                 call.resolve();
@@ -387,6 +409,7 @@ public class ExoPlayerPlugin extends Plugin {
         // ExoPlayer 只能在创建它的主线程访问：在 CapacitorPlugins 线程直接读
         // getCurrentPosition() 会抛 IllegalStateException 并终止进程（真机实证）。
         getBridge().executeOnMainThread(() -> {
+            lastHeartbeatAt = SystemClock.elapsedRealtime();
             JSObject result = new JSObject();
             if (player != null) {
                 result.put("positionMs", player.getCurrentPosition());
@@ -419,12 +442,38 @@ public class ExoPlayerPlugin extends Plugin {
     }
 
     private void releasePlayerQuietly() {
+        cancelWatchdog();
         if (player != null) {
             try {
                 player.release();
             } catch (Exception ignored) {
             }
             player = null;
+        }
+    }
+
+    private void startWatchdog() {
+        cancelWatchdog();
+        lastHeartbeatAt = SystemClock.elapsedRealtime();
+        watchdogRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (player == null) return;
+                if (player.isPlaying()
+                        && SystemClock.elapsedRealtime() - lastHeartbeatAt > PROGRESS_WATCHDOG_MS) {
+                    Log.w("ExoPlayerPlugin", "progress heartbeat lost > " + PROGRESS_WATCHDOG_MS + "ms, auto pause");
+                    player.pause();
+                }
+                mainHandler.postDelayed(this, 2_000);
+            }
+        };
+        mainHandler.postDelayed(watchdogRunnable, 2_000);
+    }
+
+    private void cancelWatchdog() {
+        if (watchdogRunnable != null) {
+            mainHandler.removeCallbacks(watchdogRunnable);
+            watchdogRunnable = null;
         }
     }
 

@@ -8,7 +8,7 @@
  * 为真时 PlayerView 才路由到本引擎；未启用时本文件零调用、WebView 链路不变。
  * 退出标准（MuMu 4K 不掉帧）与移除方式见 `契约变更-v1.7.md` §2.4。
  */
-import { registerPlugin } from '@capacitor/core';
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 
 import { logger } from '@/shared/logger';
 
@@ -23,6 +23,8 @@ export interface ExoPrepareOptions {
   url: string;
   /** 头数组形态（Java 侧 `call.getArray("headers")` 逐项还原；用 exoHeadersOf 转换） */
   headers?: Array<{ key: string; value: string }>;
+  /** 显式内容类型：中转/代理地址的 .m3u8 不在 URI 路径上，Java 侧推断不出来 */
+  mime?: string;
   rect?: ExoRect;
   autoPlay?: boolean;
 }
@@ -77,11 +79,11 @@ export interface ExoPlayerPlugin {
   enterPip(): Promise<void>;
   /** v1.8 优化：退出画中画模式 */
   exitPip(): Promise<void>;
-  /** 状态监听（ready / buffering / ended / error / qualities / textTracks）；返回解绑函数 */
+  /** 状态监听（ready / buffering / ended / error / qualities / textTracks）；返回解绑 handle */
   addListener(
     eventName: 'exostate',
     cb: (data: { state: string; message?: string; duration?: number; qualities?: ExoQuality[]; textTracks?: ExoTextTrack[] }) => void,
-  ): Promise<() => void>;
+  ): Promise<PluginListenerHandle>;
 }
 
 export const ExoPlayer = registerPlugin<ExoPlayerPlugin>('ExoPlayer');

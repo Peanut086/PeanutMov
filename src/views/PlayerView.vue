@@ -436,6 +436,9 @@ async function resolveAndLoad(): Promise<boolean> {
     return ok;
   } catch (e) {
     const shape = toErrorShape(e, 'E_NO_PLAY_URL');
+    // 失败换线时并发解析会双跑：先成功者已在播，后失败者（嗅探 15s 超时）若把
+    // 错误面板盖上去，用户看到的是「有声音却报无播放地址」。播放中一律不覆盖。
+    if (player.playing) return false;
     loadErrorShape.value = shape;
     loadError.value = shape.message;
     return false;
@@ -1079,8 +1082,17 @@ onMounted(() => {
   window.addEventListener('keydown', onKeydown);
 });
 
+/* 原生引擎（ExoPlayer）surface 在 WebView 之下：html/body/.app-root 任一不透明都会盖住画面 */
+watch(
+  () => player.engineKind,
+  (kind) => {
+    document.documentElement.classList.toggle('native-underlay', kind === 'native');
+  },
+);
+
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown);
+  document.documentElement.classList.remove('native-underlay');
 });
 
 /* ---------- 亮度显示值 ---------- */

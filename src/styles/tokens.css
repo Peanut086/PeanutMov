@@ -313,10 +313,10 @@
   --z-tabbar: 100;
   --z-header: 110;
   --z-overlay: 500;
-  --z-sheet: 600;
-  --z-dialog: 700;
-  --z-toast: 800;
   --z-player: 1000;
+  --z-sheet: 1100;
+  --z-dialog: 1150;
+  --z-toast: 1200;
 }
 
 @media (min-width: 600px) {

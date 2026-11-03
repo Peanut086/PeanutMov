@@ -12,6 +12,7 @@
  */
 import type { AppErrorShape, PlaybackRate, PlaybackSource, SubtitleTrack } from '@/types';
 import { AppError, toErrorShape } from '@/shared/errors';
+import { logger } from '@/shared/logger';
 import { guessFormatFromUrl } from '@/shared/url';
 
 import type {
@@ -669,7 +670,9 @@ export class PlayerController {
 
   async exitFullscreen(): Promise<void> {
     await this.fullscreen.exit();
-    void this.orientation.unlock();
+    // CHG-29：退出全屏回到竖屏。用 lock('portrait') 而非 unlock()，避免把方向控制权
+    // 交还给传感器导致应用自动翻转。
+    void this.orientation.lock('portrait');
   }
 
   async toggleFullscreen(): Promise<void> {
@@ -821,26 +824,34 @@ export class PlayerController {
     if (!this.engine) return;
     try {
       this.engine.destroy();
-    } catch {
-      /* ignore */
+    } catch (e) {
+      logger.warn('destroy: engine.destroy 抛错', e);
     }
     this.engine = null;
+    logger.info('destroy: 引擎已拆');
   }
 
   async destroy(): Promise<void> {
+    logger.info('destroy: 开始', { hasEngine: this.engine != null });
     this.destroyed = true;
     if (this.hideTimer !== null) clearTimeout(this.hideTimer);
     this.hideTimer = null;
     this.clearRetryTimer();
     this.clearNoVideoCheck();
     this.progress.stop();
-    await this.progress.flush();
+    // 引擎先拆：原生引擎出声不归页面 DOM 管，进度落盘卡住/失败不得拖住销毁
+    // （真机实证：flush 抛错中断 destroy → 离开播放页后声音不停）
+    this.destroyEngine();
+    this.engineKind = null;
+    try {
+      await this.progress.flush();
+    } catch {
+      /* 落盘失败可忽略 */
+    }
     this.progress.dispose();
     this.recognizer?.destroy();
     this.recognizer = null;
     this.subtitles.clear();
-    this.destroyEngine();
-    this.engineKind = null;
     this.fullscreen.destroy();
     this.orientation.destroy();
     if (this.videoHost?.parentElement) this.videoHost.parentElement.removeChild(this.videoHost);
