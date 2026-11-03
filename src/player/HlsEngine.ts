@@ -7,7 +7,7 @@
  *   仍失败则抛出映射后的 AppError（技术方案 9.1）
  * - 清晰度：`levels` 按 height 命名（1080p/720p…），`auto` = currentLevel = -1
  */
-import type { AppErrorShape, PlaybackSource } from '@/types';
+import type { AppErrorShape, PlaybackSource, ResizeMode } from '@/types';
 
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 import { VideoEngine } from '@/player/VideoEngine';
@@ -287,6 +287,10 @@ export class HlsEngine implements PlayableEngine {
     if (levelIndex === undefined) return;
     hls.currentLevel = levelIndex;
     this.currentQuality = quality;
+  }
+
+  setResizeMode(mode: ResizeMode): void {
+    this.videoEngine.setResizeMode(mode);
   }
 
   destroy(): void {

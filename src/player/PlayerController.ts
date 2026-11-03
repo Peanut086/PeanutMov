@@ -10,7 +10,7 @@
  * 明确边界：**不调用任何 Service**。播放源由 Store 解析后传入；
  * 切集通过 `resolveEpisode` 回调由 View 提供新参数。
  */
-import type { AppErrorShape, PlaybackRate, PlaybackSource, SubtitleTrack } from '@/types';
+import type { AppErrorShape, PlaybackRate, PlaybackSource, ResizeMode, SubtitleTrack } from '@/types';
 import { AppError, toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { guessFormatFromUrl } from '@/shared/url';
@@ -93,6 +93,7 @@ export class PlayerController {
   private volume = 100;
   private dim = 0;
   private quality: string = QUALITY_AUTO;
+  private resizeMode: ResizeMode = 'contain';
 
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
   /** 网络错误自动重试定时器（REV-06）：必须可取消，避免页面销毁/切集后仍触发 */
@@ -197,6 +198,7 @@ export class PlayerController {
       if (start > 0) this.engine?.seek(start);
       this.engine?.setRate(this.rate);
       this.engine?.setVolume(this.volume);
+      this.engine?.setResizeMode(this.resizeMode);
       this.applyDim();
       this.setState('ready');
       this.progress.update(start, this.engine?.getDuration() ?? 0);
@@ -578,6 +580,15 @@ export class PlayerController {
 
   getVolume(): number {
     return this.volume;
+  }
+
+  setResizeMode(mode: ResizeMode): void {
+    this.resizeMode = mode;
+    this.engine?.setResizeMode(mode);
+  }
+
+  getResizeMode(): ResizeMode {
+    return this.resizeMode;
   }
 
   /** 亮度遮罩：100 = 无遮罩，0 = 最暗（保留 20% 亮度，AC-48） */

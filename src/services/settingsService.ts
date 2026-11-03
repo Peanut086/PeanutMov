@@ -51,6 +51,7 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       rememberVolumeBrightness: true,
       lastVolume: 100,
       lastBrightness: 100,
+      resizeMode: 'contain',
     },
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
     download: { concurrency: 2, wifiOnly: false, autoResume: true, speedLimit: 'unlimited' },
@@ -105,6 +106,11 @@ function sanitize(input: AppSettings): AppSettings {
   player.lastVolume = Math.max(0, Math.min(100, Number(player.lastVolume) || 0));
   player.lastBrightness = Math.max(0, Math.min(100, Number(player.lastBrightness) || 0));
   player.subtitle.offsetSec = Math.max(-5, Math.min(5, Number(player.subtitle.offsetSec) || 0));
+  // 画面比例模式：非法值回落默认
+  const VALID_RESIZE_MODES = ['contain', 'cover', 'fill'] as const;
+  player.resizeMode = VALID_RESIZE_MODES.includes(player.resizeMode as typeof player.resizeMode)
+    ? player.resizeMode
+    : 'contain';
 
   const gesture: GestureSettings = { ...defaults.gesture, ...(gesturePatch ?? {}) };
   gesture.seekMaxSec = Math.max(30, Math.min(180, Number(gesture.seekMaxSec) || defaults.gesture.seekMaxSec));

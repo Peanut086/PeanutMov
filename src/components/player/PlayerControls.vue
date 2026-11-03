@@ -21,6 +21,7 @@ import IconFullscreen from '@/components/icons/IconFullscreen.vue';
 import IconDownload from '@/components/icons/IconDownload.vue';
 import IconCast from '@/components/icons/IconCast.vue';
 import IconChevron from '@/components/icons/IconChevron.vue';
+import IconAspectRatio from '@/components/icons/IconAspectRatio.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -69,6 +70,7 @@ const emit = defineEmits<{
   (e: 'open-speed'): void;
   (e: 'open-subtitle'): void;
   (e: 'open-quality'): void;
+  (e: 'open-display-mode'): void;
   (e: 'toggle-fullscreen'): void;
   (e: 'download'): void;
   (e: 'cast'): void;
@@ -195,6 +197,9 @@ const miniBuffered = computed(() =>
             <button class="controls-mini" type="button" aria-label="清晰度" @click="emit('open-quality')">
               {{ qualityLabel }}
             </button>
+            <button class="controls-mini controls-mini--icon" type="button" aria-label="画面比例" @click="emit('open-display-mode')">
+              <IconAspectRatio :size="18" />
+            </button>
             <button
               class="controls-mini controls-mini--icon"
               :class="{ 'controls-mini--active': subtitleActive }"
@@ -225,6 +230,10 @@ const miniBuffered = computed(() =>
         <button class="controls-secondary__btn" type="button" aria-label="清晰度" @click="emit('open-quality')">
           <span class="controls-secondary__text">{{ qualityLabel }}</span>
           <IconChevron :size="14" direction="down" />
+        </button>
+
+        <button class="controls-secondary__btn" type="button" aria-label="画面比例" @click="emit('open-display-mode')">
+          <IconAspectRatio :size="18" />
         </button>
 
         <button

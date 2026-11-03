@@ -7,7 +7,7 @@
  * - rect 对齐：ResizeObserver + 窗口 resize/orientationchange 防抖后 `setRect`
  * - 清晰度为空数组（面板天然隐藏）；PoC 边界见 `契约变更-v1.7.md` §2.4
  */
-import type { AppErrorShape, PlaybackSource } from '@/types';
+import type { AppErrorShape, PlaybackSource, ResizeMode } from '@/types';
 import { AppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import type { PluginListenerHandle } from '@capacitor/core';
@@ -150,6 +150,12 @@ export class NativeEngine implements PlayableEngine {
         logger.debug('ExoPlayer setQuality 失败', e),
       );
     }
+  }
+
+  setResizeMode(mode: ResizeMode): void {
+    void ExoPlayer.setResizeMode({ mode }).catch((e: unknown) =>
+      logger.debug('ExoPlayer setResizeMode 失败', e),
+    );
   }
 
   /** 本次会话累计丢帧（AC-125 帧率采样用） */

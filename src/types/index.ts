@@ -474,6 +474,14 @@ export interface SubtitleSettings {
   preferredLang: string | null;
 }
 
+/**
+ * 画面比例模式（P1 画面比例配置）
+ * - contain：适应画面，完整显示，留黑边（默认）
+ * - cover：裁剪铺满，不变形，裁掉部分边缘
+ * - fill：拉伸铺满，填满屏幕但会变形
+ */
+export type ResizeMode = 'contain' | 'cover' | 'fill';
+
 export interface PlayerSettings {
   defaultRate: PlaybackRate;
   /** 'auto' 或具体档位标签，如 '720p' */
@@ -485,6 +493,8 @@ export interface PlayerSettings {
   rememberVolumeBrightness: boolean;
   lastVolume: number;
   lastBrightness: number;
+  /** 画面比例模式（P1 新增） */
+  resizeMode: ResizeMode;
 }
 
 export interface GestureSettings {

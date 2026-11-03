@@ -5,7 +5,7 @@
  * - 不处理业务错误文案；错误以 `AppError` 回调抛给 PlayerController
  * - 所有原生监听在 `destroy()` 中解绑，避免重复挂载造成内存泄漏
  */
-import type { AppErrorShape, PlaybackSource } from '@/types';
+import type { AppErrorShape, PlaybackSource, ResizeMode } from '@/types';
 import { toErrorShape } from '@/shared/errors';
 
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
@@ -158,6 +158,16 @@ export class VideoEngine implements PlayableEngine {
 
   setQuality(): void {
     /* 原生引擎不支持清晰度切换 */
+  }
+
+  /**
+   * 通过 CSS object-fit 控制画面缩放：
+   * - contain → contain（留黑边，完整显示）
+   * - cover → cover（裁剪铺满，不变形）
+   * - fill → fill（拉伸铺满，会变形）
+   */
+  setResizeMode(mode: ResizeMode): void {
+    this.video.style.objectFit = mode;
   }
 
   destroy(): void {

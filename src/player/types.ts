@@ -8,6 +8,7 @@ import type {
   AppErrorShape,
   PlaybackRate,
   PlaybackSource,
+  ResizeMode,
   SubtitleTrack,
 } from '@/types';
 
@@ -116,6 +117,8 @@ export interface PlayableEngine {
   getFrameStats?(): { videoWidth: number; videoHeight: number; totalFrames: number } | null;
   setQuality(quality: string): void;
   getQualities(): string[];
+  /** 设置画面缩放模式（contain/cover/fill） */
+  setResizeMode(mode: ResizeMode): void;
   /** 销毁并释放资源 */
   destroy(): void;
 }

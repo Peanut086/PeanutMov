@@ -24,6 +24,7 @@ const h = vi.hoisted(() => {
     seek: vi.fn(async () => undefined),
     setRate: vi.fn(async () => undefined),
     setVolume: vi.fn(async () => undefined),
+    setResizeMode: vi.fn(async () => undefined),
     release: vi.fn(async () => undefined),
     progress: vi.fn(async () => ({ positionMs: 0, durationMs: 0, droppedFrames: 0 })),
   };

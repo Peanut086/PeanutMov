@@ -79,6 +79,8 @@ export interface ExoPlayerPlugin {
   enterPip(): Promise<void>;
   /** v1.8 优化：退出画中画模式 */
   exitPip(): Promise<void>;
+  /** P1 画面比例：contain/cover/fill → Media3 resize_mode */
+  setResizeMode(options: { mode: string }): Promise<void>;
   /** 状态监听（ready / buffering / ended / error / qualities / textTracks）；返回解绑 handle */
   addListener(
     eventName: 'exostate',

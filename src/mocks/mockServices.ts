@@ -285,6 +285,7 @@ function defaultSettings(): AppSettings {
       rememberVolumeBrightness: true,
       lastVolume: 100,
       lastBrightness: 100,
+      resizeMode: 'contain',
     },
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
     download: { concurrency: 2, wifiOnly: false, autoResume: true, speedLimit: 'unlimited' },

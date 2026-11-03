@@ -8,7 +8,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import type { GestureSettings, PlayerSettings, PlaybackRate, Sensitivity, ThemeMode } from '@/types';
+import type { GestureSettings, PlayerSettings, PlaybackRate, ResizeMode, Sensitivity, ThemeMode } from '@/types';
 import { APP_VERSION, PLAYBACK_RATES } from '@/shared/constants';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
@@ -47,6 +47,7 @@ const theme = useTheme();
 const speedOpen = ref(false);
 const themeOpen = ref(false);
 const sensitivityOpen = ref(false);
+const displayModeOpen = ref(false);
 const clearDataOpen = ref(false);
 const keepDemo = ref(true);
 const clearing = ref(false);
@@ -87,6 +88,7 @@ const PLAYER_FALLBACK: PlayerSettings = {
   rememberVolumeBrightness: true,
   lastVolume: 100,
   lastBrightness: 100,
+  resizeMode: 'contain',
 };
 const GESTURE_FALLBACK: GestureSettings = { sensitivity: 'medium', seekMaxSec: 90 };
 
@@ -117,6 +119,18 @@ const sensitivityLabel = computed(() => {
 
 const rateLabel = computed(() => `${(settings.settings?.player.defaultRate ?? 1).toFixed(2).replace(/0$/, '')}x`);
 const autoPlayNext = computed(() => settings.settings?.player.autoPlayNext ?? true);
+const displayModeLabel = computed(() => {
+  const mode = settings.settings?.player.resizeMode ?? 'contain';
+  switch (mode) {
+    case 'cover':
+      return '铺满';
+    case 'fill':
+      return '拉伸';
+    case 'contain':
+    default:
+      return '适应';
+  }
+});
 
 onMounted(async () => {
   try {
@@ -154,6 +168,12 @@ async function setTheme(mode: ThemeMode): Promise<void> {
 async function setSensitivity(value: Sensitivity): Promise<void> {
   sensitivityOpen.value = false;
   await update({ gesture: { ...gestureSettings.value, sensitivity: value } }, '手势灵敏度已更新');
+}
+
+async function setDisplayMode(mode: ResizeMode): Promise<void> {
+  displayModeOpen.value = false;
+  const labels: Record<ResizeMode, string> = { contain: '适应', cover: '铺满', fill: '拉伸' };
+  await update({ player: { ...playerSettings.value, resizeMode: mode } }, `画面比例已设为${labels[mode]}`);
 }
 
 async function setAutoPlayNext(value: boolean): Promise<void> {
@@ -356,6 +376,7 @@ async function exportLogs(): Promise<void> {
 
         <SettingsGroup title="播放">
           <SettingsRow label="默认倍速" :value="rateLabel" chevron @click="speedOpen = true" />
+          <SettingsRow label="画面比例" :value="displayModeLabel" chevron @click="displayModeOpen = true" />
           <SettingsRow
             label="自动连播下一集"
             :switch-value="autoPlayNext"
@@ -451,6 +472,29 @@ async function exportLogs(): Promise<void> {
         </li>
       </ul>
       <p class="sheet-hint">下次播放生效；播放页内也可临时切换倍速。</p>
+    </BottomSheet>
+
+    <!-- 画面比例 -->
+    <BottomSheet v-model="displayModeOpen" title="画面比例">
+      <ul class="sheet-list">
+        <li v-for="opt in [
+          { v: 'contain', l: '适应', d: '完整显示，留黑边' },
+          { v: 'cover', l: '铺满', d: '裁剪边缘，不变形' },
+          { v: 'fill', l: '拉伸', d: '填满屏幕，会变形' },
+        ] as const" :key="opt.v">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': playerSettings.resizeMode === opt.v }"
+            type="button"
+            @click="setDisplayMode(opt.v)"
+          >
+            {{ opt.l }}
+            <span class="sheet-list__hint">{{ opt.d }}</span>
+            <span v-if="playerSettings.resizeMode === opt.v" class="sheet-list__check">当前</span>
+          </button>
+        </li>
+      </ul>
+      <p class="sheet-hint">立即生效；播放页内也可临时切换画面比例。</p>
     </BottomSheet>
 
     <!-- 主题 -->
@@ -645,6 +689,11 @@ async function exportLogs(): Promise<void> {
 
 .sheet-list__item--active {
   color: var(--color-brand-text);
+}
+
+.sheet-list__hint {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
 }
 
 .sheet-list__check {

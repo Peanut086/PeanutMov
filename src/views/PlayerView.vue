@@ -20,6 +20,7 @@ import type {
   PlaybackRate,
   PlaybackSource,
   PlayerSettings,
+  ResizeMode,
   SubtitleSettings,
 } from '@/types';
 import type { PlayerLoadOptions } from '@/player/types';
@@ -35,6 +36,7 @@ import PlayerHud from '@/components/player/PlayerHud.vue';
 import SpeedSheet from '@/components/player/SpeedSheet.vue';
 import SubtitleSheet from '@/components/player/SubtitleSheet.vue';
 import QualitySheet from '@/components/player/QualitySheet.vue';
+import DisplayModeSheet from '@/components/player/DisplayModeSheet.vue';
 import PlayerErrorPanel from '@/components/player/PlayerErrorPanel.vue';
 import NextEpisodePrompt from '@/components/player/NextEpisodePrompt.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
@@ -164,6 +166,7 @@ const PLAYER_FALLBACK: PlayerSettings = {
   rememberVolumeBrightness: true,
   lastVolume: 100,
   lastBrightness: 100,
+  resizeMode: 'contain',
 };
 const GESTURE_FALLBACK: GestureSettings = { sensitivity: 'medium', seekMaxSec: 90 };
 
@@ -182,6 +185,7 @@ const autoPlayNext = computed(() => playerSettings.value.autoPlayNext);
 const subtitleSettings = computed<SubtitleSettings>(
   () => playerSettings.value.subtitle ?? PLAYER_FALLBACK.subtitle,
 );
+const currentResizeMode = computed(() => playerSettings.value.resizeMode ?? 'contain');
 
 const stageRef = ref<HTMLElement | null>(null);
 
@@ -199,6 +203,7 @@ const playerCtl = usePlayerController({
   subtitle: subtitleSettings.value,
   defaultRate: defaultRate.value,
   autoPlayNext: autoPlayNext.value,
+  resizeMode: currentResizeMode.value,
   describe: () => {
     const it = item.value;
     const ep = currentEpisode.value;
@@ -236,6 +241,7 @@ const {
   nextEpisode,
   prevEpisode,
   switchQuality,
+  setResizeMode,
   selectSubtitle,
   retrySubtitle,
   addLocalSubtitle,
@@ -251,6 +257,7 @@ const {
 const speedOpen = ref(false);
 const subtitleOpen = ref(false);
 const qualityOpen = ref(false);
+const displayModeOpen = ref(false);
 const episodeOpen = ref(false);
 const moreOpen = ref(false);
 const pickerOpen = ref(false);
@@ -889,6 +896,11 @@ function onSubtitleSettings(patch: Partial<SubtitleSettings>): void {
   });
 }
 
+function onDisplayModeSelect(mode: ResizeMode): void {
+  setResizeMode(mode);
+  void settings.update({ player: { ...playerSettings.value, resizeMode: mode } });
+}
+
 function chooseEpisode(ep: Episode): void {
   episodeOpen.value = false;
   if (ep.id === currentEpisode.value?.id) return;
@@ -1180,6 +1192,7 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             @open-speed="speedOpen = true"
             @open-subtitle="openSubtitlePanel"
             @open-quality="qualityOpen = true"
+            @open-display-mode="displayModeOpen = true"
             @toggle-fullscreen="toggleFullscreen"
             @download="onDownloadCurrent"
             @cast="onCast"
@@ -1403,6 +1416,11 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
       :levels="player.qualities"
       @select="switchQuality"
     />
+    <DisplayModeSheet
+      v-model="displayModeOpen"
+      :mode="currentResizeMode"
+      @select="onDisplayModeSelect"
+    />
 
     <BottomSheet v-model="episodeOpen" title="选集">
       <EpisodeList
@@ -1586,6 +1604,8 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
   min-height: 0;
   overflow-y: auto;
   padding: var(--space-4) var(--layout-page-padding-x) calc(var(--space-6) + var(--safe-bottom));
+  /* 原生引擎模式下整页透明，信息区必须自带不透明底色，否则露出 Activity 白色窗口 */
+  background-color: var(--color-bg-base);
 }
 
 .player-info__title {

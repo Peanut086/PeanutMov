@@ -9,7 +9,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
 
-import type { PlaybackRate, SaveProgressInput, SubtitleSettings } from '@/types';
+import type { PlaybackRate, ResizeMode, SaveProgressInput, SubtitleSettings } from '@/types';
 import type { PlayerLoadOptions } from '@/player/types';
 import { PlayerController } from '@/player/PlayerController';
 import type { GestureIntent } from '@/player/GestureRecognizer';
@@ -34,6 +34,8 @@ export interface UsePlayerControllerOptions {
   defaultRate: PlaybackRate;
   /** 自动连播 */
   autoPlayNext: boolean;
+  /** 初始画面比例 */
+  resizeMode: ResizeMode;
   /** 获取当前加载参数的上下文（用于写回 title/poster 等） */
   describe: () => {
     sourceId: string;
@@ -226,6 +228,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     c.mount(container);
     controller.value = c;
     c.setRate(options.defaultRate);
+    c.setResizeMode(options.resizeMode);
     c.setSubtitleOffset(options.subtitle.offsetSec);
     return c;
   }
@@ -324,6 +327,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     controller.value?.setQuality(quality);
     resolvedQuality.value = quality;
     ui.toast(quality === 'auto' ? '已切换到自动清晰度' : `已切换到 ${quality}`, 'info', 1500);
+  }
+
+  function setResizeMode(mode: ResizeMode): void {
+    controller.value?.setResizeMode(mode);
   }
 
   async function selectSubtitle(id: string | null): Promise<void> {
@@ -537,6 +544,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     nextEpisode,
     prevEpisode,
     switchQuality,
+    setResizeMode,
     selectSubtitle,
     retrySubtitle,
     addLocalSubtitle,

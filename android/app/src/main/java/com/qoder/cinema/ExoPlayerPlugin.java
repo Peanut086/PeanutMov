@@ -25,6 +25,7 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
 
 import com.getcapacitor.JSArray;
@@ -329,6 +330,31 @@ public class ExoPlayerPlugin extends Plugin {
         });
     }
 
+    /** P1 画面比例：contain/cover/fill → Media3 resize_mode */
+    @PluginMethod
+    public void setResizeMode(PluginCall call) {
+        String mode = call.getString("mode", "contain");
+        getBridge().executeOnMainThread(() -> {
+            if (playerView != null) {
+                int resizeMode;
+                switch (mode) {
+                    case "cover":
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM;
+                        break;
+                    case "fill":
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL;
+                        break;
+                    case "contain":
+                    default:
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT;
+                        break;
+                }
+                playerView.setResizeMode(resizeMode);
+            }
+            call.resolve();
+        });
+    }
+
     /** v1.8 优化：获取字幕轨列表 */
     @PluginMethod
     public void getTextTracks(PluginCall call) {
@@ -429,8 +455,8 @@ public class ExoPlayerPlugin extends Plugin {
             releasePlayerQuietly();
             if (playerView != null) playerView.setPlayer(null);
             if (overlay != null) overlay.setVisibility(View.GONE);
-            // v1.8 修复：恢复 WebView 不透明背景
-            getBridge().getWebView().setBackgroundColor(Color.WHITE);
+            // 恢复 WebView 透明：让 CSS 主题背景负责绘制，避免深色主题下闪白
+            getBridge().getWebView().setBackgroundColor(Color.TRANSPARENT);
             call.resolve();
         });
     }
@@ -483,8 +509,13 @@ public class ExoPlayerPlugin extends Plugin {
             return;
         }
         overlay = new FrameLayout(getContext());
+        // 原生视频容器与 PlayerView 都设黑底：FIT 模式下 letterbox 区域为黑色，
+        // 避免透出下层 Activity/WebView 的白色窗口（深色主题下尤为刺眼）
+        overlay.setBackgroundColor(Color.BLACK);
         PlayerView view = new PlayerView(getContext());
         view.setUseController(false);
+        view.setBackgroundColor(Color.BLACK);
+        view.setShutterBackgroundColor(Color.BLACK);
         // v1.8/CHG-25：不消费触摸——事件回落到下层 WebView（手势/HUD 由 JS 层处理）
         view.setClickable(false);
         view.setLongClickable(false);
