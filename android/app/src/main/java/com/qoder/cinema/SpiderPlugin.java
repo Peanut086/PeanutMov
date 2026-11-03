@@ -59,8 +59,6 @@ import com.google.gson.Gson;
 public class SpiderPlugin extends Plugin {
 
     private static final String TAG = "SpiderPlugin";
-    /** 是否启用详细调试日志（仅开发调试用） */
-    private static boolean ENABLE_DEBUG_LOG = true;
     
     /** Gson 实例用于 JSON 序列化 */
     private static final Gson GSON = new Gson();
@@ -77,14 +75,20 @@ public class SpiderPlugin extends Plugin {
      * 条件日志：根据开关决定是否输出详细信息，减少生产环境的日志噪音。
      * 用法：d("key=value", optionalExtraInfo)
      * 
-     * 注意：日志会自动清理 1 天前的数据（在 runSpider 方法中处理）
+     * 日志写入本地文件（filesDir/logs/），自动清理 3 天前的数据。
+     * 关闭开关时仍记录 W/E，保证崩溃可诊断。
      */
     private void d(String message) {
-        if (ENABLE_DEBUG_LOG) Log.d(TAG, message);
+        SpiderLogStore store = SpiderLogStore.get();
+        if (store != null) store.log("D", TAG, message);
+        else Log.d(TAG, message);
     }
 
     private void d(String format, Object... args) {
-        if (ENABLE_DEBUG_LOG) Log.d(TAG, String.format(format, args));
+        SpiderLogStore store = SpiderLogStore.get();
+        String message = String.format(format, args);
+        if (store != null) store.log("D", TAG, message);
+        else Log.d(TAG, message);
     }
 
     /**
@@ -113,12 +117,6 @@ public class SpiderPlugin extends Plugin {
         final AtomicBoolean settled = new AtomicBoolean(false);
         final String label = "爬虫" + op;
         
-        // 自动清理过期日志（只在空闲时）
-        Context ctx = getContext();
-        if (ctx != null && loaded.isEmpty()) {
-            autoCleanOldLogs(ctx);
-        }
-        
         final Runnable timeoutTask = () -> {
             if (settled.compareAndSet(false, true)) {
                 Log.w(TAG, op + " timeout after " + timeoutMs + "ms");
@@ -127,6 +125,8 @@ public class SpiderPlugin extends Plugin {
         };
         watchdog.postDelayed(timeoutTask, timeoutMs);
         spiderExecutor.execute(() -> {
+            // 爬虫内壳子系（AppTT 等）会同步请求 127.0.0.1:9978，执行前确保本地代理活着
+            SpiderProxyServer.ensureAlive();
             try {
                 task.run();
                 if (settled.compareAndSet(false, true)) {
@@ -257,20 +257,38 @@ public class SpiderPlugin extends Plugin {
     @PluginMethod
     public void setDebugLog(PluginCall call) {
         boolean enabled = call.getBoolean("enabled", true);
-        setDebugLogEnabled(enabled);
+        SpiderLogStore store = SpiderLogStore.get();
+        if (store == null) {
+            call.reject("Log store not initialized");
+            return;
+        }
+        store.setEnabled(enabled);
         
         JSObject ret = new JSObject();
-        ret.put("enabled", isDebugLogEnabled());
+        ret.put("enabled", store.isEnabled());
         call.resolve(ret);
     }
 
     /**
-     * 获取当前详细日志开关状态
+     * 获取当前详细日志开关状态及文件统计
      */
     @PluginMethod
     public void getDebugLogStatus(PluginCall call) {
+        SpiderLogStore store = SpiderLogStore.get();
         JSObject ret = new JSObject();
-        ret.put("enabled", isDebugLogEnabled());
+        if (store == null) {
+            ret.put("enabled", false);
+            ret.put("fileCount", 0);
+            ret.put("totalBytes", 0);
+            ret.put("retentionDays", 0);
+            call.resolve(ret);
+            return;
+        }
+        ret.put("enabled", store.isEnabled());
+        File[] files = store.listFiles();
+        ret.put("fileCount", files.length);
+        ret.put("totalBytes", store.totalBytes());
+        ret.put("retentionDays", 3);
         call.resolve(ret);
     }
 
@@ -279,17 +297,72 @@ public class SpiderPlugin extends Plugin {
      */
     @PluginMethod
     public void cleanLogs(PluginCall call) {
+        SpiderLogStore store = SpiderLogStore.get();
+        if (store == null) {
+            call.reject("Log store not initialized");
+            return;
+        }
+        
+        SpiderLogStore.CleanResult result = store.cleanOldLogs();
+        
+        JSObject ret = new JSObject();
+        ret.put("cleanedCount", result.cleanedCount);
+        ret.put("freedBytes", result.freedBytes);
+        call.resolve(ret);
+    }
+
+    /**
+     * 列出所有日志文件
+     */
+    @PluginMethod
+    public void listLogFiles(PluginCall call) {
+        SpiderLogStore store = SpiderLogStore.get();
+        JSObject ret = new JSObject();
+        if (store == null) {
+            ret.put("files", new JSArray());
+            call.resolve(ret);
+            return;
+        }
+        File[] files = store.listFiles();
+        JSArray arr = new JSArray();
+        for (File f : files) {
+            JSObject obj = new JSObject();
+            obj.put("name", f.getName());
+            obj.put("size", f.length());
+            obj.put("mtime", f.lastModified());
+            arr.put(obj);
+        }
+        ret.put("files", arr);
+        call.resolve(ret);
+    }
+
+    /**
+     * 导出日志：合并所有日志到单文件，返回 FileProvider URI
+     */
+    @PluginMethod
+    public void exportLogs(PluginCall call) {
+        SpiderLogStore store = SpiderLogStore.get();
+        if (store == null) {
+            call.reject("Log store not initialized");
+            return;
+        }
         Context ctx = getContext();
         if (ctx == null) {
             call.reject("No context available");
             return;
         }
-        
-        int cleanedCount = cleanOldLogs(ctx);
-        
-        JSObject ret = new JSObject();
-        ret.put("cleanedCount", cleanedCount);
-        call.resolve(ret);
+        try {
+            File exported = store.exportMerged();
+            String authority = ctx.getPackageName() + ".fileprovider";
+            android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(ctx, authority, exported);
+            JSObject ret = new JSObject();
+            ret.put("uri", uri.toString());
+            ret.put("path", exported.getAbsolutePath());
+            ret.put("size", exported.length());
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Export failed: " + e.getMessage());
+        }
     }
 
     @PluginMethod
@@ -309,6 +382,9 @@ public class SpiderPlugin extends Plugin {
         }
 
         runSpider(call, "加载", LOAD_TIMEOUT_MS, () -> {
+            // 首次加载爬虫时拉起 127.0.0.1:9978 本地代理：壳子系爬虫（AppTT 等）在
+            // playerContent 内部会同步请求它换直链，晚了就会 ECONNREFUSED 降级
+            SpiderProxyServer.start(this::routeProxy);
             LoadedSpider result = loadSpider(getContext(), jarUrl, api, initExt, userAgent);
             String handle = "sp-" + (++handleSeq);
             loaded.put(handle, result);
@@ -316,6 +392,43 @@ public class SpiderPlugin extends Plugin {
             ret.put("handle", handle);
             call.resolve(ret);
         });
+    }
+
+    /**
+     * 9978 本地代理路由：遍历已加载爬虫调 proxy(params)，第一个非空结果生效。
+     * 代理请求不带 handle，TVBox 原版也是全量遍历（多数爬虫对不认识的 do 立即返回 null）。
+     */
+    private Object[] routeProxy(Map<String, String> params) {
+        String doParam = params.get("do");
+        int proxyCapable = 0;
+        for (LoadedSpider target : loaded.values()) {
+            try {
+                Method method;
+                try {
+                    method = target.spider.getClass().getMethod("proxy", Map.class);
+                } catch (NoSuchMethodException e) {
+                    continue;
+                }
+                proxyCapable++;
+                method.setAccessible(true);
+                Object result = method.invoke(target.spider, params);
+                if (result instanceof Object[]) {
+                    Object[] arr = (Object[]) result;
+                    if (arr.length > 0 && arr[0] != null && String.valueOf(arr[0]).trim().length() > 0) {
+                        Log.i(TAG, "proxy do=" + doParam + " -> " + target.spider.getClass().getSimpleName());
+                        return arr;
+                    }
+                } else if (result instanceof String && !((String) result).trim().isEmpty()) {
+                    Log.i(TAG, "proxy do=" + doParam + " -> " + target.spider.getClass().getSimpleName());
+                    return new Object[]{result, null};
+                }
+            } catch (Throwable ignored) {
+                // 该爬虫 proxy 执行失败 → 试下一个
+            }
+        }
+        Log.w(TAG, "proxy do=" + doParam + " -> no spider claimed it ("
+                + loaded.size() + " loaded, " + proxyCapable + " with proxy)");
+        return null;
     }
 
     @PluginMethod
@@ -384,6 +497,7 @@ public class SpiderPlugin extends Plugin {
     protected void handleOnDestroy() {
         watchdog.removeCallbacksAndMessages(null);
         spiderExecutor.shutdownNow();
+        SpiderProxyServer.stop();
         loaded.clear();
         jarCache.clear();
         dexCache.clear();
@@ -1079,7 +1193,7 @@ public class SpiderPlugin extends Plugin {
                 sb.append("Init.loader(): ").append(loaderInfo).append("\n");
                 
                 // 如果不为 NULL，输出详细信息
-                if (loaderObj != null && ENABLE_DEBUG_LOG) {
+                if (loaderObj != null) {
                     d("Init.loader() for %s: %s", api, loaderInfo);
                 }
                 
@@ -1572,73 +1686,4 @@ public class SpiderPlugin extends Plugin {
         return sb.toString();
     }
 
-    /* ---------------- 日志管理 ---------------- */
-
-    /**
-     * 设置详细调试日志开关。
-     * 
-     * @param enabled true 启用详细日志，false 禁用
-     */
-    public void setDebugLogEnabled(boolean enabled) {
-        ENABLE_DEBUG_LOG = enabled;
-        Log.i(TAG, "Debug log enabled: " + enabled);
-    }
-
-    /**
-     * 获取当前详细日志开关状态。
-     * 
-     * @return true 如果启用了详细日志，false 如果禁用了
-     */
-    public boolean isDebugLogEnabled() {
-        return ENABLE_DEBUG_LOG;
-    }
-
-    /**
-     * 清理超过 1 天的日志文件（spider-logs/*.log）。
-     * 调用此方法来手动触发日志清理。
-     * 
-     * @return 清理的文件数量
-     */
-    public int cleanOldLogs(Context context) {
-        long oneDayAgo = System.currentTimeMillis() - 24 * 60 * 60 * 1000; // 24 小时前
-        
-        File logDir = new File(context.getFilesDir(), "spider-logs");
-        if (!logDir.exists() || !logDir.isDirectory()) {
-            Log.i(TAG, "No spider log directory found");
-            return 0;
-        }
-
-        File[] files = logDir.listFiles((dir, name) -> name.endsWith(".log"));
-        if (files == null || files.length == 0) {
-            Log.i(TAG, "No spider log files found");
-            return 0;
-        }
-
-        int cleanedCount = 0;
-        for (File file : files) {
-            if (file.lastModified() < oneDayAgo) {
-                if (file.delete()) {
-                    cleanedCount++;
-                    Log.i(TAG, "Cleaned old log file: " + file.getName());
-                } else {
-                    Log.w(TAG, "Failed to delete old log file: " + file.getName());
-                }
-            }
-        }
-
-        Log.i(TAG, "Cleaned " + cleanedCount + " old log file(s) from " + files.length + " total");
-        return cleanedCount;
-    }
-
-    /**
-     * 检查并自动清理过期日志。
-     * 建议在每次爬虫操作前调用，确保日志不会无限增长。
-     */
-    private void autoCleanOldLogs(Context context) {
-        try {
-            cleanOldLogs(context);
-        } catch (Exception e) {
-            Log.w(TAG, "Auto-clean logs failed", e);
-        }
-    }
 }

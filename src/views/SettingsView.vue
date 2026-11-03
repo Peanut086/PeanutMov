@@ -30,6 +30,8 @@ import { useTheme } from '@/composables/useTheme';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
+import { logApi, type DebugLogStatus } from '@/native/logs';
+import { Share } from '@capacitor/share';
 
 const router = useRouter();
 const settings = useSettingsStore();
@@ -50,9 +52,16 @@ const keepDemo = ref(true);
 const clearing = ref(false);
 const cacheCleared = ref(false);
 
-// v1.8: 调试日志开关
+// v1.8: 调试日志管理
 const debugLogEnabled = ref(false);
+const debugLogStatus = ref<DebugLogStatus>({
+  enabled: false,
+  fileCount: 0,
+  totalBytes: 0,
+  retentionDays: 3,
+});
 const cleanLogsLoading = ref(false);
+const exportLogsLoading = ref(false);
 
 const loading = computed(() => !settings.ready && settings.settings === null);
 const loadError = ref<string | null>(null);
@@ -119,11 +128,7 @@ onMounted(async () => {
   }
   
   // v1.8: 获取日志状态
-  try {
-    await fetchDebugLogStatus();
-  } catch (e) {
-    // 日志获取失败不影响主流程
-  }
+  await refreshLogStatus();
 });
 
 async function update(patch: Parameters<typeof settings.update>[0], successText?: string): Promise<void> {
@@ -225,26 +230,23 @@ function go(path: string): void {
 
 /* ---------- v1.8：调试日志管理（CHG-29）---------- */
 
+async function refreshLogStatus(): Promise<void> {
+  const status = await logApi.getStatus();
+  debugLogStatus.value = status;
+  debugLogEnabled.value = status.enabled;
+}
+
 async function toggleDebugLog(enabled: boolean): Promise<void> {
   try {
-    await navigator.spider.setDebugLog({ enabled });
-    debugLogEnabled.value = enabled;
+    await logApi.setEnabled(enabled);
+    await refreshLogStatus();
     if (enabled) {
-      toast.success('详细日志已启用');
+      toast.success('详细日志已启用（W/E 始终记录）');
     } else {
-      toast.info('详细日志已关闭');
+      toast.info('详细日志已关闭（仅记录警告与错误）');
     }
   } catch (e) {
     toast.error('设置日志失败：' + toErrorShape(e).message);
-  }
-}
-
-async function fetchDebugLogStatus(): Promise<void> {
-  try {
-    const result = await navigator.spider.getDebugLogStatus();
-    debugLogEnabled.value = result.enabled ?? false;
-  } catch (e) {
-    // 日志获取失败不影响主流程
   }
 }
 
@@ -260,8 +262,10 @@ async function manualCleanLogs(): Promise<void> {
   
   cleanLogsLoading.value = true;
   try {
-    const result = await navigator.spider.cleanLogs();
-    toast.success(`已清理 ${result.cleanedCount} 个日志文件`);
+    const result = await logApi.clean();
+    await refreshLogStatus();
+    const freed = result.freedBytes > 0 ? `，释放 ${formatBytes(result.freedBytes)}` : '';
+    toast.success(`已清理 ${result.cleanedCount} 个日志文件${freed}`);
   } catch (e) {
     toast.error('清理日志失败：' + toErrorShape(e).message);
   } finally {
@@ -269,10 +273,31 @@ async function manualCleanLogs(): Promise<void> {
   }
 }
 
-onMounted(async () => {
-  // 在原有加载逻辑后，获取日志状态
-  fetchDebugLogStatus();
-});
+async function exportLogs(): Promise<void> {
+  if (exportLogsLoading.value) return;
+  exportLogsLoading.value = true;
+  try {
+    const result = await logApi.export();
+    if (!result.uri) {
+      toast.error('导出失败：未生成日志文件');
+      return;
+    }
+    await Share.share({
+      title: 'PeanutMov 日志导出',
+      text: `日志文件（${formatBytes(result.size)}）`,
+      url: result.uri,
+      dialogTitle: '分享日志文件',
+    });
+    toast.success('日志已导出');
+  } catch (e) {
+    const err = toErrorShape(e);
+    // 用户在分享面板取消不算错误
+    if (err.message?.includes('dismiss') || err.message?.includes('cancel')) return;
+    toast.error('导出日志失败：' + err.message);
+  } finally {
+    exportLogsLoading.value = false;
+  }
+}
 </script>
 
 <template>
@@ -363,9 +388,19 @@ onMounted(async () => {
           <!-- v1.8 新增：调试日志管理 -->
           <SettingsRow
             label="详细日志"
-            description="用于问题诊断，自动清理 1 天前数据"
+            :description="`记录 D/I/W/E 到本地文件，保留 ${debugLogStatus.retentionDays} 天；关闭后仅记录 W/E`"
             :switch-value="debugLogEnabled"
             @update:switch-value="toggleDebugLog"
+          />
+          <SettingsRow
+            label="日志文件"
+            :value="`${debugLogStatus.fileCount} 个 · ${formatBytes(debugLogStatus.totalBytes)}`"
+          />
+          <SettingsRow
+            label="导出日志"
+            description="合并所有日志为单文件并分享"
+            :chevron="true"
+            @click="exportLogs"
           />
           <SettingsRow
             label="立即清理过期日志"

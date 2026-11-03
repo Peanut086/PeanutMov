@@ -21,6 +21,13 @@ public class MainApplication extends Application {
     private static final String SETTINGS_ACTION_PREFIX = "android.settings.";
 
     @Override
+    public void onCreate() {
+        super.onCreate();
+        // 初始化日志仓库（启动时恢复开关状态，清理过期日志）
+        SpiderLogStore.init(this);
+    }
+
+    @Override
     public void startActivity(Intent intent) {
         if (blockSettingsJump(intent)) return;
         super.startActivity(intent);

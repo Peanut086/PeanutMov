@@ -468,22 +468,34 @@ public class DrpyRuntime implements AutoCloseable {
 
         @Override
         public void log(String message) {
-            Log.d(tag, message == null ? "" : message);
+            String msg = message == null ? "" : message;
+            Log.d(tag, msg);
+            com.qoder.cinema.SpiderLogStore store = com.qoder.cinema.SpiderLogStore.get();
+            if (store != null) store.log("D", tag, msg);
         }
 
         @Override
         public void info(String message) {
-            Log.i(tag, message == null ? "" : message);
+            String msg = message == null ? "" : message;
+            Log.i(tag, msg);
+            com.qoder.cinema.SpiderLogStore store = com.qoder.cinema.SpiderLogStore.get();
+            if (store != null) store.log("I", tag, msg);
         }
 
         @Override
         public void warn(String message) {
-            Log.w(tag, message == null ? "" : message);
+            String msg = message == null ? "" : message;
+            Log.w(tag, msg);
+            com.qoder.cinema.SpiderLogStore store = com.qoder.cinema.SpiderLogStore.get();
+            if (store != null) store.log("W", tag, msg);
         }
 
         @Override
         public void error(String message) {
-            Log.e(tag, message == null ? "" : message);
+            String msg = message == null ? "" : message;
+            Log.e(tag, msg);
+            com.qoder.cinema.SpiderLogStore store = com.qoder.cinema.SpiderLogStore.get();
+            if (store != null) store.log("E", tag, msg);
         }
     }
 }

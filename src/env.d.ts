@@ -42,38 +42,4 @@ declare module '*.jpg' {
   export default src;
 }
 
-// v1.8: 添加 spider plugin 接口
-/** SpiderPlugin 原生插件接口 */
-interface SpiderPlugin {
-  /** 设置详细日志开关 */
-  setDebugLog(args: { enabled: boolean }): Promise<{ enabled: boolean }>;
-  
-  /** 获取当前详细日志状态 */
-  getDebugLogStatus(): Promise<{ enabled: boolean }>;
-  
-  /** 清理过期日志 */
-  cleanLogs(): Promise<{ cleanedCount: number }>;
-  
-  /** 加载爬虫源 */
-  load(args: { jarUrl: string; api: string; initExt?: string; userAgent?: string }): Promise<{ handle: string }>;
-  
-  /** 调用爬虫方法 */
-  invoke(args: { handle: string; method: string; args?: any[]; arrayArgs?: object }): Promise<{ json: string; logs: string[] }>;
-  
-  /** 代理请求 */
-  proxy(args: { handle: string; url: string }): Promise<{ url: string | null; headers: Record<string, string> }>;
-  
-  /** 卸载爬虫源 */
-  unload(args: { handle: string }): Promise<{ released: boolean }>;
-  
-  /** 检查支持性 */
-  isSupported(): Promise<{ supported: boolean }>;
-}
-
-declare global {
-  interface Navigator {
-    spider: SpiderPlugin;
-  }
-}
-
 export {};

@@ -70,6 +70,23 @@ export interface SpiderPlugin {
   unload(options: { handle: string }): Promise<{ released: boolean }>;
   /** 插件是否可用（原生环境恒 true） */
   isSupported(): Promise<{ supported: boolean }>;
+  /** 设置详细日志开关 */
+  setDebugLog(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
+  /** 获取日志状态（开关、文件数、总字节、保留天数） */
+  getDebugLogStatus(): Promise<{
+    enabled: boolean;
+    fileCount: number;
+    totalBytes: number;
+    retentionDays: number;
+  }>;
+  /** 清理过期日志 */
+  cleanLogs(): Promise<{ cleanedCount: number; freedBytes: number }>;
+  /** 列出所有日志文件 */
+  listLogFiles(): Promise<{
+    files: Array<{ name: string; size: number; mtime: number }>;
+  }>;
+  /** 导出日志（合并为单文件，返回 FileProvider URI） */
+  exportLogs(): Promise<{ uri: string; path: string; size: number }>;
 }
 
 export const Spider = registerPlugin<SpiderPlugin>('Spider');

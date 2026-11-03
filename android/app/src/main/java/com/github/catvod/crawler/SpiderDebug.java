@@ -2,6 +2,8 @@ package com.github.catvod.crawler;
 
 import android.util.Log;
 
+import com.qoder.cinema.SpiderLogStore;
+
 /**
  * TVBox 框架 `SpiderDebug` stub。
  *
@@ -25,6 +27,9 @@ public class SpiderDebug {
     public static void log(String msg) {
         if (msg == null) return;
         Log.d(TAG, msg);
+        // 转发到本地文件日志仓库
+        SpiderLogStore store = SpiderLogStore.get();
+        if (store != null) store.log("D", TAG, msg);
         synchronized (LOCK) {
             LINES[cursor] = msg;
             cursor = (cursor + 1) % MAX_LINES;
