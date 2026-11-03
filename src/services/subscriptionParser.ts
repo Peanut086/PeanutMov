@@ -98,17 +98,67 @@ function isDoubanSpider(api: string, ext: unknown): boolean {
   return DOUBAN_HOST_PATTERN.test(trimmed);
 }
 
-/** 把 `raw.ext` 统一成传给爬虫的字符串：对象序列化，字符串原样，其它置空 */
-function spiderInitExt(value: unknown): string {
-  if (typeof value === 'string') return value;
+/** 常见订阅附带资源扩展名（jar 会用这些字段作为 HTTP 请求目标） */
+const RESOURCE_EXT_PATTERN =
+  /\.(?:txt|json|js|html|xml|csv|ini|conf|zip|jar|png|jpe?g|gif|webp|mp4|m3u8)(?:[?#]|$)/i;
+
+/**
+ * 是否为「订阅目录下的相对资源」：无协议、无 `//` 前导、且满足以下之一
+ *   - 以 `./`、`../`、`/` 开头（TVBox 常见写法）
+ *   - 含明确文件扩展名（如 `tvfan/Cloud-drive.txt`）
+ * 目的是只补全真正的资源路径，不动 `key:value` 配置、`4k|auto` 之类的枚举值。
+ */
+function isBareRelativeResource(value: string): boolean {
+  const v = value.trim();
+  if (v.length === 0) return false;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(v)) return false; // http:/data:/jar: 等
+  if (v.startsWith('//')) return false; // 协议相对
+  if (isRelativeRef(v)) return true;
+  // 含冒号的字符串视为 key:value 配置（XBPQ 系常见），不做补全
+  if (v.includes(':')) return false;
+  return RESOURCE_EXT_PATTERN.test(v);
+}
+
+/** 相对订阅目录的资源路径补全；已经是绝对 URL 或非资源字符串原样返回 */
+function resolveResourceRef(value: string, base: string | null): string {
+  if (base === null || !isBareRelativeResource(value)) return value;
+  return toAbsoluteUrl(base, value) ?? value;
+}
+
+/** 把 `raw.ext` 统一成传给爬虫的字符串：对象序列化（内嵌资源路径按 base 补全），字符串按资源判定 */
+function spiderInitExt(value: unknown, base: string | null = null): string {
+  if (typeof value === 'string') return resolveResourceRef(value, base);
   if (isRecord(value)) {
     try {
-      return JSON.stringify(value);
+      return JSON.stringify(processExtValue(value, true, base));
     } catch {
       return '';
     }
   }
   return '';
+}
+
+/**
+ * 递归处理 ext 值中的相对路径引用。
+ * - 爬虫模式（isSpider=true）：只补全明确的资源路径（含 `./` 或以订阅目录为基准的文件扩展名形态），
+ *   其它值原样保留，避免污染 `key:value` 配置或枚举串。
+ * - 非爬虫模式：沿用 `resolveRef`（`./x`、`../x`、`/x` 都按 base 补全）。
+ */
+function processExtValue(value: unknown, isSpider: boolean, base: string | null): unknown {
+  if (typeof value === 'string') {
+    return isSpider ? resolveResourceRef(value, base) : resolveRef(value, base);
+  }
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(value)) {
+      out[k] = processExtValue(val, isSpider, base);
+    }
+    return out;
+  }
+  if (Array.isArray(value)) {
+    return value.map(v => processExtValue(v, isSpider, base));
+  }
+  return value;
 }
 
 function issue(
@@ -132,18 +182,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseExt(
   value: unknown,
   isSpider = false,
+  base: string | null = null,
 ): { ext: Record<string, unknown> | null; warning: string | null } {
   if (value === null || value === undefined || value === '') return { ext: null, warning: null };
-  if (isRecord(value)) return { ext: value, warning: null };
-  if (typeof value === 'string') {
-    if (isSpider) return { ext: null, warning: null };
-    try {
-      const parsed: unknown = JSON.parse(value);
-      if (isRecord(parsed)) return { ext: parsed, warning: null };
-      return { ext: null, warning: 'ext 不是合法 JSON，已忽略' };
-    } catch {
-      return { ext: null, warning: 'ext 不是合法 JSON，已忽略' };
+  // 非爬虫源（alist/webdav/jellyfin/site）的 ext 字段是文件系统路径/凭据（如 AList 的 `root: "/Movies"`），
+  // 不是 TVBox 相对引用，不能做路径补全——保持原逻辑，直接返回。
+  if (!isSpider) {
+    if (isRecord(value)) return { ext: value, warning: null };
+    if (typeof value === 'string') {
+      try {
+        const parsed: unknown = JSON.parse(value);
+        if (isRecord(parsed)) return { ext: parsed, warning: null };
+        return { ext: null, warning: 'ext 不是合法 JSON，已忽略' };
+      } catch {
+        return { ext: null, warning: 'ext 不是合法 JSON，已忽略' };
+      }
     }
+    return { ext: null, warning: 'ext 类型不受支持，已忽略' };
+  }
+  // 爬虫源：递归补全对象/数组里的资源路径；字符串 ext（`key:value` 文本或规则 URL）
+  // 交由 `spiderInitExt` 直接原样透传，parseExt 只负责 warning 判定，不重复处理。
+  if (isRecord(value)) {
+    return { ext: processExtValue(value, true, base) as Record<string, unknown>, warning: null };
+  }
+  if (typeof value === 'string') {
+    return { ext: null, warning: null };
   }
   return { ext: null, warning: 'ext 类型不受支持，已忽略' };
 }
@@ -333,7 +396,7 @@ function parseEntry(
     }
   }
 
-  const extResult = parseExt(raw['ext'], spiderKind !== null);
+  const extResult = parseExt(raw['ext'], spiderKind !== null, base);
   const warning =
     extResult.warning ??
     (SENSITIVE_WORDS.test(`${rawName} ${rawKey}`)
@@ -359,9 +422,14 @@ function parseEntry(
           kind: spiderKind,
           api: spiderKind === 'jar' ? rawApi : null,
           jarUrl: spiderKind === 'jar' ? jarUrl : null,
-          // jar 爬虫的 ext 原样（key:value/对象由 jar 自己解析）；
-          // JS/豆瓣爬虫的 ext 是规则地址，用补全后的绝对地址
-          initExt: spiderInitExt(spiderKind === 'jar' ? raw['ext'] : (extRef ?? raw['ext'])),
+          // jar 爬虫：字符串 ext（key:value）原样交给 jar 自己解析；
+          //          对象 ext（Guard jar 常用）内嵌资源路径按 base 补全。
+          // JS/豆瓣爬虫：字符串 ext 是规则地址，用绝对化的 extRef；
+          //             对象形态走 spiderInitExt 递归补全。
+          initExt: spiderInitExt(
+            spiderKind === 'jar' ? raw['ext'] : (extRef ?? raw['ext']),
+            base,
+          ),
         };
 
   const valid = issues.every((i) => i.level !== 'error') && !duplicateKey;

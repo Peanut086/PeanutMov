@@ -419,3 +419,168 @@ describe('订阅解析：剥离本地代理前缀', () => {
     );
   });
 });
+
+/**
+ * iptv365 类订阅（Guard jar 系）实测覆盖：
+ * - 顶层 `spider: "./spider.jar"` 相对路径 → 以订阅 URL 为基准补全
+ * - 条目 ext 为对象时，内嵌的资源路径（`tvfan/Cloud-drive.txt`、`./xxx.json`）按 base 补全
+ * - 非资源的枚举值（`from: "4k|auto"`）、key:value 配置串、绝对 URL 保持原样
+ */
+describe('订阅解析：爬虫 ext 对象内相对资源路径补全（iptv365/Guard jar）', () => {
+  const SUB_URL = 'https://play.iptv365.org/%E9%A5%AD%E5%A4%AA%E7%A1%AC/api.json';
+
+  function parseWith(subJson: unknown): ImportPreview {
+    return subscriptionParser.parse(JSON.stringify(subJson), {
+      origin: 'url',
+      sourceUrl: SUB_URL,
+    });
+  }
+
+  it('顶层 spider 相对路径补全为绝对 jar 地址', () => {
+    const preview = parseWith({
+      spider: './spider.jar',
+      sites: [
+        { key: 'Wogg', name: '玩偶', type: 3, api: 'csp_WoGGGuard' },
+      ],
+    });
+    const ext = spiderExtOf(preview, 0);
+    expect(ext?.jarUrl).toBe('https://play.iptv365.org/%E9%A5%AD%E5%A4%AA%E7%A1%AC/spider.jar');
+  });
+
+  it('ext 对象内的资源路径按 base 补全，枚举值原样保留', () => {
+    const preview = parseWith({
+      spider: './spider.jar',
+      sites: [
+        {
+          key: 'Wogg',
+          name: '玩偶',
+          type: 3,
+          api: 'csp_WoGGGuard',
+          ext: {
+            'Cloud-drive': 'tvfan/Cloud-drive.txt',
+            from: '4k|auto',
+            notice: 'https://example.com/notice.json',
+          },
+        },
+      ],
+    });
+    const initExt = spiderExtOf(preview, 0)?.initExt ?? '';
+    const parsed = JSON.parse(initExt) as Record<string, string>;
+    expect(parsed['Cloud-drive']).toBe(
+      'https://play.iptv365.org/%E9%A5%AD%E5%A4%AA%E7%A1%AC/tvfan/Cloud-drive.txt',
+    );
+    // `4k|auto` 不含扩展名也不以 ./ / 开头，保持原样
+    expect(parsed.from).toBe('4k|auto');
+    // 绝对 URL 不改动
+    expect(parsed.notice).toBe('https://example.com/notice.json');
+  });
+
+  it('ext 对象内的 ./ 相对路径同样补全', () => {
+    const preview = parseWith({
+      spider: './spider.jar',
+      sites: [
+        {
+          key: 'Douban',
+          name: '豆瓣',
+          type: 3,
+          api: 'csp_Douban',
+          ext: './json/douban.json',
+        },
+      ],
+    });
+    expect(spiderExtOf(preview, 0)?.initExt).toBe(
+      'https://play.iptv365.org/%E9%A5%AD%E5%A4%AA%E7%A1%AC/json/douban.json',
+    );
+  });
+
+  it('jar 爬虫的字符串 ext 是 key:value 配置时原样透传', () => {
+    const preview = parseWith({
+      spider: './spider.jar',
+      sites: [
+        {
+          key: 'XBPQ',
+          name: 'XBPQ 源',
+          type: 3,
+          api: 'csp_XBPQ',
+          ext: '分类url:https://x.com/vod-show-{area}-{year}-{cateId}--{pg}---{time}.html,分类:电影|电视剧',
+        },
+      ],
+    });
+    expect(spiderExtOf(preview, 0)?.initExt).toContain('分类url:');
+    expect(spiderExtOf(preview, 0)?.initExt).toContain('分类:电影|电视剧');
+  });
+
+  it('嵌套对象与数组内的相对资源都补全', () => {
+    const preview = parseWith({
+      spider: './spider.jar',
+      sites: [
+        {
+          key: 'Nest',
+          name: 'Nest',
+          type: 3,
+          api: 'csp_XiaYu',
+          ext: {
+            headers: { referer: 'https://x.com' },
+            sources: ['./list/a.json', './list/b.json'],
+            nested: { rule: './sub/rule.js' },
+            flag: 1,
+          },
+        },
+      ],
+    });
+    const parsed = JSON.parse(spiderExtOf(preview, 0)?.initExt ?? '') as {
+      headers: { referer: string };
+      sources: string[];
+      nested: { rule: string };
+      flag: number;
+    };
+    expect(parsed.headers.referer).toBe('https://x.com');
+    expect(parsed.sources[0]).toBe('https://play.iptv365.org/%E9%A5%AD%E5%A4%AA%E7%A1%AC/list/a.json');
+    expect(parsed.sources[1]).toBe('https://play.iptv365.org/%E9%A5%AD%E5%A4%AA%E7%A1%AC/list/b.json');
+    expect(parsed.nested.rule).toBe('https://play.iptv365.org/%E9%A5%AD%E5%A4%AA%E7%A1%AC/sub/rule.js');
+    expect(parsed.flag).toBe(1);
+  });
+
+  it('文件导入无 base 时相对资源路径保持原样', () => {
+    const preview = subscriptionParser.parse(
+      JSON.stringify({
+        spider: 'https://play.iptv365.org/spider.jar',
+        sites: [
+          {
+            key: 'Wogg',
+            name: '玩偶',
+            type: 3,
+            api: 'csp_WoGGGuard',
+            ext: { 'Cloud-drive': 'tvfan/Cloud-drive.txt' },
+          },
+        ],
+      }),
+      { origin: 'file', fileName: 'iptv365.json' },
+    );
+    const parsed = JSON.parse(spiderExtOf(preview, 0)?.initExt ?? '') as Record<string, string>;
+    expect(parsed['Cloud-drive']).toBe('tvfan/Cloud-drive.txt');
+  });
+
+  it('非爬虫源（alist）的 ext 不做路径补全', () => {
+    const preview = subscriptionParser.parse(
+      JSON.stringify({
+        sources: [
+          {
+            key: 'alist',
+            name: 'AList',
+            type: 'alist',
+            api: 'https://alist.example.com',
+            ext: { username: 'reader', password: 'secret', root: '/Movies' },
+          },
+        ],
+      }),
+      { origin: 'url', sourceUrl: 'https://example.com/sub.json' },
+    );
+    const entry = preview.entries[0];
+    expect(entry?.normalized?.ext).toMatchObject({
+      username: 'reader',
+      password: 'secret',
+      root: '/Movies',
+    });
+  });
+});
