@@ -29,6 +29,11 @@ export interface UsePlayerControllerOptions {
    */
   setStatusBarVisible?: (visible: boolean) => void | Promise<void>;
   /**
+   * 全屏沉浸模式（edge-to-edge）：由 View 注入原生插件代理。
+   * 不传时 no-op（Web/测试环境）。
+   */
+  setImmersive?: (on: boolean) => void | Promise<void>;
+  /**
    * 播放时保持屏幕常亮（AC-53）：由 View 注入 `deviceService.keepAwake`。
    * 不传时 no-op（Web/测试环境）。
    */
@@ -246,6 +251,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       },
       // AC-52：全屏隐藏状态栏 / 退出恢复（Web 下 Service 自身 no-op）
       setStatusBarVisible: (visible) => options.setStatusBarVisible?.(visible),
+      setImmersive: (on) => options.setImmersive?.(on),
     });
     bindController(c);
     c.mount(container);

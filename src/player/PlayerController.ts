@@ -76,6 +76,13 @@ export interface PlayerControllerDeps {
    * （本文件分层约束），Web 下 Service 自身为 no-op，异常也被 FullscreenController 吞掉。
    */
   setStatusBarVisible?: (visible: boolean) => void | Promise<void>;
+  /**
+   * 全屏沉浸模式（edge-to-edge）：横屏时让内容铺满整块屏幕，
+   * 避免刘海安全边内缩后在左侧露出窗口背景。
+   *
+   * 由 View 注入原生插件代理；Web/测试环境不传即为 no-op。
+   */
+  setImmersive?: (on: boolean) => void | Promise<void>;
 }
 
 export class PlayerController {
@@ -124,9 +131,15 @@ export class PlayerController {
     });
     this.fullscreen = new FullscreenController({
       onChange: (fs) => this.emit('fullscreenchange', { fullscreen: fs }),
-      // AC-52：全屏隐藏状态栏，退出恢复。异常不得阻断全屏（FullscreenController 已兜底）
-      onEnter: () => this.deps.setStatusBarVisible?.(false),
-      onExit: () => this.deps.setStatusBarVisible?.(true),
+      // AC-52：全屏隐藏状态栏并切沉浸式，退出恢复。异常不得阻断全屏（FullscreenController 已兜底）
+      onEnter: async () => {
+        await this.deps.setStatusBarVisible?.(false);
+        await this.deps.setImmersive?.(true);
+      },
+      onExit: async () => {
+        await this.deps.setImmersive?.(false);
+        await this.deps.setStatusBarVisible?.(true);
+      },
     });
     this.fullscreen.bind();
     this.orientation = new OrientationController();

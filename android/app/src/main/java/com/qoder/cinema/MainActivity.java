@@ -45,6 +45,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(DownloadPlugin.class);
         // AC-53：屏幕常亮插件（播放视频时防止熄屏）
         registerPlugin(KeepAwakePlugin.class);
+        // 全屏播放时切换 edge-to-edge 沉浸模式（消除刘海留白竖条）
+        registerPlugin(PlayerUiPlugin.class);
         super.onCreate(savedInstanceState);
 
         // 华为 WebView 132 在特定场景（冷启动 + 程序化 focus）下渲染进程会 SIGSEGV，

@@ -200,6 +200,11 @@ const playerCtl = usePlayerController({
     import('@/services/deviceService')
       .then((m) => m.deviceService.setStatusBarVisible(visible))
       .catch(() => undefined),
+  // 横屏全屏切 edge-to-edge：消除刘海安全边内缩露出的白色竖条；退出恢复系统栏
+  setImmersive: (on) =>
+    import('@/native/playerUi')
+      .then((m) => m.setPlayerImmersive(on))
+      .catch(() => undefined),
   // AC-53：播放时保持屏幕常亮；Web 下 no-op。
   setKeepAwake: (on) =>
     import('@/services/deviceService')

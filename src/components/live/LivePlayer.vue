@@ -14,6 +14,7 @@ import { OrientationController } from '@/player/OrientationController';
 import { VideoEngine, type VideoEngineEvents } from '@/player/VideoEngine';
 import { normalizeFormat } from '@/sources/base/normalize';
 import { deviceService } from '@/services/deviceService';
+import { setPlayerImmersive } from '@/native/playerUi';
 import type { PlaybackSource } from '@/types';
 import { TIMEOUT_LIVE_CHANNEL_MS } from '@/shared/constants';
 import { logger } from '@/shared/logger';
@@ -42,9 +43,12 @@ const fullscreenController = new FullscreenController({
   },
   onEnter: () => {
     void deviceService.setStatusBarVisible(false);
+    // 横屏 edge-to-edge：刘海安全边不再内缩内容，避免左侧露出白色竖条
+    void setPlayerImmersive(true);
     void orientationController.lock('landscape');
   },
   onExit: () => {
+    void setPlayerImmersive(false);
     void deviceService.setStatusBarVisible(true);
     void orientationController.lock('portrait');
   },
