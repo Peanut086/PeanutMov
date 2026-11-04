@@ -487,7 +487,7 @@ public class ExoPlayerPlugin extends Plugin {
                 if (player == null) return;
                 if (player.isPlaying()
                         && SystemClock.elapsedRealtime() - lastHeartbeatAt > PROGRESS_WATCHDOG_MS) {
-                    Log.w("ExoPlayerPlugin", "progress heartbeat lost > " + PROGRESS_WATCHDOG_MS + "ms, auto pause");
+                    com.qoder.cinema.AppLog.w("ExoPlayerPlugin", "progress heartbeat lost > " + PROGRESS_WATCHDOG_MS + "ms, auto pause");
                     player.pause();
                 }
                 mainHandler.postDelayed(this, 2_000);

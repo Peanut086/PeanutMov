@@ -18,7 +18,9 @@ import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 
@@ -289,6 +291,162 @@ public final class SpiderLogStore {
         long total = 0;
         for (File f : files) total += f.length();
         return total;
+    }
+
+    /** 同步刷盘：查看页读文件前调用，避免 80ms 批缓冲延迟 */
+    public void flushNow() {
+        workerHandler.removeMessages(MSG_DRAIN);
+        synchronized (fileLock) {
+            drain();
+        }
+    }
+
+    /** 清空全部日志文件 */
+    public void clearAll() {
+        synchronized (fileLock) {
+            if (currentWriter != null) {
+                try { currentWriter.close(); } catch (IOException ignored) {}
+                currentWriter = null;
+            }
+            queue.clear();
+            File[] files = logDir.listFiles();
+            if (files != null) {
+                for (File f : files) f.delete();
+            }
+            currentFile = null;
+            currentFileBytes = 0;
+        }
+    }
+
+    /**
+     * 批量写入 JS 侧日志。
+     *
+     * @param entries 每条 {level, tag, message, ts}；ts 为客户端时间戳（毫秒），
+     *                为 0 时使用服务端当前时间
+     * @param source  来源标识，如 "JS"；会拼到 tag 前（`JS:tag`）
+     */
+    public void appendBatch(List<Map<String, Object>> entries, String source) {
+        if (entries == null) return;
+        for (Map<String, Object> e : entries) {
+            if (e == null) continue;
+            String level = String.valueOf(e.getOrDefault("level", "D"));
+            String tag = String.valueOf(e.getOrDefault("tag", "app"));
+            String message = String.valueOf(e.getOrDefault("message", ""));
+            long ts = 0;
+            Object tsObj = e.get("ts");
+            if (tsObj instanceof Number) ts = ((Number) tsObj).longValue();
+            if (source != null && !source.isEmpty()) {
+                tag = source + ":" + tag;
+            }
+            message = message.replace("\n", "\\n").replace("\r", "\\r");
+            if (!level.equals("D") && !level.equals("I")
+                    && !level.equals("W") && !level.equals("E")) {
+                level = "D";
+            }
+            logWithTs(level, tag, message, ts);
+        }
+    }
+
+    /** 写入带客户端时间戳的日志（供 appendBatch 使用） */
+    private void logWithTs(String level, String tag, String message, long clientTs) {
+        boolean isError = "W".equals(level) || "E".equals(level);
+        if (!enabled && !isError) return;
+        logcat(level, tag, message);
+        String line = formatLineWithTs(level, tag, message, clientTs);
+        if (!queue.offer(line)) {
+            queue.poll();
+            queue.offer(line);
+        }
+        if (!workerHandler.hasMessages(MSG_DRAIN)) {
+            workerHandler.sendEmptyMessageDelayed(MSG_DRAIN, DRAIN_DELAY_MS);
+        }
+    }
+
+    private String formatLineWithTs(String level, String tag, String message, long clientTs) {
+        String ts;
+        String day;
+        synchronized (tsFmt) {
+            Date d = clientTs > 0 ? new Date(clientTs) : new Date();
+            ts = tsFmt.format(d);
+            day = dayFmt.format(d);
+        }
+        String thread = Thread.currentThread().getName();
+        return ts + " " + level + " [" + thread + "] " + tag + ": " + message + "\n";
+    }
+
+    /**
+     * 增量读取日志文件尾部。
+     *
+     * @param fileName 指定文件名；null 表示最新文件
+     * @param offset   已读字节偏移；为 0 或负数表示从尾部读
+     * @param maxBytes 单次最大读取字节数
+     * @return {file, size, offset, text, reset}；reset=true 表示文件已滚动/换天，客户端应清空
+     */
+    public TailResult readTail(String fileName, long offset, int maxBytes) throws IOException {
+        flushNow();
+        File[] files = listFiles();
+        if (files.length == 0) {
+            return new TailResult("", 0, 0, "", true);
+        }
+        File target;
+        if (fileName != null && !fileName.isEmpty()) {
+            target = new File(logDir, fileName);
+            if (!target.exists()) {
+                target = files[files.length - 1];
+            }
+        } else {
+            target = files[files.length - 1];
+        }
+        long size = target.length();
+        boolean reset = offset > size;
+        long start;
+        if (reset || offset <= 0) {
+            start = Math.max(0, size - maxBytes);
+        } else {
+            start = offset;
+        }
+        String text;
+        long endOffset;
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(target, "r")) {
+            raf.seek(start);
+            // 跳过首行残行（非首次读时）
+            if (start > 0 && offset <= 0) {
+                raf.readLine();
+                start = raf.getFilePointer();
+            }
+            byte[] buf = new byte[(int) Math.min(maxBytes, size - start)];
+            int read = raf.read(buf);
+            if (read <= 0) {
+                text = "";
+                endOffset = start;
+            } else {
+                String raw = new String(buf, 0, read, "UTF-8");
+                int lastNl = raw.lastIndexOf('\n');
+                if (lastNl < 0) {
+                    text = "";
+                    endOffset = start;
+                } else {
+                    text = raw.substring(0, lastNl + 1);
+                    endOffset = start + lastNl + 1;
+                }
+            }
+        }
+        return new TailResult(target.getName(), size, endOffset, text, reset);
+    }
+
+    public static final class TailResult {
+        public final String file;
+        public final long size;
+        public final long offset;
+        public final String text;
+        public final boolean reset;
+        public TailResult(String file, long size, long offset, String text, boolean reset) {
+            this.file = file;
+            this.size = size;
+            this.offset = offset;
+            this.text = text;
+            this.reset = reset;
+        }
     }
 
     /** 合并所有日志到 cacheDir 下单文件，供导出 */

@@ -110,7 +110,7 @@ public class LocalProxyPlugin extends Plugin {
                 io.execute(() -> handle(client));
             } catch (Exception e) {
                 if (socket.isClosed()) return;
-                Log.w(TAG, "accept failed", e);
+                com.qoder.cinema.AppLog.w(TAG, "accept failed", e);
             }
         }
     }
@@ -163,7 +163,7 @@ public class LocalProxyPlugin extends Plugin {
             Target actualTarget = segmentUrl != null ? new Target(segmentUrl, target.headers) : target;
             forward(c, actualTarget, range);
         } catch (Exception e) {
-            Log.w(TAG, "proxy connection failed", e);
+            com.qoder.cinema.AppLog.w(TAG, "proxy connection failed", e);
         }
     }
 
@@ -344,7 +344,7 @@ public class LocalProxyPlugin extends Plugin {
             }
             return result.toString();
         } catch (Exception e) {
-            Log.w(TAG, "rewriteM3u8 failed, returning original", e);
+            com.qoder.cinema.AppLog.w(TAG, "rewriteM3u8 failed, returning original", e);
             return manifest;
         }
     }

@@ -133,7 +133,7 @@ public class HlsDownloader {
             }
 
         } catch (Exception e) {
-            Log.e(TAG, "HLS download failed: " + taskId, e);
+            com.qoder.cinema.AppLog.e(TAG, "HLS download failed: " + taskId, e);
             if (errorCallback != null) {
                 errorCallback.onError(taskId, "E_HLS_DOWNLOAD", e.getMessage());
             }

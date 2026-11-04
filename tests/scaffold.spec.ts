@@ -18,7 +18,7 @@ describe('SCF 脚手架自检', () => {
     setComplianceGate(mockSettingsService);
   });
 
-  it('路由表含 21 条记录（20 条业务路由 + 404；CHG-13 新增 live/订阅两条）', () => {
+  it('路由表含 22 条记录（21 条业务路由 + 404；CHG-13 新增 live/订阅两条；日志查看器新增 logs）', () => {
     expect(routes.map((r) => r.name)).toEqual([
       'welcome',
       'home',
@@ -38,6 +38,7 @@ describe('SCF 脚手架自检', () => {
       'subscription-eval',
       'source-edit',
       'backup',
+      'logs',
       'about',
       'compliance',
       'not-found',
@@ -59,7 +60,7 @@ describe('SCF 脚手架自检', () => {
     expect(router.currentRoute.value.name).toBe('home');
   });
 
-  it('已同意后其余 16 条路由逐条可导航', async () => {
+  it('已同意后其余 17 条路由逐条可导航', async () => {
     await mockSettingsService.acceptCompliance(COMPLIANCE_VERSION);
     const targets: Array<[string, string]> = [
       ['/', 'home'],
@@ -79,6 +80,7 @@ describe('SCF 脚手架自检', () => {
       ['/settings/subscriptions/eval', 'subscription-eval'],
       ['/settings/sources/s1/edit', 'source-edit'],
       ['/settings/backup', 'backup'],
+      ['/settings/logs', 'logs'],
       ['/settings/about', 'about'],
       ['/legal/compliance', 'compliance'],
     ];
@@ -89,7 +91,7 @@ describe('SCF 脚手架自检', () => {
     // 未匹配的路径落到 404
     await router.push('/definitely-not-a-page');
     expect(router.currentRoute.value.name).toBe('not-found');
-    expect(targets.length + 2).toBe(21); // 19 + welcome + not-found
+    expect(targets.length + 2).toBe(22); // 20 + welcome + not-found
   });
 
   it('一级页面挂载：渲染内容 + 5 项 TabBar + 预留底部留白（CHG-13 起 5 Tab）', async () => {

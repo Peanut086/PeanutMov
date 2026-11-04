@@ -66,7 +66,7 @@ public class NativeDownloadManager {
     public void start(String taskId, String url, String filePath, Map<String, String> headers,
                       long startBytes, long totalBytes) {
         if (activeDownloads.containsKey(taskId) || pendingTasks.containsKey(taskId)) {
-            Log.w(TAG, "Task already exists: " + taskId);
+            com.qoder.cinema.AppLog.w(TAG, "Task already exists: " + taskId);
             return;
         }
 
@@ -181,7 +181,7 @@ public class NativeDownloadManager {
             try {
                 downloader.execute();
             } catch (Exception e) {
-                Log.e(TAG, "Task execution failed: " + task.taskId, e);
+                com.qoder.cinema.AppLog.e(TAG, "Task execution failed: " + task.taskId, e);
                 onError(task.taskId, "E_UNKNOWN", e.getMessage());
             } finally {
                 activeDownloads.remove(task.taskId);
@@ -221,7 +221,7 @@ public class NativeDownloadManager {
                                 onError(taskId, errorCode, errorMessage)
                 );
             } catch (Exception e) {
-                Log.e(TAG, "HLS task execution failed: " + task.taskId, e);
+                com.qoder.cinema.AppLog.e(TAG, "HLS task execution failed: " + task.taskId, e);
                 onError(task.taskId, "E_UNKNOWN", e.getMessage());
             } finally {
                 scheduleNextTask();

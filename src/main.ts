@@ -1,3 +1,9 @@
+import { installConsoleCapture } from '@/shared/logBus';
+import { restoreLogLevel } from '@/native/logs';
+
+// P1：安装 console 捕获（必须在所有业务代码之前，确保 logger.* 和裸 console.* 都被记录）
+installConsoleCapture();
+
 import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 
@@ -33,6 +39,9 @@ async function bootstrap(): Promise<void> {
   bindAppToasts();
 
   await initSettings();
+
+  // P1：恢复 JS logger 级别（根据原生存储的详细日志开关状态）
+  await restoreLogLevel();
 
   // 演示数据：幂等；失败只记日志，页面仍可进入空态并手动重试
   await ensureDemoData();

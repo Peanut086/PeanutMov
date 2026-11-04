@@ -105,7 +105,7 @@ public class RangeDownloader {
             // 检查 .part 文件实际大小（续传校正）
             long actualStartBytes = getPartFileSize();
             if (actualStartBytes != task.startBytes) {
-                Log.w(TAG, "Start bytes corrected: db=" + task.startBytes + ", actual=" + actualStartBytes);
+                com.qoder.cinema.AppLog.w(TAG, "Start bytes corrected: db=" + task.startBytes + ", actual=" + actualStartBytes);
                 downloadedBytes.set(actualStartBytes);
             }
 
@@ -130,7 +130,7 @@ public class RangeDownloader {
             if (!response.isSuccessful() && response.code() != 206) {
                 // 416 Range Not Satisfiable：从头重下
                 if (response.code() == 416 && startBytes > 0) {
-                    Log.w(TAG, "Range not satisfiable, restarting from 0");
+                    com.qoder.cinema.AppLog.w(TAG, "Range not satisfiable, restarting from 0");
                     response.close();
                     downloadedBytes.set(0);
                     deletePartFile();
@@ -143,7 +143,7 @@ public class RangeDownloader {
             // 检查是否支持续传
             boolean resumable = response.code() == 206;
             if (startBytes > 0 && !resumable) {
-                Log.w(TAG, "Server does not support Range, restarting from 0");
+                com.qoder.cinema.AppLog.w(TAG, "Server does not support Range, restarting from 0");
                 downloadedBytes.set(0);
                 deletePartFile();
             }
@@ -194,7 +194,7 @@ public class RangeDownloader {
             completedCallback.onCompleted(task.taskId, finalFilePath, downloadedBytes.get());
 
         } catch (Exception e) {
-            Log.e(TAG, "Download failed: " + task.taskId, e);
+            com.qoder.cinema.AppLog.e(TAG, "Download failed: " + task.taskId, e);
             if (!canceled.get() && !paused.get()) {
                 errorCallback.onError(task.taskId, "E_NETWORK", e.getMessage());
             }

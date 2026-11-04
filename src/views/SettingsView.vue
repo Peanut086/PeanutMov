@@ -414,8 +414,10 @@ async function exportLogs(): Promise<void> {
             @update:switch-value="toggleDebugLog"
           />
           <SettingsRow
-            label="日志文件"
+            label="运行日志"
             :value="`${debugLogStatus.fileCount} 个 · ${formatBytes(debugLogStatus.totalBytes)}`"
+            chevron
+            @click="go('/settings/logs')"
           />
           <SettingsRow
             label="导出日志"

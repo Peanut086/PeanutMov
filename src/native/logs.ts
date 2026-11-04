@@ -6,7 +6,7 @@
  * 或带默认值的结构，调用方（SettingsView）无需 try/catch。
  */
 import { Spider } from '@/native/spiderPlugin';
-import { logger } from '@/shared/logger';
+import { logger, setLogLevel } from '@/shared/logger';
 
 export interface DebugLogStatus {
   enabled: boolean;
@@ -30,6 +30,21 @@ export interface ExportResult {
   uri: string;
   path: string;
   size: number;
+}
+
+export interface TailResult {
+  file: string;
+  size: number;
+  offset: number;
+  text: string;
+  reset: boolean;
+}
+
+export interface LogEntry {
+  level: 'D' | 'I' | 'W' | 'E';
+  tag: string;
+  message: string;
+  ts: number;
 }
 
 const EMPTY_STATUS: DebugLogStatus = {
@@ -56,11 +71,14 @@ export const logApi = {
     }
   },
 
-  /** 设置日志开关 */
+  /** 设置日志开关（同步更新 JS logger 级别） */
   async setEnabled(enabled: boolean): Promise<boolean> {
     try {
       const r = await Spider.setDebugLog({ enabled });
-      return r.enabled ?? enabled;
+      const result = r.enabled ?? enabled;
+      // P1：JS logger 级别联动（详细日志启用时允许 debug，否则 info）
+      setLogLevel(result ? 'debug' : 'info');
+      return result;
     } catch (e) {
       logger.warn('设置日志开关失败', e);
       throw e;
@@ -73,6 +91,16 @@ export const logApi = {
       return await Spider.cleanLogs();
     } catch (e) {
       logger.warn('清理日志失败', e);
+      throw e;
+    }
+  },
+
+  /** 清空全部日志 */
+  async clearAll(): Promise<void> {
+    try {
+      await Spider.clearAllLogs();
+    } catch (e) {
+      logger.warn('清空日志失败', e);
       throw e;
     }
   },
@@ -97,4 +125,38 @@ export const logApi = {
       throw e;
     }
   },
+
+  /** 增量读取日志文件尾部 */
+  async readTail(file?: string, offset = 0, maxBytes = 256 * 1024): Promise<TailResult> {
+    try {
+      return await Spider.readLogTail({ file, offset, maxBytes });
+    } catch (e) {
+      logger.warn('读取日志失败', e);
+      return { file: '', size: 0, offset: 0, text: '', reset: true };
+    }
+  },
+
+  /** 批量写入 JS 侧日志 */
+  async appendLogs(entries: LogEntry[], source = 'JS'): Promise<void> {
+    try {
+      await Spider.appendLogs({ entries, source });
+    } catch (e) {
+      logger.warn('写入日志失败', e);
+    }
+  },
 };
+
+/**
+ * P1：启动时恢复 JS logger 级别（根据原生存储的开关状态）
+ * 在 bootstrap 中调用（initSettings 之后）
+ */
+export async function restoreLogLevel(): Promise<void> {
+  try {
+    const status = await logApi.getStatus();
+    if (status.enabled) {
+      setLogLevel('debug');
+    }
+  } catch (e) {
+    // 静默失败，不影响启动
+  }
+}

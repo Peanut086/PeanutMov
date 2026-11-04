@@ -25,6 +25,32 @@ public class MainApplication extends Application {
         super.onCreate();
         // 初始化日志仓库（启动时恢复开关状态，清理过期日志）
         SpiderLogStore.init(this);
+        // P3：安装全局崩溃处理器，写 FATAL 日志后交还默认处理
+        installCrashHandler();
+    }
+
+    private void installCrashHandler() {
+        final Thread.UncaughtExceptionHandler defaultHandler = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override
+            public void uncaughtException(Thread thread, Throwable throwable) {
+                try {
+                    SpiderLogStore store = SpiderLogStore.get();
+                    if (store != null) {
+                        String msg = "FATAL in thread [" + thread.getName() + "]: "
+                                + throwable.getClass().getName() + ": " + throwable.getMessage()
+                                + "\n" + Log.getStackTraceString(throwable);
+                        store.log("F", "CrashHandler", msg);
+                        store.flushNow();
+                    }
+                } catch (Exception ignored) {
+                    // 崩溃处理器内部不能再崩
+                }
+                if (defaultHandler != null) {
+                    defaultHandler.uncaughtException(thread, throwable);
+                }
+            }
+        });
     }
 
     @Override

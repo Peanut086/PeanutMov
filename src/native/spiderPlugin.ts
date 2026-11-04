@@ -62,7 +62,7 @@ export interface SpiderProxyResult {
 export interface SpiderPlugin {
   /** 加载/初始化爬虫实例；重复加载同一 jar 复用缓存 */
   load(options: SpiderLoadOptions): Promise<{ handle: string }>;
-  /** 调用爬虫方法，返回 JSON 字符串 */
+  /** 调用调用爬虫方法，返回 JSON 字符串 */
   invoke(options: SpiderInvokeOptions): Promise<SpiderInvokeResult>;
   /** 走爬虫代理取内容地址 */
   proxy(options: { handle: string; url: string; headers?: Record<string, string> }): Promise<SpiderProxyResult>;
@@ -81,12 +81,27 @@ export interface SpiderPlugin {
   }>;
   /** 清理过期日志 */
   cleanLogs(): Promise<{ cleanedCount: number; freedBytes: number }>;
+  /** 清空全部日志 */
+  clearAllLogs(): Promise<{ ok: boolean }>;
   /** 列出所有日志文件 */
   listLogFiles(): Promise<{
     files: Array<{ name: string; size: number; mtime: number }>;
   }>;
   /** 导出日志（合并为单文件，返回 FileProvider URI） */
   exportLogs(): Promise<{ uri: string; path: string; size: number }>;
+  /** 增量读取日志文件尾部 */
+  readLogTail(options: { file?: string; offset?: number; maxBytes?: number }): Promise<{
+    file: string;
+    size: number;
+    offset: number;
+    text: string;
+    reset: boolean;
+  }>;
+  /** 批量写入 JS 侧日志 */
+  appendLogs(options: {
+    entries: Array<{ level: string; tag: string; message: string; ts: number }>;
+    source?: string;
+  }): Promise<{ written: number }>;
 }
 
 export const Spider = registerPlugin<SpiderPlugin>('Spider');

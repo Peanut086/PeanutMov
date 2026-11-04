@@ -365,6 +365,85 @@ public class SpiderPlugin extends Plugin {
         }
     }
 
+    /**
+     * 增量读取日志文件尾部。
+     * 参数：file（可选，文件名）、offset（可选，字节偏移）、maxBytes（可选，默认 256KB）
+     */
+    @PluginMethod
+    public void readLogTail(PluginCall call) {
+        SpiderLogStore store = SpiderLogStore.get();
+        if (store == null) {
+            call.reject("Log store not initialized");
+            return;
+        }
+        String fileName = call.getString("file", null);
+        long offset = call.getLong("offset", 0L);
+        int maxBytes = call.getInt("maxBytes", 256 * 1024);
+        try {
+            SpiderLogStore.TailResult r = store.readTail(fileName, offset, maxBytes);
+            JSObject ret = new JSObject();
+            ret.put("file", r.file);
+            ret.put("size", r.size);
+            ret.put("offset", r.offset);
+            ret.put("text", r.text);
+            ret.put("reset", r.reset);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Read log tail failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 清空全部日志文件（查看页"清空"按钮用）
+     */
+    @PluginMethod
+    public void clearAllLogs(PluginCall call) {
+        SpiderLogStore store = SpiderLogStore.get();
+        if (store == null) {
+            call.reject("Log store not initialized");
+            return;
+        }
+        store.clearAll();
+        JSObject ret = new JSObject();
+        ret.put("ok", true);
+        call.resolve(ret);
+    }
+
+    /**
+     * 批量写入 JS 侧日志。
+     * 参数：entries（数组，每条 {level, tag, message, ts}）、source（可选，如 "JS"）
+     */
+    @PluginMethod
+    public void appendLogs(PluginCall call) {
+        SpiderLogStore store = SpiderLogStore.get();
+        if (store == null) {
+            call.reject("Log store not initialized");
+            return;
+        }
+        JSArray entriesArr = call.getArray("entries", new JSArray());
+        String source = call.getString("source", "JS");
+        try {
+            List<Map<String, Object>> entries = new ArrayList<>();
+            for (int i = 0; i < entriesArr.length(); i++) {
+                Object item = entriesArr.get(i);
+                if (!(item instanceof JSObject)) continue;
+                JSObject e = (JSObject) item;
+                Map<String, Object> m = new HashMap<>();
+                m.put("level", e.optString("level", "D"));
+                m.put("tag", e.optString("tag", "app"));
+                m.put("message", e.optString("message", ""));
+                m.put("ts", e.optLong("ts", 0));
+                entries.add(m);
+            }
+            store.appendBatch(entries, source);
+            JSObject ret = new JSObject();
+            ret.put("written", entries.size());
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Append logs failed: " + e.getMessage());
+        }
+    }
+
     @PluginMethod
     public void load(PluginCall call) {
         String jarUrl = call.getString("jarUrl");
