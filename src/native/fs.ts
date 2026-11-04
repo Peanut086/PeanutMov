@@ -142,6 +142,20 @@ export async function stat(path: string): Promise<FsStat> {
 }
 
 /** 把本地文件转成 WebView 可播放的 URL（Android 走 convertFileSrc） */
+/** 重命名/移动文件（.part → 最终路径） */
+export async function renameFile(from: string, to: string): Promise<void> {
+  try {
+    await Filesystem.rename({
+      from: normalizeFsPath(from),
+      to: normalizeFsPath(to),
+      directory: Directory.Data,
+    });
+  } catch (e) {
+    throw mapFsError(e);
+  }
+}
+
+/** 把本地文件转换成 WebView 可播放的 URL（Android 走 convertFileSrc） */
 export async function toPlayableUrl(path: string): Promise<string> {
   const { Capacitor } = await import('@capacitor/core');
   const uri = await Filesystem.getUri({ path: normalizeFsPath(path), directory: Directory.Data });

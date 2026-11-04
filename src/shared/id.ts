@@ -94,11 +94,13 @@ export function nextKey(baseKey: string, existing: ReadonlySet<string>): string 
 
 /** 从 URL 扩展名到下载文件扩展名（无扩展名时按格式兜底） */
 export function extensionOf(url: string, format: MediaFormat): string {
+  // HLS 下载会把分片合并成单一文件（分片多为 MPEG-TS）。
+  // 清单 URL 的查询串里常带 `.m3u8`（如 url=NBY-xxx.m3u8），不能据此命名，
+  // 否则合并后的 TS 流会被当成播放列表。
+  if (format === 'hls') return 'ts';
   const match = /\.([a-z0-9]{2,5})(?:[?#]|$)/i.exec(url);
   if (match?.[1]) return match[1].toLowerCase();
   switch (format) {
-    case 'hls':
-      return 'm3u8';
     case 'webm':
       return 'webm';
     case 'ts':

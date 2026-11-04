@@ -3,43 +3,67 @@
  *
  * 两种实现：
  * - `NativeFsSink`：Capacitor Filesystem 写入应用私有目录 `downloads/{mediaId}/{episodeId}.{ext}`；
+ *   写入过程中使用 `.part` 临时文件，完成后原子 rename 到最终路径；
  * - `IdbBlobSink`：Web 端把分块收进内存，完成后写 IndexedDB `blobs` 表（避免半截 Blob 残留）。
  *
- * 统一接口：`begin(totalBytes)` → 多次 `write(chunk)` → `finish()` / `abort()`。
- * 失败时 `abort()` 必须清理临时数据（AC-76：不残留半截 Blob）。
+ * 统一接口：`begin(totalBytes)` → 多次 `write(chunk)` → `finish()` / `suspend()` / `abort()`。
+ * - `finish()`：完成，返回记录值；
+ * - `suspend()`：暂停，保留已写入数据（.part 文件或内存 chunks）供续传；
+ * - `abort()`：取消，清理所有临时数据（AC-76：不残留半截 Blob）。
  */
 import { blobRepo } from '@/db/repositories/blobRepo';
 import { AppError } from '@/shared/errors';
 import { DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/shared/constants';
 import { extensionOf } from '@/shared/id';
 import { logger } from '@/shared/logger';
-import { arrayBufferToBase64, FS_ROOT, deleteFile, ensureDir, writeBase64, appendBase64 } from '@/native/fs';
+import {
+  arrayBufferToBase64,
+  FS_ROOT,
+  deleteFile,
+  ensureDir,
+  renameFile,
+  stat,
+  writeBase64,
+  appendBase64,
+} from '@/native/fs';
 import type { DownloadSinkKind, DownloadTask } from '@/types';
 
 export interface SinkInit {
   task: DownloadTask;
-  /** 已下载字节（续传起点） */
+  /** 已下载字节（续传起点；Web 端会被忽略，始终从 0 开始） */
   startBytes: number;
+}
+
+export interface BeginResult {
+  /** 实际可用的续传起点（可能与 DB 记录不一致，以文件实际大小为准） */
+  actualStartBytes: number;
 }
 
 export interface DownloadSink {
   readonly kind: DownloadSinkKind;
-  /** 开始写入；返回后 `write` 可被调用 */
-  begin(init: SinkInit): Promise<void>;
+  /** 开始写入；返回实际续传起点 */
+  begin(init: SinkInit): Promise<BeginResult>;
   /** 追加一块数据 */
   write(chunk: Uint8Array): Promise<void>;
   /** 完成：返回记录值（文件路径或 blob key） */
   finish(): Promise<{ filePath: string | null; blobKey: string | null; size: number }>;
+  /** 暂停：保留已写入数据供续传 */
+  suspend(): Promise<void>;
   /** 放弃：清理临时数据 */
   abort(): Promise<void>;
 }
 
-/** Android 相对路径：`downloads/{mediaId}/{episodeId}.{ext}` */
+/** Android 最终文件路径：`downloads/{mediaId}/{episodeId}.{ext}` */
 export function nativeFilePathOf(task: DownloadTask): string {
   const mediaSegment = sanitizeSegment(task.mediaId);
   const episodeSegment = sanitizeSegment(task.episodeId);
   const ext = extensionOf(task.url, task.format);
   return `${FS_ROOT}/${mediaSegment}/${episodeSegment}.${ext}`;
+}
+
+/** Android 临时路径：最终路径 + `.part` */
+export function nativePartPathOf(task: DownloadTask): string {
+  return `${nativeFilePathOf(task)}.part`;
 }
 
 /** 去掉文件名里的非法字符（ID 已含 `:` 与 `~`） */
@@ -54,45 +78,82 @@ function sanitizeSegment(value: string): string {
 export class NativeFsSink implements DownloadSink {
   readonly kind: DownloadSinkKind = 'filesystem';
   private filePath = '';
+  private partPath = '';
   private written = 0;
   private started = false;
 
-  async begin(init: SinkInit): Promise<void> {
+  async begin(init: SinkInit): Promise<BeginResult> {
     this.filePath = nativeFilePathOf(init.task);
-    this.written = 0;
+    this.partPath = nativePartPathOf(init.task);
     const dir = this.filePath.slice(0, this.filePath.lastIndexOf('/'));
     await ensureDir(dir);
-    if (init.startBytes > 0 && init.task.resumable) {
-      // 续传：保留已有文件，继续 append
-      this.written = init.startBytes;
+
+    // 检查 .part 文件实际大小（以文件为准，不信 DB）
+    const partStat = await stat(this.partPath);
+    const actualSize = partStat.exists ? partStat.size : 0;
+
+    if (init.startBytes > 0 && init.task.resumable && actualSize > 0) {
+      // 续传：保留 .part 文件
+      if (actualSize < init.startBytes) {
+        // 文件比 DB 记录小（异常中断）：以文件为准，引擎会重新对齐 Range
+        logger.warn('.part 文件小于 DB 记录，以文件为准', {
+          partPath: this.partPath,
+          actualSize,
+          dbBytes: init.startBytes,
+        });
+      }
+      this.written = actualSize;
     } else {
-      // 从 0 开始：先清空可能存在的残留
-      await deleteFile(this.filePath);
-      await writeBase64(this.filePath, '');
+      // 从 0 开始：清空残留
+      await deleteFile(this.partPath);
+      await writeBase64(this.partPath, '');
+      this.written = 0;
     }
+
     this.started = true;
+    return { actualStartBytes: this.written };
   }
 
   async write(chunk: Uint8Array): Promise<void> {
     if (!this.started) throw new AppError('E_INVALID_STATE', 'sink 未初始化');
     if (chunk.byteLength === 0) return;
     const base64 = arrayBufferToBase64(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
-    await appendBase64(this.filePath, base64);
+    await appendBase64(this.partPath, base64);
     this.written += chunk.byteLength;
   }
 
   async finish(): Promise<{ filePath: string | null; blobKey: string | null; size: number }> {
+    if (!this.started) {
+      return { filePath: null, blobKey: null, size: 0 };
+    }
     this.started = false;
+
+    // 原子 rename：.part → 最终路径
+    try {
+      await renameFile(this.partPath, this.filePath);
+    } catch (e) {
+      logger.error('rename .part 失败', { from: this.partPath, to: this.filePath, error: e });
+      throw new AppError('E_FILE_MISSING', '下载完成但重命名失败', {
+        detail: `from=${this.partPath}, to=${this.filePath}, error=${String(e)}`,
+        cause: e,
+      });
+    }
+
     return { filePath: this.filePath, blobKey: null, size: this.written };
+  }
+
+  async suspend(): Promise<void> {
+    // 暂停：保留 .part 文件，不清理
+    this.started = false;
   }
 
   async abort(): Promise<void> {
     if (!this.started) return;
     this.started = false;
     try {
-      await deleteFile(this.filePath);
+      await deleteFile(this.partPath);
     } catch (e) {
-      logger.warn('清理未完成文件失败', { path: this.filePath, error: e });
+      logger.warn('清理 .part 文件失败', { path: this.partPath, error: e });
     }
   }
 }
@@ -119,14 +180,14 @@ export class IdbBlobSink implements DownloadSink {
   private mime = 'video/mp4';
   private started = false;
 
-  async begin(init: SinkInit): Promise<void> {
+  async begin(init: SinkInit): Promise<BeginResult> {
     this.chunks = [];
     this.size = 0;
     this.blobKey = init.task.id;
     this.mime = mimeOfTask(init.task);
     this.started = true;
-    // 续传起点由引擎重新请求 Range 后从 0 拼装（Web 端不保留半截 Blob）
-    void init.startBytes;
+    // Web 端不保留半截 Blob，始终从 0 开始（忽略 startBytes）
+    return { actualStartBytes: 0 };
   }
 
   async write(chunk: Uint8Array): Promise<void> {
@@ -164,6 +225,11 @@ export class IdbBlobSink implements DownloadSink {
     return { filePath: null, blobKey: this.blobKey, size: this.size };
   }
 
+  async suspend(): Promise<void> {
+    // 暂停：保留 chunks 在内存（如果页面不刷新，可续传）
+    this.started = false;
+  }
+
   async abort(): Promise<void> {
     this.chunks = [];
     this.size = 0;
@@ -188,7 +254,8 @@ export function mimeOfTask(task: DownloadTask): string {
     case 'ts':
       return 'video/mp2t';
     case 'hls':
-      return 'application/vnd.apple.mpegurl';
+      // 合并后的 HLS 分片为 MPEG-TS，不能再标成 m3u8 清单
+      return 'video/mp2t';
     case 'mp4':
     default:
       return 'video/mp4';

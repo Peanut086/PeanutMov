@@ -37,6 +37,7 @@ public class LocalProxyPlugin extends Plugin {
     private static final String TAG = "LocalProxyPlugin";
     private static final int CONNECT_TIMEOUT_MS = 15_000;
     private static final int READ_TIMEOUT_MS = 30_000;
+    private static final int MAX_REDIRECTS = 6;
     /** 转发时跳过的逐跳头 */
     private static final String[] HOP_HEADERS = {
             "host", "connection", "accept-encoding", "content-length", "transfer-encoding",
@@ -166,11 +167,11 @@ public class LocalProxyPlugin extends Plugin {
         }
     }
 
-    private void forward(Socket client, Target target, String range) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(target.url).openConnection();
+    private static HttpURLConnection openConnection(Target target, String url, String range) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
         conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
         conn.setReadTimeout(READ_TIMEOUT_MS);
-        conn.setInstanceFollowRedirects(true);
+        conn.setInstanceFollowRedirects(false);
         for (Map.Entry<String, String> entry : target.headers.entrySet()) {
             String name = entry.getKey();
             boolean hop = false;
@@ -189,7 +190,25 @@ public class LocalProxyPlugin extends Plugin {
             conn.setRequestProperty("User-Agent",
                     "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Mobile Safari/537.36");
         }
+        return conn;
+    }
+
+    private void forward(Socket client, Target target, String range) throws Exception {
+        // 手动跟跳转：分片常 302 到 https 图片 CDN，而 HttpURLConnection 的
+        // setInstanceFollowRedirects 不会跨协议（http→https）跟随，3xx 会原样
+        // 冒到 CapacitorHttp 触发 "statusCode can't be in the [300, 399] range"。
+        String url = target.url;
+        HttpURLConnection conn = openConnection(target, url, range);
         int status = conn.getResponseCode();
+        for (int hop = 0; hop < MAX_REDIRECTS && status >= 300 && status < 400; hop++) {
+            String location = conn.getHeaderField("Location");
+            if (location == null || location.isEmpty()) break;
+            String next = new URL(new URL(url), location).toString();
+            conn.disconnect();
+            url = next;
+            conn = openConnection(target, url, range);
+            status = conn.getResponseCode();
+        }
         OutputStream out = client.getOutputStream();
         StringBuilder head = new StringBuilder("HTTP/1.1 ").append(status).append(" ")
                 .append(conn.getResponseMessage() == null ? "" : conn.getResponseMessage())

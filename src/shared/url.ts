@@ -93,6 +93,9 @@ export function toAbsoluteUrl(base: string, value: string | null | undefined): s
 /**
  * 从 URL 后缀推断媒体格式（FR-17 / 9.1）。
  * 查询串与 hash 会被剥离；无法判断返回 `null`（调用方按 MP4 先试）。
+ *
+ * 增强：部分 CDN 的 HLS 地址不以 `.m3u8` 结尾，而是将 `m3u8` 作为路径段
+ * （如 `/nby/m3u8/play/ts/02b18e79...?token=...`），需额外识别。
  */
 export function guessFormatFromUrl(url: string | null | undefined): MediaFormat | null {
   if (typeof url !== 'string' || url.trim().length === 0) return null;
@@ -105,6 +108,8 @@ export function guessFormatFromUrl(url: string | null | undefined): MediaFormat 
   }
   const lower = pathname.toLowerCase();
   if (lower.endsWith('.m3u8')) return 'hls';
+  // CDN 路径段包含 /m3u8/ 也视为 HLS（如 /nby/m3u8/play/ts/...）
+  if (lower.includes('/m3u8/')) return 'hls';
   if (lower.endsWith('.mp4') || lower.endsWith('.m4v') || lower.endsWith('.mov')) return 'mp4';
   if (lower.endsWith('.webm')) return 'webm';
   if (lower.endsWith('.ts')) return 'ts';

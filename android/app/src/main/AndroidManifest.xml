@@ -3,17 +3,19 @@
 
     <!--
       权限最小化（REV-03 / SRS 6.5）：
-      首版只保留真正使用的两条 ——
-      · INTERNET：浏览远程源、播放远程直链；
-      · WAKE_LOCK：播放时保持屏幕常亮（@capacitor-community/keep-awake）。
-      以下权限已移除（代码中无对应实现，属"申请了但不用"）：
-      · FOREGROUND_SERVICE / FOREGROUND_SERVICE_DATA_SYNC（无任何前台 Service，切后台下载按 Q-03 直接暂停）；
-      · POST_NOTIFICATIONS（未使用 local-notifications，无通知代码）；
-      · READ_MEDIA_VIDEO / READ_EXTERNAL_STORAGE（下载只写应用私有目录 Directory.Data，
-        播放走 Capacitor.convertFileSrc，从不读取相册/外部媒体）。
+      · INTERNET：浏览远程源、播放远程直链、下载视频；
+      · WAKE_LOCK：播放时保持屏幕常亮（@capacitor-community/keep-awake）；
+      · FOREGROUND_SERVICE：下载服务前台运行，切后台不中断；
+      · FOREGROUND_SERVICE_DATA_SYNC：Android 14+ 前台服务类型声明；
+      · POST_NOTIFICATIONS：Android 13+ 下载进度通知；
+      · ACCESS_NETWORK_STATE：检测网络类型（WiFi/移动数据）决定是否下载。
     -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
@@ -53,6 +55,12 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- 下载前台服务（Phase 1） -->
+        <service
+            android:name=".download.DownloadService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
     </application>
 
 </manifest>

@@ -35,10 +35,13 @@ const percent = computed(() => {
 });
 
 const sizeText = computed(() => {
-  if (props.task.totalBytes !== null) {
-    return `${formatBytes(props.task.downloadedBytes)} / ${formatBytes(props.task.totalBytes)}`;
+  const { totalBytes, downloadedBytes, format, status } = props.task;
+  if (totalBytes !== null) {
+    // HLS 清单无总大小，下载中的 totalBytes 是按已完成分片均值估算的
+    const approx = format === 'hls' && status !== 'completed' ? '约 ' : '';
+    return `${formatBytes(downloadedBytes)} / ${approx}${formatBytes(totalBytes)}`;
   }
-  return formatBytes(props.task.downloadedBytes);
+  return formatBytes(downloadedBytes);
 });
 
 const statusText = computed(() => {

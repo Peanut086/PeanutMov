@@ -198,28 +198,6 @@ async function requeuePending(): Promise<void> {
   await emitQueueSummary();
 }
 
-/**
- * HEAD 预检：检查服务器是否支持断点续传（Range 请求）
- */
-async function checkResumable(url: string, headers: Record<string, string>): Promise<boolean> {
-  // HLS 分片下载不支持断点续传
-  if (/\.m3u8?(?:[?#]|$)/i.test(url)) return false;
-
-  try {
-    const response = await fetch(url, {
-      method: 'HEAD',
-      headers: { ...headers, Range: 'bytes=0-0' },
-      cache: 'no-store',
-    });
-    // 206 Partial Content 表示服务器支持 Range
-    return response.status === 206;
-  } catch (e) {
-    // 网络错误或 CORS 限制，保守起见假设支持（让下载引擎在实际下载时再判断）
-    logger.debug('HEAD 预检失败，假设支持续传', { url, error: e });
-    return true;
-  }
-}
-
 export const downloadService = {
   async create(input: CreateDownloadInput): Promise<{ task: DownloadTask; existed: boolean }> {
     validateInput(input);
@@ -228,15 +206,9 @@ export const downloadService = {
       return { task: existing, existed: true };
     }
 
-    // HEAD 预检：检查服务器是否支持断点续传
-    const resumable = await checkResumable(input.url, input.headers ?? {});
-    if (!resumable) {
-      logger.debug('服务器不支持断点续传', { url: input.url });
-      appEvents.emit('toast', {
-        text: '该源不支持断点续传，中断后需重新下载',
-        type: 'info',
-      });
-    }
+    // 默认假设支持续传，让下载引擎在实际下载时验证（见 downloadEngine.ts 124-130 行）
+    // 如果服务器不支持 Range，引擎会自动降级并更新 task.resumable
+    const resumable = true;
 
     const now = Date.now();
     const task: DownloadTask = {
@@ -293,6 +265,15 @@ export const downloadService = {
         await new Promise((resolve) => setTimeout(resolve, 0));
       }
     }
+
+    // 批量摘要：避免逐个 toast 轰炸
+    if (created.length > 0) {
+      appEvents.emit('toast', {
+        text: `已加入 ${created.length} 个下载任务` + (skipped.length > 0 ? `，${skipped.length} 个已存在` : ''),
+        type: 'success',
+      });
+    }
+
     return { created, skipped };
   },
 
@@ -577,7 +558,9 @@ export const downloadService = {
       const local = await this.getLocalPlayUrl(task.id);
       return {
         url: local.url,
-        format: task.format,
+        // HLS 下载已把分片合并为单一 MPEG-TS 文件，按渐进式 ts 播放即可；
+        // 若仍报 'hls' 会被播放器当成清单去做 m3u8 预检而失败。
+        format: task.format === 'hls' ? 'ts' : task.format,
         headers: {},
         subtitles: [],
         lineId: `local:${task.id}`,
