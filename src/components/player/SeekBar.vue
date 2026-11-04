@@ -22,8 +22,10 @@ const props = withDefaults(
     disabled?: boolean;
     /** 时间与轨道同排（竖屏紧凑模式，省掉独立时间行） */
     inline?: boolean;
+    /** P1-4：键盘方向键步进秒数（默认 10） */
+    seekStep?: number;
   }>(),
-  { buffered: 0, disabled: false, inline: false },
+  { buffered: 0, disabled: false, inline: false, seekStep: 10 },
 );
 
 const emit = defineEmits<{
@@ -116,7 +118,7 @@ function onPointerLeave(): void {
 
 function onKeydown(ev: KeyboardEvent): void {
   if (props.disabled) return;
-  const step = ev.shiftKey ? 30 : 10;
+  const step = ev.shiftKey ? 30 : props.seekStep;
   if (ev.key === 'ArrowLeft') {
     ev.preventDefault();
     emit('seek', clamp(props.currentTime - step, 0, safeDuration.value));

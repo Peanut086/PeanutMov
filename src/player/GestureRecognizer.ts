@@ -71,7 +71,6 @@ export class GestureRecognizer {
   private mode: DragMode = 'none';
   private longPressTimer: ReturnType<typeof setTimeout> | null = null;
   private lastTapAt = 0;
-  private lastTapSide: 'left' | 'right' = 'left';
   private pendingTapTimer: ReturnType<typeof setTimeout> | null = null;
   private longPressActive = false;
 
@@ -248,7 +247,8 @@ export class GestureRecognizer {
 
   private handleTap(side: 'left' | 'right'): void {
     const now = Date.now();
-    const isDouble = now - this.lastTapAt <= GESTURE_DOUBLE_TAP_INTERVAL_MS && this.lastTapSide === side;
+    // 双击不再限定左右半屏：暂停/播放是全局动作，左右先后点也算双击
+    const isDouble = now - this.lastTapAt <= GESTURE_DOUBLE_TAP_INTERVAL_MS;
 
     if (isDouble) {
       this.lastTapAt = 0;
@@ -261,7 +261,6 @@ export class GestureRecognizer {
     }
 
     this.lastTapAt = now;
-    this.lastTapSide = side;
 
     // 延迟一个双击窗口再派发单击，避免与双击冲突
     if (this.pendingTapTimer !== null) clearTimeout(this.pendingTapTimer);

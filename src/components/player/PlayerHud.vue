@@ -2,15 +2,15 @@
 /**
  * 手势浮层（设计规范「player-hud」）
  *
- * 显示：快进/后退目标时间、音量百分比、亮度百分比、长按倍速提示。
+ * 显示：快进/后退目标时间、音量百分比、亮度百分比、长按倍速提示、
+ * 双击播放/暂停的大图标反馈。
  * 仅做展示，pointer-events: none。
- * 双击快进/快退时显示涟漪反馈动画，让用户感知操作生效。
  */
 import { computed, ref, watch } from 'vue';
 
 import { formatClock } from '@/shared/time';
 
-export type HudKind = 'seek' | 'volume' | 'brightness' | 'rate' | null;
+export type HudKind = 'seek' | 'volume' | 'brightness' | 'rate' | 'play' | 'pause' | null;
 
 const props = withDefaults(
   defineProps<{
@@ -24,17 +24,14 @@ const props = withDefaults(
   { value: 0, deltaSec: 0, rate: 2 },
 );
 
-/** 双击涟漪动画状态 */
-const rippleSide = ref<'left' | 'right' | null>(null);
-const rippleKey = ref(0);
+/** 播放/暂停大图标动画 key：每次 kind 切到 play/pause 时递增触发重新播放 */
+const pulseKey = ref(0);
 
 watch(
   () => props.kind,
-  (kind, oldKind) => {
-    // 从非 seek 切到 seek（双击触发的快进/快退）时显示涟漪
-    if (kind === 'seek' && oldKind !== 'seek') {
-      rippleSide.value = props.deltaSec >= 0 ? 'right' : 'left';
-      rippleKey.value += 1;
+  (kind) => {
+    if (kind === 'play' || kind === 'pause') {
+      pulseKey.value += 1;
     }
   },
 );
@@ -49,6 +46,10 @@ const title = computed(() => {
       return props.value <= 0 ? '最低亮度' : '亮度';
     case 'rate':
       return `${props.rate}x 快进中`;
+    case 'play':
+      return '播放';
+    case 'pause':
+      return '已暂停';
     default:
       return '';
   }
@@ -79,28 +80,40 @@ const barPercent = computed(() => {
 </script>
 
 <template>
-  <!-- 双击涟漪反馈（左右两侧各一个，不影响 HUD 中心显示） -->
-  <Transition name="ripple">
-    <div
-      v-if="rippleSide"
-      :key="rippleKey"
-      class="player-ripple"
-      :class="`player-ripple--${rippleSide}`"
-      aria-hidden="true"
-      @transitionend="rippleSide = null"
-    >
-      <span class="player-ripple__circle" />
-      <span class="player-ripple__text">
-        {{ rippleSide === 'right' ? '≫' : '≪' }}
-      </span>
-    </div>
-  </Transition>
-
   <Transition name="hud">
-    <div v-if="kind" class="player-hud" role="status" aria-live="polite">
-      <!-- 图标 -->
+    <div
+      v-if="kind"
+      :key="pulseKey"
+      :class="['player-hud', { 'player-hud--pulse': kind === 'play' || kind === 'pause' }]"
+      role="status"
+      aria-live="polite"
+    >
+      <!-- 播放/暂停大图标（无文字/进度条，纯视觉反馈） -->
+      <template v-if="kind === 'play' || kind === 'pause'">
+        <svg
+          v-if="kind === 'play'"
+          class="player-hud__icon player-hud__icon--large"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path d="M6 4.6c0-1.5 1.7-2.4 3-1.5l10 7.4c1.1.8 1.1 2.4 0 3.2l-10 7.4c-1.3.9-3 0-3-1.5V4.6Z" />
+        </svg>
+        <svg
+          v-else
+          class="player-hud__icon player-hud__icon--large"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <rect x="6" y="4.5" width="4" height="15" rx="1.2" />
+          <rect x="14" y="4.5" width="4" height="15" rx="1.2" />
+        </svg>
+      </template>
+
+      <!-- 其他 kind 的图标 -->
       <svg
-        v-if="kind === 'volume'"
+        v-else-if="kind === 'volume'"
         class="player-hud__icon"
         viewBox="0 0 24 24"
         fill="none"
@@ -156,7 +169,7 @@ const barPercent = computed(() => {
         <path d="m14 5 8 7-8 7z" />
       </svg>
 
-      <span class="player-hud__title">{{ title }}</span>
+      <span v-if="kind !== 'play' && kind !== 'pause'" class="player-hud__title">{{ title }}</span>
       <span v-if="mainText" class="player-hud__value">{{ mainText }}</span>
       <span v-if="subText" class="player-hud__sub">{{ subText }}</span>
 
@@ -189,10 +202,22 @@ const barPercent = computed(() => {
   pointer-events: none;
 }
 
+.player-hud--pulse {
+  min-width: 88px;
+  padding: var(--space-4);
+  animation: hud-pulse 450ms var(--ease-standard);
+}
+
 .player-hud__icon {
   width: 24px;
   height: 24px;
   margin-bottom: 2px;
+}
+
+.player-hud__icon--large {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 0;
 }
 
 .player-hud__title {
@@ -228,6 +253,21 @@ const barPercent = computed(() => {
   background-color: var(--color-brand);
 }
 
+@keyframes hud-pulse {
+  0% {
+    transform: translate(-50%, -50%) scale(0.6);
+    opacity: 0;
+  }
+  40% {
+    transform: translate(-50%, -50%) scale(1.15);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+}
+
 .hud-enter-active,
 .hud-leave-active {
   transition: opacity var(--duration-fast) var(--ease-standard);
@@ -235,80 +275,6 @@ const barPercent = computed(() => {
 
 .hud-enter-from,
 .hud-leave-to {
-  opacity: 0;
-}
-
-/* 双击涟漪反馈 */
-.player-ripple {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  pointer-events: none;
-}
-
-.player-ripple--left {
-  left: 12%;
-}
-
-.player-ripple--right {
-  right: 12%;
-}
-
-.player-ripple__circle {
-  position: absolute;
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  background-color: rgba(255, 255, 255, 0.15);
-  animation: ripple-expand 600ms var(--ease-standard) forwards;
-}
-
-.player-ripple__text {
-  position: relative;
-  font-size: 28px;
-  font-weight: 700;
-  color: rgba(255, 255, 255, 0.9);
-  animation: ripple-text 600ms var(--ease-standard) forwards;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
-}
-
-@keyframes ripple-expand {
-  0% {
-    transform: scale(0.5);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(2.2);
-    opacity: 0;
-  }
-}
-
-@keyframes ripple-text {
-  0% {
-    transform: scale(0.8);
-    opacity: 0;
-  }
-  30% {
-    transform: scale(1.1);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1);
-    opacity: 0;
-  }
-}
-
-.ripple-enter-active,
-.ripple-leave-active {
-  transition: opacity 200ms var(--ease-standard);
-}
-
-.ripple-enter-from,
-.ripple-leave-to {
   opacity: 0;
 }
 </style>

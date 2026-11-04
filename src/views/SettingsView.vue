@@ -48,6 +48,8 @@ const speedOpen = ref(false);
 const themeOpen = ref(false);
 const sensitivityOpen = ref(false);
 const displayModeOpen = ref(false);
+const seekStepOpen = ref(false);
+const longPressRateOpen = ref(false);
 const clearDataOpen = ref(false);
 const keepDemo = ref(true);
 const clearing = ref(false);
@@ -132,6 +134,10 @@ const displayModeLabel = computed(() => {
   }
 });
 
+const seekStepSecLabel = computed(() => String(settings.settings?.player.seekStepSec ?? 10));
+const longPressRateLabel = computed(() => String(settings.settings?.player.longPressRate ?? 2));
+const rememberVolumeBrightness = computed(() => settings.settings?.player.rememberVolumeBrightness ?? true);
+
 onMounted(async () => {
   try {
     await Promise.all([settings.load(), sources.load(), favorites.load(), history.load(), downloads.load()]);
@@ -170,6 +176,15 @@ async function setSensitivity(value: Sensitivity): Promise<void> {
   await update({ gesture: { ...gestureSettings.value, sensitivity: value } }, '手势灵敏度已更新');
 }
 
+function showGestureGuide(): void {
+  try {
+    localStorage.removeItem('player-gesture-guide-shown');
+  } catch {
+    // localStorage 不可用不影响功能
+  }
+  toast.info('进入播放页即可看到手势说明', 2800);
+}
+
 async function setDisplayMode(mode: ResizeMode): Promise<void> {
   displayModeOpen.value = false;
   const labels: Record<ResizeMode, string> = { contain: '适应', cover: '铺满', fill: '拉伸' };
@@ -178,6 +193,20 @@ async function setDisplayMode(mode: ResizeMode): Promise<void> {
 
 async function setAutoPlayNext(value: boolean): Promise<void> {
   await update({ player: { ...playerSettings.value, autoPlayNext: value } });
+}
+
+async function setSeekStepSec(value: number): Promise<void> {
+  seekStepOpen.value = false;
+  await update({ player: { ...playerSettings.value, seekStepSec: value } }, `快进退步长已设为 ${value} 秒`);
+}
+
+async function setLongPressRate(value: number): Promise<void> {
+  longPressRateOpen.value = false;
+  await update({ player: { ...playerSettings.value, longPressRate: value } }, `长按倍速已设为 ${value}x`);
+}
+
+async function setRememberVolumeBrightness(value: boolean): Promise<void> {
+  await update({ player: { ...playerSettings.value, rememberVolumeBrightness: value } });
 }
 
 async function setHideDemo(value: boolean): Promise<void> {
@@ -384,6 +413,15 @@ async function exportLogs(): Promise<void> {
             @update:switch-value="setAutoPlayNext"
           />
           <SettingsRow label="手势灵敏度" :value="sensitivityLabel" chevron @click="sensitivityOpen = true" />
+          <SettingsRow label="手势说明" description="查看播放页手势操作指引" chevron @click="showGestureGuide" />
+          <SettingsRow label="快进退秒数" :value="`${seekStepSecLabel}s`" chevron @click="seekStepOpen = true" />
+          <SettingsRow label="长按倍速" :value="`${longPressRateLabel}x`" chevron @click="longPressRateOpen = true" />
+          <SettingsRow
+            label="记忆音量/亮度"
+            description="退出播放时保存，下次进入自动恢复"
+            :switch-value="rememberVolumeBrightness"
+            @update:switch-value="setRememberVolumeBrightness"
+          />
           <SettingsRow label="字幕设置" description="在播放页内调整字号/颜色/偏移" chevron @click="toast.info('请在播放页的字幕面板中调整')" />
           <SettingsRow label="弹幕设置" description="字号/透明度/速度/显示区域（播放页内开关）" chevron @click="danmakuOpen = true" />
         </SettingsGroup>
@@ -535,6 +573,38 @@ async function exportLogs(): Promise<void> {
             @click="setSensitivity(opt.v)"
           >
             {{ opt.l }}
+          </button>
+        </li>
+      </ul>
+    </BottomSheet>
+
+    <!-- P1-4：快进退秒数 -->
+    <BottomSheet v-model="seekStepOpen" title="快进退步长">
+      <ul class="sheet-list">
+        <li v-for="sec in [5, 10, 15, 30]" :key="sec">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.player.seekStepSec ?? 10) === sec }"
+            type="button"
+            @click="setSeekStepSec(sec)"
+          >
+            {{ sec }} 秒
+          </button>
+        </li>
+      </ul>
+    </BottomSheet>
+
+    <!-- P1-4：长按倍速 -->
+    <BottomSheet v-model="longPressRateOpen" title="长按倍速">
+      <ul class="sheet-list">
+        <li v-for="rate in [1.5, 2, 2.5, 3]" :key="rate">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.player.longPressRate ?? 2) === rate }"
+            type="button"
+            @click="setLongPressRate(rate)"
+          >
+            {{ rate }}x
           </button>
         </li>
       </ul>

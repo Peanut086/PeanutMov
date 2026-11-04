@@ -461,7 +461,7 @@ export interface DownloadSummary {
 }
 
 /* ---------- 设置 ---------- */
-export type PlaybackRate = 0.5 | 0.75 | 1 | 1.25 | 1.5 | 2;
+export type PlaybackRate = 0.5 | 0.75 | 1 | 1.25 | 1.5 | 2 | 2.5 | 3;
 export type ThemeMode = 'dark' | 'light' | 'system';
 export type Sensitivity = 'low' | 'medium' | 'high';
 

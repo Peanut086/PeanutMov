@@ -56,8 +56,12 @@ const props = withDefaults(
      * 横屏/全屏空间充足，保持原布局。
      */
     compact?: boolean;
+    /** P1-2：弹幕是否开启 */
+    danmakuEnabled?: boolean;
+    /** P1-4：键盘/进度条步进秒数 */
+    seekStep?: number;
   }>(),
-  { downloading: false, castDisabled: false, immersive: false, compact: false },
+  { downloading: false, castDisabled: false, immersive: false, compact: false, danmakuEnabled: false, seekStep: 10 },
 );
 
 const emit = defineEmits<{
@@ -74,6 +78,8 @@ const emit = defineEmits<{
   (e: 'toggle-fullscreen'): void;
   (e: 'download'): void;
   (e: 'cast'): void;
+  (e: 'toggle-danmaku'): void;
+  (e: 'open-danmaku-settings'): void;
 }>();
 
 const rateLabel = computed(() => `${props.rate}x`);
@@ -112,6 +118,16 @@ const miniBuffered = computed(() =>
       </div>
 
       <div class="controls-top__actions">
+        <!-- P1-2：弹幕开关按钮 -->
+        <button
+          class="controls-btn"
+          :class="{ 'controls-btn--active': danmakuEnabled }"
+          type="button"
+          :aria-label="danmakuEnabled ? '关闭弹幕' : '开启弹幕'"
+          @click="emit('toggle-danmaku')"
+        >
+          <span class="danmaku-icon" aria-hidden="true">弹</span>
+        </button>
         <button
           class="controls-btn"
           type="button"
@@ -143,6 +159,7 @@ const miniBuffered = computed(() =>
         :buffered="buffered"
         :disabled="waiting && duration === 0"
         :inline="compact"
+        :seek-step="seekStep"
         @seek="emit('seek', $event)"
         @seeking="emit('seeking', $event)"
       />
@@ -276,11 +293,24 @@ const miniBuffered = computed(() =>
   justify-content: space-between;
   opacity: 1;
   transition: opacity var(--duration-slow) var(--ease-standard);
+  /* 空白区域放行给下层手势层（单击显隐、横滑快进、竖滑音量/亮度、长按 2x） */
+  pointer-events: none;
+}
+
+/* 仅顶部/底部控制栏本身可点；隐藏态显式关掉，避免 pointer-events:auto 子元素穿透 */
+.controls-top,
+.controls-bottom {
+  pointer-events: auto;
+}
+
+.player-controls--hidden,
+.player-controls--hidden .controls-top,
+.player-controls--hidden .controls-bottom {
+  pointer-events: none;
 }
 
 .player-controls--hidden {
   opacity: 0;
-  pointer-events: none;
 }
 
 /*
@@ -363,6 +393,13 @@ const miniBuffered = computed(() =>
 
 .controls-btn:active:not(:disabled) {
   background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* P1-2：弹幕图标样式 */
+.danmaku-icon {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .controls-bottom {

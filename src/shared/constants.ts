@@ -103,7 +103,7 @@ export const CONTROLS_AUTO_HIDE_MS = 3000;
 /* ---------- 手势（9.3） ---------- */
 export const GESTURE_TAP_MAX_MOVE_PX = 8;
 export const GESTURE_TAP_MAX_DURATION_MS = 300;
-export const GESTURE_DOUBLE_TAP_INTERVAL_MS = 300;
+export const GESTURE_DOUBLE_TAP_INTERVAL_MS = 250;
 export const GESTURE_LONG_PRESS_MS = 500;
 export const GESTURE_DIRECTION_RATIO = 1.5;
 export const GESTURE_SEEK_MAX_SEC = 90;

@@ -14,7 +14,7 @@ import type { PlayerLoadOptions } from '@/player/types';
 import { PlayerController } from '@/player/PlayerController';
 import type { GestureIntent } from '@/player/GestureRecognizer';
 import { ProgressReporter } from '@/player/ProgressReporter';
-import { AUTO_NEXT_COUNTDOWN_SEC, CONTROLS_HIDE_DELAY_MS } from '@/player/constants';
+import { AUTO_NEXT_COUNTDOWN_SEC, CONTROLS_HIDE_DELAY_MS, DIM_MAX_OPACITY } from '@/player/constants';
 import { toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { usePlayerStore } from '@/stores/playerStore';
@@ -46,6 +46,8 @@ export interface UsePlayerControllerOptions {
   autoPlayNext: boolean;
   /** 初始画面比例 */
   resizeMode: ResizeMode;
+  /** P1-4：长按倍速 */
+  longPressRate: PlaybackRate;
   /** 获取当前加载参数的上下文（用于写回 title/poster 等） */
   describe: () => {
     sourceId: string;
@@ -59,7 +61,7 @@ export interface UsePlayerControllerOptions {
 }
 
 export interface HudState {
-  kind: 'seek' | 'volume' | 'brightness' | 'rate' | null;
+  kind: 'seek' | 'volume' | 'brightness' | 'rate' | 'play' | 'pause' | null;
   value: number;
   deltaSec: number;
 }
@@ -82,6 +84,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   let hudTimer: ReturnType<typeof setTimeout> | null = null;
   let countdownTimer: ReturnType<typeof setInterval> | null = null;
   let restoreRate: PlaybackRate | null = null;
+  /** P1-5：记录暂停时刻，用于长时间暂停后回退 3 秒 */
+  let pausedAt: number | null = null;
 
   /** 记录最近一次 HUD 内容，便于合并高频事件 */
   function showHud(next: Omit<HudState, 'kind'> & { kind: HudState['kind'] }, autoHideMs = 800): void {
@@ -129,6 +133,14 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     else scheduleHide();
   }
 
+  /** P1-3：暂停自动隐藏（面板打开时调用） */
+  function pauseAutoHide(): void {
+    if (hideTimer !== null) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
+
   /* ---------- 事件绑定 ---------- */
 
   /** timeupdate 节流：原生 ~4Hz(250ms)，但 patch 触发响应式更新过多会掉帧 */
@@ -150,8 +162,13 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
 
     c.on('statechange', ({ playing, waiting }) => {
       player.patch({ playing, waiting });
-      if (playing) scheduleHide();
-      else setControlsVisible(true);
+      if (playing) {
+        scheduleHide();
+        pausedAt = null;
+      } else {
+        setControlsVisible(true);
+        pausedAt = Date.now();
+      }
     });
 
     c.on('ratechange', ({ rate }) => {
@@ -313,6 +330,50 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     nudgeControls();
   }
 
+  /**
+   * 双击触发的播放/暂停：与按钮 `togglePlay` 的差异在于——
+   * - ended 态下双击 = 从头重播（HTMLMediaElement.play 在 ended 会自动回 0，但原生引擎不一定）
+   * - 加载/错误态下双击静默忽略（避免误触）
+   * - waiting 态下双击 = 直接暂停（P1-5 边界）
+   * - 暂停超过 10 分钟：恢复时回退 3 秒（P1-5 边界）
+   * - 暂停时显示控制条；复播时 HUD 闪 450ms 后自动隐藏
+   */
+  async function togglePlayByTap(): Promise<void> {
+    const c = controller.value;
+    if (!c || player.error || player.loading) return;
+    
+    // P1-5：waiting 中双击直接暂停
+    if (player.waiting) {
+      c.pause();
+      setControlsVisible(true);
+      showHud({ kind: 'pause', value: 0, deltaSec: 0 }, 450);
+      return;
+    }
+    
+    if (player.playing) {
+      c.pause();
+      setControlsVisible(true);
+      showHud({ kind: 'pause', value: 0, deltaSec: 0 }, 450);
+    } else {
+      if (c.getPlayerState() === 'ended') {
+        cancelAutoNext();
+        c.seek(0);
+      }
+      // P1-5：暂停超过 10 分钟，恢复时回退 3 秒
+      if (pausedAt !== null) {
+        const pausedDuration = Date.now() - pausedAt;
+        if (pausedDuration > 10 * 60 * 1000) {
+          const seekTarget = Math.max(0, player.currentTime - 3);
+          c.seek(seekTarget);
+        }
+        pausedAt = null;
+      }
+      await c.play();
+      showHud({ kind: 'play', value: 0, deltaSec: 0 }, 450);
+      scheduleHide();
+    }
+  }
+
   async function seek(sec: number): Promise<void> {
     // 先重置节流，确保 seek 触发的 timeupdate 不被跳过
     lastTimePatchAt = 0;
@@ -430,13 +491,9 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       case 'single-tap':
         toggleControls();
         break;
-      case 'double-tap': {
-        const delta = 10;
-        const target = player.currentTime + (intent.side === 'left' ? -delta : delta);
-        c.seek(target);
-        showHud({ kind: 'seek', value: Math.max(0, target), deltaSec: intent.side === 'left' ? -delta : delta });
+      case 'double-tap':
+        void togglePlayByTap();
         break;
-      }
       case 'seek-preview':
         showHud({ kind: 'seek', value: intent.targetSec, deltaSec: intent.deltaSec }, 1200);
         break;
@@ -454,15 +511,16 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
         break;
       case 'brightness': {
         c.setDim(intent.value);
-        player.patch({ dim: (100 - intent.value) * 0.8 });
+        player.patch({ dim: ((100 - intent.value) / 100) * DIM_MAX_OPACITY });
         showHud({ kind: 'brightness', value: intent.value, deltaSec: 0 });
         break;
       }
       case 'long-press-start':
         if (restoreRate === null) {
           restoreRate = player.rate;
-          c.setRate(2);
-          showHud({ kind: 'rate', value: 2, deltaSec: 0 }, 3_600_000);
+          const rate = options.longPressRate;
+          c.setRate(rate);
+          showHud({ kind: 'rate', value: rate, deltaSec: 0 }, 3_600_000);
         }
         break;
       case 'long-press-end':
@@ -573,6 +631,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     load,
     reload,
     togglePlay,
+    togglePlayByTap,
     seek,
     setRate,
     nextEpisode,
@@ -588,6 +647,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     toggleControls,
     setControlsVisible,
     nudgeControls,
+    pauseAutoHide,
     onGesture,
     cancelAutoNext,
     resumeFromBackground,

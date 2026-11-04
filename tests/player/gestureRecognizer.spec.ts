@@ -6,8 +6,9 @@ import { GestureRecognizer, type GestureContext, type GestureIntent } from '@/pl
  * 手势识别纯逻辑测试（AC-49 / 技术方案 9.3）
  *
  * 覆盖：
- * - 位移 < 8px 判定为单击（延迟 300ms 派发，避免与双击冲突）
- * - 双击（300ms 内同侧）判定为 double-tap
+ * - 位移 < 8px 判定为单击（延迟 250ms 派发，避免与双击冲突）
+ * - 双击（250ms 内任意侧）判定为 double-tap
+ * - 双击不再触发快进/快退 seek
  * - 水平位移 > 1.5×垂直 → 快进/快退；松手才提交 seek
  * - 垂直位移主导 → 左亮度、右音量
  * - 长按 500ms → 长按开始，松手结束
@@ -55,7 +56,7 @@ describe('GestureRecognizer', () => {
     recognizer.pointerUp({ pointerId: 1, clientX: x, clientY: y });
   }
 
-  it('位移 < 8px 且时长 < 300ms 判定为单击（延迟 300ms 派发）', () => {
+  it('位移 < 8px 且时长 < 250ms 判定为单击（延迟 250ms 派发）', () => {
     const { recognizer, intents } = makeRecognizer();
     recognizer.pointerDown({ pointerId: 1, clientX: 100, clientY: 300 }, makeCtx());
     recognizer.pointerMove({ pointerId: 1, clientX: 104, clientY: 303 }, makeCtx());
@@ -64,20 +65,31 @@ describe('GestureRecognizer', () => {
 
     // 尚未派发，等待双击窗口
     expect(intents).toHaveLength(0);
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(250);
     expect(intents).toHaveLength(1);
     expect(intents[0]).toEqual({ type: 'single-tap', side: 'left' });
   });
 
-  it('300ms 内同侧两次点击判定为双击', () => {
+  it('250ms 内任意侧两次点击判定为双击（不要求同侧）', () => {
     const { recognizer, intents } = makeRecognizer();
-    tap(recognizer, 300, 300, makeCtx());
+    tap(recognizer, 100, 300, makeCtx()); // 左侧
     now += 200;
-    tap(recognizer, 302, 301, makeCtx());
-    vi.advanceTimersByTime(400);
+    tap(recognizer, 300, 300, makeCtx()); // 右侧
+    vi.advanceTimersByTime(300);
 
     expect(intents).toHaveLength(1);
     expect(intents[0]).toEqual({ type: 'double-tap', side: 'right' });
+  });
+
+  it('双击不产生 seek intent', () => {
+    const { recognizer, intents } = makeRecognizer();
+    tap(recognizer, 100, 300, makeCtx());
+    now += 200;
+    tap(recognizer, 300, 300, makeCtx());
+    vi.advanceTimersByTime(300);
+
+    expect(intents.some((i) => i.type === 'seek-preview')).toBe(false);
+    expect(intents.some((i) => i.type === 'seek-commit')).toBe(false);
   });
 
   it('水平拖动 1/3 屏宽 → 快进约 30s，松手才提交 seek（AC-47）', () => {

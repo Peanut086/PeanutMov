@@ -32,6 +32,7 @@ import { guidanceOf, magnetUrlOf } from '@/shared/sourceFailure';
 import PlayerSurface from '@/components/player/PlayerSurface.vue';
 import PlayerControls from '@/components/player/PlayerControls.vue';
 import GestureLayer from '@/components/player/GestureLayer.vue';
+import GestureGuide from '@/components/player/GestureGuide.vue';
 import PlayerHud from '@/components/player/PlayerHud.vue';
 import SpeedSheet from '@/components/player/SpeedSheet.vue';
 import SubtitleSheet from '@/components/player/SubtitleSheet.vue';
@@ -182,6 +183,7 @@ const noVideoDismissed = ref(false);
 
 const defaultRate = computed<PlaybackRate>(() => playerSettings.value.defaultRate ?? 1);
 const autoPlayNext = computed(() => playerSettings.value.autoPlayNext);
+const longPressRate = computed<PlaybackRate>(() => (playerSettings.value.longPressRate ?? 2) as PlaybackRate);
 const subtitleSettings = computed<SubtitleSettings>(
   () => playerSettings.value.subtitle ?? PLAYER_FALLBACK.subtitle,
 );
@@ -214,6 +216,7 @@ const playerCtl = usePlayerController({
   defaultRate: defaultRate.value,
   autoPlayNext: autoPlayNext.value,
   resizeMode: currentResizeMode.value,
+  longPressRate: longPressRate.value,
   describe: () => {
     const it = item.value;
     const ep = currentEpisode.value;
@@ -261,6 +264,7 @@ const {
   onGesture,
   cancelAutoNext,
   resumeFromBackground,
+  pauseAutoHide,
 } = playerCtl;
 
 /* ---------- 面板 ---------- */
@@ -272,6 +276,16 @@ const episodeOpen = ref(false);
 const moreOpen = ref(false);
 const pickerOpen = ref(false);
 const downloading = ref(false);
+
+/** P1-3：任一面板打开时暂停控制条自动隐藏 */
+watch(
+  () => [speedOpen.value, subtitleOpen.value, qualityOpen.value, displayModeOpen.value, episodeOpen.value, moreOpen.value, pickerOpen.value],
+  (states) => {
+    if (states.some(Boolean)) {
+      pauseAutoHide();
+    }
+  },
+);
 
 const castSupported = ref<boolean | null>(null);
 /** 最近一次解析出的播放源（投屏/分享用，避免再次解析触发网络请求） */
@@ -468,6 +482,13 @@ async function resolveAndLoad(): Promise<boolean> {
 onMounted(async () => {
   void detectCastSupport();
   await Promise.all([settings.load(), history.load(), favorites.load(), downloads.load()]);
+  // P1-4：记忆音量/亮度
+  if (settings.player?.rememberVolumeBrightness) {
+    player.patch({
+      volume: settings.player.lastVolume ?? 100,
+      dim: ((100 - (settings.player.lastBrightness ?? 100)) / 100) * DIM_MAX_OPACITY,
+    });
+  }
   await library.loadDetail(mediaId.value);
   detailReady.value = true;
   if (library.detailState === 'error') {
@@ -484,6 +505,17 @@ onMounted(async () => {
 /* ---------- 关闭时写回进度 ---------- */
 onBeforeUnmount(() => {
   cancelAutoNext();
+  // P1-4：记忆音量/亮度写回
+  if (settings.player?.rememberVolumeBrightness) {
+    const brightness = Math.round(100 - (player.dim / DIM_MAX_OPACITY) * 100);
+    void settings.update({
+      player: {
+        ...settings.player,
+        lastVolume: Math.round(player.volume),
+        lastBrightness: brightness,
+      },
+    });
+  }
 });
 
 /* ---------- 标题/集标签 ---------- */
@@ -941,6 +973,11 @@ function onBackgroundExit(): void {
 const danmakuOpen = ref(false);
 const danmakuOverlay = shallowRef<DanmakuOverlay | null>(null);
 
+/** P1-3：弹幕设置面板打开时也暂停自动隐藏 */
+watch(danmakuOpen, (open) => {
+  if (open) pauseAutoHide();
+});
+
 const danmakuSettings = computed(
   () =>
     settings.settings?.danmaku ?? {
@@ -1067,16 +1104,17 @@ const immersive = computed(() => player.fullscreen);
  */
 function onKeydown(ev: KeyboardEvent): void {
   if (shouldIgnoreShortcut(ev.target)) return;
+  const step = playerSettings.value.seekStepSec ?? 10;
   switch (ev.key) {
     case ' ':
       ev.preventDefault();
       void togglePlay();
       break;
     case 'ArrowLeft':
-      seek(player.currentTime - 10);
+      seek(player.currentTime - step);
       break;
     case 'ArrowRight':
-      seek(player.currentTime + 10);
+      seek(player.currentTime + step);
       break;
     case 'ArrowUp':
       playerCtl.controller.value?.setVolume(Math.min(100, player.volume + 5));
@@ -1143,26 +1181,8 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             @intent="onGesture"
           />
 
-          <!-- v1.7/CHG-22：弹幕 HUD（开关 + 设置入口） -->
-          <div v-if="!pageLoading && !loadError && !player.error" class="danmaku-hud">
-            <button
-              class="danmaku-hud__btn"
-              :class="{ 'danmaku-hud__btn--on': danmakuSettings.enabled }"
-              type="button"
-              :aria-label="danmakuSettings.enabled ? '关闭弹幕' : '开启弹幕'"
-              @click.stop="toggleDanmaku"
-            >
-              弹
-            </button>
-            <button
-              class="danmaku-hud__btn"
-              type="button"
-              aria-label="弹幕设置"
-              @click.stop="danmakuOpen = true"
-            >
-              ⚙
-            </button>
-          </div>
+          <!-- P1-1：手势引导（首次进入自动显示） -->
+          <GestureGuide v-if="!pageLoading && !loadError && !player.error" />
 
           <PlayerHud
             :kind="hud.kind"
@@ -1193,6 +1213,8 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             :cast-disabled="castSupported === false"
             :immersive="immersive"
             :compact="!immersive"
+            :danmaku-enabled="danmakuSettings.enabled"
+            :seek-step="playerSettings.seekStepSec"
             @back="goBack"
             @toggle-play="togglePlay"
             @prev="prevEpisode"
@@ -1206,6 +1228,8 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
             @toggle-fullscreen="toggleFullscreen"
             @download="onDownloadCurrent"
             @cast="onCast"
+            @toggle-danmaku="toggleDanmaku"
+            @open-danmaku-settings="danmakuOpen = true"
           />
 
           <!-- loading -->
@@ -1459,33 +1483,6 @@ const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_
 </template>
 
 <style scoped>
-/* v1.7/CHG-22：弹幕 HUD（播放区内右上角，pointer 事件不透传） */
-.danmaku-hud {
-  position: absolute;
-  top: calc(var(--safe-top) + var(--space-8));
-  right: var(--space-2);
-  z-index: 6;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.danmaku-hud__btn {
-  width: 34px;
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-full);
-  background-color: rgba(0, 0, 0, 0.45);
-  color: rgba(255, 255, 255, 0.6);
-  font: var(--text-caption);
-}
-
-.danmaku-hud__btn--on {
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.7);
-}
 .player-root {
   display: flex;
   flex-direction: column;
