@@ -19,6 +19,8 @@ public class MainApplication extends Application {
 
     private static final String TAG = "SettingsJumpGuard";
     private static final String SETTINGS_ACTION_PREFIX = "android.settings.";
+    /** P0: 网盘账号登录需要放行「所有文件访问」授权页 */
+    private static final String ALLOWED_SETTINGS_ACTION = "android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION";
 
     @Override
     public void onCreate() {
@@ -68,6 +70,11 @@ public class MainApplication extends Application {
     private static boolean blockSettingsJump(Intent intent) {
         String action = intent == null ? null : intent.getAction();
         if (action != null && action.startsWith(SETTINGS_ACTION_PREFIX)) {
+            // P0: 放行「所有文件访问」授权页，其余 settings 跳转继续拦截
+            if (ALLOWED_SETTINGS_ACTION.equals(action)) {
+                Log.d(TAG, "allowed settings jump: " + action);
+                return false;
+            }
             Log.w(TAG, "blocked settings jump: " + action);
             return true;
         }

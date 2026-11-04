@@ -372,6 +372,7 @@ async function exportLogs(): Promise<void> {
           <SettingsRow label="片源管理" :value="`${sources.sources.length} 个`" chevron @click="go('/settings/sources')" />
           <SettingsRow label="观看历史" :value="`${history.items.length} 条`" chevron @click="go('/history')" />
           <SettingsRow label="我的收藏" :value="`${favorites.items.length} 个`" chevron @click="go('/favorites')" />
+          <SettingsRow label="网盘账号" description="夸克/UC/天翼/123/阿里" chevron @click="go('/settings/netdisk')" />
         </SettingsGroup>
 
         <SettingsGroup title="播放">

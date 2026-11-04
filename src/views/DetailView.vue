@@ -212,6 +212,19 @@ async function ensurePlayable(ep: Episode): Promise<boolean> {
       toast.error('该集暂无可播放地址');
       return false;
     }
+    if (err.code === 'E_NETDISK_LOGIN_REQUIRED') {
+      // P3-2: 网盘未登录，引导用户去登录
+      const ok = await ui.confirm({
+        title: '网盘未登录',
+        message: '播放网盘资源需要先登录网盘账号，是否前往登录？',
+        confirmText: '去登录',
+        cancelText: '取消',
+      });
+      if (ok) {
+        await router.push('/settings/netdisk');
+      }
+      return false;
+    }
     // 其它错误（网络/源不可用等）保持原行为：跳转后由播放页错误面板给出重试/切换线路
     return true;
   } finally {

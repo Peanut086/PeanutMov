@@ -151,6 +151,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresLayout: false, title: '编辑源' },
   },
   {
+    path: '/settings/netdisk',
+    name: 'netdisk-settings',
+    component: () => import('@/views/NetdiskSettingsView.vue'),
+    meta: { requiresLayout: false, title: '网盘账号' },
+  },
+  {
     path: '/settings/backup',
     name: 'backup',
     component: () => import('@/views/BackupView.vue'),

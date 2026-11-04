@@ -29,6 +29,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   E_SOURCE_DISABLED: '该源已禁用，请先在源管理中启用',
   E_SOURCE_UNAVAILABLE: '该源暂不可用，可切换其他源',
   E_NO_PLAY_URL: '该集暂无可播放地址',
+  E_NETDISK_LOGIN_REQUIRED: '网盘未登录，请先登录',
   E_UNSUPPORTED_FORMAT: '暂不支持该格式',
   E_DRM_PROTECTED: '不支持受保护内容',
   E_DECODE: '视频解码失败，请尝试切换线路',

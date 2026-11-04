@@ -119,6 +119,8 @@ export interface SpiderPlayerResult {
   proxy?: number | boolean | string | null;
   flag?: string | null;
   msg?: string | null;
+  /** P1: 错误码（用于前端分类处理） */
+  code?: string;
 }
 
 function parsePlayerJson(json: string | null | undefined, sourceName?: string): SpiderPlayerResult {
@@ -709,7 +711,12 @@ export class SpiderAdapter extends BaseAdapter {
     const played = await this.invokePlayer(source, flag, picked.url, params.signal);
 
     const raw = (played.url ?? played.playUrl ?? '').trim();
-    if (raw.length === 0) throw new AppError('E_NO_PLAY_URL', played.msg ?? '爬虫未返回播放地址');
+    if (raw.length === 0) {
+      // P1: 识别网盘登录错误
+      const msg = played.msg ?? '';
+      const errorCode = detectNetdiskError(msg);
+      throw new AppError(errorCode ?? 'E_NO_PLAY_URL', msg || '爬虫未返回播放地址');
+    }
 
     const absolute = toAbsoluteUrl(source.baseUrl, raw) ?? raw;
 
@@ -731,6 +738,24 @@ export class SpiderAdapter extends BaseAdapter {
       // 解析页地址（jx 页面）：嗅探其加载过程中的媒体请求
       direct = await this.resolveViaParse(source, direct, params.signal);
     }
+
+    // 方向4：本地代理 URL（127.0.0.1:9978/proxy?do=m3u8&url=...）
+    // 如果 inner URL 是绝对地址，直接使用它（passThrough 会处理）
+    const localProxyMatch = direct.match(/^https?:\/\/127\.0\.0\.1:\d+\/proxy\?/i);
+    if (localProxyMatch) {
+      try {
+        const urlObj = new URL(direct);
+        const doParam = urlObj.searchParams.get('do');
+        const innerUrl = urlObj.searchParams.get('url');
+        if (doParam === 'm3u8' && innerUrl && /^https?:\/\//i.test(innerUrl)) {
+          logger.debug('检测到本地代理 URL，提取内部地址', { direct, innerUrl });
+          direct = innerUrl;
+        }
+      } catch (e) {
+        logger.warn('解析本地代理 URL 失败', { direct, error: e });
+      }
+    }
+
     if (isMagnetUrl(direct)) {
       // P1-4：App 不内置种子下载/播放链路，点开必失败。这里给出确定结论 +
       // 原始地址（detail），UI 据此提供「用外部应用打开」，而不是一句「该源暂不可用」。
@@ -834,6 +859,15 @@ export class SpiderAdapter extends BaseAdapter {
     const hot = this.handles.has(source.id);
     const invokeTimeout = hot ? NATIVE_INVOKE_TIMEOUT_HOT_MS : NATIVE_INVOKE_TIMEOUT_MS;
     const handle = await this.ensureLoaded(source, signal);
+
+    // 方向3：设置本地代理归属，确保 9978 代理请求路由到正确的爬虫
+    try {
+      await SpiderNative.setCurrentOwner({ handle });
+    } catch (e) {
+      logger.warn('设置代理归属失败', { sourceId: source.id, error: e });
+      // 不阻断主流程，继续执行
+    }
+
     try {
       let result: { json: string | null; logs?: string[] };
       if (extOf(source).kind === 'js') {
@@ -924,6 +958,19 @@ function parseFlagIsEnabled(value: SpiderPlayerResult['parse']): boolean {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'string') return value.trim() === '1' || value.trim().toLowerCase() === 'true';
   return false;
+}
+
+/** P1: 识别网盘登录错误 */
+function detectNetdiskError(msg: string): 'E_NETDISK_LOGIN_REQUIRED' | undefined {
+  if (!msg) return undefined;
+  const lower = msg.toLowerCase();
+  if (lower.includes('未登录') || lower.includes('还未登录') || lower.includes('未配置') || lower.includes('请登录')) {
+    return 'E_NETDISK_LOGIN_REQUIRED';
+  }
+  if (lower.includes('cookie') || lower.includes('账号')) {
+    return 'E_NETDISK_LOGIN_REQUIRED';
+  }
+  return undefined;
 }
 
 /** HEAD 结论不确定：超时（慢网络活源）或服务端不支持 HEAD（405/501），应继续 B 段 */
