@@ -532,7 +532,17 @@ export interface AppSettings {
   experimentalNativePlayer?: boolean;
   /** v1.7/CHG-22：弹幕设置（只读展示） */
   danmaku?: DanmakuSettings;
+  /** v1.8/P4：网盘画质与线程配置 */
+  netdisk?: NetdiskSettings;
   updatedAt: Timestamp;
+}
+
+/** P4: 网盘画质与线程配置 */
+export interface NetdiskSettings {
+  /** 画质：auto/4K/1080P/720P/480P */
+  quality: 'auto' | '4K' | '1080P' | '720P' | '480P';
+  /** 下载线程数：1-8 */
+  threadCount: number;
 }
 
 /* ---------- v1.7 增量（CHG-19 / CHG-22） ---------- */

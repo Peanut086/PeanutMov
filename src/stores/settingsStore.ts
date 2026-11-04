@@ -19,6 +19,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const player = computed(() => settings.value?.player ?? null);
   const gesture = computed(() => settings.value?.gesture ?? null);
   const download = computed(() => settings.value?.download ?? null);
+  const netdisk = computed(() => settings.value?.netdisk ?? { quality: 'auto', threadCount: 4 });
 
   let unsubscribe: (() => void) | null = null;
 
@@ -77,6 +78,7 @@ export const useSettingsStore = defineStore('settings', () => {
     player,
     gesture,
     download,
+    netdisk,
     load,
     update,
     acceptCompliance,

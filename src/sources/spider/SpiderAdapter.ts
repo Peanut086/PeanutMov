@@ -42,6 +42,7 @@ import {
   vodIdOf,
 } from '@/sources/site/tvboxNormalize';
 import { isPlayPageUrl, resolvePlayPage } from '@/sources/site/playPageResolver';
+import { getNetdiskConfig, formatConfigForSpider } from '@/services/netdiskConfig';
 import type {
   BrowseParams,
   Category,
@@ -77,6 +78,45 @@ function extOf(source: Source): SpiderSourceExt {
     initExt: ext.initExt ?? '',
     searchable: ext.searchable ?? true,
   };
+}
+
+/**
+ * P4-3: 判断是否为网盘源
+ * 通过 initExt 或 baseUrl 中的关键词识别
+ */
+function isNetdiskSource(source: Source): boolean {
+  const ext = extOf(source);
+  const keywords = ['netdisk', 'pan', 'quark', 'uc', '123', 'tianyi', 'ali', '网盘'];
+  const searchText = `${ext.initExt} ${source.baseUrl ?? ''}`.toLowerCase();
+  return keywords.some(kw => searchText.includes(kw.toLowerCase()));
+}
+
+/**
+ * P4-3: 为网盘源附加画质/线程配置到 initExt
+ * 配置以 JSON 格式追加，爬虫源启动时解析
+ */
+function appendNetdiskConfig(initExt: string): string {
+  try {
+    const config = getNetdiskConfig();
+    const configStr = formatConfigForSpider(config);
+    // 如果 initExt 已包含配置，替换；否则追加
+    if (initExt.includes('"quality"') || initExt.includes('"thread"')) {
+      // 尝试合并配置
+      try {
+        const existing = JSON.parse(initExt);
+        if (typeof existing === 'object') {
+          return JSON.stringify({ ...existing, ...config });
+        }
+      } catch {
+        // 解析失败，直接追加
+      }
+    }
+    // 追加配置（用分隔符避免冲突）
+    return initExt ? `${initExt}|||${configStr}` : configStr;
+  } catch (e) {
+    logger.warn('附加网盘配置失败', e);
+    return initExt;
+  }
 }
 
 /**
@@ -494,6 +534,8 @@ export class SpiderAdapter extends BaseAdapter {
     }
     const cleanJarUrl = ext.jarUrl.split(';')[0] ?? ext.jarUrl;
     const md5Suffix = ext.jarUrl.slice(cleanJarUrl.length);
+    // P4-3: 网盘源附加画质/线程配置
+    const initExt = isNetdiskSource(source) ? appendNetdiskConfig(ext.initExt) : ext.initExt;
     // 直连优先；失败时依次尝试镜像变体（CHG-11）。探活命中的镜像已记入 jarVariants。
     const candidates = [this.jarVariants.get(source.id) ?? cleanJarUrl, ...mirrorVariants(cleanJarUrl)];
     const tried = new Set<string>();
@@ -507,7 +549,7 @@ export class SpiderAdapter extends BaseAdapter {
             SpiderNative.load({
               jarUrl: `${candidate}${md5Suffix}`,
               api: ext.api ?? '',
-              initExt: ext.initExt,
+              initExt,
               userAgent: source.headers['User-Agent'] ?? source.headers['user-agent'] ?? null,
             }),
           signal,
@@ -535,6 +577,8 @@ export class SpiderAdapter extends BaseAdapter {
     if (candidates.length === 0) {
       throw new AppError('E_UNSUPPORTED_FORMAT', '该 drpy 源缺少规则地址');
     }
+    // P4-3: 网盘源附加画质/线程配置
+    const initExt = isNetdiskSource(source) ? appendNetdiskConfig(ext.initExt) : ext.initExt;
     let lastError: unknown = null;
     const tried = new Set<string>();
     for (const candidate of candidates) {
@@ -546,7 +590,7 @@ export class SpiderAdapter extends BaseAdapter {
             () =>
               DrpyNative.load({
                 ruleUrl: variant,
-                initExt: ext.initExt,
+                initExt,
               }),
             signal,
             NATIVE_LOAD_TIMEOUT_MS,

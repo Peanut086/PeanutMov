@@ -68,6 +68,11 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       merge: true,
       safeBottomPercent: 15,
     },
+    /* v1.8/P4：网盘画质与线程配置 */
+    netdisk: {
+      quality: 'auto',
+      threadCount: 4,
+    },
     updatedAt: now,
   };
 }
