@@ -10,9 +10,8 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import type { MediaItem, SearchScope } from '@/types';
+import type { MediaItem, SearchResultGroup, SearchScope } from '@/types';
 
-import AppHeader from '@/components/layout/AppHeader.vue';
 import OfflineBanner from '@/components/common/OfflineBanner.vue';
 import SearchBar from '@/components/common/SearchBar.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
@@ -20,6 +19,7 @@ import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import PosterImage from '@/components/common/PosterImage.vue';
+import IconChevron from '@/components/icons/IconChevron.vue';
 import IconClose from '@/components/icons/IconClose.vue';
 import { useLibraryStore } from '@/stores/libraryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -232,6 +232,33 @@ function toggleViewMode(): void {
   library.setSearchViewMode(library.searchViewMode === 'grouped' ? 'flat' : 'grouped');
 }
 
+const viewToggleLabel = computed(() => (library.searchViewMode === 'grouped' ? '平铺' : '聚合'));
+
+/** 聚合行副标题：`2024 · 科幻 · 3 个来源` */
+function groupMeta(group: SearchResultGroup): string {
+  const parts: string[] = [];
+  if (group.year !== null) parts.push(String(group.year));
+  const genre = group.items[0]?.genres[0];
+  if (genre) parts.push(genre);
+  parts.push(`${group.items.length} 个来源`);
+  return parts.join(' · ');
+}
+
+/** 平铺行副标题：`2024 · 电影 · 科幻 · 源名` */
+function itemMeta(item: MediaItem): string {
+  const parts: string[] = [mediaSubtitle(item)];
+  const genre = item.genres[0];
+  if (genre) parts.push(genre);
+  parts.push(sourceName(item.sourceId));
+  return parts.join(' · ');
+}
+
+function ratingText(item: MediaItem | undefined): string | null {
+  const rating = item?.rating;
+  if (typeof rating !== 'number' || !Number.isFinite(rating) || rating <= 0) return null;
+  return rating.toFixed(1);
+}
+
 function openSourceManage(): void {
   void router.push({ name: 'sources' });
 }
@@ -239,52 +266,67 @@ function openSourceManage(): void {
 
 <template>
   <main class="search-page" data-route="search">
-    <div class="search-head">
-      <AppHeader title="" back @back="goBack">
-        <template #before-title />
-      </AppHeader>
-
+    <header class="search-head">
       <div class="search-head__bar">
-        <SearchBar
-          v-model="keyword"
-          placeholder="搜索片名…"
-          @search="submitSearch"
-        />
+        <SearchBar v-model="keyword" placeholder="搜索片名、演员…" @search="submitSearch" />
+        <button class="search-cancel" type="button" @click="goBack">取消</button>
       </div>
+
+      <div class="scope-row">
+        <div class="scope-row__scroll" aria-label="搜索范围">
+          <button
+            v-for="scope in scopeOptions"
+            :key="scope.value"
+            class="scope-chip"
+            :class="{ 'scope-chip--active': library.searchScope === scope.value }"
+            type="button"
+            :aria-pressed="library.searchScope === scope.value"
+            @click="applyScope(scope.value)"
+          >
+            {{ scope.label }}
+          </button>
+        </div>
+      </div>
+
       <OfflineBanner v-if="isOffline" />
-    </div>
+    </header>
 
     <div class="search-body">
       <!-- 初始：搜索历史 -->
       <template v-if="showInitial">
         <section v-if="history.length > 0" class="search-section">
-          <div class="search-section__head">
+          <div class="section-head">
             <h2 class="section-title">搜索历史</h2>
-            <button class="search-section__action" type="button" @click="clearHistory">清空</button>
+            <button class="section-head__action" type="button" @click="clearHistory">清空</button>
           </div>
-          <ul class="history-list">
-            <li v-for="word in history" :key="word" class="history-row">
-              <button class="history-row__main" type="button" @click="chooseHistory(word)">
-                <svg class="history-row__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <ul class="history-chips">
+            <li v-for="word in history" :key="word" class="history-chip">
+              <button class="history-chip__main" type="button" @click="chooseHistory(word)">
+                <svg class="history-chip__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
                   <circle cx="12" cy="12" r="8.4" />
                   <path d="M12 7.6V12l3 2" />
                 </svg>
                 <span class="truncate-1">{{ word }}</span>
               </button>
-              <button class="history-row__remove" type="button" :aria-label="`删除历史 ${word}`" @click="removeHistory(word)">
-                <IconClose :size="14" />
+              <button
+                class="history-chip__remove"
+                type="button"
+                :aria-label="`删除历史 ${word}`"
+                @click="removeHistory(word)"
+              >
+                <IconClose :size="12" />
               </button>
             </li>
           </ul>
         </section>
 
         <section v-else class="search-suggest">
-          <p class="search-suggest__title">试试搜索片名或演员</p>
+          <p class="search-suggest__title">试试搜索片名、演员或年份</p>
           <div class="search-suggest__chips">
             <button
               v-for="word in ['Big Buck', 'Sintel', '示例']"
               :key="word"
-              class="search-suggest__chip"
+              class="suggest-chip"
               type="button"
               @click="chooseHistory(word)"
             >
@@ -294,10 +336,18 @@ function openSourceManage(): void {
         </section>
       </template>
 
-      <!-- 搜索中 -->
+      <!-- 搜索中：骨架行，避免空白等待 -->
       <div v-else-if="isSearching && !hasResults" class="search-loading" role="status">
-        <LoadingSpinner :size="24" />
-        <span>正在搜索…</span>
+        <span class="sr-only">正在搜索…</span>
+        <ul class="result-list" aria-hidden="true">
+          <li v-for="n in 3" :key="`sk-${n}`" class="skeleton-row">
+            <span class="skeleton skeleton-row__poster" />
+            <span class="skeleton-row__lines">
+              <span class="skeleton skeleton-row__line" style="width: 62%" />
+              <span class="skeleton skeleton-row__line skeleton-row__line--short" style="width: 40%" />
+            </span>
+          </li>
+        </ul>
       </div>
 
       <!-- 错误 -->
@@ -321,14 +371,22 @@ function openSourceManage(): void {
         <!-- CHG-15：0 源参与时给出诊断与去路；失败明细在空结果下也要可查 -->
         <button
           v-if="zeroCandidates"
-          class="search-failed"
+          class="search-diagnose"
           type="button"
           @click="openSourceManage"
         >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.4" />
+            <path d="M12 8v5M12 16.2v.2" />
+          </svg>
           被跳过的源有 {{ library.searchFilteredOut }} 个，打开源管理检查
         </button>
-        <!-- P2-9：失败源汇总 + 一键重试（原来只有「查看明细」，用户没有下一步动作） -->
+        <!-- P2-9：失败源汇总 + 一键重试 -->
         <div v-else-if="library.searchFailed.length > 0" class="search-failed-bar" role="status">
+          <svg class="search-failed-bar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 4.6 3.8 19.4h16.4L12 4.6Z" />
+            <path d="M12 9.6v4M12 16.6v.2" />
+          </svg>
           <span class="search-failed-bar__text">
             {{ library.searchFailed.length }} 个源搜索失败
             <span v-if="failedSummary" class="search-failed-bar__summary">（{{ failedSummary }}）</span>
@@ -340,7 +398,7 @@ function openSourceManage(): void {
               :disabled="library.searchRetrying"
               @click="retryFailed"
             >
-              {{ library.searchRetrying ? '重试中…' : '重试失败源' }}
+              {{ library.searchRetrying ? '重试中…' : '重试' }}
             </button>
             <button class="search-failed-bar__btn" type="button" @click="failedDetailOpen = true">
               明细
@@ -353,37 +411,37 @@ function openSourceManage(): void {
       <template v-else-if="hasResults">
         <div v-if="isOffline" class="search-offline-hint">离线，仅搜索本地缓存</div>
 
-        <!-- v1.7/CHG-20：视图切换 + 范围筛选 + 慢源晚到提示 -->
-        <div class="search-toolbar">
-          <div class="search-toolbar__chips">
-            <button
-              v-for="scope in scopeOptions"
-              :key="scope.value"
-              class="search-scope-chip"
-              :class="{ 'search-scope-chip--active': library.searchScope === scope.value }"
-              type="button"
-              @click="applyScope(scope.value)"
-            >
-              {{ scope.label }}
-            </button>
-          </div>
-          <button class="search-view-toggle" type="button" @click="toggleViewMode">
-            {{ library.searchViewMode === 'grouped' ? '按源平铺' : '聚合视图' }}
-          </button>
-        </div>
-
         <section class="search-section">
-          <div class="search-section__head">
+          <div class="section-head">
             <h2 class="section-title">搜索结果</h2>
-            <span class="search-section__count">
-              <template v-if="library.searchViewMode === 'grouped'">
-                {{ library.searchGroups.length }} 部 · 来源 {{ library.searchResultsAll.length }} 条
-              </template>
-              <template v-else>{{ library.searchResults.length }} 条</template>
-            </span>
+            <div class="section-head__tools">
+              <span class="search-count">
+                <template v-if="library.searchViewMode === 'grouped'">
+                  {{ library.searchGroups.length }} 部 · 来源 {{ library.searchResultsAll.length }} 条
+                </template>
+                <template v-else>{{ library.searchResults.length }} 条</template>
+              </span>
+              <button
+                class="view-toggle"
+                type="button"
+                :aria-label="`切换到${viewToggleLabel}视图`"
+                @click="toggleViewMode"
+              >
+                <svg v-if="library.searchViewMode === 'grouped'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="4" y="4" width="6.5" height="6.5" rx="1.6" />
+                  <rect x="13.5" y="4" width="6.5" height="6.5" rx="1.6" />
+                  <rect x="4" y="13.5" width="6.5" height="6.5" rx="1.6" />
+                  <rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.6" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+                  <path d="M4 6.5h16M4 12h16M4 17.5h16" />
+                </svg>
+                {{ viewToggleLabel }}
+              </button>
+            </div>
           </div>
 
-          <!-- 聚合视图：组卡片（同片跨源归并，点卡片进详情换源） -->
+          <!-- 聚合视图：同片跨源归并，点行进详情换源 -->
           <ul v-if="library.searchViewMode === 'grouped'" class="result-list">
             <li v-for="group in library.searchGroups" :key="group.key">
               <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
@@ -391,17 +449,24 @@ function openSourceManage(): void {
                   <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" />
                 </span>
                 <span class="result-row__body">
-                  <span class="result-row__title clamp-2">{{ group.title }}</span>
-                  <span class="result-row__meta">
-                    {{ group.items.length }} 个来源 · 首选 {{ sourceName(group.items[0]!.sourceId) }}
-                    <template v-if="group.year"> · {{ group.year }}</template>
+                  <span class="result-row__title">{{ group.title }}</span>
+                  <span class="result-row__meta">{{ groupMeta(group) }}</span>
+                </span>
+                <span class="result-row__tail">
+                  <span
+                    v-if="ratingText(group.items[0])"
+                    class="rating-tag"
+                    :aria-label="`评分 ${ratingText(group.items[0])}`"
+                  >
+                    {{ ratingText(group.items[0]) }}
                   </span>
+                  <IconChevron :size="16" class="result-row__chevron" />
                 </span>
               </button>
             </li>
           </ul>
 
-          <!-- 平铺视图：按相关度排序的单条列表（原视图） -->
+          <!-- 平铺视图：按相关度排序的单条列表 -->
           <ul v-else class="result-list">
             <li v-for="item in library.searchResults" :key="item.id">
               <button class="result-row" type="button" @click="openDetail(item)">
@@ -409,21 +474,32 @@ function openSourceManage(): void {
                   <PosterImage :src="item.posterUrl" :alt="item.title" />
                 </span>
                 <span class="result-row__body">
-                  <span class="result-row__title clamp-2">{{ item.title }}</span>
-                  <span class="result-row__meta">{{ mediaSubtitle(item) }} · {{ sourceName(item.sourceId) }}</span>
+                  <span class="result-row__title">{{ item.title }}</span>
+                  <span class="result-row__meta">{{ itemMeta(item) }}</span>
+                </span>
+                <span class="result-row__tail">
+                  <span v-if="ratingText(item)" class="rating-tag" :aria-label="`评分 ${ratingText(item)}`">
+                    {{ ratingText(item) }}
+                  </span>
+                  <IconChevron :size="16" class="result-row__chevron" />
                 </span>
               </button>
             </li>
           </ul>
         </section>
 
-        <!-- 慢源晚到提示：不重排已浏览内容，计数提示可点击刷新排序 -->
+        <!-- 慢源晚到提示：不重排已浏览内容，点击刷新排序 -->
         <button
           v-if="library.searchLateCount > 0 && !isSearching"
           class="search-late"
           type="button"
           @click="retry"
         >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 5.5v6l3.6 2.2" />
+            <path d="M20.4 12a8.4 8.4 0 1 1-2.6-6" />
+            <path d="M20.6 4.2v4.4h-4.4" />
+          </svg>
           爬虫源晚到 {{ library.searchLateCount }} 条新结果，点击重新排序
         </button>
 
@@ -436,8 +512,12 @@ function openSourceManage(): void {
           </span>
         </div>
 
-        <!-- P2-9：结果已上屏时同样给汇总 + 重试（只重跑失败源，不打断当前列表） -->
+        <!-- P2-9：结果已上屏时同样给汇总 + 重试（只重跑失败源） -->
         <div v-if="library.searchFailed.length > 0" class="search-failed-bar" role="status">
+          <svg class="search-failed-bar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 4.6 3.8 19.4h16.4L12 4.6Z" />
+            <path d="M12 9.6v4M12 16.6v.2" />
+          </svg>
           <span class="search-failed-bar__text">
             {{ library.searchFailed.length }} 个源搜索失败
             <span v-if="failedSummary" class="search-failed-bar__summary">（{{ failedSummary }}）</span>
@@ -449,7 +529,7 @@ function openSourceManage(): void {
               :disabled="library.searchRetrying"
               @click="retryFailed"
             >
-              {{ library.searchRetrying ? '重试中…' : '重试失败源' }}
+              {{ library.searchRetrying ? '重试中…' : '重试' }}
             </button>
             <button class="search-failed-bar__btn" type="button" @click="failedDetailOpen = true">
               明细
@@ -480,193 +560,349 @@ function openSourceManage(): void {
   background-color: var(--color-bg-base);
 }
 
+/* ---------- 顶部：搜索框 + 取消 + 范围筛选（吸顶） ---------- */
 .search-head {
   position: sticky;
   top: 0;
   z-index: var(--z-header);
   flex: 0 0 auto;
+  padding-top: var(--safe-top);
   background-color: var(--color-bg-base);
 }
 
-/* 顶栏与搜索框同排：用负 margin 让 SearchBar 紧贴返回按钮 */
+/* 内容滚到顶部时的软过渡，避免硬切 */
+.search-head::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -10px;
+  height: 10px;
+  background: linear-gradient(180deg, var(--color-bg-base) 0%, transparent 100%);
+  pointer-events: none;
+}
+
 .search-head__bar {
   display: flex;
   align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--layout-page-padding-x);
+}
+
+.search-head__bar :deep(.search-bar) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.search-cancel {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  font: var(--text-label-strong);
+  color: var(--color-brand-text);
+  transition: var(--transition-color);
+}
+
+.search-cancel:active {
+  color: var(--color-brand-strong);
+}
+
+.scope-row {
+  display: flex;
   padding: 0 var(--layout-page-padding-x) var(--space-2);
 }
 
-.search-head :deep(.app-header) {
-  padding-bottom: 0;
-  min-height: 44px;
+.scope-row__scroll {
+  display: flex;
+  flex: 1 1 auto;
+  gap: var(--space-2);
+  overflow-x: auto;
+  margin: 0 calc(var(--layout-page-padding-x) * -1);
+  padding: 0 var(--layout-page-padding-x);
+  scrollbar-width: none;
+}
+
+.scope-row__scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.scope-chip {
+  position: relative;
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border);
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font: var(--font-weight-medium) 13px / 18px var(--font-family-base);
+  transition: var(--transition-color), border-color var(--duration-fast) var(--ease-standard);
+}
+
+/* 视觉 34，命中区补到 44 */
+.scope-chip::after {
+  content: '';
+  position: absolute;
+  inset: -5px 0;
+}
+
+.scope-chip:active {
+  background-color: var(--color-bg-pressed);
+}
+
+.scope-chip--active {
+  background-color: var(--color-brand-soft);
+  border-color: rgba(240, 168, 46, 0.42);
+  color: var(--color-brand-text);
+  font-weight: 600;
 }
 
 .search-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-2) var(--layout-page-padding-x) var(--space-6);
+  padding: var(--space-1) var(--layout-page-padding-x) calc(var(--space-6) + var(--safe-bottom));
 }
 
+/* ---------- 区块标题 ---------- */
 .search-section + .search-section {
   margin-top: var(--space-5);
 }
 
-.search-section__head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
-}
-
-.search-section__count {
-  font: var(--text-caption);
-  color: var(--color-text-tertiary);
-}
-
-.search-section__action {
-  min-height: 44px;
-  font: var(--text-label);
-  color: var(--color-brand-text);
-}
-
-/* v1.7/CHG-20：工具行（范围筛选 + 视图切换） */
-.search-toolbar {
+.section-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  margin-top: var(--space-2);
+  margin: var(--space-4) 0 var(--space-3);
 }
 
-.search-toolbar__chips {
+.section-head__tools {
   display: flex;
-  gap: var(--space-1);
-  overflow-x: auto;
+  align-items: center;
+  gap: var(--space-2);
 }
 
-.search-scope-chip {
-  flex: 0 0 auto;
+.section-head__action {
+  position: relative;
   min-height: 32px;
-  padding: 0 var(--space-3);
+  padding: 0 var(--space-1);
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  transition: var(--transition-color);
+}
+
+.section-head__action::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+}
+
+.section-head__action:active {
+  color: var(--color-text-primary);
+}
+
+.search-count {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.view-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
   border-radius: var(--radius-full);
   border: var(--border-default);
   background-color: var(--color-bg-surface);
   color: var(--color-text-secondary);
   font: var(--text-caption);
+  transition: var(--transition-color);
 }
 
-.search-scope-chip--active {
-  background-color: var(--color-brand-soft, rgba(124, 92, 255, 0.16));
-  border-color: var(--color-brand-text);
-  color: var(--color-brand-text);
+.view-toggle svg {
+  width: 14px;
+  height: 14px;
 }
 
-.search-view-toggle {
-  flex: 0 0 auto;
-  min-height: 32px;
-  padding: 0 var(--space-2);
-  font: var(--text-caption);
-  color: var(--color-text-tertiary);
+.view-toggle::after {
+  content: '';
+  position: absolute;
+  inset: -7px;
 }
 
-.search-late {
-  margin-top: var(--space-3);
-  min-height: 36px;
-  font: var(--text-caption);
-  color: var(--color-brand-text);
+.view-toggle:active {
+  background-color: var(--color-bg-pressed);
+  color: var(--color-text-primary);
 }
 
-.history-list {
+/* ---------- 搜索历史 / 建议 ---------- */
+.history-chips {
   display: flex;
-  flex-direction: column;
-}
-
-.history-row {
-  display: flex;
-  align-items: center;
-  border-bottom: 1px solid var(--color-divider);
-}
-
-.history-row__main {
-  display: flex;
-  align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
-  flex: 1 1 auto;
-  min-height: 44px;
-  text-align: left;
+}
+
+.history-chip {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
+  height: 40px;
+  border-radius: var(--radius-full);
+  border: var(--border-default);
+  background-color: var(--color-bg-surface);
+}
+
+.history-chip__main {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: 0 var(--space-1) 0 var(--space-3);
   color: var(--color-text-primary);
   font: var(--text-label);
 }
 
-.history-row__icon {
-  width: 16px;
-  height: 16px;
+.history-chip__main::after {
+  content: '';
+  position: absolute;
+  inset: -2px 0;
+}
+
+.history-chip__main:active {
+  color: var(--color-brand-text);
+}
+
+.history-chip__icon {
+  width: 14px;
+  height: 14px;
   flex: 0 0 auto;
   color: var(--color-text-tertiary);
 }
 
-.history-row__remove {
-  width: 44px;
-  height: 44px;
+.history-chip__remove {
+  position: relative;
+  flex: 0 0 auto;
+  width: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  border-radius: 0 var(--radius-full) var(--radius-full) 0;
   color: var(--color-text-tertiary);
+  transition: var(--transition-color);
+}
+
+.history-chip__remove::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+}
+
+.history-chip__remove:active {
+  color: var(--color-text-primary);
+  background-color: var(--color-overlay-press);
 }
 
 .search-suggest {
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: var(--space-3);
-  padding: var(--space-8) var(--space-4);
-  text-align: center;
+  padding: var(--space-6) 0;
 }
 
 .search-suggest__title {
-  font: var(--text-body-strong);
+  font: var(--text-label-strong);
   color: var(--color-text-secondary);
 }
 
 .search-suggest__chips {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
   gap: var(--space-2);
 }
 
-.search-suggest__chip {
-  min-height: 32px;
-  padding: 0 var(--space-3);
+.suggest-chip {
+  position: relative;
+  height: 40px;
+  padding: 0 var(--space-4);
   border-radius: var(--radius-full);
+  border: var(--border-default);
   background-color: var(--color-bg-surface);
   color: var(--color-text-secondary);
   font: var(--text-label);
+  transition: var(--transition-color);
+}
+
+.suggest-chip::after {
+  content: '';
+  position: absolute;
+  inset: -2px 0;
+}
+
+.suggest-chip:active {
+  background-color: var(--color-bg-pressed);
+  color: var(--color-text-primary);
+}
+
+/* ---------- 加载骨架 / 结果列表 ---------- */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .search-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-8);
-  font: var(--text-label);
-  color: var(--color-text-tertiary);
-}
-
-.search-offline-hint {
-  margin-bottom: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background-color: var(--color-info-soft);
-  font: var(--text-caption);
-  color: var(--color-info);
+  padding-top: var(--space-2);
 }
 
 .result-list {
   display: flex;
   flex-direction: column;
+  /* 行按压反馈铺满整屏宽 */
+  margin: 0 calc(var(--layout-page-padding-x) * -1);
+}
+
+.skeleton-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px var(--layout-page-padding-x);
+}
+
+.skeleton-row__poster {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 69px;
+  border-radius: 9px;
+}
+
+.skeleton-row__lines {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.skeleton-row__line {
+  height: 12px;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-row__line--short {
+  height: 10px;
 }
 
 .result-row {
@@ -675,66 +911,155 @@ function openSourceManage(): void {
   gap: var(--space-3);
   width: 100%;
   min-height: 88px;
-  padding: var(--space-3) 0;
-  border-bottom: 1px solid var(--color-divider);
+  padding: 10px var(--layout-page-padding-x);
   text-align: left;
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+.result-row:active {
+  background-color: var(--color-bg-pressed);
 }
 
 .result-row__poster {
   flex: 0 0 auto;
-  width: 64px;
-  border-radius: var(--radius-sm);
+  width: 46px;
+  border-radius: 9px;
   overflow: hidden;
 }
 
+.result-row__poster :deep(.poster-image) {
+  border-radius: 9px;
+}
+
 .result-row__body {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
+  gap: 3px;
 }
 
 .result-row__title {
-  font: var(--text-body-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--font-weight-semibold) 14.5px / 1.35 var(--font-family-base);
+  letter-spacing: var(--letter-spacing-tight);
   color: var(--color-text-primary);
 }
 
 .result-row__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font: var(--text-caption);
   color: var(--color-text-tertiary);
 }
 
+.result-row__tail {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-tertiary);
+}
+
+.result-row__chevron {
+  color: var(--color-text-tertiary);
+  opacity: 0.65;
+}
+
+.rating-tag {
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  background-color: var(--color-brand-soft);
+  color: var(--color-brand-text);
+  font: var(--font-weight-semibold) 11px / 1 var(--font-family-number);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 进程提示条 ---------- */
+.search-late,
 .search-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  margin-top: var(--space-4);
+  padding: 10px var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(96, 165, 250, 0.22);
+  background-color: var(--color-info-soft);
+  color: var(--color-info);
+  font: var(--text-caption);
+  text-align: left;
+}
+
+.search-late svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.search-late:active {
+  background-color: rgba(96, 165, 250, 0.22);
+}
+
+.search-offline-hint {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-info-soft);
+  font: var(--text-caption);
+  color: var(--color-info);
+}
+
+.search-diagnose {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  padding: var(--space-3);
-  font: var(--text-caption);
-  color: var(--color-text-tertiary);
-}
-
-.search-failed {
-  display: block;
   width: 100%;
   min-height: 44px;
-  padding: var(--space-2);
-  font: var(--text-caption);
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(251, 191, 36, 0.22);
+  background-color: var(--color-warning-soft);
   color: var(--color-warning);
-  text-align: center;
+  font: var(--text-caption);
+}
+
+.search-diagnose svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.search-diagnose:active {
+  background-color: rgba(251, 191, 36, 0.22);
 }
 
 /* P2-9：失败源汇总条（原因聚类 + 重试 + 明细） */
 .search-failed-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
-  min-height: 44px;
-  padding: var(--space-2) var(--space-3);
+  margin-top: var(--space-4);
+  padding: 10px var(--space-3);
   border-radius: var(--radius-md);
-  background-color: var(--color-bg-elevated);
-  border: var(--border-default);
+  border: 1px solid rgba(251, 191, 36, 0.22);
+  background-color: var(--color-warning-soft);
+}
+
+.search-failed-bar__icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  color: var(--color-warning);
 }
 
 .search-failed-bar__text {
@@ -749,21 +1074,35 @@ function openSourceManage(): void {
 }
 
 .search-failed-bar__actions {
-  display: flex;
   flex: 0 0 auto;
+  display: flex;
   gap: var(--space-1);
 }
 
 .search-failed-bar__btn {
-  min-height: 32px;
+  position: relative;
+  min-height: 30px;
   padding: 0 var(--space-2);
-  font: var(--text-caption);
-  color: var(--color-accent);
   border-radius: var(--radius-sm);
+  background-color: rgba(251, 191, 36, 0.12);
+  font: var(--text-caption);
+  font-weight: 600;
+  color: var(--color-warning);
+}
+
+.search-failed-bar__btn::after {
+  content: '';
+  position: absolute;
+  inset: -7px -2px;
+}
+
+.search-failed-bar__btn:active {
+  background-color: rgba(251, 191, 36, 0.22);
 }
 
 .search-failed-bar__btn:disabled {
   color: var(--color-text-disabled);
+  background-color: transparent;
 }
 
 .failed-list {

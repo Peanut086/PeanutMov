@@ -85,16 +85,16 @@ function clear(): void {
   align-items: center;
   gap: var(--space-2);
   height: 46px;
-  padding: 0 var(--space-2) 0 var(--space-4);
+  padding: 0 var(--space-2) 0 14px;
   border-radius: var(--radius-md);
   background-color: var(--color-bg-elevated);
   border: 1px solid var(--color-border-strong);
-  transition: var(--transition-color), box-shadow var(--duration-fast) var(--ease-standard);
+  transition: var(--transition-color), box-shadow var(--duration-base) var(--ease-standard);
 }
 
 .search-bar:focus-within {
   border-color: var(--color-brand);
-  box-shadow: var(--shadow-focus);
+  box-shadow: 0 0 0 3px var(--color-brand-soft);
 }
 
 .search-bar__icon {
