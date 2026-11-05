@@ -606,7 +606,7 @@ async function switchLine(targetLineId: string): Promise<void> {
   const targetEpisode = episodeOnLine(targetLineId, currentNumber);
 
   // P1-4: 记住当前播放位置，切线后续播
-  const currentPositionSec = playerCtl.controller.value?.getCurrentTime() ?? 0;
+  const currentPositionSec = playerCtl.controller.value?.getState().currentTime ?? 0;
 
   switchingLine.value = true;
   try {

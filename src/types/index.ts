@@ -542,6 +542,8 @@ export interface AppSettings {
   danmaku?: DanmakuSettings;
   /** v1.8/P4：网盘画质与线程配置 */
   netdisk?: NetdiskSettings;
+  /** 功能扩展-4：WebDAV 云备份配置 */
+  webdav?: WebDAVSettings;
   updatedAt: Timestamp;
 }
 
@@ -551,6 +553,18 @@ export interface NetdiskSettings {
   quality: 'auto' | '4K' | '1080P' | '720P' | '480P';
   /** 下载线程数：1-8 */
   threadCount: number;
+}
+
+/** 功能扩展-4: WebDAV 云备份配置 */
+export interface WebDAVSettings {
+  /** WebDAV 服务器地址 */
+  serverUrl: string;
+  /** 用户名 */
+  username: string;
+  /** 密码/应用密钥 */
+  password: string;
+  /** 远程备份目录路径 */
+  backupPath: string;
 }
 
 /* ---------- v1.7 增量（CHG-19 / CHG-22） ---------- */

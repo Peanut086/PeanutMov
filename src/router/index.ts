@@ -79,6 +79,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresLayout: true, tab: 'live', title: '直播' },
   },
   {
+    path: '/live/epg',
+    name: 'epg',
+    component: () => import('@/views/EpgView.vue'),
+    meta: { requiresLayout: false, title: '节目单' },
+  },
+  {
     path: '/detail/:mediaId',
     name: 'detail',
     component: () => import('@/views/DetailView.vue'),
@@ -155,6 +161,12 @@ const routes: RouteRecordRaw[] = [
     name: 'netdisk-settings',
     component: () => import('@/views/NetdiskSettingsView.vue'),
     meta: { requiresLayout: false, title: '网盘账号' },
+  },
+  {
+    path: '/douban',
+    name: 'douban',
+    component: () => import('@/views/DoubanView.vue'),
+    meta: { requiresLayout: false, title: '豆瓣榜单' },
   },
   {
     path: '/settings/backup',

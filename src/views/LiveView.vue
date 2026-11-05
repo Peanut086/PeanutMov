@@ -7,6 +7,7 @@
  * 添加直播源：底部「添加直播源」→ 名称 + m3u/txt 地址。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
 
 import type { LiveGroup, LiveRecord } from '@/types';
 
@@ -24,6 +25,7 @@ import { useToast } from '@/composables/useToast';
 import { toErrorShape } from '@/shared/errors';
 
 const toast = useToast();
+const router = useRouter();
 
 const records = ref<LiveRecord[]>([]);
 const activeId = ref<string | null>(null);
@@ -212,6 +214,11 @@ function playChannel(channel: { name: string; url: string }): void {
   playing.value = { url: channel.url, title: channel.name };
 }
 
+function openEpgFull(): void {
+  if (!playing.value?.title) return;
+  void router.push({ name: 'epg', query: { ch: playing.value.title } });
+}
+
 async function submitAdd(): Promise<void> {
   if (adding.value) return;
   adding.value = true;
@@ -293,6 +300,9 @@ async function removeRecord(record: LiveRecord): Promise<void> {
           <p v-for="programme in epgNext" :key="`${programme.start}-${programme.title}`" class="live-epg__next">
             <span class="live-epg__badge live-epg__badge--muted">接下来</span> {{ programme.start }} {{ programme.title }}
           </p>
+          <button class="btn btn--ghost btn--sm live-epg__full" type="button" @click="openEpgFull">
+            完整节目单 ›
+          </button>
         </div>
 
         <!-- 分组 chips -->
@@ -549,6 +559,13 @@ async function removeRecord(record: LiveRecord): Promise<void> {
   background-color: transparent;
   border: 1px solid var(--color-divider);
   color: var(--color-text-tertiary);
+}
+
+.live-epg__full {
+  align-self: flex-end;
+  margin-top: var(--space-1);
+  color: var(--color-brand-text);
+  font: var(--text-caption);
 }
 
 .live-error {

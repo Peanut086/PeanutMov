@@ -56,6 +56,36 @@ const showInitial = computed(() => keyword.value.trim().length === 0);
 const showEmpty = computed(
   () => !showInitial.value && library.searchState === 'empty' && !isSearching.value,
 );
+
+/* ---------- 功能扩展-7：搜索组内换源 ---------- */
+const sourcePickerGroup = ref<SearchResultGroup | null>(null);
+const sourcePickerOpen = computed({
+  get: () => sourcePickerGroup.value !== null,
+  set: (v: boolean) => { if (!v) sourcePickerGroup.value = null; },
+});
+
+function openSourcePicker(group: SearchResultGroup): void {
+  sourcePickerGroup.value = group;
+}
+
+function pickSource(item: MediaItem): void {
+  sourcePickerGroup.value = null;
+  openDetail(item);
+}
+
+function sourceHealthLabel(health: string): string {
+  switch (health) {
+    case 'ok': return '正常';
+    case 'timeout': return '慢';
+    case 'unreachable': return '不可达';
+    case 'auth_failed': return '需登录';
+    default: return '未知';
+  }
+}
+
+function getSourceHealth(sourceId: string): string {
+  return sources.sources.find((s) => s.id === sourceId)?.health ?? 'unknown';
+}
 /** CHG-15：0 个源实际参与搜索（启用源全被体检结论/类型支持性过滤）→ 结果不可信，给诊断 */
 const zeroCandidates = computed(
   () => showEmpty.value && library.searchCandidates === 0 && library.searchFilteredOut > 0,
@@ -450,7 +480,18 @@ function openSourceManage(): void {
                 </span>
                 <span class="result-row__body">
                   <span class="result-row__title">{{ group.title }}</span>
-                  <span class="result-row__meta">{{ groupMeta(group) }}</span>
+                  <span class="result-row__meta">
+                    {{ groupMeta(group) }}
+                    <button
+                      v-if="group.items.length > 1"
+                      class="source-count-btn"
+                      type="button"
+                      @click.stop="openSourcePicker(group)"
+                    >
+                      切换
+                      <IconChevron :size="12" class="source-count-btn__arrow" />
+                    </button>
+                  </span>
                 </span>
                 <span class="result-row__tail">
                   <span
@@ -547,6 +588,29 @@ function openSourceManage(): void {
         </li>
       </ul>
       <p v-if="failedRows.length === 0" class="failed-empty">没有失败的源</p>
+    </BottomSheet>
+
+    <!-- 功能扩展-7：组内换源弹层 -->
+    <BottomSheet v-model="sourcePickerOpen" :title="sourcePickerGroup?.title ?? '选择来源'">
+      <ul v-if="sourcePickerGroup" class="source-picker-list">
+        <li
+          v-for="(item, idx) in sourcePickerGroup.items"
+          :key="item.id"
+          class="source-picker-item"
+          :class="{ 'source-picker-item--current': idx === 0 }"
+        >
+          <button class="source-picker-item__btn" type="button" @click="pickSource(item)">
+            <span class="source-picker-item__main">
+              <span class="source-picker-item__name">{{ sourceName(item.sourceId) }}</span>
+              <span class="source-picker-item__health">
+                {{ sourceHealthLabel(getSourceHealth(item.sourceId)) }}
+              </span>
+            </span>
+            <span v-if="idx === 0" class="source-picker-item__badge">推荐</span>
+            <IconChevron :size="16" class="source-picker-item__arrow" />
+          </button>
+        </li>
+      </ul>
     </BottomSheet>
   </main>
 </template>
@@ -1133,5 +1197,99 @@ function openSourceManage(): void {
   text-align: center;
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+/* ---------- 功能扩展-7：组内换源 ---------- */
+.source-count-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: var(--space-2);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-brand-soft);
+  color: var(--color-brand-text);
+  font: var(--text-caption);
+  border: none;
+  cursor: pointer;
+  transition: background-color var(--duration-fast);
+}
+
+.source-count-btn:active {
+  background-color: var(--color-brand-soft-hover, rgba(40, 160, 80, 0.25));
+}
+
+.source-count-btn__arrow {
+  transform: rotate(90deg);
+}
+
+.source-picker-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.source-picker-item {
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.source-picker-item:last-child {
+  border-bottom: none;
+}
+
+.source-picker-item__btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 56px;
+  padding: var(--space-3) var(--space-4);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--duration-fast);
+}
+
+.source-picker-item__btn:active {
+  background-color: var(--color-bg-pressed);
+}
+
+.source-picker-item__main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.source-picker-item__name {
+  font: var(--text-label-strong);
+  color: var(--color-text-primary);
+}
+
+.source-picker-item__health {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.source-picker-item__badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-brand-soft);
+  color: var(--color-brand-text);
+  font: var(--font-weight-semibold) 10px / 1.2 var(--font-family-base);
+}
+
+.source-picker-item--current .source-picker-item__badge {
+  background-color: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.source-picker-item__arrow {
+  flex: 0 0 auto;
+  color: var(--color-text-tertiary);
+  transform: rotate(90deg);
 }
 </style>

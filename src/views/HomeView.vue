@@ -133,6 +133,10 @@ function goLibrary(): void {
   void router.push('/library');
 }
 
+function openDouban(): void {
+  void router.push('/douban');
+}
+
 function openSearch(): void {
   void router.push('/search');
 }
@@ -255,6 +259,22 @@ async function retry(): Promise<void> {
             <LoadingSpinner :size="16" />
             正在刷新…
           </p>
+        </section>
+
+        <!-- 豆瓣榜单榜单 榜单榜入口 -->
+        <section class="home-section" aria-labelledby="home-douban">
+          <button class="home-douban-banner" type="button" @click="openDouban">
+            <span class="home-douban-banner__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                <path d="M12 2.4l2.95 6.03 6.6.96-4.78 4.7 1.13 6.6L12 17.77l-5.9 3.02 1.13-6.6L2.45 9.39l6.6-.96L12 2.4z" />
+              </svg>
+            </span>
+            <span class="home-douban-banner__text">
+              <span id="home-douban" class="home-douban-banner__title">豆瓣榜单 榜单榜</span>
+              <span class="home-douban-banner__desc">豆瓣 Top250 · 正在热映 · 热门剧集</span>
+            </span>
+            <span class="home-douban-banner__arrow" aria-hidden="true">›</span>
+          </button>
         </section>
       </template>
     </div>
@@ -494,6 +514,62 @@ async function retry(): Promise<void> {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
   padding: var(--space-2);
+}
+
+/* ---------- 豆瓣榜单入口横幅 ---------- */
+.home-douban-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 60px;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-card);
+  background: linear-gradient(135deg, rgba(40, 160, 80, 0.12) 0%, rgba(40, 160, 80, 0.04) 100%);
+  border: 1px solid rgba(40, 160, 80, 0.18);
+  transition: transform var(--duration-fast) var(--ease-standard), background-color var(--duration-fast);
+  text-align: left;
+}
+
+.home-douban-banner:active {
+  transform: scale(0.985);
+  background: linear-gradient(135deg, rgba(40, 160, 80, 0.18) 0%, rgba(40, 160, 80, 0.08) 100%);
+}
+
+.home-douban-banner__icon {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background-color: rgba(40, 160, 80, 0.15);
+  color: #28a050;
+}
+
+.home-douban-banner__text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.home-douban-banner__title {
+  font: var(--font-weight-semibold) 14px / 1.3 var(--font-family-base);
+  color: var(--color-text-primary);
+}
+
+.home-douban-banner__desc {
+  font: var(--font-weight-regular) 11.5px / 1.3 var(--font-family-number);
+  color: var(--color-text-tertiary);
+}
+
+.home-douban-banner__arrow {
+  flex: 0 0 auto;
+  font: var(--font-weight-semibold) 20px / 1 var(--font-family-number);
+  color: var(--color-text-tertiary);
 }
 
 /* 错误文案的兜底：无 error.message 时使用映射 */
