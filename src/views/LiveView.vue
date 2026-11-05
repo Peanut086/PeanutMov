@@ -35,6 +35,8 @@ const channelsLoading = ref(false);
 const channelsError = ref<string | null>(null);
 
 const playing = ref<{ url: string; title: string } | null>(null);
+/** OPT-12: 频道切换过渡态（淡出/淡入） */
+const channelSwitching = ref(false);
 
 /* ---------- v1.7/CHG-23：EPG / 收藏 / 失效沉底 / 超时切路 ---------- */
 
@@ -98,6 +100,8 @@ function onChannelTimeout(failedUrl: string): void {
   const next = sameName[0] ?? (idx >= 0 ? flat[idx + 1] : undefined) ?? flat[0];
   if (next && next.url !== failedUrl) {
     toast.info(`频道无响应，已切换到「${next.name}」`);
+    // REV-18: 超时自动切路时也需设置过渡态，与 playChannel 行为一致
+    channelSwitching.value = true;
     playing.value = { url: next.url, title: next.name };
   } else if (failed) {
     toast.error(`「${failed.name}」暂时无法播放`);
@@ -211,7 +215,16 @@ const visibleChannels = computed(() => {
 });
 
 function playChannel(channel: { name: string; url: string }): void {
+  // OPT-12: 切换频道时先淡出
+  if (playing.value && playing.value.url !== channel.url) {
+    channelSwitching.value = true;
+  }
   playing.value = { url: channel.url, title: channel.name };
+}
+
+/** OPT-12: 新流可播放后淡入 */
+function onPlayerCanplay(): void {
+  channelSwitching.value = false;
 }
 
 function openEpgFull(): void {
@@ -290,7 +303,13 @@ async function removeRecord(record: LiveRecord): Promise<void> {
           </button>
         </div>
 
-        <LivePlayer :url="playing?.url ?? null" :title="playing?.title ?? ''" @timeout="onChannelTimeout" />
+        <LivePlayer
+          :url="playing?.url ?? null"
+          :title="playing?.title ?? ''"
+          :loading="channelSwitching"
+          @timeout="onChannelTimeout"
+          @canplay="onPlayerCanplay"
+        />
 
         <!-- v1.7/CHG-23：EPG 节目单（现在播 / 接下来） -->
         <div v-if="epgNow" class="live-epg">
@@ -508,6 +527,19 @@ async function removeRecord(record: LiveRecord): Promise<void> {
 .live-channel--playing {
   border-color: var(--color-brand);
   color: var(--color-brand-text);
+  position: relative;
+}
+
+/* OPT-12: 选中频道左侧琥珀金竖条 indicator */
+.live-channel--playing::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 20%;
+  width: 3px;
+  height: 60%;
+  border-radius: var(--radius-full);
+  background-color: var(--color-brand);
 }
 
 .live-channel--dead {

@@ -22,6 +22,8 @@ import IconDownload from '@/components/icons/IconDownload.vue';
 import IconCast from '@/components/icons/IconCast.vue';
 import IconChevron from '@/components/icons/IconChevron.vue';
 import IconAspectRatio from '@/components/icons/IconAspectRatio.vue';
+import IconPip from '@/components/icons/IconPip.vue';
+import { useHaptic } from '@/composables/useHaptic';
 
 const props = withDefaults(
   defineProps<{
@@ -60,8 +62,12 @@ const props = withDefaults(
     danmakuEnabled?: boolean;
     /** P1-4：键盘/进度条步进秒数 */
     seekStep?: number;
+    /** OPT-06：当前环境是否支持画中画 */
+    pipSupported?: boolean;
+    /** OPT-06：是否已处于画中画状态 */
+    pipActive?: boolean;
   }>(),
-  { downloading: false, castDisabled: false, immersive: false, compact: false, danmakuEnabled: false, seekStep: 10 },
+  { downloading: false, castDisabled: false, immersive: false, compact: false, danmakuEnabled: false, seekStep: 10, pipSupported: false, pipActive: false },
 );
 
 const emit = defineEmits<{
@@ -80,10 +86,18 @@ const emit = defineEmits<{
   (e: 'cast'): void;
   (e: 'toggle-danmaku'): void;
   (e: 'open-danmaku-settings'): void;
+  (e: 'toggle-pip'): void;
 }>();
 
 const rateLabel = computed(() => `${props.rate}x`);
 const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
+
+const { haptic } = useHaptic();
+
+function onTogglePlay(): void {
+  haptic('light');
+  emit('toggle-play');
+}
 
 /** 微进度条百分比（控制条隐藏时显示） */
 const miniProgress = computed(() =>
@@ -185,7 +199,7 @@ const miniBuffered = computed(() =>
           type="button"
           :aria-label="playLabel"
           :aria-busy="waiting ? 'true' : undefined"
-          @click="emit('toggle-play')"
+          @click="onTogglePlay"
         >
           <span v-if="waiting" class="controls-play__spinner" aria-hidden="true" />
           <IconPause v-else-if="playing" :size="28" />
@@ -227,6 +241,16 @@ const miniBuffered = computed(() =>
               <IconSubtitle :size="18" />
             </button>
             <button
+              v-if="pipSupported"
+              class="controls-mini controls-mini--icon"
+              :class="{ 'controls-mini--active': pipActive }"
+              type="button"
+              :aria-label="pipActive ? '退出画中画' : '画中画'"
+              @click="emit('toggle-pip')"
+            >
+              <IconPip :size="18" :active="pipActive" />
+            </button>
+            <button
               class="controls-mini controls-mini--icon"
               type="button"
               :aria-label="fullscreen ? '退出全屏' : '全屏'"
@@ -262,6 +286,16 @@ const miniBuffered = computed(() =>
           @click="emit('download')"
         >
           <IconDownload :size="18" :done="downloading" />
+        </button>
+
+        <button
+          v-if="pipSupported"
+          class="controls-secondary__btn"
+          type="button"
+          :aria-label="pipActive ? '退出画中画' : '画中画'"
+          @click="emit('toggle-pip')"
+        >
+          <IconPip :size="18" :active="pipActive" />
         </button>
 
         <button

@@ -31,6 +31,8 @@ import { useToast } from '@/composables/useToast';
 import { mediaSubtitle } from '@/components/common/format';
 import { toErrorShape } from '@/shared/errors';
 import { classifySourceFailure, guidanceOf, sanitizeSourceMessage } from '@/shared/sourceFailure';
+// OPT-07：搜索建议服务
+import { getSearchSuggestions, getHotSearchTags } from '@/services/suggestService';
 
 defineOptions({ name: 'SearchView' });
 
@@ -56,6 +58,15 @@ const showInitial = computed(() => keyword.value.trim().length === 0);
 const showEmpty = computed(
   () => !showInitial.value && library.searchState === 'empty' && !isSearching.value,
 );
+
+/* ---------- OPT-07：搜索建议与热门标签 ---------- */
+const suggestions = computed(() => getSearchSuggestions(
+  keyword.value,
+  8,
+  settings.settings?.searchHistory ?? [],
+  library.items ?? [],
+));
+const hotSearchTags = computed(() => getHotSearchTags(10));
 
 /* ---------- 功能扩展-7：搜索组内换源 ---------- */
 const sourcePickerGroup = ref<SearchResultGroup | null>(null);
@@ -191,6 +202,23 @@ function chooseHistory(word: string): void {
   void runSearch(word, true);
 }
 
+// OPT-07：选中建议项
+function selectSuggestion(word: string): void {
+  keyword.value = word;
+  debouncedSearch.cancel();
+  void runSearch(word, true);
+}
+
+// OPT-07：删除建议（从历史中移除）
+async function deleteSuggestion(word: string): Promise<void> {
+  const current = settings.settings?.searchHistory ?? [];
+  try {
+    await settings.update({ searchHistory: current.filter((v) => v !== word) });
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
+}
+
 async function removeHistory(word: string): Promise<void> {
   const current = settings.settings?.searchHistory ?? [];
   try {
@@ -298,7 +326,14 @@ function openSourceManage(): void {
   <main class="search-page" data-route="search">
     <header class="search-head">
       <div class="search-head__bar">
-        <SearchBar v-model="keyword" placeholder="搜索片名、演员…" @search="submitSearch" />
+        <SearchBar
+          v-model="keyword"
+          placeholder="搜索片名、演员…"
+          :suggestions="suggestions"
+          @search="submitSearch"
+          @select-suggestion="selectSuggestion"
+          @delete-suggestion="deleteSuggestion"
+        />
         <button class="search-cancel" type="button" @click="goBack">取消</button>
       </div>
 
@@ -351,18 +386,22 @@ function openSourceManage(): void {
         </section>
 
         <section v-else class="search-suggest">
-          <p class="search-suggest__title">试试搜索片名、演员或年份</p>
+          <p class="search-suggest__title">热门搜索</p>
           <div class="search-suggest__chips">
             <button
-              v-for="word in ['Big Buck', 'Sintel', '示例']"
+              v-for="word in hotSearchTags"
               :key="word"
-              class="suggest-chip"
+              class="suggest-chip suggest-chip--hot"
               type="button"
               @click="chooseHistory(word)"
             >
+              <svg class="suggest-chip__fire" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 2c-1 4-4 6-4 10a4 4 0 0 0 8 0c0-4-3-6-4-10z" />
+              </svg>
               {{ word }}
             </button>
           </div>
+          <p class="search-suggest__hint">试试搜索片名、演员或年份</p>
         </section>
       </template>
 
@@ -912,6 +951,29 @@ function openSourceManage(): void {
 .suggest-chip:active {
   background-color: var(--color-bg-pressed);
   color: var(--color-text-primary);
+}
+
+/* OPT-07：热门搜索标签 */
+.suggest-chip--hot {
+  background-color: var(--color-warning-soft);
+  border-color: rgba(251, 191, 36, 0.22);
+  color: var(--color-warning);
+}
+
+.suggest-chip--hot:active {
+  background-color: rgba(251, 191, 36, 0.22);
+}
+
+.suggest-chip__fire {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.search-suggest__hint {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  padding-top: var(--space-1);
 }
 
 /* ---------- 加载骨架 / 结果列表 ---------- */

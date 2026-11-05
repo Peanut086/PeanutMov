@@ -12,7 +12,7 @@ import { setBackFallback } from '@/native/appLifecycle';
 
 /**
  * 根组件：
- * - `RouterView` 页面渲染（进入动画为纯 CSS keyframes，见 §过渡）
+ * - `RouterView` 页面渲染（方向感知过渡动画，见 §过渡）
  * - `ToastHost`（全局轻提示宿主，uiStore 驱动）
  * - `ConfirmDialog`（全局确认框宿主，uiStore.confirm 驱动）
  * - 主题挂载（data-theme）与设置同步
@@ -20,15 +20,34 @@ import { setBackFallback } from '@/native/appLifecycle';
  * - 错误边界：捕获子树未处理异常 → 可恢复错误页（NFR-R04）
  * - 底部 TabBar 仅在 `meta.requiresLayout === true` 的路由渲染
  *
- * 过渡说明：这里**不使用** `<Transition mode="out-in">`。
- * 实测（390px / 连续快速路由切换）：out-in 模式下 leave 阶段再触发导航，
- * Vue 会残留 `fade-leave-active` 且不触发 transitionend，导致新页面停在
- * 半透明状态（内容变暗不可读）。改用"进入即播放的 CSS 动画"：
- * 动画由浏览器保证结束，不会因为连续导航而卡住。
+ * 过渡说明：使用 `<Transition>` 包裹 RouterView，根据 route.meta.depth
+ * 判断导航方向：depth 增大为前进（slide-left），depth 减小为后退（slide-right），
+ * 同 depth 为 Tab 切换（fade）。不使用 mode="out-in" 以避免连续导航时
+ * leave 阶段卡住导致页面停在半透明状态。
  */
 const route = useRoute();
 const router = useRouter();
 const showTabBar = computed(() => route.meta.requiresLayout === true);
+
+/**
+ * 记录上一次路由的 depth，用于判断过渡方向。
+ * 通过 beforeEach 在路由更新前快照来源 depth，
+ * 避免 currentRoute 与 useRoute() 指向同一响应式引用导致方向判断失效（REV-01）。
+ */
+const prevDepth = ref(0);
+
+router.beforeEach((from) => {
+  prevDepth.value = (from.meta.depth ?? 0) as number;
+});
+
+/** 根据 depth 变化判断过渡方向 */
+const transitionName = computed(() => {
+  const from = prevDepth.value;
+  const toDepth = (route.meta.depth ?? 0) as number;
+  if (toDepth > from) return 'slide-left';
+  if (toDepth < from) return 'slide-right';
+  return 'fade';
+});
 
 const fatal = ref<Error | null>(null);
 
@@ -106,13 +125,15 @@ function recover(): void {
       <!-- 底部 TabBar 为 fixed，由外壳统一预留空间，页面无需各自处理 -->
       <div class="app-content" :class="{ 'app-content--tabbar': showTabBar }">
         <RouterView v-slot="{ Component, route: current }">
-          <!-- 首页 KeepAlive（P0-4）：回 tab 不重闪骨架、不重新全量拉取；
-               搜索页 KeepAlive（CHG-28）：从详情/播放返回时保留关键词与结果，
-               不再因组件重建退回历史页（store 数据本身一直在，缺的是视图状态）；
-               其余页面进出 Player/Detail 等重资源页，保持即用即毁 -->
-          <KeepAlive :include="['HomeView', 'SearchView']">
-            <component :is="Component" :key="current.fullPath" class="route-view" />
-          </KeepAlive>
+          <Transition :name="transitionName">
+            <!-- 首页 KeepAlive（P0-4）：回 tab 不重闪骨架、不重新全量拉取；
+                 搜索页 KeepAlive（CHG-28）：从详情/播放返回时保留关键词与结果，
+                 不再因组件重建退回历史页（store 数据本身一直在，缺的是视图状态）；
+                 其余页面进出 Player/Detail 等重资源页，保持即用即毁 -->
+            <KeepAlive :include="['HomeView', 'SearchView']">
+              <component :is="Component" :key="current.fullPath" class="route-view" />
+            </KeepAlive>
+          </Transition>
         </RouterView>
       </div>
 

@@ -6,7 +6,7 @@
  * 显示后写入 localStorage 标记，不再自动弹出。
  * 设置页可手动触发再次显示。
  */
-import { onMounted, ref } from 'vue';
+import { onMounted, onBeforeUnmount, ref } from 'vue';
 
 const STORAGE_KEY = 'player-gesture-guide-shown';
 const AUTO_DISMISS_MS = 5000;
@@ -45,6 +45,14 @@ onMounted(() => {
   } catch {
     // localStorage 不可用时默认显示一次
     show();
+  }
+});
+
+// REV-12：组件卸载时清理 dismissTimer
+onBeforeUnmount(() => {
+  if (dismissTimer) {
+    clearTimeout(dismissTimer);
+    dismissTimer = null;
   }
 });
 
@@ -122,6 +130,14 @@ defineExpose({ show });
             <span class="gesture-guide__desc">快速倍速播放</span>
           </div>
         </div>
+        <!-- OPT-10：长按帮助提示 -->
+        <p class="gesture-guide__long-press-hint">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <circle cx="12" cy="12" r="10" />
+            <path d="M12 16v-4M12 8h.01" />
+          </svg>
+          长按屏幕 2 秒可随时查看手势帮助
+        </p>
         <p class="gesture-guide__hint">点击任意处关闭</p>
       </div>
     </div>
@@ -208,6 +224,28 @@ defineExpose({ show });
   font: var(--text-caption);
   color: rgba(255, 255, 255, 0.4);
   text-align: center;
+}
+
+/* OPT-10：长按帮助提示 */
+.gesture-guide__long-press-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  margin: var(--space-3) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: rgba(240, 168, 46, 0.08);
+  border: 1px solid rgba(240, 168, 46, 0.2);
+  font: var(--text-caption);
+  color: var(--color-brand);
+  text-align: center;
+}
+
+.gesture-guide__long-press-hint svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
 }
 
 .guide-enter-active,

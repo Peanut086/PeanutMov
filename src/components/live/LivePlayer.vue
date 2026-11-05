@@ -22,11 +22,15 @@ import { logger } from '@/shared/logger';
 const props = defineProps<{
   url: string | null;
   title: string;
+  /** OPT-12: 外部控制的加载态（频道切换时淡出/淡入） */
+  loading?: boolean;
 }>();
 
 const emit = defineEmits<{
   /** v1.7/CHG-21：起播超时或加载失败，请求外层切换同组下一路 */
   (e: 'timeout', url: string): void;
+  /** OPT-12：流已可播放（频道切换淡入完成） */
+  (e: 'canplay'): void;
 }>();
 
 const containerRef = ref<HTMLElement | null>(null);
@@ -72,6 +76,7 @@ function engineEvents(): VideoEngineEvents {
     },
     onPlaying: () => {
       state.value = 'playing';
+      emit('canplay');
     },
     onEnded: () => {
       /* 直播流不会 ended；RTP 断流由 error 分支处理 */
@@ -176,46 +181,48 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="live-player" :class="{ 'live-player--fullscreen': fullscreen }">
-    <div ref="containerRef" class="live-player__stage" />
+    <div class="live-player-wrapper" :class="{ 'live-player-wrapper--loading': loading }">
+      <div ref="containerRef" class="live-player__stage" />
 
-    <div v-if="state === 'idle'" class="live-player__placeholder">
-      <p>选择一个频道开始观看</p>
-    </div>
-    <div v-else-if="state === 'loading'" class="live-player__placeholder" role="status">
-      <span class="live-player__spinner" aria-hidden="true" />
-      <p>正在连接 {{ title }}…</p>
-    </div>
-    <div v-else-if="state === 'error'" class="live-player__placeholder">
-      <p>「{{ title }}」播放失败</p>
-      <p class="live-player__error-detail">{{ errorMessage ?? '频道可能已失效，换一个试试' }}</p>
-    </div>
+      <div v-if="state === 'idle'" class="live-player__placeholder">
+        <p>选择一个频道开始观看</p>
+      </div>
+      <div v-else-if="state === 'loading'" class="live-player__placeholder" role="status">
+        <span class="live-player__spinner" aria-hidden="true" />
+        <p>正在连接 {{ title }}…</p>
+      </div>
+      <div v-else-if="state === 'error'" class="live-player__placeholder">
+        <p>「{{ title }}」播放失败</p>
+        <p class="live-player__error-detail">{{ errorMessage ?? '频道可能已失效，换一个试试' }}</p>
+      </div>
 
-    <button
-      v-if="state === 'playing' || state === 'paused'"
-      class="live-player__tap"
-      type="button"
-      :aria-label="state === 'playing' ? '暂停' : '播放'"
-      @click="togglePlay"
-    />
-
-    <div class="live-player__bar">
-      <span class="live-player__title truncate-1">{{ title || '直播' }}</span>
       <button
-        class="live-player__btn"
+        v-if="state === 'playing' || state === 'paused'"
+        class="live-player__tap"
         type="button"
         :aria-label="state === 'playing' ? '暂停' : '播放'"
         @click="togglePlay"
-      >
-        {{ state === 'playing' ? '⏸' : '▶' }}
-      </button>
-      <button
-        class="live-player__btn"
-        type="button"
-        aria-label="全屏"
-        @click="toggleFullscreen"
-      >
-        {{ fullscreen ? '⤡' : '⤢' }}
-      </button>
+      />
+
+      <div class="live-player__bar">
+        <span class="live-player__title truncate-1">{{ title || '直播' }}</span>
+        <button
+          class="live-player__btn"
+          type="button"
+          :aria-label="state === 'playing' ? '暂停' : '播放'"
+          @click="togglePlay"
+        >
+          {{ state === 'playing' ? '⏸' : '▶' }}
+        </button>
+        <button
+          class="live-player__btn"
+          type="button"
+          aria-label="全屏"
+          @click="toggleFullscreen"
+        >
+          {{ fullscreen ? '⤡' : '⤢' }}
+        </button>
+      </div>
     </div>
   </section>
 </template>
@@ -312,5 +319,17 @@ onBeforeUnmount(() => {
   height: 36px;
   color: #fff;
   font-size: 16px;
+}
+
+/* OPT-12: 频道切换淡出/淡入 */
+.live-player-wrapper {
+  position: absolute;
+  inset: 0;
+  opacity: 1;
+  transition: opacity 0.2s var(--ease-standard);
+}
+
+.live-player-wrapper--loading {
+  opacity: 0.3;
 }
 </style>

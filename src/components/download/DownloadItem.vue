@@ -81,7 +81,15 @@ const canPlay = computed(() => props.task.status === 'completed');
 </script>
 
 <template>
-  <article class="download-item" :class="{ 'download-item--batch': batchMode, 'download-item--selected': selected }" :data-status="task.status">
+  <article
+    class="download-item"
+    :class="{
+      'download-item--batch': batchMode,
+      'download-item--selected': selected,
+      'download-item--downloading': task.status === 'downloading',
+    }"
+    :data-status="task.status"
+  >
     <!-- 功能扩展-10：批量模式复选框 -->
     <button
       v-if="batchMode"
@@ -109,18 +117,6 @@ const canPlay = computed(() => props.task.status === 'completed');
           <template v-if="task.episodeNumber !== null"> · 第 {{ task.episodeNumber }} 集</template>
         </span>
 
-        <span
-          class="download-item__bar"
-          :class="`download-item__bar--${barTone}`"
-          role="progressbar"
-          :aria-valuenow="percent"
-          aria-valuemin="0"
-          aria-valuemax="100"
-          :aria-label="`下载进度 ${percent}%`"
-        >
-          <span class="download-item__bar-fill" :style="{ width: `${Math.max(2, percent)}%` }" />
-        </span>
-
         <span class="download-item__status">{{ statusText }}</span>
         <span class="download-item__size">
           {{ sizeText }}
@@ -128,6 +124,22 @@ const canPlay = computed(() => props.task.status === 'completed');
         </span>
       </span>
     </button>
+
+    <!-- OPT-13: 卡片底部 3px 进度条 -->
+    <div
+      class="download-item__progress"
+      role="progressbar"
+      :aria-valuenow="percent"
+      aria-valuemin="0"
+      aria-valuemax="100"
+      :aria-label="`下载进度 ${percent}%`"
+    >
+      <div
+        class="download-item__progress-bar"
+        :class="`download-item__progress-bar--${barTone}`"
+        :style="{ width: `${Math.max(2, percent)}%` }"
+      />
+    </div>
 
     <!-- 功能扩展-10：批量模式下隐藏操作按钮 -->
     <div v-if="!batchMode" class="download-item__actions">
@@ -190,6 +202,7 @@ const canPlay = computed(() => props.task.status === 'completed');
   gap: var(--space-2);
   padding: var(--space-3) 0;
   border-bottom: 1px solid var(--color-divider);
+  position: relative;
 }
 
 .download-item__main {
@@ -222,28 +235,41 @@ const canPlay = computed(() => props.task.status === 'completed');
   color: var(--color-text-primary);
 }
 
-.download-item__bar {
-  display: block;
-  height: 4px;
-  margin-top: var(--space-1);
-  border-radius: var(--radius-full);
+/* OPT-13: 卡片底部 3px 进度条 */
+.download-item__progress {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
   background-color: var(--color-overlay-track);
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
   overflow: hidden;
 }
 
-.download-item__bar-fill {
-  display: block;
+.download-item__progress-bar {
   height: 100%;
+  background: linear-gradient(90deg, var(--color-brand), var(--color-brand-strong));
+  transition: width 0.3s ease;
   border-radius: inherit;
-  background-color: var(--color-brand);
 }
 
-.download-item__bar--danger .download-item__bar-fill {
-  background-color: var(--color-danger);
+.download-item__progress-bar--danger {
+  background: var(--color-danger);
 }
 
-.download-item__bar--success .download-item__bar-fill {
-  background-color: var(--color-success);
+.download-item__progress-bar--success {
+  background: var(--color-success);
+}
+
+/* OPT-13: 下载中卡片微弱呼吸动画 */
+.download-item--downloading {
+  animation: download-breathe 2s ease-in-out infinite;
+}
+
+@keyframes download-breathe {
+  0%, 100% { border-color: var(--color-border); }
+  50% { border-color: var(--color-brand); }
 }
 
 .download-item__status {

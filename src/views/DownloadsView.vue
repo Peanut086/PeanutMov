@@ -5,7 +5,7 @@
  * 汇总卡 + 状态筛选（Segmented）+ 任务列表 + 全部暂停/继续。
  * 四态：loading 骨架 / empty 引导 / error 汇总区错误卡（列表仍可操作）/ offline 横幅。
  */
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import type { DownloadTask } from '@/types';
@@ -16,12 +16,14 @@ import OfflineBanner from '@/components/common/OfflineBanner.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
 import SegmentedControl from '@/components/common/SegmentedControl.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
+import PullToRefresh from '@/components/common/PullToRefresh.vue';
 import DownloadSummary from '@/components/download/DownloadSummary.vue';
 import DownloadItem from '@/components/download/DownloadItem.vue';
 import SkeletonPoster from '@/components/media/SkeletonPoster.vue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
+import { useHaptic } from '@/composables/useHaptic';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
 
@@ -30,6 +32,7 @@ const downloads = useDownloadStore();
 const toast = useToast();
 const ui = useUiStore();
 const { isOffline } = useOnlineStatus();
+const { haptic } = useHaptic();
 
 const filter = ref<'all' | 'active' | 'completed' | 'failed'>('all');
 const menuOpen = ref(false);
@@ -52,6 +55,31 @@ const FILTER_OPTIONS = [
 
 const loading = computed(() => downloads.state === 'idle');
 const isEmpty = computed(() => downloads.state === 'empty' || downloads.tasks.length === 0);
+
+/** OPT-13: 追踪已完成通知，避免重复 Toast */
+const notifiedCompletedIds = new Set<string>();
+
+/** OPT-13: 监听下载完成事件，触发触觉反馈 + Toast */
+watch(
+  () => downloads.tasks,
+  (tasks) => {
+    // REV-19: 清理已删除任务的 ID，防止 Set 无限增长
+    const taskIds = new Set(tasks.map((t) => t.id));
+    for (const id of notifiedCompletedIds) {
+      if (!taskIds.has(id)) {
+        notifiedCompletedIds.delete(id);
+      }
+    }
+    for (const task of tasks) {
+      if (task.status === 'completed' && !notifiedCompletedIds.has(task.id)) {
+        notifiedCompletedIds.add(task.id);
+        haptic('medium');
+        toast.success(`「${task.title}」下载完成`);
+      }
+    }
+  },
+  { deep: true },
+);
 
 const filtered = computed(() => {
   switch (filter.value) {
@@ -319,6 +347,7 @@ function goLibrary(): void {
       </template>
     </AppHeader>
 
+    <PullToRefresh :loading="refreshing" @refresh="refresh">
     <div class="downloads-body">
       <OfflineBanner v-if="isOffline" text="离线模式，已完成内容可正常播放" />
 
@@ -393,6 +422,7 @@ function goLibrary(): void {
         <p v-if="refreshing" class="downloads-refreshing">正在刷新…</p>
       </template>
     </div>
+    </PullToRefresh>
 
     <BottomSheet v-model="menuOpen" title="下载操作">
       <ul class="sheet-list">

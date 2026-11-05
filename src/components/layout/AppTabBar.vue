@@ -10,6 +10,7 @@ import { useRoute, useRouter } from 'vue-router';
 
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useUiStore, type TabKey } from '@/stores/uiStore';
+import { useHaptic } from '@/composables/useHaptic';
 
 interface TabItem {
   key: TabKey;
@@ -29,6 +30,7 @@ const route = useRoute();
 const router = useRouter();
 const ui = useUiStore();
 const downloads = useDownloadStore();
+const { haptic } = useHaptic();
 
 /**
  * 角标数据来源：仅展示汇总，不需要任务列表。
@@ -54,6 +56,7 @@ const pendingCount = computed(
 const badgeText = computed(() => (pendingCount.value > 99 ? '99+' : String(pendingCount.value)));
 
 function go(tab: TabItem): void {
+  haptic('light');
   ui.setActiveTab(tab.key);
   if (route.path === tab.to) {
     globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });

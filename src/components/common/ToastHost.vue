@@ -4,13 +4,33 @@
  *
  * 订阅 `uiStore.toasts`，底部居中、最多 3 条、可点击关闭。
  * 进入 200ms 上移淡入、退出 150ms 加速淡出。
+ * OPT-03：error 类型 Toast 触发 heavy 触觉反馈。
  */
 import { storeToRefs } from 'pinia';
+import { watch } from 'vue';
 
 import { useUiStore } from '@/stores/uiStore';
+import { useHaptic } from '@/composables/useHaptic';
 
 const ui = useUiStore();
 const { toasts } = storeToRefs(ui);
+const { haptic } = useHaptic();
+
+/** 监听新增 toast，基于 id 去重检测 error 类型并触发触觉反馈 */
+const seenIds = new Set<string>();
+watch(toasts, (newToasts) => {
+  for (const t of newToasts) {
+    if (!seenIds.has(t.id) && t.type === 'error') {
+      haptic('heavy');
+    }
+    seenIds.add(t.id);
+  }
+  // 清理已不在队列中的 id
+  const currentIds = new Set(newToasts.map((t) => t.id));
+  for (const id of seenIds) {
+    if (!currentIds.has(id)) seenIds.delete(id);
+  }
+}, { deep: true });
 
 const iconPath: Record<'info' | 'success' | 'error', string> = {
   info: 'M12 3.6a8.4 8.4 0 1 0 0 16.8 8.4 8.4 0 0 0 0-16.8ZM12 11v5.4M12 7.9v.2',

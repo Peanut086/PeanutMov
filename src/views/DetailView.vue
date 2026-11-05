@@ -37,6 +37,7 @@ import { castService } from '@/services/castService';
 import { libraryService } from '@/services/libraryService';
 import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
+import { useSmartPreload } from '@/composables/useSmartPreload';
 import { toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
@@ -52,6 +53,12 @@ const cache = useCacheStore();
 const ui = useUiStore();
 const toast = useToast();
 const { isOffline } = useOnlineStatus();
+const { isWifi, canPreload, preloadItem } = useSmartPreload();
+
+/** OPT-15: 预加载提示条状态 */
+const showPreloadHint = ref(false);
+const preloadHintDismissed = ref(false);
+const preloading = ref(false);
 
 const mediaId = computed(() => (typeof route.params.mediaId === 'string' ? route.params.mediaId : ''));
 const detail = computed(() => library.detail);
@@ -249,8 +256,54 @@ onMounted(async () => {
 watch(mediaId, () => {
   lineId.value = null;
   descExpanded.value = false;
+  preloadHintDismissed.value = false;
   void load(false);
 });
+
+/** OPT-15: WiFi 环境 + 未预加载 + 未关闭提示 → 显示预加载提示条 */
+watch(
+  [() => item.value, isWifi, canPreload],
+  ([media, wifi, can]) => {
+    if (media && wifi && can && !preloadHintDismissed.value) {
+      // 检查是否已有下载任务（已预加载则不提示）
+      const hasDownload = downloads.tasks.some(
+        (t) => t.mediaId === media.id && (t.status === 'downloading' || t.status === 'completed' || t.status === 'queued'),
+      );
+      showPreloadHint.value = !hasDownload;
+    } else {
+      showPreloadHint.value = false;
+    }
+  },
+);
+
+/** OPT-15: 执行预加载（首集） */
+async function onPreload(): Promise<void> {
+  const it = item.value;
+  if (!it || preloading.value) return;
+  const ep = targetEpisode.value ?? episodes.value[0];
+  if (!ep) {
+    toast.error('暂无可预加载的剧集');
+    return;
+  }
+  preloading.value = true;
+  try {
+    const result = await preloadItem(it.id, ep.id);
+    showPreloadHint.value = false;
+    if (result.ok) {
+      toast.success(result.message);
+    } else {
+      toast.error(result.message);
+    }
+  } finally {
+    preloading.value = false;
+  }
+}
+
+/** OPT-15: 关闭预加载提示 */
+function dismissPreloadHint(): void {
+  showPreloadHint.value = false;
+  preloadHintDismissed.value = true;
+}
 
 function goBack(): void {
   if (globalThis.history.length > 1) router.back();
@@ -633,49 +686,6 @@ function openCompliance(): void {
           </div>
         </section>
 
-        <section class="detail-actions">
-          <button
-            class="btn btn--primary btn--lg detail-actions__main"
-            type="button"
-            :aria-busy="prechecking || playingNavigate ? 'true' : undefined"
-            @click="onPrimary"
-          >
-            <IconPlay :size="20" />
-            {{ playingNavigate ? '正在打开播放页…' : primaryLabel }}
-          </button>
-          <button
-            class="detail-actions__icon"
-            :class="{ 'detail-actions__icon--bump': favoriteBump, 'detail-actions__icon--on': isFavorite }"
-            type="button"
-            :aria-label="isFavorite ? '取消收藏' : '收藏'"
-            :aria-pressed="isFavorite"
-            @click="toggleFavorite"
-          >
-            <IconHeart :size="22" :filled="isFavorite" />
-          </button>
-          <button
-            class="detail-actions__icon"
-            type="button"
-            :aria-label="needsEpisodePicker ? '选择集数下载' : '下载'"
-            :disabled="downloading"
-            @click="onDownload"
-          >
-            <IconDownload :size="20" />
-          </button>
-          <button
-            class="detail-actions__icon"
-            :class="{ 'detail-actions__icon--disabled': castSupported === false }"
-            type="button"
-            :aria-label="castSupported === false ? '投屏（当前平台不支持投屏）' : '投屏'"
-            :aria-disabled="castSupported === false ? 'true' : undefined"
-            :disabled="castSupported === false"
-            :title="castSupported === false ? '当前平台不支持投屏' : undefined"
-            @click="castPlay"
-          >
-            <IconCast :size="20" />
-          </button>
-        </section>
-
         <section class="detail-section">
           <h2 class="section-title">简介</h2>
           <p
@@ -734,6 +744,78 @@ function openCompliance(): void {
         </section>
       </template>
     </div>
+
+    <!-- OPT-15: WiFi 预加载提示条 -->
+    <Transition name="preload-hint">
+      <div v-if="showPreloadHint && item && !loading && !isError" class="detail-preload-hint" role="status">
+        <span class="detail-preload-hint__text">当前为 WiFi 环境，是否预加载到本地？</span>
+        <button
+          class="detail-preload-hint__action btn btn--primary btn--sm"
+          type="button"
+          :disabled="preloading"
+          aria-label="预加载当前内容到本地"
+          @click="onPreload"
+        >
+          {{ preloading ? '预加载中…' : '预加载' }}
+        </button>
+        <button
+          class="detail-preload-hint__close"
+          type="button"
+          aria-label="关闭预加载提示"
+          @click="dismissPreloadHint"
+        >
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" width="16" height="16">
+            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
+      </div>
+    </Transition>
+
+    <!-- OPT-08：固定底部操作栏 -->
+    <section v-if="item && !loading && !isError" class="detail-actions-bar">
+      <div class="detail-actions-bar__inner">
+        <button
+          class="btn btn--primary btn--lg detail-actions__main"
+          type="button"
+          :aria-busy="prechecking || playingNavigate ? 'true' : undefined"
+          @click="onPrimary"
+        >
+          <IconPlay :size="20" />
+          {{ playingNavigate ? '正在打开播放页…' : primaryLabel }}
+        </button>
+        <button
+          class="detail-actions__icon"
+          :class="{ 'detail-actions__icon--bump': favoriteBump, 'detail-actions__icon--on': isFavorite }"
+          type="button"
+          :aria-label="isFavorite ? '取消收藏' : '收藏'"
+          :aria-pressed="isFavorite"
+          @click="toggleFavorite"
+        >
+          <IconHeart :size="22" :filled="isFavorite" />
+        </button>
+        <button
+          class="detail-actions__icon"
+          type="button"
+          :aria-label="needsEpisodePicker ? '选择集数下载' : '下载'"
+          :disabled="downloading"
+          @click="onDownload"
+        >
+          <IconDownload :size="20" />
+        </button>
+        <button
+          class="detail-actions__icon"
+          :class="{ 'detail-actions__icon--disabled': castSupported === false }"
+          type="button"
+          :aria-label="castSupported === false ? '投屏（当前平台不支持投屏）' : '投屏'"
+          :aria-disabled="castSupported === false ? 'true' : undefined"
+          :disabled="castSupported === false"
+          :title="castSupported === false ? '当前平台不支持投屏' : undefined"
+          @click="castPlay"
+        >
+          <IconCast :size="20" />
+        </button>
+      </div>
+    </section>
 
     <!-- 更多操作 -->
     <BottomSheet v-model="moreOpen" :title="item?.title ?? '操作'">
@@ -830,7 +912,7 @@ function openCompliance(): void {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 var(--layout-page-padding-x) calc(var(--space-6) + var(--safe-bottom));
+  padding: 0 var(--layout-page-padding-x) calc(var(--space-6) + var(--safe-bottom) + 80px);
 }
 
 .detail-hero {
@@ -873,11 +955,23 @@ function openCompliance(): void {
   color: var(--color-brand-text);
 }
 
-.detail-actions {
+/* OPT-08：固定底部操作栏 */
+.detail-actions-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-header);
+  padding: var(--space-3) var(--layout-page-padding-x) calc(var(--space-3) + var(--safe-bottom));
+  background: linear-gradient(180deg, transparent 0%, var(--color-bg-base) 24%);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.detail-actions-bar__inner {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-top: var(--space-4);
 }
 
 .detail-actions__main {
@@ -963,10 +1057,14 @@ function openCompliance(): void {
 }
 
 .detail-desc--clamped {
+  position: relative;
   display: -webkit-box;
   -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  /* OPT-08：底部渐隐遮罩，提示可展开 */
+  mask-image: linear-gradient(180deg, #000 0%, #000 60%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, #000 60%, transparent 100%);
 }
 
 .detail-desc__toggle {
@@ -1056,5 +1154,61 @@ function openCompliance(): void {
 
 .sheet-list__item--danger {
   color: var(--color-danger);
+}
+
+/* OPT-15 / REV-14: WiFi 预加载提示条 — fixed 定位悬浮于操作栏上方 */
+.detail-preload-hint {
+  position: fixed;
+  bottom: calc(80px + var(--safe-bottom));
+  left: var(--layout-page-padding-x);
+  right: var(--layout-page-padding-x);
+  z-index: calc(var(--z-header) + 1);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-info-soft);
+  border: 1px solid var(--color-info);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.detail-preload-hint__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: var(--text-caption);
+  color: var(--color-text-primary);
+}
+
+.detail-preload-hint__action {
+  flex: 0 0 auto;
+}
+
+.detail-preload-hint__close {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  color: var(--color-text-tertiary);
+  transition: color 0.15s ease;
+}
+
+.detail-preload-hint__close:active {
+  color: var(--color-text-primary);
+}
+
+/* 预加载提示条进出动画 */
+.preload-hint-enter-active,
+.preload-hint-leave-active {
+  transition: opacity 0.2s var(--ease-standard), transform 0.2s var(--ease-standard);
+}
+
+.preload-hint-enter-from,
+.preload-hint-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 </style>

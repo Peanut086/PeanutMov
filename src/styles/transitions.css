@@ -1,0 +1,93 @@
+/**
+ * OPT-02: Direction-aware page transitions
+ *
+ * slide-left: forward navigation (new page enters from right)
+ * slide-right: backward navigation (new page enters from left)
+ * fade: same-level tab switch (opacity only)
+ *
+ * All animations use transform/opacity for GPU compositing.
+ * Respects prefers-reduced-motion via tokens.css variable override.
+ */
+
+/* ---------- Slide Left (forward) ---------- */
+.slide-left-enter-active,
+.slide-left-leave-active {
+  transition: transform 0.3s var(--ease-standard);
+}
+
+.slide-left-enter-from {
+  transform: translateX(100%);
+}
+
+.slide-left-enter-to {
+  transform: translateX(0);
+}
+
+.slide-left-leave-from {
+  transform: translateX(0);
+}
+
+.slide-left-leave-to {
+  transform: translateX(-30%);
+}
+
+/* ---------- Slide Right (backward) ---------- */
+.slide-right-enter-active,
+.slide-right-leave-active {
+  transition: transform 0.3s var(--ease-standard);
+}
+
+.slide-right-enter-from {
+  transform: translateX(-100%);
+}
+
+.slide-right-enter-to {
+  transform: translateX(0);
+}
+
+.slide-right-leave-from {
+  transform: translateX(0);
+}
+
+.slide-right-leave-to {
+  transform: translateX(30%);
+}
+
+/* ---------- Fade (tab switch) ---------- */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s var(--ease-standard);
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.fade-enter-to,
+.fade-leave-from {
+  opacity: 1;
+}
+
+/* ---------- Reduced Motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .slide-left-enter-active,
+  .slide-left-leave-active,
+  .slide-right-enter-active,
+  .slide-right-leave-active {
+    transition: opacity 0.15s var(--ease-standard);
+    transform: none !important;
+  }
+
+  .slide-left-enter-from,
+  .slide-right-enter-from {
+    transform: none !important;
+    opacity: 0;
+  }
+
+  .slide-left-leave-to,
+  .slide-right-leave-to {
+    transform: none !important;
+    opacity: 0;
+  }
+}

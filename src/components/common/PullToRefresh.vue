@@ -1,0 +1,268 @@
+<script setup lang="ts">
+/**
+ * 下拉刷新组件（OPT-05）
+ *
+ * 包裹滚动容器，监听 touchstart/touchmove/touchend 实现下拉刷新。
+ * 仅使用 transform/opacity 动画，保证 GPU 合成层性能。
+ * 支持 prefers-reduced-motion。
+ *
+ * 用法：
+ *   <PullToRefresh @refresh="handleRefresh" :loading="isRefreshing">
+ *     <div class="scroll-container">...</div>
+ *   </PullToRefresh>
+ */
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+
+import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import { useHaptic } from '@/composables/useHaptic';
+
+const props = withDefaults(
+  defineProps<{
+    /** 外部刷新状态，为 true 时保持 spinner 显示 */
+    loading?: boolean;
+    /** 下拉触发阈值（px） */
+    threshold?: number;
+    /** 最大下拉距离（px） */
+    maxPull?: number;
+  }>(),
+  {
+    loading: false,
+    threshold: 60,
+    maxPull: 120,
+  },
+);
+
+const emit = defineEmits<{
+  (e: 'refresh'): void;
+}>();
+
+const { haptic } = useHaptic();
+
+/** 当前下拉距离（px） */
+const pullDistance = ref(0);
+/** 是否正在触摸 */
+const touching = ref(false);
+/** 触摸起始 Y 坐标 */
+const startY = ref(0);
+/** 是否已触发刷新（松手后等待 loading 结束） */
+const triggered = ref(false);
+
+/** 根元素引用，用于检测可滚动子容器 */
+const rootRef = ref<HTMLElement | null>(null);
+/** 实际滚动容器（插槽内第一个可滚动子元素） */
+let scrollEl: HTMLElement | null = null;
+
+/** 是否处于激活状态（下拉超过阈值或正在刷新） */
+const isActive = computed(() => pullDistance.value >= props.threshold || props.loading || triggered.value);
+
+/** 是否处于 reduced-motion 模式 */
+const reducedMotion = ref(false);
+
+let mediaQuery: MediaQueryList | null = null;
+
+onMounted(() => {
+  if (typeof window === 'undefined') return;
+  mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  reducedMotion.value = mediaQuery.matches;
+  const handler = (e: MediaQueryListEvent): void => {
+    reducedMotion.value = e.matches;
+  };
+  mediaQuery.addEventListener('change', handler);
+  onBeforeUnmount(() => {
+    mediaQuery?.removeEventListener('change', handler);
+  });
+
+  // 查找插槽内第一个可滚动子元素（REV-02）
+  const root = rootRef.value;
+  if (root) {
+    for (let i = 0; i < root.children.length; i++) {
+      const child = root.children[i] as HTMLElement;
+      if (child.scrollHeight > child.clientHeight) {
+        scrollEl = child;
+        break;
+      }
+    }
+  }
+});
+
+/** 判断滚动容器是否位于顶部 */
+function isAtTop(): boolean {
+  return (scrollEl?.scrollTop ?? 0) <= 0;
+}
+
+function onTouchStart(e: TouchEvent): void {
+  if (props.loading || triggered.value) return;
+  /* 只在滚动容器位于顶部时响应下拉 */
+  if (!isAtTop()) return;
+  touching.value = true;
+  startY.value = e.touches[0].clientY;
+}
+
+function onTouchMove(e: TouchEvent): void {
+  if (!touching.value || props.loading || triggered.value) return;
+  if (!isAtTop()) return;
+
+  const deltaY = e.touches[0].clientY - startY.value;
+  if (deltaY <= 0) {
+    pullDistance.value = 0;
+    return;
+  }
+  /* 阻尼效果：越往下拉阻力越大 */
+  const damped = Math.min(props.maxPull, deltaY * 0.5);
+  pullDistance.value = damped;
+}
+
+function onTouchEnd(): void {
+  if (!touching.value) return;
+  touching.value = false;
+
+  if (pullDistance.value >= props.threshold && !props.loading) {
+    triggered.value = true; // 先锁定，防止重复触发（REV-03）
+    const indicatorHeight = 48;
+    pullDistance.value = indicatorHeight;
+    haptic('light');
+    emit('refresh');
+  } else {
+    pullDistance.value = 0;
+  }
+}
+
+/** 外部 loading 结束后，收回下拉 */
+function onLoadingChange(): void {
+  if (!props.loading && triggered.value) {
+    triggered.value = false;
+    pullDistance.value = 0;
+  }
+}
+
+/* 监听 loading 变化，刷新完成后收回下拉 */
+watch(() => props.loading, onLoadingChange);
+
+/** 指示器位移（跟随 pullDistance） */
+const indicatorStyle = computed(() => ({
+  transform: `translateY(${pullDistance.value}px)`,
+  transition: touching.value ? 'none' : reducedMotion.value
+    ? 'transform 0.1s ease'
+    : 'transform 0.3s cubic-bezier(0.2, 0, 0, 1)',
+}));
+
+/** 箭头/ spinner 旋转 */
+const iconRotation = computed(() => {
+  if (props.loading || triggered.value) return 180;
+  return (pullDistance.value / props.threshold) * 180;
+});
+</script>
+
+<template>
+  <div
+    ref="rootRef"
+    class="pull-to-refresh"
+    @touchstart.passive="onTouchStart"
+    @touchmove.passive="onTouchMove"
+    @touchend.passive="onTouchEnd"
+    @touchcancel.passive="onTouchEnd"
+  >
+    <!-- 下拉指示器 -->
+    <div class="ptr-indicator" :style="indicatorStyle" aria-hidden="true">
+      <div class="ptr-indicator__inner" :class="{ 'ptr-indicator__inner--active': isActive }">
+        <LoadingSpinner v-if="loading || triggered" :size="20" />
+        <svg
+          v-else
+          class="ptr-indicator__arrow"
+          :style="{ transform: `rotate(${iconRotation}deg)` }"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M12 5v14M5 12l7 7 7-7" />
+        </svg>
+      </div>
+    </div>
+
+    <!-- 无障碍状态播报（REV-06） -->
+    <div class="ptr-sr-only" role="status" aria-live="polite">
+      {{ loading ? '正在刷新' : '' }}
+    </div>
+
+    <!-- 默认插槽：滚动容器 -->
+    <slot />
+  </div>
+</template>
+
+<style scoped>
+.pull-to-refresh {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ptr-indicator {
+  position: absolute;
+  top: -48px;
+  left: 0;
+  right: 0;
+  height: 48px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: var(--space-3);
+  z-index: 10;
+  pointer-events: none;
+}
+
+.ptr-indicator__inner {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  background-color: var(--color-bg-elevated);
+  border: var(--border-default);
+  color: var(--color-text-tertiary);
+  opacity: 0.6;
+  transition: opacity var(--duration-fast) var(--ease-standard),
+    background-color var(--duration-fast) var(--ease-standard);
+}
+
+.ptr-indicator__inner--active {
+  opacity: 1;
+  color: var(--color-brand);
+}
+
+.ptr-indicator__arrow {
+  width: 18px;
+  height: 18px;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+/* 无障碍：视觉隐藏但屏幕阅读器可读 */
+.ptr-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Reduced motion: 禁用箭头旋转动画 */
+@media (prefers-reduced-motion: reduce) {
+  .ptr-indicator__arrow {
+    transition: none;
+  }
+
+  .ptr-indicator {
+    transition: none !important;
+  }
+}
+</style>

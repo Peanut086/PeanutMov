@@ -42,4 +42,14 @@ declare module '*.jpg' {
   export default src;
 }
 
+declare module 'vue-router' {
+  interface RouteMeta {
+    requiresLayout?: boolean;
+    tab?: string;
+    depth?: number;
+    immersive?: boolean;
+    title?: string;
+  }
+}
+
 export {};

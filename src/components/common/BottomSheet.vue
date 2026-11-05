@@ -9,6 +9,7 @@
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import IconClose from '@/components/icons/IconClose.vue';
+import { useHaptic } from '@/composables/useHaptic';
 
 const props = withDefaults(
   defineProps<{
@@ -21,6 +22,8 @@ const props = withDefaults(
 );
 
 const emit = defineEmits<{ (e: 'update:modelValue', v: boolean): void }>();
+
+const { haptic } = useHaptic();
 
 const panelRef = ref<HTMLElement | null>(null);
 const dragOffset = ref(0);
@@ -105,6 +108,7 @@ watch(
   () => props.modelValue,
   async (open) => {
     if (open) {
+      haptic('light');
       lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       document.addEventListener('keydown', onKeydown, true);
       await nextTick();

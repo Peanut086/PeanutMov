@@ -1,8 +1,10 @@
 /**
- * 主题（深色默认 / 浅色 / 跟随系统）
+ * 主题（跟随系统默认 / 深色 / 浅色）
  *
  * 只操作 `<html data-theme>`，并监听 `prefers-color-scheme`（AC-88）。
  * 主题切换时短暂禁用 transition，避免整页泛白闪烁（设计规范 9.2）。
+ *
+ * OPT-14：默认跟随系统主题，用户手动选择深色/浅色后视为覆盖系统设置。
  */
 import { computed, ref, watch } from 'vue';
 
@@ -13,9 +15,9 @@ const STORAGE_KEY = 'peanutmov:theme';
 function readStored(): ThemeMode {
   try {
     const v = globalThis.localStorage?.getItem(STORAGE_KEY);
-    return v === 'light' || v === 'dark' || v === 'system' ? v : 'dark';
+    return v === 'light' || v === 'dark' || v === 'system' ? v : 'system';
   } catch {
-    return 'dark';
+    return 'system';
   }
 }
 
@@ -72,12 +74,12 @@ export function useTheme(): {
   bindMedia();
 
   function setMode(next: ThemeMode): void {
-    mode.value = next;
     try {
       globalThis.localStorage?.setItem(STORAGE_KEY, next);
     } catch {
       /* 隐私模式忽略 */
     }
+    mode.value = next;
   }
 
   return { mode, resolved, setMode };
@@ -85,9 +87,11 @@ export function useTheme(): {
 
 /** 测试辅助 */
 export function __resetTheme(): void {
-  mode.value = 'dark';
-  systemDark.value = true;
+  mode.value = 'system';
+  systemDark.value = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia('(prefers-color-scheme: dark)').matches
+    : true;
   if (typeof document !== 'undefined') {
-    document.documentElement.setAttribute('data-theme', 'dark');
+    document.documentElement.setAttribute('data-theme', systemDark.value ? 'dark' : 'light');
   }
 }

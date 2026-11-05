@@ -28,7 +28,7 @@ const SCHEMA_VERSION = 1;
 export function defaultSettings(now: number = Date.now()): AppSettings {
   return {
     schemaVersion: SCHEMA_VERSION,
-    theme: 'dark',
+    theme: 'system',
     locale: 'zh-CN',
     complianceVersion: COMPLIANCE_VERSION,
     complianceAcceptedAt: null,
@@ -73,6 +73,14 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       quality: 'auto',
       threadCount: 4,
     },
+    /* OPT-03：触觉反馈开关（默认开启） */
+    hapticEnabled: true,
+    /* OPT-06：自动进入画中画（默认关闭，避免用户误触） */
+    pipAutoEnter: false,
+    /* OPT-15：智能预加载（默认关闭） */
+    smartPreloadEnabled: false,
+    /* OPT-15：预加载存储上限（默认 1GB = 1024MB） */
+    preloadStorageLimitMb: 1024,
     updatedAt: now,
   };
 }
@@ -94,6 +102,13 @@ function deepMerge<T>(base: T, patch: unknown): T {
     out[key] = isRecord(current) && isRecord(value) ? deepMerge(current, value) : value;
   }
   return out as T;
+}
+
+/** OPT-15: 校验预加载存储上限（合法值：0=无限制, 500, 1024, 2048, 5120） */
+const PRELOAD_LIMITS = [0, 500, 1024, 2048, 5120] as const;
+function validatePreloadLimit(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return fallback;
+  return (PRELOAD_LIMITS as readonly number[]).includes(value) ? value : fallback;
 }
 
 /** 校正设置的合法域（越界值回落到默认，避免 UI 崩溃） */
@@ -153,6 +168,10 @@ function sanitize(input: AppSettings): AppSettings {
     hideDemoContent: Boolean(input.hideDemoContent),
     showRecommendedSubscriptions: input.showRecommendedSubscriptions === undefined ? true : Boolean(input.showRecommendedSubscriptions),
     experimentalNativePlayer: Boolean(input.experimentalNativePlayer),
+    hapticEnabled: input.hapticEnabled === undefined ? true : Boolean(input.hapticEnabled),
+    pipAutoEnter: input.pipAutoEnter === undefined ? false : Boolean(input.pipAutoEnter),
+    smartPreloadEnabled: input.smartPreloadEnabled === undefined ? false : Boolean(input.smartPreloadEnabled),
+    preloadStorageLimitMb: validatePreloadLimit(input.preloadStorageLimitMb, defaults.preloadStorageLimitMb!),
     danmaku,
     searchHistory: Array.isArray(input.searchHistory)
       ? input.searchHistory.filter((k): k is string => typeof k === 'string' && k.trim().length > 0).slice(0, SEARCH_HISTORY_MAX)
@@ -248,6 +267,16 @@ export const settingsService = {
   async clearSearchHistory(): Promise<void> {
     const current = await load();
     await persist({ ...current, searchHistory: [], updatedAt: Date.now() });
+  },
+
+  /** OPT-07：删除单条搜索历史 */
+  async removeSearchHistoryItem(keyword: string): Promise<string[]> {
+    const trimmed = keyword.trim();
+    if (trimmed.length === 0) return (await load()).searchHistory;
+    const current = await load();
+    const next = current.searchHistory.filter((k) => k !== trimmed);
+    const updated = await persist({ ...current, searchHistory: next, updatedAt: Date.now() });
+    return updated.searchHistory;
   },
 
   /**

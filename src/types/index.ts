@@ -546,6 +546,14 @@ export interface AppSettings {
   webdav?: WebDAVSettings;
   /** 功能扩展-9：暂停历史记录（隐私开关，默认关） */
   pauseHistoryRecording?: boolean;
+  /** OPT-03：触觉反馈开关（默认开） */
+  hapticEnabled?: boolean;
+  /** OPT-06：自动进入画中画（页面不可见且正在播放时，默认关） */
+  pipAutoEnter?: boolean;
+  /** OPT-15：智能预加载开关（WiFi 环境下提示预加载内容，默认关） */
+  smartPreloadEnabled?: boolean;
+  /** OPT-15：预加载存储上限（MB），0 表示无限制 */
+  preloadStorageLimitMb?: number;
   updatedAt: Timestamp;
 }
 

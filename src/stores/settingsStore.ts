@@ -15,7 +15,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const ready = ref(false);
   const error = ref<AppErrorShape | null>(null);
 
-  const theme = computed(() => settings.value?.theme ?? 'dark');
+  const theme = computed(() => settings.value?.theme ?? 'system');
   const player = computed(() => settings.value?.player ?? null);
   const gesture = computed(() => settings.value?.gesture ?? null);
   const download = computed(() => settings.value?.download ?? null);

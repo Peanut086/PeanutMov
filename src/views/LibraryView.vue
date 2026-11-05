@@ -18,6 +18,7 @@ import BottomSheet from '@/components/common/BottomSheet.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
 import LoadMoreFooter from '@/components/common/LoadMoreFooter.vue';
+import PullToRefresh from '@/components/common/PullToRefresh.vue';
 import PosterGrid from '@/components/media/PosterGrid.vue';
 import CategoryTabs from '@/components/media/CategoryTabs.vue';
 import FilterSheet from '@/components/media/FilterSheet.vue';
@@ -283,7 +284,7 @@ function quickDetail(): void {
 }
 
 function goSources(): void {
-  void router.push('/settings/sources');
+  void router.push('/settings');
 }
 
 function openSearch(): void {
@@ -350,6 +351,7 @@ function openSettings(): void {
       </button>
     </div>
 
+    <PullToRefresh :loading="refreshing" @refresh="refresh">
     <div class="library-body">
       <!-- loading -->
       <template v-if="showSkeleton">
@@ -435,6 +437,7 @@ function openSettings(): void {
         />
       </template>
     </div>
+    </PullToRefresh>
 
     <!-- 源选择 -->
     <BottomSheet v-model="sourceOpen" title="选择源">

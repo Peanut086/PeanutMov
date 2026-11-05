@@ -54,7 +54,7 @@ export interface GestureCallbacks {
   onIntent: (intent: GestureIntent) => void;
 }
 
-type DragMode = 'none' | 'undetermined' | 'seek' | 'volume' | 'brightness';
+export type DragMode = 'none' | 'undetermined' | 'seek' | 'volume' | 'brightness';
 
 interface PointerSample {
   id: number;
@@ -235,6 +235,25 @@ export class GestureRecognizer {
       this.longPressActive = false;
       this.callbacks.onIntent({ type: 'long-press-end' });
     }
+  }
+
+  /** 取消当前正在进行的长按倍速手势（供帮助浮层等外部逻辑调用） */
+  cancelActiveGesture(): void {
+    this.cancelLongPress();
+    if (this.longPressActive) {
+      this.longPressActive = false;
+      this.callbacks.onIntent({ type: 'long-press-end' });
+    }
+    this.sample = null;
+    this.mode = 'none';
+    this.pendingTarget = null;
+    this.pendingVolume = null;
+    this.pendingBrightness = null;
+  }
+
+  /** 返回当前手势模式，供外部判断是否已进入确定手势 */
+  getMode(): DragMode {
+    return this.mode;
   }
 
   /** 组件卸载时清理定时器，防止回调打到已卸载实例 */

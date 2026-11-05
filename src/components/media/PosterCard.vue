@@ -13,6 +13,7 @@ import type { MediaItem } from '@/types';
 import PosterImage from '@/components/common/PosterImage.vue';
 import IconCheck from '@/components/icons/IconCheck.vue';
 import { mediaTypeLabel } from '@/components/common/format';
+import { useHaptic } from '@/composables/useHaptic';
 
 const props = withDefaults(
   defineProps<{
@@ -33,6 +34,8 @@ const props = withDefaults(
 
 const emit = defineEmits<{ (e: 'select', item: MediaItem): void; (e: 'longpress', item: MediaItem): void }>();
 
+const { haptic } = useHaptic();
+
 /** 演示角标：显式传入或由数据自身 isDemo 决定（避免调用方漏传） */
 const showDemo = computed(() => props.demo || props.item.isDemo);
 
@@ -51,6 +54,7 @@ function onPointerDown(): void {
   pressTimer = setTimeout(() => {
     pressTimer = null;
     longPressFired = true;
+    haptic('medium');
     emit('longpress', props.item);
   }, 500);
 }

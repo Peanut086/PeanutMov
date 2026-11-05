@@ -33,6 +33,7 @@ import PlayerSurface from '@/components/player/PlayerSurface.vue';
 import PlayerControls from '@/components/player/PlayerControls.vue';
 import GestureLayer from '@/components/player/GestureLayer.vue';
 import GestureGuide from '@/components/player/GestureGuide.vue';
+import GestureHelpOverlay from '@/components/player/GestureHelpOverlay.vue';
 import PlayerHud from '@/components/player/PlayerHud.vue';
 import SpeedSheet from '@/components/player/SpeedSheet.vue';
 import SubtitleSheet from '@/components/player/SubtitleSheet.vue';
@@ -65,6 +66,7 @@ import { QUALITY_AUTO } from '@/player/constants';
 import { brightnessToDimOpacity, dimOpacityToBrightness } from '@/player/brightness';
 import { PLAYER_FAILOVER_WINDOW_MS } from '@/shared/constants';
 import { localProxyUrl } from '@/native/localProxy';
+import { pipService } from '@/native/pipService';
 import { libraryService } from '@/services/libraryService';
 import { sourceService } from '@/services/sourceService';
 import { pickPlayCandidates } from '@/sources/douban/playMatch';
@@ -277,10 +279,20 @@ const episodeOpen = ref(false);
 const moreOpen = ref(false);
 const pickerOpen = ref(false);
 const downloading = ref(false);
+// OPT-10：手势帮助浮层
+const gestureHelpVisible = ref(false);
+
+function showGestureHelp(): void {
+  gestureHelpVisible.value = true;
+}
+
+function closeGestureHelp(): void {
+  gestureHelpVisible.value = false;
+}
 
 /** P1-3：任一面板打开时暂停控制条自动隐藏 */
 watch(
-  () => [speedOpen.value, subtitleOpen.value, qualityOpen.value, displayModeOpen.value, episodeOpen.value, moreOpen.value, pickerOpen.value],
+  () => [speedOpen.value, subtitleOpen.value, qualityOpen.value, displayModeOpen.value, episodeOpen.value, moreOpen.value, pickerOpen.value, gestureHelpVisible.value],
   (states) => {
     if (states.some(Boolean)) {
       pauseAutoHide();
@@ -830,9 +842,9 @@ async function onSwitchSource(): Promise<void> {
   }
 }
 
-/** v1.8/CHG-26：跳源管理页体检（一键禁用失效源入口所在页） */
+/** v1.8/CHG-26：跳设置页源管理区（一键禁用失效源入口） */
 function goHealthCheck(): void {
-  void router.push('/settings/sources');
+  void router.push('/settings');
 }
 
 async function onCast(): Promise<void> {
@@ -1171,6 +1183,77 @@ onBeforeUnmount(() => {
 
 /* ---------- 亮度显示值 ---------- */
 const brightnessPercent = computed(() => dimOpacityToBrightness(player.dim));
+
+/* ---------- OPT-06：画中画（PiP） ---------- */
+const pipSupported = ref(false);
+const pipActive = ref(false);
+let pipCleanup: (() => void) | null = null;
+
+/** 探测 PiP 能力并注册事件监听 */
+async function initPip(): Promise<void> {
+  try {
+    pipSupported.value = await pipService.isSupported();
+  } catch {
+    pipSupported.value = false;
+  }
+  if (!pipSupported.value) return;
+  pipCleanup = pipService.listen({
+    onEnter: () => {
+      pipActive.value = true;
+      // 进入 PiP 时隐藏控制条，避免小窗内显示多余 UI
+      if (controlsVisible.value) controlsVisible.value = false;
+    },
+    onLeave: () => {
+      pipActive.value = false;
+      // 退出 PiP 时恢复控制条可见性（让用户能继续操作）
+      controlsVisible.value = true;
+    },
+    onError: () => {
+      pipActive.value = false;
+    },
+  });
+}
+
+async function togglePip(): Promise<void> {
+  try {
+    if (pipActive.value) {
+      await pipService.exit();
+    } else {
+      await pipService.enter();
+    }
+  } catch (e) {
+    // PiP 失败不阻断播放，仅提示
+    toast.info(toErrorShape(e, 'E_NOT_IMPLEMENTED').message);
+    pipActive.value = false;
+  }
+}
+
+/** OPT-06：页面可见性变化时自动进入 PiP（设置开启 + 正在播放 + 非全屏） */
+function onVisibilityChangeForPip(): void {
+  if (!pipSupported.value || !settings.settings?.pipAutoEnter) return;
+  if (document.visibilityState !== 'hidden') return;
+  if (!player.playing) return;
+  if (player.fullscreen) return;
+  if (pipActive.value) return;
+  void pipService.enter().catch(() => {
+    // 自动进入失败不打扰用户
+  });
+}
+
+onMounted(() => {
+  void initPip();
+  document.addEventListener('visibilitychange', onVisibilityChangeForPip);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChangeForPip);
+  pipCleanup?.();
+  pipCleanup = null;
+  // 离开页面时退出 PiP（避免残留浮窗）
+  if (pipActive.value) {
+    void pipService.exit().catch(() => undefined);
+  }
+});
 </script>
 
 <template>
@@ -1193,10 +1276,14 @@ const brightnessPercent = computed(() => dimOpacityToBrightness(player.dim));
             :seek-max-sec="gestureSettings.seekMaxSec"
             :sensitivity="gestureSettings.sensitivity"
             @intent="onGesture"
+            @long-press-help="showGestureHelp"
           />
 
           <!-- P1-1：手势引导（首次进入自动显示） -->
           <GestureGuide v-if="!pageLoading && !loadError && !player.error" />
+
+          <!-- OPT-10：手势帮助浮层（长按触发） -->
+          <GestureHelpOverlay :visible="gestureHelpVisible" @close="closeGestureHelp" />
 
           <PlayerHud
             :kind="hud.kind"
@@ -1229,6 +1316,8 @@ const brightnessPercent = computed(() => dimOpacityToBrightness(player.dim));
             :compact="!immersive"
             :danmaku-enabled="danmakuSettings.enabled"
             :seek-step="playerSettings.seekStepSec"
+            :pip-supported="pipSupported"
+            :pip-active="pipActive"
             @back="goBack"
             @toggle-play="togglePlay"
             @prev="prevEpisode"
@@ -1244,6 +1333,7 @@ const brightnessPercent = computed(() => dimOpacityToBrightness(player.dim));
             @cast="onCast"
             @toggle-danmaku="toggleDanmaku"
             @open-danmaku-settings="danmakuOpen = true"
+            @toggle-pip="togglePip"
           />
 
           <!-- loading -->

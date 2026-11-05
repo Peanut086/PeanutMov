@@ -18,6 +18,7 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import DanmakuSettingsSheet from '@/components/player/DanmakuSettingsSheet.vue';
 import SettingsGroup from '@/components/settings/SettingsGroup.vue';
 import SettingsRow from '@/components/settings/SettingsRow.vue';
+import SourceManageSection from '@/components/source/SourceManageSection.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
 import { formatBytes } from '@/components/common/format';
 import { useDownloadStore } from '@/stores/downloadStore';
@@ -54,6 +55,7 @@ const clearDataOpen = ref(false);
 const keepDemo = ref(true);
 const clearing = ref(false);
 const cacheCleared = ref(false);
+const sourceSectionOpen = ref(false);
 
 // v1.8: 调试日志管理
 const debugLogEnabled = ref(false);
@@ -98,13 +100,13 @@ const playerSettings = computed<PlayerSettings>(() => settings.player ?? PLAYER_
 const gestureSettings = computed<GestureSettings>(() => settings.gesture ?? GESTURE_FALLBACK);
 
 const themeLabel = computed(() => {
-  switch (settings.settings?.theme ?? 'dark') {
+  switch (settings.settings?.theme ?? 'system') {
     case 'light':
       return '浅色';
-    case 'system':
-      return '跟随系统';
-    default:
+    case 'dark':
       return '深色';
+    default:
+      return '跟随系统';
   }
 });
 
@@ -137,12 +139,14 @@ const displayModeLabel = computed(() => {
 const seekStepSecLabel = computed(() => String(settings.settings?.player.seekStepSec ?? 10));
 const longPressRateLabel = computed(() => String(settings.settings?.player.longPressRate ?? 2));
 const rememberVolumeBrightness = computed(() => settings.settings?.player.rememberVolumeBrightness ?? true);
+const hapticEnabled = computed(() => settings.settings?.hapticEnabled ?? true);
+const pipAutoEnter = computed(() => settings.settings?.pipAutoEnter ?? false);
 
 onMounted(async () => {
   try {
     await Promise.all([settings.load(), sources.load(), favorites.load(), history.load(), downloads.load()]);
     if (settings.error) loadError.value = settings.error.message;
-    theme.setMode(settings.settings?.theme ?? 'dark');
+    theme.setMode(settings.settings?.theme ?? 'system');
   } catch (e) {
     loadError.value = toErrorShape(e, 'E_DB').message;
   }
@@ -208,6 +212,34 @@ async function setLongPressRate(value: number): Promise<void> {
 async function setRememberVolumeBrightness(value: boolean): Promise<void> {
   await update({ player: { ...playerSettings.value, rememberVolumeBrightness: value } });
 }
+
+async function setHapticEnabled(value: boolean): Promise<void> {
+  await update({ hapticEnabled: value }, value ? '触觉反馈已开启' : '触觉反馈已关闭');
+}
+
+// OPT-06：自动进入画中画
+async function setPipAutoEnter(value: boolean): Promise<void> {
+  await update({ pipAutoEnter: value }, value ? '已开启自动画中画' : '已关闭自动画中画');
+}
+
+// OPT-15：智能预加载
+const preloadLimitOpen = ref(false);
+
+async function setSmartPreloadEnabled(value: boolean): Promise<void> {
+  await update({ smartPreloadEnabled: value }, value ? '已开启智能预加载' : '已关闭智能预加载');
+}
+
+async function setPreloadStorageLimitMb(value: number): Promise<void> {
+  preloadLimitOpen.value = false;
+  const label = value === 0 ? '无限制' : value >= 1024 ? `${value / 1024} GB` : `${value} MB`;
+  await update({ preloadStorageLimitMb: value }, `预加载上限已设为 ${label}`);
+}
+
+const preloadLimitLabel = computed(() => {
+  const mb = settings.settings?.preloadStorageLimitMb ?? 1024;
+  if (mb === 0) return '无限制';
+  return mb >= 1024 ? `${mb / 1024} GB` : `${mb} MB`;
+});
 
 async function setHideDemo(value: boolean): Promise<void> {
   await update({ hideDemoContent: value });
@@ -404,7 +436,16 @@ async function exportLogs(): Promise<void> {
         </section>
 
         <SettingsGroup title="内容">
-          <SettingsRow label="片源管理" :value="`${sources.sources.length} 个`" chevron @click="go('/settings/sources')" />
+          <SettingsRow
+            label="片源管理"
+            :value="`${sources.sources.length} 个`"
+            :chevron="!sourceSectionOpen"
+            @click="sourceSectionOpen = !sourceSectionOpen"
+          />
+          <!-- OPT-09: 内联源管理区（不再跳转独立路由） -->
+          <div v-if="sourceSectionOpen" class="settings-inline-section">
+            <SourceManageSection />
+          </div>
           <SettingsRow label="观看历史" :value="`${history.items.length} 条`" chevron @click="go('/history')" />
           <SettingsRow label="我的收藏" :value="`${favorites.items.length} 个`" chevron @click="go('/favorites')" />
           <SettingsRow label="网盘账号" description="夸克/UC/天翼/123/阿里" chevron @click="go('/settings/netdisk')" />
@@ -428,6 +469,18 @@ async function exportLogs(): Promise<void> {
             :switch-value="rememberVolumeBrightness"
             @update:switch-value="setRememberVolumeBrightness"
           />
+          <SettingsRow
+            label="触觉反馈"
+            description="操作时振动确认（播放/长按/Tab 切换/错误提示）"
+            :switch-value="hapticEnabled"
+            @update:switch-value="setHapticEnabled"
+          />
+          <SettingsRow
+            label="自动进入画中画"
+            description="切到后台且正在播放时自动悬浮小窗"
+            :switch-value="pipAutoEnter"
+            @update:switch-value="setPipAutoEnter"
+          />
           <SettingsRow label="字幕设置" description="在播放页内调整字号/颜色/偏移" chevron @click="toast.info('请在播放页的字幕面板中调整')" />
           <SettingsRow label="弹幕设置" description="字号/透明度/速度/显示区域（播放页内开关）" chevron @click="danmakuOpen = true" />
         </SettingsGroup>
@@ -444,6 +497,18 @@ async function exportLogs(): Promise<void> {
 
         <SettingsGroup title="数据">
           <SettingsRow label="数据备份与恢复" chevron @click="go('/settings/backup')" />
+          <SettingsRow
+            label="智能预加载"
+            description="WiFi 环境下提示预加载内容到本地"
+            :switch-value="settings.settings?.smartPreloadEnabled ?? false"
+            @update:switch-value="setSmartPreloadEnabled"
+          />
+          <SettingsRow
+            label="预加载存储上限"
+            :value="preloadLimitLabel"
+            chevron
+            @click="preloadLimitOpen = true"
+          />
           <SettingsRow
             label="清理缓存"
             :value="cacheCleared ? '已清理' : '元数据与图片'"
@@ -502,7 +567,7 @@ async function exportLogs(): Promise<void> {
         <SettingsGroup title="关于">
           <SettingsRow label="关于 PeanutMov" :value="APP_VERSION" chevron @click="go('/settings/about')" />
           <SettingsRow label="合规声明" chevron @click="go('/legal/compliance')" />
-          <SettingsRow label="源合规提示" description="请仅添加你有访问权限的源" chevron @click="go('/settings/sources')" />
+          <SettingsRow label="源合规提示" description="请仅添加你有访问权限的源" @click="sourceSectionOpen = true" />
         </SettingsGroup>
 
         <p class="settings-footer">本 App 不提供任何影视片源 · 数据仅保存在本机</p>
@@ -554,13 +619,13 @@ async function exportLogs(): Promise<void> {
     <BottomSheet v-model="themeOpen" title="主题">
       <ul class="sheet-list">
         <li v-for="opt in [
-          { v: 'dark', l: '深色（默认）' },
+          { v: 'system', l: '跟随系统（默认）' },
+          { v: 'dark', l: '深色' },
           { v: 'light', l: '浅色' },
-          { v: 'system', l: '跟随系统' },
         ] as const" :key="opt.v">
           <button
             class="sheet-list__item"
-            :class="{ 'sheet-list__item--active': (settings.settings?.theme ?? 'dark') === opt.v }"
+            :class="{ 'sheet-list__item--active': (settings.settings?.theme ?? 'system') === opt.v }"
             type="button"
             @click="setTheme(opt.v)"
           >
@@ -641,6 +706,30 @@ async function exportLogs(): Promise<void> {
 
     <!-- v1.7/CHG-22：弹幕设置 -->
     <DanmakuSettingsSheet v-model:open="danmakuOpen" />
+
+    <!-- OPT-15：预加载存储上限选择 -->
+    <BottomSheet v-model="preloadLimitOpen" title="预加载存储上限">
+      <ul class="sheet-list">
+        <li v-for="opt in [
+          { v: 500, l: '500 MB' },
+          { v: 1024, l: '1 GB' },
+          { v: 2048, l: '2 GB' },
+          { v: 5120, l: '5 GB' },
+          { v: 0, l: '无限制' },
+        ] as const" :key="opt.v">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.preloadStorageLimitMb ?? 1024) === opt.v }"
+            type="button"
+            @click="setPreloadStorageLimitMb(opt.v)"
+          >
+            {{ opt.l }}
+            <span v-if="(settings.settings?.preloadStorageLimitMb ?? 1024) === opt.v" class="sheet-list__check">当前</span>
+          </button>
+        </li>
+      </ul>
+      <p class="sheet-hint">达到上限后将自动停止新的预加载任务。</p>
+    </BottomSheet>
   </SafeArea>
 </template>
 
@@ -813,5 +902,11 @@ async function exportLogs(): Promise<void> {
   width: 18px;
   height: 18px;
   accent-color: var(--color-brand);
+}
+
+/* OPT-09: 内联源管理区容器 */
+.settings-inline-section {
+  padding: var(--space-2) 0 var(--space-3);
+  border-bottom: 1px solid var(--color-divider);
 }
 </style>

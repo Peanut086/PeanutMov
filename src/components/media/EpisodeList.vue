@@ -29,6 +29,8 @@ const props = withDefaults(
     playingNavigate?: boolean;
     /** 正在解析播放地址的剧集 id（父级预检 resolvePlay 期间显示加载态） */
     resolvingId?: string | null;
+    /** OPT-08：紧凑模式，横向滚动芯片布局 */
+    compact?: boolean;
   }>(),
   {
     currentId: null,
@@ -38,6 +40,7 @@ const props = withDefaults(
     batchSize: 50,
     playingNavigate: false,
     resolvingId: null,
+    compact: false,
   },
 );
 
@@ -90,8 +93,8 @@ function onClick(ep: Episode): void {
 </script>
 
 <template>
-  <div class="episode-list">
-    <div class="episode-list__grid" role="list">
+  <div class="episode-list" :class="{ 'episode-list--compact': compact }">
+    <div class="episode-list__grid" :class="{ 'episode-list__grid--compact': compact }" role="list">
       <button
         v-for="ep in visible"
         :key="ep.id"
@@ -100,6 +103,7 @@ function onClick(ep: Episode): void {
           'episode-chip--current': ep.id === currentId,
           'episode-chip--unavailable': isUnavailable(ep),
           'episode-chip--resolving': ep.id === resolvingId,
+          'episode-chip--compact': compact,
         }"
         type="button"
         role="listitem"
@@ -123,7 +127,7 @@ function onClick(ep: Episode): void {
     </div>
 
     <button
-      v-if="hasMore"
+      v-if="hasMore && !compact"
       class="episode-list__more"
       type="button"
       @click="visibleCount += batchSize"
@@ -227,5 +231,37 @@ function onClick(ep: Episode): void {
   border: var(--border-strong);
   color: var(--color-text-secondary);
   font: var(--text-button-sm);
+}
+
+/* OPT-08：紧凑模式 - 横向滚动芯片 */
+.episode-list--compact {
+  gap: var(--space-2);
+}
+
+.episode-list__grid--compact {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  gap: var(--space-2);
+  padding-bottom: var(--space-1);
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  /* REV-15：compact 模式 scroll-snap，提升横向浏览体验 */
+  scroll-snap-type: x proximity;
+}
+
+.episode-list__grid--compact::-webkit-scrollbar {
+  display: none;
+}
+
+.episode-chip--compact {
+  flex: 0 0 auto;
+  min-width: 52px;
+  height: 36px;
+  padding: 0 var(--space-3);
+  font-size: 12px;
+  /* REV-15：scroll-snap 对齐 */
+  scroll-snap-align: start;
 }
 </style>

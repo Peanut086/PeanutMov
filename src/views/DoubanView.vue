@@ -16,6 +16,7 @@ import SafeArea from '@/components/layout/SafeArea.vue';
 import OfflineBanner from '@/components/common/OfflineBanner.vue';
 import PosterImage from '@/components/common/PosterImage.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import PullToRefresh from '@/components/common/PullToRefresh.vue';
 import IconStar from '@/components/icons/IconStar.vue';
 import { getAllCategories, clearDoubanCache } from '@/services/doubanService';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
@@ -31,6 +32,7 @@ const { isOffline } = useOnlineStatus();
 const loading = ref(true);
 const categories = ref<DoubanCategory[]>([]);
 const loadError = ref<string | null>(null);
+const pullRefreshing = ref(false);
 
 const isEmpty = computed(() => !loading.value && !loadError.value && categories.value.length === 0);
 
@@ -50,6 +52,16 @@ async function retry(): Promise<void> {
   clearDoubanCache();
   await load();
   if (!loadError.value) toast.success('已刷新');
+}
+
+async function onPullRefresh(): Promise<void> {
+  pullRefreshing.value = true;
+  try {
+    clearDoubanCache();
+    await load();
+  } finally {
+    pullRefreshing.value = false;
+  }
 }
 
 function searchItem(item: DoubanItem): void {
@@ -73,6 +85,7 @@ onMounted(() => {
   <SafeArea data-route="douban">
     <AppHeader title="豆瓣榜单" :back="true" @back="goBack" />
 
+    <PullToRefresh :loading="pullRefreshing" @refresh="onPullRefresh">
     <div class="douban-body">
       <OfflineBanner v-if="isOffline" />
 
@@ -149,6 +162,7 @@ onMounted(() => {
         </div>
       </template>
     </div>
+    </PullToRefresh>
   </SafeArea>
 </template>
 
