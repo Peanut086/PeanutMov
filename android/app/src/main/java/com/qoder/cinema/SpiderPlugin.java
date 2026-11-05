@@ -191,6 +191,13 @@ public class SpiderPlugin extends Plugin {
     private int handleSeq = 0;
 
     /**
+     * 本地代理当前归属的爬虫句柄：JS 侧在调用 playerContent 前设置，
+     * 9978 代理请求优先路由给该爬虫；避免其它爬虫（如移动•4K）劫持不属于自己的 do。
+     * 置空表示无归属，回退到遍历全部已加载爬虫。
+     */
+    private static volatile String currentOwner = null;
+
+    /**
      * Guard jar 初始化锁：按 jar 文件名加锁。
      *
      * 饭太硬 spider.jar 是 guard 加固类型，多个爬虫源（csp_BiliGuard / csp_AppSxGuard /
@@ -474,39 +481,91 @@ public class SpiderPlugin extends Plugin {
     }
 
     /**
-     * 9978 本地代理路由：遍历已加载爬虫调 proxy(params)，第一个非空结果生效。
+     * 设置本地代理当前归属的爬虫句柄（方向3：owner 机制）。
+     * JS 侧在调用 playerContent 前设置，使后续 9978 代理请求优先路由给该爬虫。
+     */
+    @PluginMethod
+    public void setCurrentOwner(PluginCall call) {
+        String handle = call.getString("handle");
+        if (handle == null || handle.isEmpty()) {
+            currentOwner = null;
+            Log.i(TAG, "proxy owner cleared");
+        } else if (!loaded.containsKey(handle)) {
+            call.reject("spider instance not found: " + handle);
+            return;
+        } else {
+            currentOwner = handle;
+            LoadedSpider target = loaded.get(handle);
+            Log.i(TAG, "proxy owner set -> " + target.spider.getClass().getSimpleName() + " (" + handle + ")");
+        }
+        JSObject ret = new JSObject();
+        ret.put("owner", currentOwner);
+        call.resolve(ret);
+    }
+
+    /**
+     * 9978 本地代理路由：优先 owner，其次遍历已加载爬虫调 proxy(params)。
      * 代理请求不带 handle，TVBox 原版也是全量遍历（多数爬虫对不认识的 do 立即返回 null）。
+     * 方向3：先尝试 currentOwner，避免被其它爬虫（如移动•4K）劫持。
      */
     private Object[] routeProxy(Map<String, String> params) {
         String doParam = params.get("do");
         int proxyCapable = 0;
-        for (LoadedSpider target : loaded.values()) {
-            try {
-                Method method;
-                try {
-                    method = target.spider.getClass().getMethod("proxy", Map.class);
-                } catch (NoSuchMethodException e) {
-                    continue;
-                }
+        
+        // 方向3：优先尝试 currentOwner
+        String owner = currentOwner;
+        if (owner != null) {
+            LoadedSpider target = loaded.get(owner);
+            if (target != null) {
+                Object[] result = tryProxy(target, params, doParam);
+                if (result != null) return result;
                 proxyCapable++;
-                method.setAccessible(true);
-                Object result = method.invoke(target.spider, params);
-                if (result instanceof Object[]) {
-                    Object[] arr = (Object[]) result;
-                    if (arr.length > 0 && arr[0] != null && String.valueOf(arr[0]).trim().length() > 0) {
-                        Log.i(TAG, "proxy do=" + doParam + " -> " + target.spider.getClass().getSimpleName());
-                        return arr;
-                    }
-                } else if (result instanceof String && !((String) result).trim().isEmpty()) {
-                    Log.i(TAG, "proxy do=" + doParam + " -> " + target.spider.getClass().getSimpleName());
-                    return new Object[]{result, null};
-                }
-            } catch (Throwable ignored) {
-                // 该爬虫 proxy 执行失败 → 试下一个
             }
+        }
+        
+        // 回退：遍历其他已加载爬虫
+        for (Map.Entry<String, LoadedSpider> entry : loaded.entrySet()) {
+            String handle = entry.getKey();
+            if (handle.equals(owner)) continue; // 已尝试过
+            LoadedSpider target = entry.getValue();
+            Object[] result = tryProxy(target, params, doParam);
+            if (result != null) {
+                proxyCapable++;
+                return result;
+            }
+            proxyCapable++;
         }
         Log.w(TAG, "proxy do=" + doParam + " -> no spider claimed it ("
                 + loaded.size() + " loaded, " + proxyCapable + " with proxy)");
+        return null;
+    }
+    
+    /**
+     * 尝试调用单个爬虫的 proxy 方法；返回非空表示认领，null 表示未认领或失败。
+     */
+    private Object[] tryProxy(LoadedSpider target, Map<String, String> params, String doParam) {
+        try {
+            Method method;
+            try {
+                method = target.spider.getClass().getMethod("proxy", Map.class);
+            } catch (NoSuchMethodException e) {
+                return null;
+            }
+            method.setAccessible(true);
+            Object result = method.invoke(target.spider, params);
+            if (result instanceof Object[]) {
+                Object[] arr = (Object[]) result;
+                if (arr.length > 0 && arr[0] != null && String.valueOf(arr[0]).trim().length() > 0) {
+                    Log.i(TAG, "proxy do=" + doParam + " -> " + target.spider.getClass().getSimpleName());
+                    return arr;
+                }
+            } else if (result instanceof String && !((String) result).trim().isEmpty()) {
+                Log.i(TAG, "proxy do=" + doParam + " -> " + target.spider.getClass().getSimpleName());
+                return new Object[]{result, null};
+            }
+        } catch (Throwable ignored) {
+            // 该爬虫 proxy 执行失败 → 试下一个
+        }
         return null;
     }
 
@@ -567,6 +626,11 @@ public class SpiderPlugin extends Plugin {
     public void unload(PluginCall call) {
         String handle = call.getString("handle");
         LoadedSpider target = handle == null ? null : loaded.remove(handle);
+        // 方向3：卸载时清除 owner，避免悬空引用
+        if (handle != null && handle.equals(currentOwner)) {
+            currentOwner = null;
+            Log.i(TAG, "proxy owner cleared (unloaded)");
+        }
         JSObject ret = new JSObject();
         ret.put("released", target != null);
         call.resolve(ret);
@@ -582,6 +646,7 @@ public class SpiderPlugin extends Plugin {
         dexCache.clear();
         guardInitLocks.clear();
         guardInitDone.clear();
+        currentOwner = null;
     }
 
     /* ---------------- 内部 ---------------- */

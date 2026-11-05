@@ -282,10 +282,40 @@ public final class SpiderProxyServer {
                 return;
             }
             Object[] result = handler != null ? handler.proxy(params) : null;
+
+            // 方向2：支持 CatVod 的 [Integer status, String contentType, byte[] body] 契约
+            if (result != null && result.length >= 3 && result[0] instanceof Integer) {
+                int statusCode = (Integer) result[0];
+                String ct = result[1] instanceof String ? (String) result[1] : "text/plain; charset=utf-8";
+                byte[] body = result[2] instanceof byte[] ? (byte[]) result[2] : new byte[0];
+                Log.i(TAG, "res " + statusCode + " ct=" + ct + " len=" + body.length + " (CatVod contract)");
+                respond(s, statusCode, ct, body, null);
+                return;
+            }
+
             // 壳级兜底：爬虫返回 do=m3u8&url=... 而没有任何爬虫 proxy 认领时，直取转发
             if (result == null || result.length == 0 || result[0] == null
                     || String.valueOf(result[0]).trim().isEmpty()) {
                 result = passThrough(params);
+            }
+
+            // 方向1：do=m3u8&url=absolute 但爬虫返回非清单内容（如 "200"），回退到 passThrough
+            if ("m3u8".equals(doParam) && result != null && result.length > 0 && result[0] != null) {
+                String content = String.valueOf(result[0]).trim();
+                String url = params.get("url");
+                boolean isAbsoluteUrl = url != null && (url.startsWith("http://") || url.startsWith("https://"));
+                boolean isPlaylist = content.startsWith("#EXTM3U") || content.startsWith("#EXTINF");
+                boolean isRedirect = content.startsWith("http://") || content.startsWith("https://");
+                boolean isJson = content.startsWith("{");
+
+                if (isAbsoluteUrl && !isPlaylist && !isRedirect && !isJson) {
+                    Log.w(TAG, "proxy returned non-playlist for do=m3u8 (content=" + content.substring(0, Math.min(20, content.length())) + "), fallback to passThrough");
+                    Object[] fallback = passThrough(params);
+                    if (fallback != null && fallback.length > 0 && fallback[0] != null
+                            && !String.valueOf(fallback[0]).trim().isEmpty()) {
+                        result = fallback;
+                    }
+                }
             }
 
             if (result == null || result.length == 0 || result[0] == null

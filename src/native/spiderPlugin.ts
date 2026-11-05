@@ -68,6 +68,8 @@ export interface SpiderPlugin {
   proxy(options: { handle: string; url: string; headers?: Record<string, string> }): Promise<SpiderProxyResult>;
   /** 释放实例 */
   unload(options: { handle: string }): Promise<{ released: boolean }>;
+  /** 设置本地代理当前归属的爬虫句柄（避免多爬虫场景下代理请求被错误路由） */
+  setCurrentOwner(options: { handle: string | null }): Promise<{ owner: string | null }>;
   /** 插件是否可用（原生环境恒 true） */
   isSupported(): Promise<{ supported: boolean }>;
   /** 设置详细日志开关 */
