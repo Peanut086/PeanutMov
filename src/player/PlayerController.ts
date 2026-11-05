@@ -44,7 +44,7 @@ import { GestureRecognizer, type GestureIntent } from '@/player/GestureRecognize
 import { ProgressReporter, type ProgressSnapshot } from '@/player/ProgressReporter';
 import { FullscreenController } from '@/player/FullscreenController';
 import { OrientationController } from '@/player/OrientationController';
-import { assertSourceSupported, preflightManifest } from '@/player/sourceGuard';
+import { assertSourceSupported } from '@/player/sourceGuard';
 
 /** 帧统计（`getFrameStats` 的返回；原生 surface 引擎为 null） */
 export interface FrameStats {
@@ -109,7 +109,6 @@ export class PlayerController {
   private networkRetries = 0;
 
   /** m3u8 DRM 预检的取消句柄（AC-40）：切集/重试/销毁时中止上一轮预检 */
-  private preflightAbort: AbortController | null = null;
 
   private readonly subtitles: SubtitleManager;
   private readonly progress: ProgressReporter;
@@ -191,8 +190,6 @@ export class PlayerController {
     if (this.destroyed) throw new AppError('E_INVALID_STATE', '播放器已销毁');
     // 切集/切线路：取消上一轮尚未触发的网络重试，避免旧重试把新加载顶掉（REV-06）
     this.clearRetryTimer();
-    // 同时中止上一轮 m3u8 DRM 预检（AC-40）：旧预检结果不得影响本次加载
-    this.resetPreflight();
     // 上一集的预载参数对新集已过期（CHG-21）
     this.clearPreload();
     // 黑屏检测按「每次加载」重置
@@ -220,6 +217,8 @@ export class PlayerController {
       this.progress.update(start, this.engine?.getDuration() ?? 0);
       this.progress.start();
       this.scheduleControlsHide();
+      // P1-6: 起播后即预载下一集（给足时间预热连接/DNS），临近片尾的二次调用由幂等保护跳过
+      this.preloadNext();
     } catch (e) {
       const error = toErrorShape(
         e instanceof AppError ? e : new AppError('E_DECODE', '视频加载失败，请尝试切换线路', { cause: e }),
@@ -243,16 +242,9 @@ export class PlayerController {
     const useNativeEngine = this.options?.preferNativeEngine === true && await isExoPlayerAvailable();
 
     if (!useNativeEngine) {
-      // WebView 引擎路径：DASH/DRM 明确拒绝（AC-40 / FR-17）
-      if (format === 'hls') {
-        const manifest = await preflightManifest(playback.url, {
-          signal: this.preflightAbort?.signal,
-          headers: playback.headers,
-        });
-        assertSourceSupported(playback.url, manifest);
-      } else {
-        assertSourceSupported(playback.url);
-      }
+      // P0-4: 仅做 URL 级 DRM/DASH 检测，不再预拉清单（省掉一次网络往返）。
+      // hls.js 加载时若遇到 SAMPLE-AES 会自然报错，由错误处理路径兜底。
+      assertSourceSupported(playback.url);
     }
 
     /*
@@ -535,12 +527,6 @@ export class PlayerController {
   private clearRetryTimer(): void {
     if (this.retryTimer !== null) clearTimeout(this.retryTimer);
     this.retryTimer = null;
-  }
-
-  /** 丢弃上一轮 DRM 预检（中止在飞请求并新建句柄，AC-40） */
-  private resetPreflight(): void {
-    this.preflightAbort?.abort();
-    this.preflightAbort = typeof AbortController === 'function' ? new AbortController() : null;
   }
 
   /* ================= 播放控制 ================= */

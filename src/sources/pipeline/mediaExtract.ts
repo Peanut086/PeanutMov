@@ -7,10 +7,10 @@
 import { toAbsoluteUrl } from '@/shared/url';
 
 /** 绝对媒体地址（协议相对也接受），排除引号/空白/反斜杠干扰 */
-const ABSOLUTE_MEDIA = /(?:https?:)?\/\/[^\s"'<>()\\]+?\.(m3u8|mp4|m4v|mov|webm)(?:\?[^\s"'<>()\\]*)?/gi;
+const ABSOLUTE_MEDIA = /(?:https?:)?\/\/[^\s"'<>()\\]+?\.(m3u8|mp4|m4v|mov|webm|ts|mkv|flv)(?:\?[^\s"'<>()\\]*)?/gi;
 
 /** 引号包裹的相对媒体地址 */
-const QUOTED_MEDIA = /["']([^"'\s<>]*?\.(m3u8|mp4|m4v|mov|webm)(?:\?[^"'\s<>]*)?)["']/gi;
+const QUOTED_MEDIA = /["']([^"'\s<>]*?\.(m3u8|mp4|m4v|mov|webm|ts|mkv|flv)(?:\?[^"'\s<>]*)?)["']/gi;
 
 export interface MediaCandidate {
   url: string;

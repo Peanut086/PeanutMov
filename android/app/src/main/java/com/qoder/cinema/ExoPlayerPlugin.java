@@ -63,6 +63,14 @@ import java.util.Map;
 @CapacitorPlugin(name = "ExoPlayer")
 public class ExoPlayerPlugin extends Plugin {
 
+    // P0-5: OkHttpClient 单例——连接池/线程池跨播放复用，避免每次 prepare 重建
+    private static final OkHttpClient SHARED_HTTP_CLIENT = new OkHttpClient.Builder()
+            .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build();
+
     private ExoPlayer player;
     private PlayerView playerView;
     private FrameLayout overlay;
@@ -120,14 +128,8 @@ public class ExoPlayerPlugin extends Plugin {
                     }
                 }
 
-                // P0-4: OkHttp 数据源（连接池、HTTP/2、gzip）
-                OkHttpClient okHttpClient = new OkHttpClient.Builder()
-                        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-                        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                        .followRedirects(true)
-                        .followSslRedirects(true)
-                        .build();
-                OkHttpDataSource.Factory httpFactory = new OkHttpDataSource.Factory(okHttpClient);
+                // P0-5: 复用单例 OkHttpClient（连接池/线程池不随播放重建）
+                OkHttpDataSource.Factory httpFactory = new OkHttpDataSource.Factory(SHARED_HTTP_CLIENT);
                 if (!headers.isEmpty()) {
                     httpFactory.setDefaultRequestProperties(headers);
                 }
@@ -143,13 +145,16 @@ public class ExoPlayerPlugin extends Plugin {
                                 .setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8).build()
                         : MediaItem.fromUri(url);
 
-                // P0-4: DefaultLoadControl 首帧优先（小 minBuffer），稳定后放大
+                // P0-7: 续播位置随 prepare 下发（毫秒），0 或负数视为从头播放
+                long startPositionMs = call.getLong("startPositionMs", 0L);
+
+                // P0-6: DefaultLoadControl 首帧优先——缩短起播等待
                 LoadControl loadControl = new DefaultLoadControl.Builder()
                         .setBufferDurationsMs(
-                                15_000,  // minBuffer: 首帧快
+                                8_000,   // minBuffer: 降低最小缓冲，起播更快
                                 30_000,  // maxBuffer: 稳定后缓冲
-                                2_500,   // bufferForPlayback: 2.5s 即播
-                                5_000    // bufferForPlaybackAfterRebuffer: 卡顿后缓冲 5s
+                                1_000,   // bufferForPlayback: 1s 即播（原 2.5s）
+                                3_000    // bufferForPlaybackAfterRebuffer: 卡顿后 3s 即追
                         )
                         .build();
 
@@ -163,7 +168,7 @@ public class ExoPlayerPlugin extends Plugin {
                         .setMediaSourceFactory(mediaSourceFactory)
                         .setLoadControl(loadControl)
                         .build();
-                player.setMediaItem(mediaItem);
+                player.setMediaItem(mediaItem, startPositionMs);
                 player.addListener(new Player.Listener() {
                     @Override
                     public void onPlaybackStateChanged(int playbackState) {

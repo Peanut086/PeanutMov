@@ -39,9 +39,27 @@ public class SnifferPlugin extends Plugin {
     private static final long DEFAULT_TIMEOUT_MS = 15_000;
     private static final long MAX_TIMEOUT_MS = 30_000;
 
-    /** 媒体请求特征：m3u8 清单与直链视频 */
+    /**
+     * P1-5: 媒体请求特征扩展——覆盖更多格式与 URL 形态
+     *
+     * 原始只匹配 .m3u8/.mp4/.m4v/.mkv/.flv，真机实测漏掉：
+     * - .ts（HLS 分片直链，部分源直接返回 TS 而非清单）
+     * - .webm（WebM 格式）
+     * - /video/、/stream 等无扩展名但 Content-Type 为媒体的路径
+     * - 含 type=video 查询参数的 CDN 地址
+     */
     private static final Pattern MEDIA_URL = Pattern.compile(
-            "\\.(m3u8|mp4|m4v|mkv|flv)(\\?|#|$)", Pattern.CASE_INSENSITIVE);
+            "(\\.(m3u8|mp4|m4v|mkv|flv|ts|webm|mov|avi)(\\?|#|$)" +
+            "|/video/[^?#]+" +
+            "|/stream[^?#]*" +
+            "|[?&]type=video" +
+            "|[?&]format=(mp4|m3u8|ts|webm))",
+            Pattern.CASE_INSENSITIVE);
+
+    /** 响应 响应 拦截的 Content-Type（shouldInterceptRequest 无法读 response header，留作扩展点） */
+    private static final Pattern MEDIA_MIME = Pattern.compile(
+            "^(video/|application/x-mpegURL|application/vnd\\.apple\\.mpegurl)",
+            Pattern.CASE_INSENSITIVE);
 
     private final Handler main = new Handler(Looper.getMainLooper());
 

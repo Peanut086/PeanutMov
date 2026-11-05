@@ -19,6 +19,7 @@ import {
   isNativeDownloadAvailable,
   nativeDownloadStart,
   nativeDownloadCancel,
+  nativeDownloadPause,
   onProgress,
   onCompleted,
   onError,
@@ -357,7 +358,15 @@ export class DownloadEngine {
       // 监听取消信号
       const onAbort = () => {
         cleanup();
-        nativeDownloadCancel(task.id).catch(() => undefined);
+        // P0-1: 根据 reason 区分暂停与取消
+        const reason = (signal.reason as { reason?: string })?.reason;
+        if (reason === 'pause') {
+          // 暂停：保留 .part 文件供续传
+          nativeDownloadPause(task.id).catch(() => undefined);
+        } else {
+          // 取消：删除 .part 文件
+          nativeDownloadCancel(task.id).catch(() => undefined);
+        }
         if (!resolved) {
           resolved = true;
           resolve(true);

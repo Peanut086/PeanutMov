@@ -415,6 +415,10 @@ async function resolveAndLoad(): Promise<boolean> {
       const ratio = duration > 0 ? rec.positionSec / duration : 0;
       if (ratio > 0.05 && ratio < 0.95) start = rec.positionSec;
     }
+    // P0-7: 续播位置注入 PlaybackSource，原生引擎随 prepare 下发（省掉起播后 seek）
+    if (start > 0) {
+      prepared.startPositionMs = start * 1000;
+    }
 
     const episodeRefs = episodes.value.map((e) => ({
       episodeId: e.id,
@@ -601,12 +605,21 @@ async function switchLine(targetLineId: string): Promise<void> {
   const currentNumber = currentEpisode.value?.number ?? 1;
   const targetEpisode = episodeOnLine(targetLineId, currentNumber);
 
+  // P1-4: 记住当前播放位置，切线后续播
+  const currentPositionSec = playerCtl.controller.value?.getCurrentTime() ?? 0;
+
   switchingLine.value = true;
   try {
     lineId.value = targetLineId;
     pendingLineSwitchEpisode = targetEpisode?.id ?? previousEpisodeId;
     await replaceRoute(targetEpisode?.id ?? previousEpisodeId, targetLineId);
-    if (await resolveAndLoad()) return;
+    if (await resolveAndLoad()) {
+      // P1-4: 切线成功后跳转到原位置（跳过前 5 秒的"从头开始"场景）
+      if (currentPositionSec > 5) {
+        playerCtl.controller.value?.seek(currentPositionSec);
+      }
+      return;
+    }
 
     // ---- 回退原线路 ----
     lineId.value = previousLineId;

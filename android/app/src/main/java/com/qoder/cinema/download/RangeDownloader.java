@@ -305,20 +305,25 @@ public class RangeDownloader {
             if (!partFileObj.renameTo(finalFileObj)) {
                 throw new IOException("Failed to rename .part file");
             }
+            deleteSidecarFile();
             completedCallback.onCompleted(task.taskId, finalFilePath, totalSize);
             return;
         }
+
+        // P0-2: 读取 sidecar 文件获取各 Range 实际进度
+        long[] initialRangeProgress = readSidecarFile();
+        if (initialRangeProgress == null) {
+            // 首次下载或 sidecar 不存在，初始化所有 Range 进度为 0
+            initialRangeProgress = new long[MULTI_RANGE_CONNECTIONS];
+        }
+        final long[] rangeProgress = initialRangeProgress;
 
         // 计算每个 Range 的大小
         long rangeSize = remainingBytes / MULTI_RANGE_CONNECTIONS;
         ExecutorService executor = Executors.newFixedThreadPool(MULTI_RANGE_CONNECTIONS);
         Future<?>[] futures = new Future<?>[MULTI_RANGE_CONNECTIONS];
 
-        // 预分配文件大小
-        RandomAccessFile raf = new RandomAccessFile(partFilePath, "rw");
-        raf.setLength(totalSize);
-        raf.close();
-
+        // P0-2: 不再预分配文件大小，由各 Range 线程按需写入
         final long finalTotalBytes = totalSize;
 
         for (int i = 0; i < MULTI_RANGE_CONNECTIONS; i++) {
@@ -327,13 +332,17 @@ public class RangeDownloader {
             final long rangeEnd = (i == MULTI_RANGE_CONNECTIONS - 1)
                     ? totalSize - 1
                     : rangeStart + rangeSize - 1;
+            final long rangeAlreadyDownloaded = rangeProgress[i];
 
             futures[i] = executor.submit(() -> {
                 try {
-                    downloadRange(rangeIndex, rangeStart, rangeEnd, finalTotalBytes);
+                    long downloaded = downloadRange(rangeIndex, rangeStart, rangeEnd, finalTotalBytes, rangeAlreadyDownloaded);
+                    // P0-2: 更新该 Range 的进度
+                    synchronized (rangeProgress) {
+                        rangeProgress[rangeIndex] = downloaded;
+                    }
                 } catch (Exception e) {
                     com.qoder.cinema.AppLog.e(TAG, "Range " + rangeIndex + " failed: " + e.getMessage());
-                    // 标记错误，让主线程处理
                     if (!canceled.get() && !paused.get()) {
                         errorCallback.onError(task.taskId, "E_NETWORK", "Range " + rangeIndex + " failed: " + e.getMessage());
                     }
@@ -353,11 +362,14 @@ public class RangeDownloader {
         // 检查是否被取消或暂停
         if (canceled.get()) {
             deletePartFile();
+            deleteSidecarFile();
             errorCallback.onError(task.taskId, "E_CANCELED", "Download canceled");
             return;
         }
 
         if (paused.get()) {
+            // P0-2: 暂停时保存各 Range 进度到 sidecar 文件
+            saveSidecarFile(rangeProgress);
             return;
         }
 
@@ -368,16 +380,20 @@ public class RangeDownloader {
             throw new IOException("Failed to rename .part file");
         }
 
+        deleteSidecarFile();
         completedCallback.onCompleted(task.taskId, finalFilePath, totalSize);
     }
 
     /**
      * 下载单个 Range
+     * @param rangeAlreadyDownloaded 该 Range 已下载的字节数（用于续传）
+     * @return 该 Range 实际下载的字节数（含续传部分）
      */
-    private void downloadRange(int rangeIndex, long rangeStart, long rangeEnd, long totalFileSize) throws IOException {
+    private long downloadRange(int rangeIndex, long rangeStart, long rangeEnd, long totalFileSize, long rangeAlreadyDownloaded) throws IOException {
+        long actualRangeStart = rangeStart + rangeAlreadyDownloaded;
         Request.Builder requestBuilder = new Request.Builder()
                 .url(task.url)
-                .header("Range", "bytes=" + rangeStart + "-" + rangeEnd)
+                .header("Range", "bytes=" + actualRangeStart + "-" + rangeEnd)
                 .header("User-Agent", "PeanutMov/1.0");
 
         if (task.headers != null) {
@@ -394,11 +410,11 @@ public class RangeDownloader {
 
             InputStream inputStream = response.body().byteStream();
             RandomAccessFile outputFile = new RandomAccessFile(partFilePath, "rw");
-            outputFile.seek(rangeStart);
+            outputFile.seek(actualRangeStart);
 
             byte[] buffer = new byte[BUFFER_SIZE];
             int bytesRead;
-            long localDownloaded = 0;
+            long localDownloaded = rangeAlreadyDownloaded;
 
             try {
                 while ((bytesRead = inputStream.read(buffer)) != -1) {
@@ -430,6 +446,7 @@ public class RangeDownloader {
             }
 
             com.qoder.cinema.AppLog.d(TAG, "Range " + rangeIndex + " completed: " + localDownloaded + " bytes");
+            return localDownloaded;
         } finally {
             response.close();
         }
@@ -537,6 +554,61 @@ public class RangeDownloader {
             if (partFile.exists()) {
                 partFile.delete();
             }
+        }
+    }
+
+    // ========== P0-2: Sidecar 文件管理（记录各 Range 进度） ==========
+
+    private String getSidecarFilePath() {
+        return partFilePath + ".sidecar";
+    }
+
+    /**
+     * 读取 sidecar 文件，返回各 Range 已下载字节数数组
+     */
+    private long[] readSidecarFile() {
+        File sidecarFile = new File(getSidecarFilePath());
+        if (!sidecarFile.exists()) return null;
+
+        try (java.io.FileInputStream fis = new java.io.FileInputStream(sidecarFile);
+             java.io.DataInputStream dis = new java.io.DataInputStream(fis)) {
+            int count = dis.readInt();
+            if (count != MULTI_RANGE_CONNECTIONS) return null;
+            long[] progress = new long[count];
+            for (int i = 0; i < count; i++) {
+                progress[i] = dis.readLong();
+            }
+            return progress;
+        } catch (Exception e) {
+            com.qoder.cinema.AppLog.w(TAG, "readSidecarFile failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 保存 sidecar 文件，记录各 Range 已下载字节数
+     */
+    private void saveSidecarFile(long[] rangeProgress) {
+        File sidecarFile = new File(getSidecarFilePath());
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(sidecarFile);
+             java.io.DataOutputStream dos = new java.io.DataOutputStream(fos)) {
+            dos.writeInt(rangeProgress.length);
+            for (long progress : rangeProgress) {
+                dos.writeLong(progress);
+            }
+            dos.flush();
+        } catch (Exception e) {
+            com.qoder.cinema.AppLog.w(TAG, "saveSidecarFile failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 删除 sidecar 文件
+     */
+    private void deleteSidecarFile() {
+        File sidecarFile = new File(getSidecarFilePath());
+        if (sidecarFile.exists()) {
+            sidecarFile.delete();
         }
     }
 }

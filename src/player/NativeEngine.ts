@@ -90,6 +90,8 @@ export class NativeEngine implements PlayableEngine {
         // 按 progressive 嗅探 m3u8 → UnrecognizedInputFormatException（真机实证）
         mime: source.format === 'hls' ? 'application/x-mpegURL' : undefined,
         rect: rectOf(host),
+        // P0-7: 续播位置随 prepare 下发
+        startPositionMs: source.startPositionMs ?? 0,
       });
     } catch (e) {
       this.pending = null;

@@ -441,43 +441,62 @@ export class HlsDownloader {
 
     // 5. 初始化 sink
     const sink = sinkFactory(task.sink);
-    await sink.begin({ task: { ...task, resumable: false }, startBytes: 0 });
+    // P0-3: 检查是否有已完成的分片（暂停续传）
+    const completedSegments = task.completedSegments ?? [];
+    const startBytes = completedSegments.length > 0 ? task.downloadedBytes : 0;
+    await sink.begin({ task: { ...task, resumable: true }, startBytes });
 
-    let downloaded = 0;
+    let downloaded = startBytes;
     let lastPersist = now();
     let lastSampleAt = now();
-    let lastSampleBytes = 0;
+    let lastSampleBytes = startBytes;
 
     await this.deps.saveProgress(task.id, {
       status: 'downloading',
-      downloadedBytes: 0,
+      downloadedBytes: startBytes,
       totalBytes: null,
-      resumable: false,
+      resumable: true,
       speedBps: 0,
       updatedAt: now(),
+      completedSegments,
     });
 
-    // 6. 写入初始化分片
-    if (playlist.initSegment?.data) {
+    // 6. 写入初始化分片（如果尚未完成）
+    if (playlist.initSegment?.data && !completedSegments.includes(-1)) {
       await sink.write(playlist.initSegment.data);
+      downloaded += playlist.initSegment.data.byteLength;
+      completedSegments.push(-1); // -1 表示初始化分片
+      await this.deps.saveProgress(task.id, {
+        downloadedBytes: downloaded,
+        completedSegments,
+        updatedAt: now(),
+      });
+    } else if (playlist.initSegment?.data) {
+      // 初始化分片已完成，跳过写入但计入大小
       downloaded += playlist.initSegment.data.byteLength;
     }
 
     // 7. 并行下载分片
     try {
-      const segmentBatches = this.createBatches(playlist.segments, parallelSegments);
+      // P0-3: 为每个分片登记索引，用于跳过已完成的分片
+      const segmentsWithIndex = playlist.segments.map((seg, idx) => ({ segment: seg, index: idx }));
+      const segmentBatches = this.createBatches(segmentsWithIndex, parallelSegments);
       // HLS 清单不带总大小，用「已完成分片平均体积 × 总分片数」估算总字节数，
       // 让进度条/剩余时间随下载推进收敛，下载完成后由实际大小覆盖。
       const totalSegments = playlist.segments.length;
-      let completedSegments = 0;
-      let segmentBytes = 0;
+      let completedCount = completedSegments.length;
+      let segmentBytes = completedCount > 0 ? downloaded : 0;
 
       for (const batch of segmentBatches) {
         if (signal.aborted) throw new AppError('E_ABORTED');
 
+        // P0-3: 过滤掉已完成的分片
+        const pendingBatch = batch.filter(({ index }) => !completedSegments.includes(index));
+        if (pendingBatch.length === 0) continue;
+
         // 并行下载当前批次（带重试）
         const results = await Promise.all(
-          batch.map(async (segment) => {
+          pendingBatch.map(async ({ segment, index }) => {
             let lastError: unknown;
             for (let attempt = 0; attempt <= MAX_SEGMENT_RETRIES; attempt++) {
               try {
@@ -508,7 +527,7 @@ export class HlsDownloader {
                   data = await decryptAes128(data, key, iv);
                 }
 
-                return stripSegmentPrefix(data);
+                return { data: stripSegmentPrefix(data), index };
               } catch (e) {
                 lastError = e;
                 if (attempt < MAX_SEGMENT_RETRIES) {
@@ -523,20 +542,21 @@ export class HlsDownloader {
         );
 
         // 按顺序写入 sink
-        for (const data of results) {
+        for (const { data, index } of results) {
           await sink.write(data);
           downloaded += data.byteLength;
           segmentBytes += data.byteLength;
-          completedSegments += 1;
+          completedCount += 1;
+          completedSegments.push(index);
 
-          // 进度上报
+          // 进度上报（含分片索引，用于暂停续传）
           const currentTime = now();
           if (currentTime - lastPersist >= 1000) {
             const elapsedSec = Math.max((currentTime - lastSampleAt) / 1000, 0.001);
             const speedBps = Math.max(0, Math.round((downloaded - lastSampleBytes) / elapsedSec));
             const estimatedTotal =
-              completedSegments > 0
-                ? Math.max(downloaded, Math.round((segmentBytes / completedSegments) * totalSegments))
+              completedCount > 0
+                ? Math.max(downloaded, Math.round((segmentBytes / completedCount) * totalSegments))
                 : null;
             lastPersist = currentTime;
             lastSampleAt = currentTime;
@@ -546,10 +566,8 @@ export class HlsDownloader {
               totalBytes: estimatedTotal,
               speedBps,
               updatedAt: currentTime,
+              completedSegments,
             });
-            this.deps
-              .saveProgress(task.id, { downloadedBytes: downloaded, totalBytes: estimatedTotal })
-              .catch(() => undefined);
           }
         }
       }

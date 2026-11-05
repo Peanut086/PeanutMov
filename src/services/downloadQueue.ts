@@ -219,9 +219,29 @@ export class DownloadQueue {
   private disposed = false;
   /** 合并同一轮同步 enqueue 的调度，保证按 priority 排序后再启动 */
   private pumpScheduled = false;
+  // P1-3: 每个任务的互斥锁，防止并发操作导致状态回写竞态
+  private readonly taskLocks = new Map<string, Promise<void>>();
 
   constructor(private readonly opts: DownloadQueueOptions) {
     this.concurrency = opts.concurrency ?? DOWNLOAD_DEFAULT_CONCURRENCY;
+  }
+
+  /** P1-3: 获取任务互斥锁，确保同一任务的操作串行执行 */
+  private async withTaskLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.taskLocks.get(id) ?? Promise.resolve();
+    let release: () => void;
+    const next = new Promise<void>((resolve) => { release = resolve; });
+    this.taskLocks.set(id, next);
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release!();
+      // 清理已完成的锁
+      if (this.taskLocks.get(id) === next) {
+        this.taskLocks.delete(id);
+      }
+    }
   }
 
   get activeCount(): number {
@@ -384,52 +404,62 @@ export class DownloadQueue {
 
   /** 暂停：abort 正在进行的下载（下载中）或标记等待（queued 不合法） */
   async pause(id: string): Promise<DownloadTask> {
-    const task = await this.opts.load(id);
-    if (!task) throw new AppError('E_NOT_FOUND');
-    const now = this.opts.now ?? Date.now;
-    const next = transition(task, 'pause', now());
-    this.pausedSet.add(id);
-    const entry = this.active.get(id);
-    entry?.controller.abort();
-    await this.opts.save(next);
-    this.opts.onStatus?.(next, task.status);
-    return next;
+    return this.withTaskLock(id, async () => {
+      const task = await this.opts.load(id);
+      if (!task) throw new AppError('E_NOT_FOUND');
+      const now = this.opts.now ?? Date.now;
+      const next = transition(task, 'pause', now());
+      this.pausedSet.add(id);
+      const entry = this.active.get(id);
+      // P0-1: 传递 pause reason，让 downloadEngine 区分暂停与取消
+      entry?.controller.abort({ reason: 'pause' });
+      await this.opts.save(next);
+      this.opts.onStatus?.(next, task.status);
+      return next;
+    });
   }
 
   async resume(id: string): Promise<DownloadTask> {
-    const task = await this.opts.load(id);
-    if (!task) throw new AppError('E_NOT_FOUND');
-    const now = this.opts.now ?? Date.now;
-    const next = transition(task, 'resume', now());
-    this.pausedSet.delete(id);
-    await this.opts.save(next);
-    this.opts.onStatus?.(next, task.status);
-    this.enqueue(next);
-    return next;
+    return this.withTaskLock(id, async () => {
+      const task = await this.opts.load(id);
+      if (!task) throw new AppError('E_NOT_FOUND');
+      const now = this.opts.now ?? Date.now;
+      const next = transition(task, 'resume', now());
+      this.pausedSet.delete(id);
+      await this.opts.save(next);
+      this.opts.onStatus?.(next, task.status);
+      this.enqueue(next);
+      return next;
+    });
   }
 
   async retry(id: string): Promise<DownloadTask> {
-    const task = await this.opts.load(id);
-    if (!task) throw new AppError('E_NOT_FOUND');
-    const now = this.opts.now ?? Date.now;
-    const next = transition(task, 'retry', now());
-    await this.opts.save(next);
-    this.opts.onStatus?.(next, task.status);
-    this.enqueue(next);
-    return next;
+    return this.withTaskLock(id, async () => {
+      const task = await this.opts.load(id);
+      if (!task) throw new AppError('E_NOT_FOUND');
+      const now = this.opts.now ?? Date.now;
+      const next = transition(task, 'retry', now());
+      await this.opts.save(next);
+      this.opts.onStatus?.(next, task.status);
+      this.enqueue(next);
+      return next;
+    });
   }
 
   async cancel(id: string): Promise<DownloadTask> {
-    const task = await this.opts.load(id);
-    if (!task) throw new AppError('E_NOT_FOUND');
-    const now = this.opts.now ?? Date.now;
-    const next = transition(task, 'cancel', now());
-    this.dequeue(id);
-    const entry = this.active.get(id);
-    entry?.controller.abort();
-    await this.opts.save(next);
-    this.opts.onStatus?.(next, task.status);
-    return next;
+    return this.withTaskLock(id, async () => {
+      const task = await this.opts.load(id);
+      if (!task) throw new AppError('E_NOT_FOUND');
+      const now = this.opts.now ?? Date.now;
+      const next = transition(task, 'cancel', now());
+      this.dequeue(id);
+      const entry = this.active.get(id);
+      // P0-1: 传递 cancel reason，让 downloadEngine 区分暂停与取消
+      entry?.controller.abort({ reason: 'cancel' });
+      await this.opts.save(next);
+      this.opts.onStatus?.(next, task.status);
+      return next;
+    });
   }
 
   /** 全部暂停（切后台，AC-72） */
@@ -484,5 +514,6 @@ export class DownloadQueue {
     this.active.clear();
     this.pending.length = 0;
     this.pausedSet.clear();
+    this.taskLocks.clear();
   }
 }

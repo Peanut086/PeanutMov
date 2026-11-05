@@ -27,6 +27,8 @@ export interface ExoPrepareOptions {
   mime?: string;
   rect?: ExoRect;
   autoPlay?: boolean;
+  /** P0-7: 续播起始位置（毫秒），0 或 undefined 表示从头播放 */
+  startPositionMs?: number;
 }
 
 export interface ExoQuality {

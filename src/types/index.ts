@@ -239,6 +239,8 @@ export interface PlaybackSource {
   isLocal: boolean;
   /** v1.7/CHG-21：直播流（启用 hls.js 低延迟模式与追帧） */
   isLive?: boolean;
+  /** P0-7: 续播起始位置（毫秒），0 或 undefined 表示从头播放 */
+  startPositionMs?: number;
 }
 
 /* ---------- 列表查询 ---------- */
@@ -427,6 +429,8 @@ export interface DownloadTask {
   /** 待下载的封面 URL（创建时传入，下载完成后清空） */
   pendingCoverUrl?: string;
   errorCode: ErrorCode | null;
+  /** P0-3: HLS 下载已完成的分片序号列表（用于暂停续传） */
+  completedSegments?: number[];
   errorMessage: string | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;

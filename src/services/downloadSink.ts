@@ -75,12 +75,18 @@ function sanitizeSegment(value: string): string {
  * Android：Filesystem
  * =======================================================*/
 
+/** P1-1: 写盘合并缓冲阈值（512KB）。小于此值的 write 先攒在内存，达到后一次性落盘，减少桥接调用次数。 */
+const WRITE_BUFFER_LIMIT = 512 * 1024;
+
 export class NativeFsSink implements DownloadSink {
   readonly kind: DownloadSinkKind = 'filesystem';
   private filePath = '';
   private partPath = '';
   private written = 0;
   private started = false;
+  // P1-1: 滑动窗口写盘缓冲
+  private writeBuffer: Uint8Array[] = [];
+  private writeBufferSize = 0;
 
   async begin(init: SinkInit): Promise<BeginResult> {
     this.filePath = nativeFilePathOf(init.task);
@@ -110,6 +116,8 @@ export class NativeFsSink implements DownloadSink {
       this.written = 0;
     }
 
+    this.writeBuffer = [];
+    this.writeBufferSize = 0;
     this.started = true;
     return { actualStartBytes: this.written };
   }
@@ -117,9 +125,35 @@ export class NativeFsSink implements DownloadSink {
   async write(chunk: Uint8Array): Promise<void> {
     if (!this.started) throw new AppError('E_INVALID_STATE', 'sink 未初始化');
     if (chunk.byteLength === 0) return;
-    const base64 = arrayBufferToBase64(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength));
+
+    // P1-1: 先拷贝进缓冲区，减少 base64 转换和桥接调用次数
+    const copy = new Uint8Array(chunk.byteLength);
+    copy.set(chunk);
+    this.writeBuffer.push(copy);
+    this.writeBufferSize += chunk.byteLength;
+
+    if (this.writeBufferSize >= WRITE_BUFFER_LIMIT) {
+      await this.flushBuffer();
+    }
+  }
+
+  /** P1-1: 把缓冲区中的数据合并后一次性写入磁盘 */
+  private async flushBuffer(): Promise<void> {
+    if (this.writeBufferSize === 0) return;
+
+    // 合并所有缓冲块为一块连续内存
+    const merged = new Uint8Array(this.writeBufferSize);
+    let offset = 0;
+    for (const buf of this.writeBuffer) {
+      merged.set(buf, offset);
+      offset += buf.byteLength;
+    }
+    this.writeBuffer = [];
+    this.writeBufferSize = 0;
+
+    const base64 = arrayBufferToBase64(merged.buffer);
     await appendBase64(this.partPath, base64);
-    this.written += chunk.byteLength;
+    this.written += merged.byteLength;
   }
 
   async finish(): Promise<{ filePath: string | null; blobKey: string | null; size: number }> {
@@ -127,6 +161,9 @@ export class NativeFsSink implements DownloadSink {
       return { filePath: null, blobKey: null, size: 0 };
     }
     this.started = false;
+
+    // P1-1: 刷出剩余缓冲
+    await this.flushBuffer();
 
     // 原子 rename：.part → 最终路径
     try {
@@ -143,13 +180,18 @@ export class NativeFsSink implements DownloadSink {
   }
 
   async suspend(): Promise<void> {
-    // 暂停：保留 .part 文件，不清理
+    // P1-1: 暂停前刷出缓冲，确保数据落盘可供续传
+    if (this.started) {
+      await this.flushBuffer();
+    }
     this.started = false;
   }
 
   async abort(): Promise<void> {
     if (!this.started) return;
     this.started = false;
+    this.writeBuffer = [];
+    this.writeBufferSize = 0;
     try {
       await deleteFile(this.partPath);
     } catch (e) {
