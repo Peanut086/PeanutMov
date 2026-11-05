@@ -61,7 +61,8 @@ import { danmakuService } from '@/services/danmakuService';
 import DanmakuSettingsSheet from '@/components/player/DanmakuSettingsSheet.vue';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
-import { DIM_MAX_OPACITY, QUALITY_AUTO } from '@/player/constants';
+import { QUALITY_AUTO } from '@/player/constants';
+import { brightnessToDimOpacity, dimOpacityToBrightness } from '@/player/brightness';
 import { PLAYER_FAILOVER_WINDOW_MS } from '@/shared/constants';
 import { localProxyUrl } from '@/native/localProxy';
 import { libraryService } from '@/services/libraryService';
@@ -486,7 +487,7 @@ onMounted(async () => {
   if (settings.player?.rememberVolumeBrightness) {
     player.patch({
       volume: settings.player.lastVolume ?? 100,
-      dim: ((100 - (settings.player.lastBrightness ?? 100)) / 100) * DIM_MAX_OPACITY,
+      dim: brightnessToDimOpacity(settings.player.lastBrightness ?? 100),
     });
   }
   await library.loadDetail(mediaId.value);
@@ -507,7 +508,7 @@ onBeforeUnmount(() => {
   cancelAutoNext();
   // P1-4：记忆音量/亮度写回
   if (settings.player?.rememberVolumeBrightness) {
-    const brightness = Math.round(100 - (player.dim / DIM_MAX_OPACITY) * 100);
+    const brightness = Math.round(dimOpacityToBrightness(player.dim));
     void settings.update({
       player: {
         ...settings.player,
@@ -1156,7 +1157,7 @@ onBeforeUnmount(() => {
 });
 
 /* ---------- 亮度显示值 ---------- */
-const brightnessPercent = computed(() => Math.round(100 - (player.dim / DIM_MAX_OPACITY) * 100));
+const brightnessPercent = computed(() => dimOpacityToBrightness(player.dim));
 </script>
 
 <template>

@@ -26,7 +26,6 @@ import type {
 } from '@/player/types';
 import {
   CONTROLS_HIDE_DELAY_MS,
-  DIM_MAX_OPACITY,
   LOAD_METADATA_TIMEOUT_MS,
   NETWORK_RETRY_DELAY_MS,
   NETWORK_RETRY_TIMES,
@@ -35,6 +34,7 @@ import {
   RESUME_MAX_RATIO,
   RESUME_MIN_RATIO,
 } from '@/player/constants';
+import { clampBrightness } from '@/player/brightness';
 import { canPlayNativeHls, VideoEngine } from '@/player/VideoEngine';
 import { HlsEngine, isHlsSupported } from '@/player/HlsEngine';
 import { NativeEngine } from '@/player/NativeEngine';
@@ -98,7 +98,8 @@ export class PlayerController {
 
   private rate: PlaybackRate = 1;
   private volume = 100;
-  private dim = 0;
+  /** 画面亮度 0~100（100 = 无遮罩，0 = 遮罩最暗）；遮罩渲染由 PlayerSurface 负责 */
+  private brightness = 100;
   private quality: string = QUALITY_AUTO;
   private resizeMode: ResizeMode = 'contain';
 
@@ -178,7 +179,10 @@ export class PlayerController {
       host.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;';
       this.videoHost = host;
     }
-    if (this.videoHost.parentElement !== container) container.appendChild(this.videoHost);
+    // 视频挂到设计约定的 `[data-player-host]`（位于 PlayerSurface 内部），
+    // 让亮度遮罩/字幕等兄弟元素自然叠加在画面之上；找不到时回退容器（测试/兜底）。
+    const target = container.querySelector<HTMLElement>('[data-player-host]') ?? container;
+    if (this.videoHost.parentElement !== target) target.appendChild(this.videoHost);
     this.engine?.attach(this.videoHost);
     this.fullscreen.setElement(container);
   }
@@ -212,7 +216,6 @@ export class PlayerController {
       this.engine?.setRate(this.rate);
       this.engine?.setVolume(this.volume);
       this.engine?.setResizeMode(this.resizeMode);
-      this.applyDim();
       this.setState('ready');
       this.progress.update(start, this.engine?.getDuration() ?? 0);
       this.progress.start();
@@ -604,21 +607,13 @@ export class PlayerController {
     return this.resizeMode;
   }
 
-  /** 亮度遮罩：100 = 无遮罩，0 = 最暗（保留 20% 亮度，AC-48） */
-  setDim(percent: number): void {
-    this.dim = Math.min(100, Math.max(0, percent));
-    this.applyDim();
+  /** 画面亮度 0~100（100 = 无遮罩，0 = 遮罩最暗，AC-48） */
+  setBrightness(brightness: number): void {
+    this.brightness = clampBrightness(brightness);
   }
 
-  getDim(): number {
-    return this.dim;
-  }
-
-  private applyDim(): void {
-    if (!this.container) return;
-    const opacity = ((100 - this.dim) / 100) * DIM_MAX_OPACITY;
-    const layer = this.container.querySelector<HTMLElement>('[data-dim-layer]');
-    if (layer) layer.style.opacity = String(opacity);
+  getBrightness(): number {
+    return this.brightness;
   }
 
   /* ================= 字幕 ================= */

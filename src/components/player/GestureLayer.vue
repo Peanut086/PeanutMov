@@ -11,7 +11,7 @@ import { ref } from 'vue';
 
 import { usePlayerStore } from '@/stores/playerStore';
 import { GestureRecognizer, type GestureIntent, type GestureContext } from '@/player/GestureRecognizer';
-import { DIM_MAX_OPACITY } from '@/player/constants';
+import { dimOpacityToBrightness } from '@/player/brightness';
 
 const emit = defineEmits<{ (e: 'intent', intent: GestureIntent): void }>();
 
@@ -36,8 +36,8 @@ function ctx(): GestureContext {
     height: el?.clientHeight ?? 640,
     currentTime: player.currentTime,
     duration: player.duration,
-    volume: player.volume,
-    brightness: 100 - (player.dim / DIM_MAX_OPACITY) * 100,
+    volume: Math.min(100, Math.max(0, player.volume)),
+    brightness: dimOpacityToBrightness(player.dim),
     seekMaxSec: props.seekMaxSec,
     sensitivity: props.sensitivity,
   };
@@ -53,6 +53,8 @@ function ensureRecognizer(): GestureRecognizer {
 }
 
 function onPointerDown(ev: PointerEvent): void {
+  // 显式捕获：保证滑出层/跨到控制条时仍能收到 move/up，避免 sample 残留
+  (ev.currentTarget as HTMLElement | null)?.setPointerCapture?.(ev.pointerId);
   ensureRecognizer().pointerDown({ pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY }, ctx());
 }
 
@@ -61,6 +63,7 @@ function onPointerMove(ev: PointerEvent): void {
 }
 
 function onPointerUp(ev: PointerEvent): void {
+  (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId);
   ensureRecognizer().pointerUp({ pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY });
 }
 

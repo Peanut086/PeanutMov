@@ -3,6 +3,7 @@
  *
  * 只放播放器局部数值；跨模块常量见 `shared/constants.ts`。
  */
+import { DIM_MAX_PERCENT } from '@/shared/constants';
 import type { PlaybackRate } from '@/types';
 
 export const PLAYER_ENGINE_KIND = {
@@ -53,8 +54,8 @@ export const SUBTITLE_SIZE_CLASS = {
   large: 'subtitle-overlay--large',
 } as const;
 
-/** 亮度遮罩最大不透明度（AC-48：底层保留 20%） */
-export const DIM_MAX_OPACITY = 0.8;
+/** 亮度遮罩最大不透明度（AC-48：底层保留 20%；与 DIM_MAX_PERCENT 同一真相） */
+export const DIM_MAX_OPACITY = DIM_MAX_PERCENT / 100;
 
 /** 起播位置有效区间（技术方案 9.4） */
 export const RESUME_MIN_RATIO = 0.05;

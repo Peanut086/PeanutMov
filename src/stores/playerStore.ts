@@ -23,6 +23,7 @@ export const usePlayerStore = defineStore('player', () => {
   const buffered = ref(0);
   const rate = ref<PlaybackRate>(DEFAULT_PLAYBACK_RATE);
   const volume = ref(100);
+  /** 亮度遮罩不透明度 0~DIM_MAX_OPACITY（不是亮度 0~100，换算见 player/brightness） */
   const dim = ref(0);
   const fullscreen = ref(false);
   const controlsVisible = ref(true);

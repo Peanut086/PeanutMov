@@ -111,6 +111,33 @@ describe('PlayerController 源守卫（AC-40）', () => {
   });
 });
 
+describe('PlayerController 画面亮度（P0 回归）', () => {
+  it('默认亮度 100，setBrightness 按 0~100 钳制', () => {
+    const ctl = new PlayerController({ onProgress: () => {} });
+    expect(ctl.getBrightness()).toBe(100);
+
+    ctl.setBrightness(0);
+    expect(ctl.getBrightness()).toBe(0);
+    ctl.setBrightness(200);
+    expect(ctl.getBrightness()).toBe(100);
+    ctl.setBrightness(Number.NaN);
+    expect(ctl.getBrightness()).toBe(100);
+  });
+
+  it('不再命令式改写遮罩样式（遮罩唯一写入者为 PlayerSurface）', () => {
+    const ctl = new PlayerController({ onProgress: () => {} });
+    const el = mount(ctl);
+    const layer = document.createElement('div');
+    layer.setAttribute('data-dim-layer', '');
+    el.appendChild(layer);
+
+    ctl.setBrightness(0);
+    expect(layer.style.opacity).toBe('');
+
+    el.remove();
+  });
+});
+
 describe('PlayerController 状态栏接线（AC-52）', () => {
   it('进入全屏调 setStatusBarVisible(false)，退出调 true', async () => {
     const setStatusBarVisible = vi.fn();

@@ -9,6 +9,7 @@ import { computed } from 'vue';
 
 import type { SubtitleSettings } from '@/types';
 
+import { brightnessToDimOpacity } from '@/player/brightness';
 import { SUBTITLE_SIZE_CLASS } from '@/player/constants';
 
 const props = withDefaults(
@@ -34,7 +35,7 @@ const subtitleClasses = computed(() => [
 ]);
 
 /** 遮罩不透明度：0~0.8（设计规范 2.7：最多压到 80%，保留 20% 亮度） */
-const dimOpacity = computed(() => ((100 - Math.min(100, Math.max(0, props.dim))) / 100) * 0.8);
+const dimOpacity = computed(() => brightnessToDimOpacity(props.dim));
 </script>
 
 <template>

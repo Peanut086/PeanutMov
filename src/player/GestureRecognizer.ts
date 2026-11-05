@@ -86,8 +86,13 @@ export class GestureRecognizer {
   /* ---------- 事件入口 ---------- */
 
   pointerDown(ev: { pointerId: number; clientX: number; clientY: number }, ctx: GestureContext): void {
-    // 多指：忽略新增手指，避免缩放/误触
-    if (this.sample !== null) return;
+    // 多指：忽略新增手指，避免缩放/误触；
+    // 同一指针重复 down（上一次 up/cancel 丢失）则丢弃陈旧样本，避免手势永久卡死
+    if (this.sample !== null) {
+      if (this.sample.id !== ev.pointerId) return;
+      this.sample = null;
+      this.mode = 'none';
+    }
     this.cancelLongPress();
     const side = ev.clientX < ctx.width / 2 ? 'left' : 'right';
     this.sample = {
@@ -131,9 +136,9 @@ export class GestureRecognizer {
       if (Math.abs(dx) > Math.abs(dy) * GESTURE_DIRECTION_RATIO) this.mode = 'seek';
       else if (Math.abs(dy) > Math.abs(dx) * GESTURE_DIRECTION_RATIO) {
         this.mode = sample.side === 'left' ? 'brightness' : 'volume';
-        // 记录拖动起点的音量/亮度作为基准，避免逐帧累加漂移
-        this.baseVolume = ctx.volume;
-        this.baseBrightness = ctx.brightness;
+        // 记录拖动起点的音量/亮度作为基准，避免逐帧累加漂移；越界/NaN 由 clamp 兜底
+        this.baseVolume = clamp(Number.isFinite(ctx.volume) ? ctx.volume : 0, 0, 100);
+        this.baseBrightness = clamp(Number.isFinite(ctx.brightness) ? ctx.brightness : 100, 0, 100);
       } else return;
     }
 

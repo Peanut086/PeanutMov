@@ -213,4 +213,45 @@ describe('GestureRecognizer', () => {
     vi.advanceTimersByTime(1000);
     expect(intents).toHaveLength(0);
   });
+
+  it('回归：亮度已为 0 时再次上滑可回升（不再卡在 0%）', () => {
+    const { recognizer, intents } = makeRecognizer();
+    // 上游 store dim=0.8 经 dimOpacityToBrightness 反算得到 0
+    const ctx = makeCtx({ brightness: 0 });
+    recognizer.pointerDown({ pointerId: 1, clientX: 60, clientY: 480 }, ctx);
+    recognizer.pointerMove({ pointerId: 1, clientX: 60, clientY: 400 }, ctx);
+    recognizer.pointerMove({ pointerId: 1, clientX: 60, clientY: 300 }, ctx);
+
+    const values = intents.filter((i) => i.type === 'brightness');
+    const last = values[values.length - 1];
+    // 上滑 180px ≈ 28.1%（旧 bug 下基准为 -9900，任何滑动都被钳成 0）
+    if (last?.type === 'brightness') expect(last.value).toBeCloseTo(28.1, 1);
+  });
+
+  it('基准亮度为 NaN 时回落 100，不会把亮度锁死', () => {
+    const { recognizer, intents } = makeRecognizer();
+    const ctx = makeCtx({ brightness: Number.NaN });
+    recognizer.pointerDown({ pointerId: 1, clientX: 60, clientY: 480 }, ctx);
+    recognizer.pointerMove({ pointerId: 1, clientX: 60, clientY: 560 }, ctx);
+
+    const values = intents.filter((i) => i.type === 'brightness');
+    const last = values[values.length - 1];
+    if (last?.type === 'brightness') expect(last.value).toBeCloseTo(87.5, 1);
+  });
+
+  it('上次 up 丢失后同一指针再次按下会重置样本（手势不会永久失效）', () => {
+    const { recognizer, intents } = makeRecognizer();
+    const ctx = makeCtx({ brightness: 0 });
+    recognizer.pointerDown({ pointerId: 1, clientX: 60, clientY: 480 }, ctx);
+    recognizer.pointerMove({ pointerId: 1, clientX: 60, clientY: 600 }, ctx);
+    // 故意不派发 pointerUp，模拟落点被控制条等元素吞掉
+    const before = intents.length;
+
+    recognizer.pointerDown({ pointerId: 1, clientX: 60, clientY: 480 }, ctx);
+    recognizer.pointerMove({ pointerId: 1, clientX: 60, clientY: 400 }, ctx);
+
+    const after = intents.slice(before).filter((i) => i.type === 'brightness');
+    const last = after[after.length - 1];
+    if (last?.type === 'brightness') expect(last.value).toBeCloseTo(12.5, 1);
+  });
 });

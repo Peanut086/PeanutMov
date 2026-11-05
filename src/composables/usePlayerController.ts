@@ -14,7 +14,8 @@ import type { PlayerLoadOptions } from '@/player/types';
 import { PlayerController } from '@/player/PlayerController';
 import type { GestureIntent } from '@/player/GestureRecognizer';
 import { ProgressReporter } from '@/player/ProgressReporter';
-import { AUTO_NEXT_COUNTDOWN_SEC, CONTROLS_HIDE_DELAY_MS, DIM_MAX_OPACITY } from '@/player/constants';
+import { AUTO_NEXT_COUNTDOWN_SEC, CONTROLS_HIDE_DELAY_MS } from '@/player/constants';
+import { brightnessToDimOpacity, clampBrightness } from '@/player/brightness';
 import { toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { usePlayerStore } from '@/stores/playerStore';
@@ -510,9 +511,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
         showHud({ kind: 'volume', value: intent.value, deltaSec: 0 });
         break;
       case 'brightness': {
-        c.setDim(intent.value);
-        player.patch({ dim: ((100 - intent.value) / 100) * DIM_MAX_OPACITY });
-        showHud({ kind: 'brightness', value: intent.value, deltaSec: 0 });
+        const value = clampBrightness(intent.value);
+        c.setBrightness(value);
+        player.patch({ dim: brightnessToDimOpacity(value) });
+        showHud({ kind: 'brightness', value, deltaSec: 0 });
         break;
       }
       case 'long-press-start':
