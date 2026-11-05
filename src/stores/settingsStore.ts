@@ -8,7 +8,7 @@ import { settingsService } from '@/services/settingsService';
 import { appEvents } from '@/services/events';
 import { COMPLIANCE_VERSION } from '@/shared/constants';
 import { toErrorShape } from '@/shared/errors';
-import type { AppErrorShape, AppSettings, DeepPartial } from '@/types';
+import type { AppErrorShape, AppSettings, DeepPartial, NetdiskSettings } from '@/types';
 
 export const useSettingsStore = defineStore('settings', () => {
   const settings = ref<AppSettings | null>(null);
@@ -19,7 +19,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const player = computed(() => settings.value?.player ?? null);
   const gesture = computed(() => settings.value?.gesture ?? null);
   const download = computed(() => settings.value?.download ?? null);
-  const netdisk = computed(() => settings.value?.netdisk ?? { quality: 'auto', threadCount: 4 });
+  const netdisk = computed((): NetdiskSettings => settings.value?.netdisk ?? { quality: 'auto', threadCount: 4 });
 
   let unsubscribe: (() => void) | null = null;
 

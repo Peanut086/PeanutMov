@@ -94,9 +94,17 @@ function isNetdiskSource(source: Source): boolean {
 /**
  * P4-3: 为网盘源附加画质/线程配置到 initExt
  * 配置以 JSON 格式追加，爬虫源启动时解析
+ * P2-1: 加密 ext（长度 > 100 且含特殊字符）不追加，避免破坏加密结构
  */
 function appendNetdiskConfig(initExt: string): string {
   try {
+    // P2-1: 检测加密 ext（长度 > 100 且非 JSON 对象）
+    const isEncrypted = initExt.length > 100 && !initExt.trim().startsWith('{');
+    if (isEncrypted) {
+      logger.debug('跳过网盘配置追加（加密 ext）', { length: initExt.length });
+      return initExt;
+    }
+
     const config = getNetdiskConfig();
     const configStr = formatConfigForSpider(config);
     // 如果 initExt 已包含配置，替换；否则追加
@@ -838,6 +846,7 @@ export class SpiderAdapter extends BaseAdapter {
 
   /**
    * 解析页 → 直链（parse=1 / jx 解析器地址）。
+   * P0-3: 并发执行直抓与嗅探，竞速返回；直抓超时从 15s 降到 8s。
    * 先按普通请求抓一次：App 系爬虫的解析中转接口（getM3u8 之类）响应体就是 m3u8
    * 清单本身，页面里不会有媒体子请求，WebView 嗅探只能干等超时（真机实证
    * 2026-11-03：热播|多线/AppTT 15s 超时报「无播放地址」）；抓到清单 → 该地址直接可播。
@@ -848,19 +857,34 @@ export class SpiderAdapter extends BaseAdapter {
     if (!isNative()) {
       throw new AppError('E_NO_PLAY_URL', '该线路需要解析接口，暂不支持');
     }
-    const direct = await this.fetchIfPlaylist(pageUrl, source, signal).catch((e: unknown) => {
+
+    // P0-3: 并发执行直抓与嗅探，竞速返回
+    const directPromise = this.fetchIfPlaylist(pageUrl, source, signal).catch((e: unknown) => {
       logger.warn('解析地址直抓失败', source.name, pageUrl, e);
       return null;
     });
-    if (direct) return direct;
-    const sniffed = await sniffPlayUrl(pageUrl, this.headersWith(source)).catch((e: unknown) => {
+
+    const sniffPromise = sniffPlayUrl(pageUrl, this.headersWith(source), 8_000).catch((e: unknown) => {
       logger.warn('嗅探解析失败', source.name, pageUrl, e);
       return null;
     });
-    if (!sniffed) {
-      throw new AppError('E_NO_PLAY_URL', '未能从解析页取得播放地址，请换线路');
+
+    // 竞速：谁先返回有效结果用谁
+    const result = await Promise.race([
+      directPromise.then((url) => ({ source: 'direct' as const, url })),
+      sniffPromise.then((url) => ({ source: 'sniff' as const, url })),
+    ]);
+
+    if (result.url) {
+      logger.debug('解析竞速胜出', { source: source.name, winner: result.source, url: result.url });
+      return result.url;
     }
-    return sniffed;
+
+    // 两者都失败，等待另一个完成（可能还在跑）
+    const other = result.source === 'direct' ? await sniffPromise : await directPromise;
+    if (other) return other;
+
+    throw new AppError('E_NO_PLAY_URL', '未能从解析页取得播放地址，请换线路');
   }
 
   /** 解析地址的响应即 m3u8 清单 → 该地址本身可播；其余（HTML/错误页）返回 null 走嗅探 */
@@ -871,8 +895,8 @@ export class SpiderAdapter extends BaseAdapter {
       signal,
       throwOnHttpError: false,
       retries: 0,
-      // 冷启动经本地代理首抓 CDN 可达 ~7s（真机实证），8s 曾把成功响应判成超时
-      timeoutMs: 15_000,
+      // P0-3: 超时从 15s 降到 8s
+      timeoutMs: 8_000,
       responseType: 'text',
     });
     const contentType = response.headers.get('content-type') ?? '';
@@ -880,13 +904,13 @@ export class SpiderAdapter extends BaseAdapter {
     const body = (response.data ?? '').trimStart();
     if (!body.startsWith('#EXTM3U')) {
       logger.warn(
-        '解析地址响应不是清单',
-        source.name,
-        `status=${response.status}`,
-        `ct=${contentType}`,
-        `head=${body.slice(0, 96).replace(/\s+/g, ' ')}`,
-      );
-      return null;
+      '解析地址响应不是清单',
+      source.name,
+      `status=${response.status}`,
+      `ct=${contentType}`,
+      `head=${body.slice(0, 96).replace(/\s+/g, ' ')}`,
+    );
+    return null;
     }
     return url;
   }

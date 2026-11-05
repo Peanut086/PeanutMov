@@ -25,8 +25,15 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.exoplayer.hls.HlsMediaSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.datasource.okhttp.OkHttpDataSource;
+import androidx.media3.exoplayer.DefaultLoadControl;
+import androidx.media3.exoplayer.LoadControl;
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
+import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
 import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
+
+import okhttp3.OkHttpClient;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -113,10 +120,14 @@ public class ExoPlayerPlugin extends Plugin {
                     }
                 }
 
-                DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
-                        .setAllowCrossProtocolRedirects(true)
-                        .setConnectTimeoutMs(15_000)
-                        .setReadTimeoutMs(30_000);
+                // P0-4: OkHttp 数据源（连接池、HTTP/2、gzip）
+                OkHttpClient okHttpClient = new OkHttpClient.Builder()
+                        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+                        .followRedirects(true)
+                        .followSslRedirects(true)
+                        .build();
+                OkHttpDataSource.Factory httpFactory = new OkHttpDataSource.Factory(okHttpClient);
                 if (!headers.isEmpty()) {
                     httpFactory.setDefaultRequestProperties(headers);
                 }
@@ -132,8 +143,25 @@ public class ExoPlayerPlugin extends Plugin {
                                 .setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8).build()
                         : MediaItem.fromUri(url);
 
+                // P0-4: DefaultLoadControl 首帧优先（小 minBuffer），稳定后放大
+                LoadControl loadControl = new DefaultLoadControl.Builder()
+                        .setBufferDurationsMs(
+                                15_000,  // minBuffer: 首帧快
+                                30_000,  // maxBuffer: 稳定后缓冲
+                                2_500,   // bufferForPlayback: 2.5s 即播
+                                5_000    // bufferForPlaybackAfterRebuffer: 卡顿后缓冲 5s
+                        )
+                        .build();
+
+                // P0-4: 短退避重试策略（2 次，500ms/1500ms）
+                LoadErrorHandlingPolicy errorPolicy = new DefaultLoadErrorHandlingPolicy(2);
+
+                DefaultMediaSourceFactory mediaSourceFactory = new DefaultMediaSourceFactory(httpFactory);
+                mediaSourceFactory.setLoadErrorHandlingPolicy(errorPolicy);
+
                 player = new ExoPlayer.Builder(getContext())
-                        .setMediaSourceFactory(new DefaultMediaSourceFactory(httpFactory))
+                        .setMediaSourceFactory(mediaSourceFactory)
+                        .setLoadControl(loadControl)
                         .build();
                 player.setMediaItem(mediaItem);
                 player.addListener(new Player.Listener() {

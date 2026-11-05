@@ -9,6 +9,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -34,6 +38,9 @@ public class RangeDownloader {
     private static final String TAG = "RangeDownloader";
     private static final int BUFFER_SIZE = 64 * 1024; // 64KB 缓冲区
     private static final int PROGRESS_INTERVAL_MS = 500; // 进度上报间隔
+    // P1-5: 多 Range 并发下载配置
+    private static final int MULTI_RANGE_CONNECTIONS = 4;
+    private static final long MIN_SIZE_FOR_MULTI_RANGE = 10 * 1024 * 1024; // 10MB 以上才用多 Range
 
     private final Context context;
     private final NativeDownloadManager.DownloadTask task;
@@ -51,6 +58,7 @@ public class RangeDownloader {
     private long totalBytes = -1;
     private long lastProgressTime = 0;
     private long lastReportedBytes = 0;
+    private long lastSpeedCalcTime = 0;
 
     public interface ProgressCallback {
         void onProgress(String taskId, long downloadedBytes, long totalBytes, long speedBps);
@@ -109,24 +117,56 @@ public class RangeDownloader {
                 downloadedBytes.set(actualStartBytes);
             }
 
-            // 构建请求
-            Request.Builder requestBuilder = new Request.Builder().url(task.url);
+            // P1-5: 检查是否支持多 Range 下载
+            long totalSize = task.totalBytes;
+            if (totalSize <= 0) {
+                // 未知总大小，先 HEAD 请求获取
+                totalSize = fetchContentLength();
+            }
+
+            if (totalSize >= MIN_SIZE_FOR_MULTI_RANGE && checkMultiRangeSupport()) {
+                com.qoder.cinema.AppLog.i(TAG, "Using multi-range download: " + totalSize + " bytes, " + MULTI_RANGE_CONNECTIONS + " connections");
+                executeMultiRange(totalSize);
+                return;
+            }
+
+            // 单连接下载（原有逻辑）
+            executeSingleConnection();
+
+        } catch (Exception e) {
+            com.qoder.cinema.AppLog.e(TAG, "Download failed: " + task.taskId, e);
+            if (!canceled.get() && !paused.get()) {
+                errorCallback.onError(task.taskId, "E_NETWORK", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 单连接下载（支持断点续传）
+     */
+    private void executeSingleConnection() throws IOException {
+        long startBytes = downloadedBytes.get();
+
+        // 构建请求
+        Request.Builder requestBuilder = new Request.Builder()
+                .url(task.url)
+                .header("User-Agent", "PeanutMov/1.0");
+
+        // 添加自定义 headers
+        if (task.headers != null) {
             for (Map.Entry<String, String> entry : task.headers.entrySet()) {
-                requestBuilder.addHeader(entry.getKey(), entry.getValue());
+                requestBuilder.header(entry.getKey(), entry.getValue());
             }
+        }
 
-            // 添加 Range 头（续传）
-            long startBytes = downloadedBytes.get();
-            if (startBytes > 0 && task.totalBytes < 0) {
-                // 未知总大小时尝试续传
-                requestBuilder.addHeader("Range", "bytes=" + startBytes + "-");
-            } else if (startBytes > 0) {
-                requestBuilder.addHeader("Range", "bytes=" + startBytes + "-");
-            }
+        // Range 续传
+        if (startBytes > 0) {
+            requestBuilder.header("Range", "bytes=" + startBytes + "-");
+        }
 
-            // 执行请求
-            Response response = client.newCall(requestBuilder.build()).execute();
+        Response response = client.newCall(requestBuilder.build()).execute();
 
+        try {
             if (!response.isSuccessful() && response.code() != 206) {
                 // 416 Range Not Satisfiable：从头重下
                 if (response.code() == 416 && startBytes > 0) {
@@ -134,7 +174,7 @@ public class RangeDownloader {
                     response.close();
                     downloadedBytes.set(0);
                     deletePartFile();
-                    execute(); // 递归重试
+                    executeSingleConnection(); // 递归重试
                     return;
                 }
                 throw new IOException("HTTP " + response.code() + ": " + response.message());
@@ -146,6 +186,7 @@ public class RangeDownloader {
                 com.qoder.cinema.AppLog.w(TAG, "Server does not support Range, restarting from 0");
                 downloadedBytes.set(0);
                 deletePartFile();
+                startBytes = 0;
             }
 
             // 获取总大小
@@ -162,9 +203,7 @@ public class RangeDownloader {
             }
 
             // 写入文件
-            writeToFile(response);
-
-            response.close();
+            writeToFileResponse(response);
 
             // 检查是否被取消
             if (canceled.get()) {
@@ -176,11 +215,6 @@ public class RangeDownloader {
             // 检查是否暂停
             if (paused.get()) {
                 // 保留 .part 文件供续传
-                NativeDownloadManager.DownloadStatus status = new NativeDownloadManager.DownloadStatus();
-                status.taskId = task.taskId;
-                status.state = "paused";
-                status.downloadedBytes = downloadedBytes.get();
-                status.totalBytes = totalBytes;
                 return;
             }
 
@@ -192,16 +226,216 @@ public class RangeDownloader {
             }
 
             completedCallback.onCompleted(task.taskId, finalFilePath, downloadedBytes.get());
-
-        } catch (Exception e) {
-            com.qoder.cinema.AppLog.e(TAG, "Download failed: " + task.taskId, e);
-            if (!canceled.get() && !paused.get()) {
-                errorCallback.onError(task.taskId, "E_NETWORK", e.getMessage());
-            }
+        } finally {
+            response.close();
         }
     }
 
-    private void writeToFile(Response response) throws IOException {
+    /**
+     * HEAD 请求获取 Content-Length
+     */
+    private long fetchContentLength() {
+        try {
+            Request.Builder requestBuilder = new Request.Builder()
+                    .url(task.url)
+                    .head()
+                    .header("User-Agent", "PeanutMov/1.0");
+
+            if (task.headers != null) {
+                for (Map.Entry<String, String> entry : task.headers.entrySet()) {
+                    requestBuilder.header(entry.getKey(), entry.getValue());
+                }
+            }
+
+            Response response = client.newCall(requestBuilder.build()).execute();
+            try {
+                if (!response.isSuccessful()) return -1;
+                String contentLength = response.header("content-length");
+                return contentLength != null ? Long.parseLong(contentLength) : -1;
+            } finally {
+                response.close();
+            }
+        } catch (Exception e) {
+            com.qoder.cinema.AppLog.w(TAG, "fetchContentLength failed: " + e.getMessage());
+            return -1;
+        }
+    }
+
+    /**
+     * 检查服务器是否支持多 Range 下载
+     */
+    private boolean checkMultiRangeSupport() {
+        try {
+            Request.Builder requestBuilder = new Request.Builder()
+                    .url(task.url)
+                    .head()
+                    .header("User-Agent", "PeanutMov/1.0");
+
+            if (task.headers != null) {
+                for (Map.Entry<String, String> entry : task.headers.entrySet()) {
+                    requestBuilder.header(entry.getKey(), entry.getValue());
+                }
+            }
+
+            Response response = client.newCall(requestBuilder.build()).execute();
+            try {
+                if (!response.isSuccessful()) return false;
+                String acceptRanges = response.header("accept-ranges");
+                return acceptRanges != null && acceptRanges.contains("bytes");
+            } finally {
+                response.close();
+            }
+        } catch (Exception e) {
+            com.qoder.cinema.AppLog.w(TAG, "checkMultiRangeSupport failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 多 Range 并发下载
+     */
+    private void executeMultiRange(long totalSize) throws IOException {
+        long startBytes = downloadedBytes.get();
+        long remainingBytes = totalSize - startBytes;
+
+        if (remainingBytes <= 0) {
+            // 已完成
+            File partFileObj = new File(partFilePath);
+            File finalFileObj = new File(finalFilePath);
+            if (!partFileObj.renameTo(finalFileObj)) {
+                throw new IOException("Failed to rename .part file");
+            }
+            completedCallback.onCompleted(task.taskId, finalFilePath, totalSize);
+            return;
+        }
+
+        // 计算每个 Range 的大小
+        long rangeSize = remainingBytes / MULTI_RANGE_CONNECTIONS;
+        ExecutorService executor = Executors.newFixedThreadPool(MULTI_RANGE_CONNECTIONS);
+        Future<?>[] futures = new Future<?>[MULTI_RANGE_CONNECTIONS];
+
+        // 预分配文件大小
+        RandomAccessFile raf = new RandomAccessFile(partFilePath, "rw");
+        raf.setLength(totalSize);
+        raf.close();
+
+        final long finalTotalBytes = totalSize;
+
+        for (int i = 0; i < MULTI_RANGE_CONNECTIONS; i++) {
+            final int rangeIndex = i;
+            final long rangeStart = startBytes + (i * rangeSize);
+            final long rangeEnd = (i == MULTI_RANGE_CONNECTIONS - 1)
+                    ? totalSize - 1
+                    : rangeStart + rangeSize - 1;
+
+            futures[i] = executor.submit(() -> {
+                try {
+                    downloadRange(rangeIndex, rangeStart, rangeEnd, finalTotalBytes);
+                } catch (Exception e) {
+                    com.qoder.cinema.AppLog.e(TAG, "Range " + rangeIndex + " failed: " + e.getMessage());
+                    // 标记错误，让主线程处理
+                    if (!canceled.get() && !paused.get()) {
+                        errorCallback.onError(task.taskId, "E_NETWORK", "Range " + rangeIndex + " failed: " + e.getMessage());
+                    }
+                }
+            });
+        }
+
+        // 等待所有 Range 完成
+        executor.shutdown();
+        try {
+            executor.awaitTermination(1, TimeUnit.HOURS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Multi-range download interrupted");
+        }
+
+        // 检查是否被取消或暂停
+        if (canceled.get()) {
+            deletePartFile();
+            errorCallback.onError(task.taskId, "E_CANCELED", "Download canceled");
+            return;
+        }
+
+        if (paused.get()) {
+            return;
+        }
+
+        // 原子 rename：.part → 最终路径
+        File partFileObj = new File(partFilePath);
+        File finalFileObj = new File(finalFilePath);
+        if (!partFileObj.renameTo(finalFileObj)) {
+            throw new IOException("Failed to rename .part file");
+        }
+
+        completedCallback.onCompleted(task.taskId, finalFilePath, totalSize);
+    }
+
+    /**
+     * 下载单个 Range
+     */
+    private void downloadRange(int rangeIndex, long rangeStart, long rangeEnd, long totalFileSize) throws IOException {
+        Request.Builder requestBuilder = new Request.Builder()
+                .url(task.url)
+                .header("Range", "bytes=" + rangeStart + "-" + rangeEnd)
+                .header("User-Agent", "PeanutMov/1.0");
+
+        if (task.headers != null) {
+            for (Map.Entry<String, String> entry : task.headers.entrySet()) {
+                requestBuilder.header(entry.getKey(), entry.getValue());
+            }
+        }
+
+        Response response = client.newCall(requestBuilder.build()).execute();
+        try {
+            if (!response.isSuccessful() && response.code() != 206) {
+                throw new IOException("Range " + rangeIndex + " HTTP " + response.code());
+            }
+
+            InputStream inputStream = response.body().byteStream();
+            RandomAccessFile outputFile = new RandomAccessFile(partFilePath, "rw");
+            outputFile.seek(rangeStart);
+
+            byte[] buffer = new byte[BUFFER_SIZE];
+            int bytesRead;
+            long localDownloaded = 0;
+
+            try {
+                while ((bytesRead = inputStream.read(buffer)) != -1) {
+                    if (canceled.get() || paused.get()) {
+                        break;
+                    }
+
+                    outputFile.write(buffer, 0, bytesRead);
+                    localDownloaded += bytesRead;
+                    downloadedBytes.addAndGet(bytesRead);
+
+                    // 上报进度（节流，每个 range 独立计算）
+                    long now = System.currentTimeMillis();
+                    if (now - lastProgressTime >= PROGRESS_INTERVAL_MS) {
+                        long speedBps = 0;
+                        long elapsed = now - lastSpeedCalcTime;
+                        if (elapsed > 0) {
+                            speedBps = ((downloadedBytes.get() - lastReportedBytes) * 1000) / elapsed;
+                            lastReportedBytes = downloadedBytes.get();
+                            lastSpeedCalcTime = now;
+                        }
+                        progressCallback.onProgress(task.taskId, downloadedBytes.get(), totalFileSize, speedBps);
+                        lastProgressTime = now;
+                    }
+                }
+            } finally {
+                outputFile.close();
+                inputStream.close();
+            }
+
+            com.qoder.cinema.AppLog.d(TAG, "Range " + rangeIndex + " completed: " + localDownloaded + " bytes");
+        } finally {
+            response.close();
+        }
+    }
+
+    private void writeToFileResponse(Response response) throws IOException {
         InputStream inputStream = response.body().byteStream();
         RandomAccessFile outputFile = new RandomAccessFile(partFilePath, "rw");
 

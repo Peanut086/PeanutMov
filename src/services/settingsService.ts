@@ -54,7 +54,7 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       resizeMode: 'contain',
     },
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
-    download: { concurrency: 2, wifiOnly: false, autoResume: true, speedLimit: 'unlimited' },
+    download: { concurrency: 2, wifiOnly: false, autoResume: true, speedLimit: 'unlimited', segmentConcurrency: 6 },
     searchHistory: [],
     /* v1.7 增量（CHG-22/24/21） */
     showRecommendedSubscriptions: true,
@@ -122,6 +122,10 @@ function sanitize(input: AppSettings): AppSettings {
 
   const download: DownloadSettings = { ...defaults.download, ...(downloadPatch ?? {}) };
   download.concurrency = ([1, 2, 3] as const).includes(download.concurrency) ? download.concurrency : 2;
+  // P0-6: segmentConcurrency 合法值校验
+  download.segmentConcurrency = ([3, 6, 8] as const).includes(download.segmentConcurrency as 3 | 6 | 8)
+    ? download.segmentConcurrency
+    : 6;
 
   const danmakuPatch = input.danmaku as Partial<DanmakuSettings> | undefined;
   const danmaku: DanmakuSettings = { ...defaults.danmaku!, ...(danmakuPatch ?? {}) };

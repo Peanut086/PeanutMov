@@ -73,12 +73,16 @@ export class DownloadEngine {
   async run(task: DownloadTask, signal: AbortSignal): Promise<void> {
     // HLS 分片下载：委托给 HlsDownloader（暂不支持 Native）
     if (task.format === 'hls') {
+      // P0-6: 从设置读取 segmentConcurrency
+      const settings = await settingsService.get();
+      const parallelSegments = settings.download.segmentConcurrency ?? 6;
       const hlsDownloader = createHlsDownloader({
         load: this.deps.load,
         saveProgress: this.deps.saveProgress,
         fetchImpl: this.deps.fetchImpl,
         createSinkImpl: this.deps.createSinkImpl,
         now: this.deps.now,
+        parallelSegments,
       });
       await hlsDownloader.run(task, signal);
       return;

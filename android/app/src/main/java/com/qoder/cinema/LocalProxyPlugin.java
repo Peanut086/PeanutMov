@@ -53,7 +53,14 @@ public class LocalProxyPlugin extends Plugin {
         }
     }
 
-    private final Map<String, Target> targets = new ConcurrentHashMap<>();
+    private final Map<String, Target> targets = new java.util.LinkedHashMap<String, Target>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Target> eldest) {
+            return size() > 100; // P0-8: LRU，最多保留 100 个 token
+        }
+    };
+    // P0-8: 302 跳转目标缓存（原始 URL → 最终 URL）
+    private final Map<String, String> redirectCache = new ConcurrentHashMap<>();
     private final ExecutorService io = Executors.newCachedThreadPool();
     private volatile ServerSocket server;
     private volatile int port = 0;
@@ -198,6 +205,13 @@ public class LocalProxyPlugin extends Plugin {
         // setInstanceFollowRedirects 不会跨协议（http→https）跟随，3xx 会原样
         // 冒到 CapacitorHttp 触发 "statusCode can't be in the [300, 399] range"。
         String url = target.url;
+
+        // P0-8: 302 跳转目标缓存
+        String cachedRedirect = redirectCache.get(url);
+        if (cachedRedirect != null) {
+            url = cachedRedirect;
+        }
+
         HttpURLConnection conn = openConnection(target, url, range);
         int status = conn.getResponseCode();
         for (int hop = 0; hop < MAX_REDIRECTS && status >= 300 && status < 400; hop++) {
@@ -209,6 +223,12 @@ public class LocalProxyPlugin extends Plugin {
             conn = openConnection(target, url, range);
             status = conn.getResponseCode();
         }
+
+        // P0-8: 缓存跳转结果
+        if (!url.equals(target.url)) {
+            redirectCache.put(target.url, url);
+        }
+
         OutputStream out = client.getOutputStream();
         StringBuilder head = new StringBuilder("HTTP/1.1 ").append(status).append(" ")
                 .append(conn.getResponseMessage() == null ? "" : conn.getResponseMessage())
@@ -221,6 +241,8 @@ public class LocalProxyPlugin extends Plugin {
             if (name == null) continue; // 状态行
             String lower = name.toLowerCase();
             if (lower.equals("transfer-encoding") || lower.equals("connection")) continue;
+            // P0-8: m3u8 重写时删 Content-Length（长度会变）
+            if (isM3u8 && lower.equals("content-length")) continue;
             for (String value : entry.getValue()) {
                 head.append(name).append(": ").append(value).append("\r\n");
                 if (lower.equals("content-length")) hasLength = true;

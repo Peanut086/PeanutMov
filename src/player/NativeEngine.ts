@@ -16,7 +16,8 @@ import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 import { assertSourceSupported } from '@/player/sourceGuard';
 import { ExoPlayer, exoHeadersOf, type ExoQuality, type ExoTextTrack } from '@/native/exoPlayerPlugin';
 
-const PROGRESS_POLL_MS = 500;
+// P2-2: 进度轮询从 500ms 放宽到 1000ms，减少 CPU 开销
+const PROGRESS_POLL_MS = 1000;
 const RECT_SYNC_DEBOUNCE_MS = 150;
 
 export interface NativeEngineEvents {

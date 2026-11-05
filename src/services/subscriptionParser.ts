@@ -414,6 +414,10 @@ function parseEntry(
         // JS 爬虫用脚本地址；豆瓣源用规则地址
         normalizeBaseUrl(spiderKind === 'jar' ? jarHttpUrl(jarUrl ?? '') : api);
   const searchable = flagToBool(raw['searchable'] ?? raw['search'], true);
+  // P1-1: 消费订阅字段 timeout/quickSearch/playerType
+  const timeout = typeof raw['timeout'] === 'number' ? raw['timeout'] : null;
+  const quickSearch = flagToBool(raw['quickSearch'], false);
+  const playerType = raw['playerType'] != null ? Number(raw['playerType']) : null;
 
   const spiderExt: SpiderExtRecord | null =
     spiderKind === null
@@ -443,13 +447,13 @@ function parseEntry(
           pathPrefix: null,
           auth: null,
           headers: parseHeaders(raw['headers']),
-          // ext 解析失败时保持 null（技术方案 7.7）；成功时把 searchable 合入 ext 供适配器读取
+          // ext 解析失败时保持 null（技术方案 7.7）；成功时把 searchable/timeout/quickSearch/playerType 合入 ext 供适配器读取
           ext:
             spiderExt !== null
-              ? { ...spiderExt, searchable }
+              ? { ...spiderExt, searchable, timeout, quickSearch, playerType }
               : extResult.ext === null
                 ? null
-                : { ...extResult.ext, searchable },
+                : { ...extResult.ext, searchable, timeout, quickSearch, playerType },
           enabled: true,
         }
       : null;

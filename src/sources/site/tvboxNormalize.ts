@@ -194,6 +194,7 @@ export function buildLinesWithRaw(
         title,
         durationSec: null,
         subtitles: [],
+        rawUrl: entry.url,
         updatedAt: now,
       });
     });

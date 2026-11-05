@@ -403,8 +403,9 @@ public final class SpiderProxyServer {
     private static Object[] fetchPassthrough(String url) {
         try {
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-            conn.setConnectTimeout(8_000);
-            conn.setReadTimeout(8_000);
+            // P1-3: 超时从 8s 提到 15s（冷启动首抓 CDN 可达 ~7s）
+            conn.setConnectTimeout(15_000);
+            conn.setReadTimeout(15_000);
             conn.setInstanceFollowRedirects(true);
             conn.setRequestProperty("User-Agent",
                     "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
@@ -413,20 +414,28 @@ public final class SpiderProxyServer {
                 Log.w(TAG, "passthrough upstream " + status + " url=" + url);
                 return null;
             }
+
+            // P1-3: 先读响应头判断 content-type，决定是否流式
+            String contentType = conn.getContentType();
+            boolean isM3u8 = contentType != null && contentType.toLowerCase().contains("mpegurl");
+
             java.io.InputStream in = status >= 200 && status < 400 ? conn.getInputStream() : conn.getErrorStream();
-            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+
+            // 对于 m3u8，必须整包读取以 absolutize；对于其他内容，也整包读取但用更大缓冲区
+            ByteArrayOutputStream buf = new ByteArrayOutputStream(isM3u8 ? 8192 : 65536);
             byte[] chunk = new byte[8192];
             int n;
             while ((n = in.read(chunk)) > 0) buf.write(chunk, 0, n);
             in.close();
             String body = new String(buf.toByteArray(), StandardCharsets.UTF_8);
+
             Map<String, String> headers = new LinkedHashMap<>();
             String rewritten = body;
             if (body.stripLeading().startsWith("#EXTM3U")) {
                 headers.put("Content-Type", "application/vnd.apple.mpegurl");
                 rewritten = absolutize(body, url);
             } else {
-                headers.put("Content-Type", "text/plain; charset=utf-8");
+                headers.put("Content-Type", contentType != null ? contentType : "text/plain; charset=utf-8");
             }
             Log.i(TAG, "passthrough " + status + " len=" + rewritten.length() + " url=" + url);
             return new Object[]{rewritten, headers};

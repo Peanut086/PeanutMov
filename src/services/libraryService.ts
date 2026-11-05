@@ -111,8 +111,42 @@ export interface LibraryService {
   ): Promise<{ mediaId: string; sourceName: string } | null>;
 }
 
-/** 首屏缓存有效期（技术方案 6 章：cachedAt < 5min） */
+/** 首屏缓存有效期（技术方案 6 章：cached < 5min） */
 const BROWSE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** 播放地址内存缓存（避免每次播放都重跑 detailContent + playerContent） */
+interface ResolvedPlayCacheEntry {
+  playback: PlaybackSource;
+  cachedAt: number;
+}
+const RESOLVED_PLAY_TTL_MS = 30 * 60 * 1000;
+const resolvedPlayCache = new Map<string, ResolvedPlayCacheEntry>();
+
+function resolvedPlayCacheKey(mediaId: string, lineId: string, episodeId: string | null | undefined): string {
+  return `${mediaId}|${lineId}|${episodeId ?? ''}`;
+}
+
+function getResolvedPlayCache(key: string): PlaybackSource | null {
+  const entry = resolvedPlayCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.cachedAt > RESOLVED_PLAY_TTL_MS) {
+    resolvedPlayCache.delete(key);
+    return null;
+  }
+  return entry.playback;
+}
+
+function setResolvedPlayCache(key: string, playback: PlaybackSource): void {
+  resolvedPlayCache.set(key, { playback, cachedAt: Date.now() });
+}
+
+function invalidateResolvedPlayCache(mediaId: string): void {
+  for (const key of resolvedPlayCache.keys()) {
+    if (key.startsWith(`${mediaId}|`)) {
+      resolvedPlayCache.delete(key);
+    }
+  }
+}
 
 const EMPTY_FILTERS: LibraryFilters = { type: null, yearFrom: null, yearTo: null, area: null, ext: null };
 
@@ -536,7 +570,22 @@ export const libraryService: LibraryService = {
           params.onPartial?.({ sourceId: source.id, items: [], error: shape, done, total });
         }
       };
-      await Promise.all(enabled.map((source, index) => settleOne(source, index)));
+      // P1-2: 并发上限 8，避免同时打满网络/爬虫
+      const SEARCH_CONCURRENCY = 8;
+      let cursor = 0;
+      const workers: Promise<void>[] = [];
+      for (let i = 0; i < Math.min(SEARCH_CONCURRENCY, enabled.length); i++) {
+        workers.push(
+          (async () => {
+            while (cursor < enabled.length) {
+              const idx = cursor++;
+              const source = enabled[idx];
+              if (source) await settleOne(source, idx);
+            }
+          })(),
+        );
+      }
+      await Promise.all(workers);
     } else {
       for (const source of enabled) {
         failed.push({ sourceId: source.id, error: toErrorShape(new AppError('E_NETWORK')) });
@@ -664,6 +713,14 @@ export const libraryService: LibraryService = {
     const lineId = params.lineId ?? lines[0]?.id;
     if (!lineId) throw new AppError('E_NO_PLAY_URL');
 
+    // P0-1: 播放地址内存缓存，避免每次播放都重跑 detailContent + playerContent
+    const cacheKey = resolvedPlayCacheKey(item.id, lineId, params.episodeId);
+    const cached = getResolvedPlayCache(cacheKey);
+    if (cached) {
+      logger.debug('播放地址缓存命中', { mediaId: item.id, lineId, episodeId: params.episodeId });
+      return cached;
+    }
+
     try {
       prewarm(adapter, source);
       const playback = await adapter.resolvePlayUrl({
@@ -674,6 +731,7 @@ export const libraryService: LibraryService = {
         lineId,
       });
       calibrateAlive(source.id);
+      setResolvedPlayCache(cacheKey, playback);
       return playback;
     } catch (e) {
       const error = readableSourceError(e);
@@ -803,6 +861,9 @@ async function refreshDetail(item: MediaItem): Promise<MediaDetail> {
     updatedAt: now,
     isDemo: item.isDemo,
   };
+
+  // P0-1: 详情刷新时失效播放地址缓存
+  invalidateResolvedPlayCache(item.id);
 
   // 删除旧线路/剧集后写入新的（避免线路数变化留下脏数据）
   await lineRepo.removeByMedia(item.id);

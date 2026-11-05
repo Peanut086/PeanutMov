@@ -188,6 +188,8 @@ public class SpiderPlugin extends Plugin {
     private final Map<String, File> jarCache = new ConcurrentHashMap<>();
     /** jar 文件 → dex 输出目录，避免重复解包 */
     private final Map<String, File> dexCache = new ConcurrentHashMap<>();
+    /** P0-5: jar 文件 → DexClassLoader 池，复用避免重复加载 */
+    private final Map<String, dalvik.system.DexClassLoader> loaderCache = new ConcurrentHashMap<>();
     private int handleSeq = 0;
 
     /**
@@ -900,12 +902,22 @@ public class SpiderPlugin extends Plugin {
         // 必须在 DexClassLoader 之前拒绝，否则一个后台预热就能把整个 App 打崩。
         assertNativeAbiSupported(jarFile);
 
-        ClassLoader parent = context.getClassLoader();
-        dalvik.system.DexClassLoader loader = new dalvik.system.DexClassLoader(
-                jarFile.getAbsolutePath(),
-                dexDir.getAbsolutePath(),
-                null,
-                parent);
+        // P0-5: 复用 DexClassLoader，避免同一 jar 重复加载
+        String jarKey = jarFile.getAbsolutePath();
+        dalvik.system.DexClassLoader loader = loaderCache.get(jarKey);
+        boolean loaderReused = loader != null;
+        if (loader == null) {
+            ClassLoader parent = context.getClassLoader();
+            loader = new dalvik.system.DexClassLoader(
+                    jarFile.getAbsolutePath(),
+                    dexDir.getAbsolutePath(),
+                    null,
+                    parent);
+            loaderCache.put(jarKey, loader);
+            Log.i(TAG, "created new DexClassLoader for jar: " + jarKey);
+        } else {
+            Log.i(TAG, "reusing DexClassLoader for jar: " + jarKey);
+        }
 
         // jar 自带 com.github.catvod.spider.Init（静态字段 Application c 由 TVBox 宿主注入）。
         // 不注入时 Init.context() 返回 null，爬虫在 detailContent 等路径里
@@ -940,7 +952,7 @@ public class SpiderPlugin extends Plugin {
         if (userAgent != null && !userAgent.isEmpty()) {
             applyUserAgent(spider, userAgent);
         }
-        Log.i(TAG, "loaded spider: " + api);
+        Log.i(TAG, "loaded spider: " + api + (loaderReused ? " (reused loader)" : ""));
         return new LoadedSpider(spider, api, dexDir);
     }
 

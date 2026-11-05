@@ -99,6 +99,11 @@ export function toAbsoluteUrl(base: string, value: string | null | undefined): s
  */
 export function guessFormatFromUrl(url: string | null | undefined): MediaFormat | null {
   if (typeof url !== 'string' || url.trim().length === 0) return null;
+
+  // P0-7: 整串 URL 正则（含 query 参数），识别 ?url=xxx.m3u8 这类
+  if (/\?[^#]*m3u8/i.test(url)) return 'hls';
+  if (/[?&]format=hls/i.test(url)) return 'hls';
+
   let pathname = url.trim();
   try {
     pathname = new URL(pathname).pathname;
@@ -106,13 +111,13 @@ export function guessFormatFromUrl(url: string | null | undefined): MediaFormat 
     // 相对地址：手动剥离 query/hash
     pathname = pathname.split('#')[0]!.split('?')[0]!;
   }
-  const lower = pathname.toLowerCase();
-  if (lower.endsWith('.m3u8')) return 'hls';
+  const lowerPath = pathname.toLowerCase();
+  if (lowerPath.endsWith('.m3u8')) return 'hls';
   // CDN 路径段包含 /m3u8/ 也视为 HLS（如 /nby/m3u8/play/ts/...）
-  if (lower.includes('/m3u8/')) return 'hls';
-  if (lower.endsWith('.mp4') || lower.endsWith('.m4v') || lower.endsWith('.mov')) return 'mp4';
-  if (lower.endsWith('.webm')) return 'webm';
-  if (lower.endsWith('.ts')) return 'ts';
+  if (lowerPath.includes('/m3u8/')) return 'hls';
+  if (lowerPath.endsWith('.mp4') || lowerPath.endsWith('.m4v') || lowerPath.endsWith('.mov')) return 'mp4';
+  if (lowerPath.endsWith('.webm')) return 'webm';
+  if (lowerPath.endsWith('.ts')) return 'ts';
   return null;
 }
 

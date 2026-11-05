@@ -22,8 +22,10 @@ export interface HlsDownloaderDeps {
   fetchImpl?: typeof fetch;
   createSinkImpl?: (kind: DownloadTask['sink']) => DownloadSink;
   now?: () => number;
-  /** 并行分片数（默认 3） */
+  /** 并行分片数（默认 6） */
   parallelSegments?: number;
+  /** P1-6: 下载质量选择（max=最高, 1080p=1080p封顶, 720p=720p封顶, auto=按网络） */
+  quality?: 'max' | '1080p' | '720p' | 'auto';
 }
 
 /** HLS 变体流（master playlist 中的选项） */
@@ -67,7 +69,9 @@ interface HlsPlaylist {
 }
 
 /** 并行下载控制 */
-const DEFAULT_PARALLEL_SEGMENTS = 3;
+const DEFAULT_PARALLEL_SEGMENTS = 6;
+const MAX_SEGMENT_RETRIES = 2;
+const RETRY_BACKOFF_MS = [500, 1500];
 
 /**
  * 解析 m3u8 清单
@@ -352,10 +356,13 @@ export class HlsDownloader {
       throw toAppError(e, 'E_NETWORK');
     }
 
-    // 2. 如果是 master playlist，选择最高码率并获取 media playlist
+    // 2. 如果是 master playlist，选择码率并获取 media playlist
     if (playlist.isMaster && playlist.variants && playlist.variants.length > 0) {
-      const selected = playlist.variants[0]; // 已按码率降序排序
+      // P1-6: 按质量选择变体流
+      const quality = this.deps.quality ?? 'max';
+      const selected = this.selectVariant(playlist.variants, quality);
       logger.debug('选择变体流', {
+        quality,
         bandwidth: selected.bandwidth,
         resolution: selected.resolution,
         codecs: selected.codecs,
@@ -468,37 +475,50 @@ export class HlsDownloader {
       for (const batch of segmentBatches) {
         if (signal.aborted) throw new AppError('E_ABORTED');
 
-        // 并行下载当前批次
+        // 并行下载当前批次（带重试）
         const results = await Promise.all(
           batch.map(async (segment) => {
-            const response = await fetchImpl(resourceUrl(segment.url), {
-              method: 'GET',
-              headers: resourceHeaders(
-                segment.byteRange
-                  ? { Range: `bytes=${segment.byteRange.offset}-${segment.byteRange.offset + segment.byteRange.length - 1}` }
-                  : undefined,
-              ),
-              signal,
-              cache: 'no-store',
-            });
+            let lastError: unknown;
+            for (let attempt = 0; attempt <= MAX_SEGMENT_RETRIES; attempt++) {
+              try {
+                const response = await fetchImpl(resourceUrl(segment.url), {
+                  method: 'GET',
+                  headers: resourceHeaders(
+                    segment.byteRange
+                      ? { Range: `bytes=${segment.byteRange.offset}-${segment.byteRange.offset + segment.byteRange.length - 1}` }
+                      : undefined,
+                  ),
+                  signal,
+                  cache: 'no-store',
+                });
 
-            if (!response.ok) {
-              throw this.mapHttpError(response.status, `下载分片失败: ${segment.url}`);
-            }
+                if (!response.ok) {
+                  throw this.mapHttpError(response.status, `下载分片失败: ${segment.url}`);
+                }
 
-            let data = new Uint8Array(await response.arrayBuffer());
+                let data = new Uint8Array(await response.arrayBuffer());
 
-            // 解密（如果需要）
-            if (segment.key && segment.key.method === 'AES-128') {
-              const key = keyCache.get(segment.key.uri);
-              if (!key) {
-                throw new AppError('E_PARSE', `密钥未找到: ${segment.key.uri}`);
+                // 解密（如果需要）
+                if (segment.key && segment.key.method === 'AES-128') {
+                  const key = keyCache.get(segment.key.uri);
+                  if (!key) {
+                    throw new AppError('E_PARSE', `密钥未找到: ${segment.key.uri}`);
+                  }
+                  const iv = segment.key.iv ? parseIV(segment.key.iv) : this.getDefaultIV(segment, playlist);
+                  data = await decryptAes128(data, key, iv);
+                }
+
+                return stripSegmentPrefix(data);
+              } catch (e) {
+                lastError = e;
+                if (attempt < MAX_SEGMENT_RETRIES) {
+                  const backoff = RETRY_BACKOFF_MS[attempt] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]!;
+                  logger.warn('分片下载失败，重试中', { attempt: attempt + 1, backoff, url: segment.url, error: e });
+                  await new Promise((resolve) => setTimeout(resolve, backoff));
+                }
               }
-              const iv = segment.key.iv ? parseIV(segment.key.iv) : this.getDefaultIV(segment, playlist);
-              data = await decryptAes128(data, key, iv);
             }
-
-            return stripSegmentPrefix(data);
+            throw lastError;
           }),
         );
 
@@ -580,6 +600,25 @@ export class HlsDownloader {
       logger.warn('HLS 本机代理不可用，分片回退直连', (e as Error)?.message ?? String(e));
       return null;
     }
+  }
+
+  /**
+   * P1-6: 按质量选择变体流
+   */
+  private selectVariant(variants: HlsVariant[], quality: 'max' | '1080p' | '720p' | 'auto'): HlsVariant {
+    // variants 已按码率降序排序
+    if (quality === 'max' || quality === 'auto') {
+      return variants[0]!;
+    }
+    const maxHeight = quality === '1080p' ? 1080 : 720;
+    // 找第一个高度 <= maxHeight 的变体
+    for (const v of variants) {
+      if (v.resolution && v.resolution.height <= maxHeight) {
+        return v;
+      }
+    }
+    // 都没找到，返回最低的
+    return variants[variants.length - 1]!;
   }
 
   /**

@@ -19,9 +19,17 @@ export interface HealthSnapshot {
 let cachedSnapshot: HealthSnapshot | null = null;
 let running: Promise<HealthSnapshot> | null = null;
 
+// P1-4: 健康检查缓存 TTL（10 分钟）
+const HEALTH_CACHE_TTL_MS = 10 * 60 * 1000;
+const unreachableCooldowns = new Map<string, number>();
+
 export const healthService = {
   /** 检查全部启用源（并发上限 6，单源 3s 超时） */
   async checkAll(): Promise<HealthSnapshot> {
+    // P1-4: 缓存 TTL 检查
+    if (cachedSnapshot && Date.now() - cachedSnapshot.checkedAt < HEALTH_CACHE_TTL_MS) {
+      return cachedSnapshot;
+    }
     if (running) return running;
     running = (async () => {
       const results = await sourceService.checkHealth();
@@ -30,6 +38,12 @@ export const healthService = {
         results,
         failedCount: Object.values(results).filter((result) => result.health !== 'ok').length,
       };
+      // P1-4: 记录 unreachable 源冷却
+      for (const [sourceId, result] of Object.entries(results)) {
+        if (result.health === 'unreachable') {
+          unreachableCooldowns.set(sourceId, Date.now());
+        }
+      }
       cachedSnapshot = snapshot;
       return snapshot;
     })();

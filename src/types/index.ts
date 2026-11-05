@@ -214,6 +214,8 @@ export interface Episode {
   title: string;
   durationSec: number | null;
   subtitles: SubtitleTrack[];
+  /** 原始播放地址（未解析），用于缓存避免重复 detailContent */
+  rawUrl?: string;
   updatedAt: Timestamp;
 }
 
@@ -512,6 +514,8 @@ export interface DownloadSettings {
   autoResume: boolean;
   /** 下载限速档位（low=512KB/s, medium=2MB/s, high=5MB/s, unlimited=不限速） */
   speedLimit: DownloadSpeedLimit;
+  /** P0-6: HLS 分片并发下载数（3/6/8） */
+  segmentConcurrency?: 3 | 6 | 8;
 }
 
 export interface AppSettings {

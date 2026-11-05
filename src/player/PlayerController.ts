@@ -294,7 +294,9 @@ export class PlayerController {
       this.emit('notice', { message: '原生引擎不可用，已切回内置引擎' });
     }
 
-    const useHls = format === 'hls' && !canPlayNativeHls();
+    // P0-7: 有头 HLS 强制 hls.js（原生 <video> 无法注入头）
+    const hasHeaders = Object.keys(playback.headers ?? {}).length > 0;
+    const useHls = format === 'hls' && (!canPlayNativeHls() || hasHeaders);
     // v1.8 优化：WebView 引擎加载失败时自动降级到原生引擎（如果可用且未尝试过）
     let webviewFailed = false;
     let webviewError: unknown = null;
