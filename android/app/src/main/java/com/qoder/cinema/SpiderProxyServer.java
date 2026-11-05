@@ -5,13 +5,16 @@ import android.util.Log;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
+import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
@@ -296,6 +299,23 @@ public final class SpiderProxyServer {
             // 壳级兜底：爬虫返回 do=m3u8&url=... 而没有任何爬虫 proxy 认领时，直取转发
             if (result == null || result.length == 0 || result[0] == null
                     || String.valueOf(result[0]).trim().isEmpty()) {
+                // P1-3: 优先尝试流式透传（非 m3u8 请求）
+                String url = params.get("url");
+                if (!"m3u8".equals(doParam) && url != null && (url.startsWith("http://") || url.startsWith("https://"))) {
+                    Object[] streamingResult = fetchPassthroughStreaming(url);
+                    if (streamingResult != null) {
+                        InputStream in = (InputStream) streamingResult[0];
+                        String ct = (String) streamingResult[1];
+                        long len = (Long) streamingResult[2];
+                        try {
+                            respondStreaming(s, 200, ct, in, len);
+                        } finally {
+                            in.close();
+                        }
+                        return;
+                    }
+                }
+                // m3u8 请求或流式失败，走原来的 passThrough
                 result = passThrough(params);
             }
 
@@ -445,6 +465,40 @@ public final class SpiderProxyServer {
         }
     }
 
+    /**
+     * P1-3: 流式透传（不缓存整个响应体到内存）
+     * 返回 [InputStream, contentType, contentLength]，调用方负责关闭流
+     */
+    private static Object[] fetchPassthroughStreaming(String url) {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setConnectTimeout(15_000);
+            conn.setReadTimeout(15_000);
+            conn.setInstanceFollowRedirects(true);
+            conn.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
+
+            int status = conn.getResponseCode();
+            if (status < 200 || status >= 300) {
+                Log.w(TAG, "passthrough streaming upstream " + status + " url=" + url);
+                conn.disconnect();
+                return null;
+            }
+
+            String contentType = conn.getContentType();
+            long contentLength = conn.getContentLengthLong();
+            InputStream in = conn.getInputStream();
+
+            Log.i(TAG, "passthrough streaming " + status + " ct=" + contentType + " len=" + contentLength + " url=" + url);
+            return new Object[]{in, contentType, contentLength};
+        } catch (Exception e) {
+            Log.w(TAG, "passthrough streaming failed: " + e + " url=" + url);
+            if (conn != null) conn.disconnect();
+            return null;
+        }
+    }
+
     /** m3u8 相对地址 → 绝对地址（行级：非 # 行为地址，# 行重写 URI="..." 属性） */
     private static String absolutize(String playlist, String base) {
         java.net.URI baseUri;
@@ -530,6 +584,39 @@ public final class SpiderProxyServer {
         out.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
         if (body.length > 0) out.write(body);
         out.flush();
+    }
+
+    /**
+     * P1-3: 流式响应（不缓存整个响应体到内存）
+     * 用于视频分片、大 JSON 等场景
+     */
+    private static void respondStreaming(Socket socket, int status, String contentType,
+                                         InputStream inputStream, long contentLength)
+            throws IOException {
+        StringBuilder head = new StringBuilder();
+        head.append("HTTP/1.1 ").append(status).append(' ')
+                .append(status == 200 ? "OK" : "Not Found").append("\r\n");
+        if (contentType != null) head.append("Content-Type: ").append(contentType).append("\r\n");
+        if (contentLength >= 0) {
+            head.append("Content-Length: ").append(contentLength).append("\r\n");
+        }
+        head.append("Connection: close\r\n\r\n");
+
+        OutputStream out = socket.getOutputStream();
+        out.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
+        out.flush();
+
+        // 流式转发
+        byte[] buffer = new byte[8192];
+        int bytesRead;
+        try {
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                out.write(buffer, 0, bytesRead);
+            }
+            out.flush();
+        } finally {
+            inputStream.close();
+        }
     }
 
     private static long parseLongOr(String value, long fallback) {
