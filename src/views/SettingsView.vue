@@ -213,6 +213,12 @@ async function setHideDemo(value: boolean): Promise<void> {
   await update({ hideDemoContent: value });
 }
 
+// 功能扩展-9：暂停历史记录
+async function setPauseHistory(value: boolean): Promise<void> {
+  await update({ pauseHistoryRecording: value });
+  toast.info(value ? '已暂停历史记录' : '已恢复历史记录');
+}
+
 /* ---------- v1.7（CHG-22/24/21 PoC） ---------- */
 
 const danmakuOpen = ref(false);
@@ -443,6 +449,12 @@ async function exportLogs(): Promise<void> {
             :value="cacheCleared ? '已清理' : '元数据与图片'"
             chevron
             @click="clearCache"
+          />
+          <SettingsRow
+            label="暂停历史记录"
+            description="开启后不再 观看内容不会被记录到历史"
+            :switch-value="settings.settings?.pauseHistoryRecording ?? false"
+            @update:switch-value="setPauseHistory"
           />
           <SettingsRow label="清空全部数据" danger chevron @click="clearDataOpen = true" />
           <!-- v1.8 新增：调试日志管理 -->

@@ -38,6 +38,31 @@ function clamp(value: number, min: number, max: number): number {
 
 export const historyService: HistoryService = {
   async saveProgress(input: SaveProgressInput): Promise<HistoryRecord> {
+    // 功能扩展-9：隐私开关——暂停记录时不写入
+    const settings = await settingsService.get();
+    if (settings.pauseHistoryRecording) {
+      // 返回一条"假记录"，不写库，让调用方以为成功（避免播放页报错）
+      const id = historyIdOf(input.sourceId, input.mediaId);
+      const durationSec = Number(input.durationSec);
+      const position = clamp(Number(input.positionSec) || 0, 0, durationSec);
+      return {
+        id,
+        sourceId: input.sourceId,
+        mediaId: input.mediaId,
+        episodeId: input.episodeId,
+        episodeNumber: input.episodeNumber,
+        title: input.title,
+        posterUrl: input.posterUrl,
+        positionSec: position,
+        durationSec,
+        progress: durationSec > 0 ? position / durationSec : 0,
+        finished: false,
+        totalEpisodes: input.totalEpisodes,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+    }
+
     const durationSec = Number(input.durationSec);
     if (!Number.isFinite(durationSec) || durationSec <= 0) {
       throw new AppError('E_INVALID_INPUT', '时长必须大于 0');

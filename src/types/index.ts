@@ -544,6 +544,8 @@ export interface AppSettings {
   netdisk?: NetdiskSettings;
   /** 功能扩展-4：WebDAV 云备份配置 */
   webdav?: WebDAVSettings;
+  /** 功能扩展-9：暂停历史记录（隐私开关，默认关） */
+  pauseHistoryRecording?: boolean;
   updatedAt: Timestamp;
 }
 
