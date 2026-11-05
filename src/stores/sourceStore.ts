@@ -9,6 +9,7 @@ import { computed, ref } from 'vue';
 import { sourceService } from '@/services/sourceService';
 import { healthService } from '@/services/healthService';
 import { subscriptionLifecycleService } from '@/services/subscriptionLifecycleService';
+import { liveService } from '@/services/liveService';
 import { appEvents } from '@/services/events';
 import { sourceRegistry } from '@/sources/registry';
 import { logger } from '@/shared/logger';
@@ -218,6 +219,11 @@ export const useSourceStore = defineStore('source', () => {
         currentSourceId.value = null;
       }
       await reload();
+    }
+    // 级联删除关联的直播源（功能扩展-2）
+    const removedLives = await liveService.removeBySubscription(subscriptionId);
+    if (removedLives > 0) {
+      logger.info('按订阅级联删除直播源', { subscriptionId, removedLives });
     }
     return removed;
   }

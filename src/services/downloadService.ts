@@ -12,8 +12,10 @@
  */
 import { downloadRepo } from '@/db/repositories/downloadRepo';
 import { blobRepo } from '@/db/repositories/blobRepo';
+import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { settingsService } from '@/services/settingsService';
 import { appEvents } from '@/services/events';
+import { danmakuService } from '@/services/danmakuService';
 import { DownloadQueue, transition } from '@/services/downloadQueue';
 import { createDownloadEngine, setDownloadEngine } from '@/services/downloadEngine';
 import { nativeFilePathOf, readBlob } from '@/services/downloadSink';
@@ -782,6 +784,18 @@ export const downloadService = {
         logger.debug('封面已下载', { path: coverPath });
       } catch (e) {
         logger.warn('封面下载失败（忽略）', { error: toAppError(e).message });
+      }
+    }
+
+    // 功能扩展-3：预取弹幕（离线可用）
+    if (input.title && input.episodeNumber) {
+      try {
+        const mediaItem = await mediaRepo.get(input.mediaId);
+        const year = mediaItem?.year ?? null;
+        await danmakuService.prefetch(input.title, year, input.episodeNumber);
+        logger.debug('弹幕已预取', { title: input.title, year, episode: input.episodeNumber });
+      } catch (e) {
+        logger.warn('弹幕预取失败（忽略）', { error: toAppError(e).message });
       }
     }
 

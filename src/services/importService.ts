@@ -22,6 +22,7 @@ import { sourceRepo, toStorableSource } from '@/db/repositories/sourceRepo';
 import { appEvents } from '@/services/events';
 import { probeJarUrls } from '@/services/jarProbe';
 import { subscriptionParser } from '@/services/subscriptionParser';
+import { liveService } from '@/services/liveService';
 import { extractTvboxLives } from '@/sources/live/liveParsers';
 import {
   HTML_SNIFF_MAX_CANDIDATES,
@@ -32,6 +33,7 @@ import {
 import { AppError, toAppError } from '@/shared/errors';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { newId, nextKey } from '@/shared/id';
+import { logger } from '@/shared/logger';
 import { isValidHttpUrl } from '@/shared/url';
 import { normalizeImportUrl } from '@/shared/urlNormalize';
 import { crawl } from '@/sources/pipeline/scheduler';
@@ -630,7 +632,7 @@ export async function listImportRecords(): Promise<ImportRecord[]> {
 async function refreshSubscriptionImpl(
   url: string,
   signal?: AbortSignal,
-): Promise<{ updated: number; newCount: number; jarDead: number }> {
+): Promise<{ updated: number; newCount: number; jarDead: number; livesSynced: number }> {
   const preview = await importService.previewFromUrl(url, signal);
   const valid = preview.entries.filter((entry) => entry.valid && entry.normalized !== null);
   const jarDead = valid.filter((entry) => (entry.warning ?? '').includes('jar 不可达')).length;
@@ -638,5 +640,17 @@ async function refreshSubscriptionImpl(
   const updateKeys = valid.filter((entry) => entry.selected && entry.duplicateOf).map((entry) => entry.key);
   const result = await importService.commit(preview, { selectedKeys: updateKeys, onDuplicate: 'overwrite' });
   const newCount = valid.filter((entry) => entry.selected && !entry.duplicateOf).length;
-  return { updated: result.success, newCount, jarDead };
+
+  // 功能扩展-2：同步直播源（url 即 subscriptionId）
+  let livesSynced = 0;
+  if (preview.lives.length > 0) {
+    try {
+      await liveService.addTvboxLives(preview.lives, url);
+      livesSynced = preview.lives.length;
+    } catch (e) {
+      logger.warn('刷新订阅同步直播源失败', url, e);
+    }
+  }
+
+  return { updated: result.success, newCount, jarDead, livesSynced };
 }

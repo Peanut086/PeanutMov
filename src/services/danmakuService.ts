@@ -82,4 +82,18 @@ export const danmakuService = {
     }
     return kept;
   },
+
+  /**
+   * 功能扩展-3：预取弹幕（下载完成时调用，确保离线可用）
+   *
+   * 与 match 相同逻辑，但静默失败（不影响下载流程）。
+   * 成功时弹幕已写入 cacheRepo，离线播放可直接命中。
+   */
+  async prefetch(title: string, year: number | null, episode: number): Promise<void> {
+    try {
+      await this.match(title, year, episode);
+    } catch (e) {
+      logger.debug('弹幕预取失败（静默）', { title, year, episode }, e);
+    }
+  },
 };

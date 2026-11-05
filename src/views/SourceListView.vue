@@ -49,6 +49,63 @@ const menuOpen = ref(false);
 const healthChecking = ref(false);
 const error = ref<string | null>(null);
 
+// 功能扩展-8：批量操作模式
+const batchMode = ref(false);
+const selectedIds = ref<Set<string>>(new Set());
+
+function toggleBatchMode(): void {
+  batchMode.value = !batchMode.value;
+  if (!batchMode.value) {
+    selectedIds.value.clear();
+  }
+}
+
+function toggleSelect(id: string): void {
+  if (selectedIds.value.has(id)) {
+    selectedIds.value.delete(id);
+  } else {
+    selectedIds.value.add(id);
+  }
+  // 触发响应 让 computed 更新
+  selectedIds.value = new Set(selectedIds.value);
+}
+
+function selectAll(): void {
+  for (const source of ordered.value) {
+    selectedIds.value.add(source.id);
+  }
+  selectedIds.value = new Set(selectedIds.value);
+}
+
+function deselectAll(): void {
+  selectedIds.value.clear();
+  selectedIds.value = new Set(selectedIds.value);
+}
+
+function invertSelection(): void {
+  const newSet = new Set<string>();
+  for (const source of ordered.value) {
+    if (!selectedIds.value.has(source.id)) {
+      newSet.add(source.id);
+    }
+  }
+  selectedIds.value = newSet;
+}
+
+const selectedCount = computed(() => selectedIds.value.size);
+const selectedSources = computed(() =>
+  sources.sources.filter((s) => selectedIds.value.has(s.id)),
+);
+const canDeleteSelected = computed(() =>
+  selectedSources.value.some((s) => !s.builtin),
+);
+const canEnableSelected = computed(() =>
+  selectedSources.value.some((s) => !s.enabled),
+);
+const canDisableSelected = computed(() =>
+  selectedSources.value.some((s) => s.enabled),
+);
+
 const loading = computed(() => sources.loading && sources.sources.length === 0);
 const isEmpty = computed(() => sources.sources.length === 0);
 
@@ -336,13 +393,128 @@ async function retry(): Promise<void> {
   error.value = null;
   await sources.load();
 }
+
+// 功能扩展-8：批量操作
+const batchOperating = ref(false);
+
+async function batchEnable(): Promise<void> {
+  const targets = selectedSources.value.filter((s) => !s.enabled);
+  if (targets.length === 0 || batchOperating.value) return;
+  const ok = await ui.confirm({
+    title: `启用 ${targets.length} 个源？`,
+    message: '将批量启用选中的源。',
+    confirmText: '启用',
+  });
+  if (!ok) return;
+  batchOperating.value = true;
+  try {
+    let enabled = 0;
+    for (const source of targets) {
+      try {
+        await sources.toggle(source.id);
+        enabled += 1;
+      } catch {
+        // 单个失败不阻断其余
+      }
+    }
+    toast.success(`已启用 ${enabled} 个源`);
+    batchMode.value = false;
+    selectedIds.value.clear();
+  } finally {
+    batchOperating.value = false;
+  }
+}
+
+async function batchDisable(): Promise<void> {
+  const targets = selectedSources.value.filter((s) => s.enabled);
+  if (targets.length === 0 || batchOperating.value) return;
+  const ok = await ui.confirm({
+    title: `禁用 ${targets.length} 个源？`,
+    message: '将批量禁用选中的源。被禁用的源可随时重新启用。',
+    confirmText: '禁用',
+  });
+  if (!ok) return;
+  batchOperating.value = true;
+  try {
+    let disabled = 0;
+    for (const source of targets) {
+      try {
+        await sources.toggle(source.id);
+        disabled += 1;
+        // 默认源被禁用时，切到第一个可用源
+        if (defaultSourceId.value === source.id) {
+          const next = sources.enabledSources.find((s) => s.id !== source.id && !s.builtin) ?? sources.enabledSources[0] ?? null;
+          await settings.update({ defaultSourceId: next?.id ?? null });
+        }
+      } catch {
+        // 单个失败不阻断其余
+      }
+    }
+    toast.success(`已禁用 ${disabled} 个源`);
+    batchMode.value = false;
+    selectedIds.value.clear();
+  } finally {
+    batchOperating.value = false;
+  }
+}
+
+async function batchDelete(): Promise<void> {
+  const targets = selectedSources.value.filter((s) => !s.builtin);
+  if (targets.length === 0 || batchOperating.value) return;
+  const ok = await ui.confirm({
+    title: `删除 ${targets.length} 个源？`,
+    message: '将批量删除选中的源（内置源不会被删除）。收藏与历史会保留；已下载的文件不会被删除。此操作不可撤销。',
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  batchOperating.value = true;
+  try {
+    let removed = 0;
+    for (const source of targets) {
+      try {
+        await sources.remove(source.id);
+        removed += 1;
+        // 默认源被删除时，切到第一个可用源
+        if (defaultSourceId.value === source.id) {
+          const next = sources.enabledSources.find((s) => !s.builtin) ?? sources.enabledSources[0] ?? null;
+          await settings.update({ defaultSourceId: next?.id ?? null });
+        }
+      } catch {
+        // 单个失败（如有下载任务）不阻断其余
+      }
+    }
+    toast.success(removed === targets.length ? `已删除 ${removed} 个源` : `已删除 ${removed} 个源，${targets.length - removed} 个未能删除`);
+    batchMode.value = false;
+    selectedIds.value.clear();
+  } finally {
+    batchOperating.value = false;
+  }
+}
 </script>
 
 <template>
   <main class="sources-page" data-route="sources">
     <AppHeader title="片源管理" back>
       <template #actions>
-        <button class="sources-add" type="button" aria-label="新增源" @click="goNew">
+        <button
+          class="sources-add"
+          type="button"
+          :aria-label="batchMode ? '退出批量' : '批量操作'"
+          :aria-pressed="batchMode"
+          @click="toggleBatchMode"
+        >
+          <svg v-if="batchMode" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="9" cy="9" r="2" />
+            <circle cx="9" cy="15" r="2" />
+            <circle cx="15" cy="9" r="2" />
+            <circle cx="15" cy="15" r="2" />
+          </svg>
+        </button>
+        <button v-if="!batchMode" class="sources-add" type="button" aria-label="新增源" @click="goNew">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
             <path d="M12 5v14M5 12h14" />
           </svg>
@@ -445,6 +617,47 @@ async function retry(): Promise<void> {
         </button>
       </div>
 
+      <!-- 功能扩展-8：批量操作栏 -->
+      <div v-if="batchMode && !loading && !error && !isEmpty" class="batch-bar">
+        <div class="batch-bar__controls">
+          <button class="btn btn--ghost btn--sm" type="button" @click="selectAll">全选</button>
+          <button class="btn btn--ghost btn--sm" type="button" @click="deselectAll">取消</button>
+          <button class="btn btn--ghost btn--sm" type="button" @click="invertSelection">反选</button>
+        </div>
+        <div class="batch-bar__info">
+          已选 <strong>{{ selectedCount }}</strong> 个
+        </div>
+        <div class="batch-bar__actions">
+          <button
+            class="btn btn--secondary btn--sm"
+            type="button"
+            :disabled="!canEnableSelected || batchOperating"
+            @click="batchEnable"
+          >
+            <LoadingSpinner v-if="batchOperating" :size="14" />
+            批量启用
+          </button>
+          <button
+            class="btn btn--secondary btn--sm"
+            type="button"
+            :disabled="!canDisableSelected || batchOperating"
+            @click="batchDisable"
+          >
+            <LoadingSpinner v-if="batchOperating" :size="14" />
+            批量禁用
+          </button>
+          <button
+            class="btn btn--danger btn--sm"
+            type="button"
+            :disabled="!canDeleteSelected || batchOperating"
+            @click="batchDelete"
+          >
+            <LoadingSpinner v-if="batchOperating" :size="14" />
+            批量删除
+          </button>
+        </div>
+      </div>
+
       <div v-if="loading" class="sources-loading" role="status">
         <LoadingSpinner :size="24" />
         <span>正在读取源…</span>
@@ -465,9 +678,12 @@ async function retry(): Promise<void> {
               :checking="healthChecking"
               :tier="tierOf(source)"
               :latency-ms="latencyOf(source.id)"
+              :batch-mode="batchMode"
+              :selected="selectedIds.has(source.id)"
               @select="edit"
               @toggle="toggle"
               @menu="openMenu"
+              @toggle-select="toggleSelect"
             />
           </li>
         </ul>
@@ -746,5 +962,40 @@ async function retry(): Promise<void> {
 
 .sheet-list__item--danger {
   color: var(--color-danger);
+}
+
+/* 功能扩展-8：批量操作栏 */
+.batch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  margin-top: var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+}
+
+.batch-bar__controls {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.batch-bar__info {
+  flex: 1;
+  font: var(--text-body);
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.batch-bar__info strong {
+  color: var(--color-brand);
+  font-weight: var(--font-weight-semibold);
+}
+
+.batch-bar__actions {
+  display: flex;
+  gap: var(--space-2);
 }
 </style>

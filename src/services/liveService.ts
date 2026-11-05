@@ -101,6 +101,19 @@ export const liveService = {
     channelsCache.delete(id);
   },
 
+  /**
+   * 按订阅 ID 删除全部关联直播源（功能扩展-2：直播源纳入订阅生命周期）
+   * 返回删除数量
+   */
+  async removeBySubscription(subscriptionId: string): Promise<number> {
+    const removed = await liveRepo.removeBySubscription(subscriptionId);
+    if (removed > 0) {
+      // 清缓存：删除的直播源可能还在缓存中
+      channelsCache.clear();
+    }
+    return removed;
+  },
+
   /** 拉取并解析频道（5min 缓存）；失败时回落上一次成功缓存，缓存也没有才抛错 */
   async channelsOf(record: LiveRecord, opts?: { refresh?: boolean; signal?: AbortSignal }): Promise<LiveGroup[]> {
     const cached = channelsCache.get(record.id);

@@ -2,7 +2,8 @@
  * 站点源适配器（TVBox 风格 JSON，技术方案 7.6）
  *
  * 仅支持 JSON API（不做 HTML 抓取）；`api?ac=list|detail|search` 三种请求。
- * 播放地址按 `线路$集数` 解析规则处理，不做解析接口的递归解包。
+ * 播放地址按 `线路$集数` 解析规则处理。
+ * 功能扩展-6：支持解析接口（jx）——优先直连 API 解析，回退 WebView 嗅探。
  */
 import { AppError } from '@/shared/errors';
 import { mediaIdOf } from '@/shared/id';
@@ -24,6 +25,7 @@ import { isPlayPageUrl, resolvePlayPage } from '@/sources/site/playPageResolver'
 import { sniffPlayUrl } from '@/native/snifferPlugin';
 import { isNative } from '@/shared/platform';
 import { TIMEOUT_SEARCH_SITE_MS } from '@/shared/constants';
+import { resolveViaMultiple } from '@/services/resolverService';
 import type {
   BrowseParams,
   Category,
@@ -48,6 +50,25 @@ const UNSUPPORTED_FORMAT_MESSAGE = UNSUPPORTED_FORMAT_MESSAGE_PIPELINE;
 /** 占位符替换：`{type}` / `{page}` / `{kw}` / `{id}` */
 function fillTemplate(template: string, values: Record<string, string | number>): string {
   return template.replace(/\{(type|page|kw|id)\}/g, (_, key: string) => String(values[key] ?? ''));
+}
+
+/**
+ * 功能扩展-6：从解析接口 URL 中提取原始视频地址。
+ *
+ * 解析接口典型形态：`https://jx.xxx.com/?url=VIDEO_URL` 或 `https://jx.xxx.com/?url=VIDEO_URL&other=xxx`
+ * 提取 提取 提取 返回 null（表示无法提取，回退到 WebView 嗅）。
+ */
+function extractOriginalVideoUrl(resolverUrl: string): string | null {
+  try {
+    const url = new URL(resolverUrl);
+    const videoUrl = url.searchParams.get('url');
+    if (!videoUrl || videoUrl.trim().length === 0) return null;
+    // 基本校验：必须是 http/https 开头
+    if (!/^https?:\/\//i.test(videoUrl)) return null;
+    return videoUrl;
+  } catch {
+    return null;
+  }
 }
 
 export class SiteAdapter extends BaseAdapter {
@@ -130,7 +151,31 @@ export class SiteAdapter extends BaseAdapter {
 
     const absolute = toAbsoluteUrl(source.baseUrl, picked.url) ?? picked.url;
     if (looksLikeResolverUrl(absolute)) {
-      // 解析器地址（jx 页面）：App 内走 WebView 嗅探取真实直链
+      // 功能扩展-6：解析接口（jx）支持
+      // ① 优先尝试配置的解析接口列表（直连 API，速度快）
+      const ext = extOf(source);
+      const resolvers = ext.resolvers ?? [];
+      if (resolvers.length > 0 && !(params.signal?.aborted ?? false)) {
+        // 提取原始视频（解析接口需要的是被包装的 URL，不是解析接口本身）
+        const originalVideoUrl = extractOriginalVideoUrl(absolute);
+        if (originalVideoUrl) {
+          const resolved = await resolveViaMultiple(resolvers, originalVideoUrl, params.signal);
+          if (resolved) {
+            return {
+              url: resolved,
+              format: normalizeFormat(resolved, line.format),
+              headers: this.headersWith(source),
+              subtitles: [],
+              lineId: line.id,
+              quality: line.quality,
+              expiresAt: null,
+              isLocal: false,
+            };
+          }
+        }
+      }
+
+      // ② 回退：App 内走 WebView 嗅探取真实直链
       if (isNative() && !(params.signal?.aborted ?? false)) {
         const sniffed = await sniffPlayUrl(absolute, this.headersWith(source)).catch(() => null);
         if (sniffed) {
@@ -146,7 +191,7 @@ export class SiteAdapter extends BaseAdapter {
           };
         }
       }
-      throw new AppError('E_NO_PLAY_URL', '该源需要解析接口，暂不支持');
+      throw new AppError('E_NO_PLAY_URL', '该源需要解析接口，但未配置或嗅探失败');
     }
     if (!/^https?:\/\//i.test(absolute) && !absolute.startsWith('magnet:')) {
       throw new AppError('E_UNSUPPORTED_FORMAT', '播放地址协议不受支持');

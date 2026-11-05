@@ -26,14 +26,19 @@ const props = withDefaults(
     tier?: HealthTier;
     /** 最近一次探测耗时（v1.2 / CHG-05） */
     latencyMs?: number | null;
+    /** 功能扩展-8：是否处于批量选择模式 */
+    batchMode?: boolean;
+    /** 功能扩展-8：是否被选中 */
+    selected?: boolean;
   }>(),
-  { isDefault: false, checking: false, tier: undefined, latencyMs: null },
+  { isDefault: false, checking: false, tier: undefined, latencyMs: null, batchMode: false, selected: false },
 );
 
 const emit = defineEmits<{
   (e: 'select', source: Source): void;
   (e: 'toggle', source: Source, enabled: boolean): void;
   (e: 'menu', source: Source): void;
+  (e: 'toggleSelect', source: Source): void;
 }>();
 
 const TYPE_LABELS: Record<SourceType, string> = {
@@ -63,8 +68,18 @@ const checkedText = computed(() => {
 </script>
 
 <template>
-  <article class="source-card">
-    <button class="source-card__main" type="button" @click="emit('select', source)">
+  <article class="source-card" :class="{ 'source-card--batch': batchMode, 'source-card--selected': selected }">
+    <button
+      class="source-card__main"
+      type="button"
+      @click="batchMode ? emit('toggleSelect', source) : emit('select', source)"
+    >
+      <div v-if="batchMode" class="source-card__checkbox" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline v-if="selected" points="20 6 9 17 4 12" />
+          <rect v-else x="3" y="3" width="18" height="18" rx="2" ry="2" />
+        </svg>
+      </div>
       <div class="source-card__head">
         <span class="source-card__name truncate-1">{{ source.name }}</span>
         <span class="source-card__type">{{ typeLabel }}</span>
@@ -93,7 +108,7 @@ const checkedText = computed(() => {
       <p v-if="source.warning" class="source-card__warning-text">{{ source.warning }}</p>
     </button>
 
-    <div class="source-card__actions">
+    <div v-if="!batchMode" class="source-card__actions">
       <ToggleSwitch
         :model-value="source.enabled"
         :label="`${source.name} 启用状态`"
@@ -256,5 +271,41 @@ const checkedText = computed(() => {
 .source-card__menu svg {
   width: 20px;
   height: 20px;
+}
+
+/* 功能扩展-8：批量选择模式 */
+.source-card--batch {
+  cursor: pointer;
+}
+
+.source-card--batch .source-card__main {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.source-card__checkbox {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+  color: var(--color-text-tertiary);
+}
+
+.source-card--selected .source-card__checkbox {
+  color: var(--color-brand);
+}
+
+.source-card__checkbox svg {
+  width: 20px;
+  height: 20px;
+}
+
+.source-card--selected {
+  background-color: var(--color-brand-soft);
+  border-color: var(--color-brand);
 }
 </style>

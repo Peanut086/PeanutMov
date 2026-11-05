@@ -47,4 +47,20 @@ export const liveRepo = {
   async remove(id: string): Promise<void> {
     await withTx(['lives'], 'readwrite', (tx) => tx.objectStore(STORE_NAMES.lives).delete(id));
   },
+
+  /**
+   * 按订阅 ID 删除全部关联直播源（功能扩展-2：直播源纳入订阅生命周期）
+   * 返回删除数量
+   */
+  async removeBySubscription(subscriptionId: string): Promise<number> {
+    return withTx(['lives'], 'readwrite', async (tx) => {
+      const store = tx.objectStore(STORE_NAMES.lives);
+      const all = await store.getAll();
+      const targets = all.filter((record: LiveRecord) => record.subscriptionId === subscriptionId);
+      for (const record of targets) {
+        await store.delete(record.id);
+      }
+      return targets.length;
+    });
+  },
 };

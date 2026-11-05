@@ -62,6 +62,8 @@ export interface SiteExt {
   categoryPath?: string | null;
   /** 详情路径覆盖（默认 `?ac=detail&ids={id}`） */
   detailPath?: string | null;
+  /** 功能扩展-6：解析接口列表（按顺序尝试；支持 `{url}` 占位符或已带 `?url=`） */
+  resolvers?: string[] | null;
 }
 
 export interface TvboxPlayLine {
