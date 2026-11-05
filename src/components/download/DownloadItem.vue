@@ -16,7 +16,12 @@ import IconPause from '@/components/icons/IconPause.vue';
 import IconRefresh from '@/components/icons/IconRefresh.vue';
 import IconTrash from '@/components/icons/IconTrash.vue';
 
-const props = defineProps<{ task: DownloadTask; offline?: boolean }>();
+const props = defineProps<{
+  task: DownloadTask;
+  offline?: boolean;
+  batchMode?: boolean;
+  selected?: boolean;
+}>();
 
 const emit = defineEmits<{
   (e: 'play', task: DownloadTask): void;
@@ -25,6 +30,7 @@ const emit = defineEmits<{
   (e: 'retry', task: DownloadTask): void;
   (e: 'remove', task: DownloadTask): void;
   (e: 'select', task: DownloadTask): void;
+  (e: 'toggleSelect', task: DownloadTask): void;
 }>();
 
 const percent = computed(() => {
@@ -75,7 +81,23 @@ const canPlay = computed(() => props.task.status === 'completed');
 </script>
 
 <template>
-  <article class="download-item" :data-status="task.status">
+  <article class="download-item" :class="{ 'download-item--batch': batchMode, 'download-item--selected': selected }" :data-status="task.status">
+    <!-- 功能扩展-10：批量模式复选框 -->
+    <button
+      v-if="batchMode"
+      class="download-item__checkbox"
+      type="button"
+      :aria-label="selected ? '取消选择' : '选择'"
+      @click.stop="emit('toggleSelect', task)"
+    >
+      <svg v-if="selected" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M19 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.11 0 2-.9 2-2V5c0-1.1-.89-2-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+      </svg>
+      <svg v-else viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M19 5v14H5V5h14m0-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z" />
+      </svg>
+    </button>
+
     <button class="download-item__main" type="button" @click="emit('select', task)">
       <span class="download-item__poster">
         <PosterImage :src="task.posterUrl" :alt="task.title" />
@@ -107,7 +129,8 @@ const canPlay = computed(() => props.task.status === 'completed');
       </span>
     </button>
 
-    <div class="download-item__actions">
+    <!-- 功能扩展-10：批量模式下隐藏操作按钮 -->
+    <div v-if="!batchMode" class="download-item__actions">
       <button
         v-if="canPlay"
         class="download-item__action download-item__action--play"
@@ -266,5 +289,40 @@ const canPlay = computed(() => props.task.status === 'completed');
 
 .download-item__action--danger {
   color: var(--color-danger);
+}
+
+/* 功能扩展-10：批量模式样式 */
+.download-item--batch {
+  background-color: var(--color-bg-surface);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-bottom: var(--space-2);
+  transition: background-color 0.15s ease;
+}
+
+.download-item--selected {
+  background-color: var(--color-brand-soft);
+  border: 1px solid var(--color-brand);
+}
+
+.download-item__checkbox {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  transition: color 0.15s ease;
+}
+
+.download-item--selected .download-item__checkbox {
+  color: var(--color-brand);
+}
+
+.download-item__checkbox svg {
+  width: 24px;
+  height: 24px;
 }
 </style>

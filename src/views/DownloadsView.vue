@@ -37,6 +37,12 @@ const detailTask = ref<DownloadTask | null>(null);
 const detailOpen = ref(false);
 const refreshing = ref(false);
 
+/** 功能扩展-10：批量模式 */
+const batchMode = ref(false);
+const selectedIds = ref<Set<string>>(new Set());
+const batchOperating = ref(false);
+const storageUsage = ref<{ totalBytes: number; fileCount: number } | null>(null);
+
 const FILTER_OPTIONS = [
   { value: 'all', label: '全部' },
   { value: 'active', label: '下载中' },
@@ -62,14 +68,129 @@ const filtered = computed(() => {
 
 const activeDownloading = computed(() => downloads.tasks.some((t) => t.status === 'downloading'));
 const hasPaused = computed(() => downloads.tasks.some((t) => t.status === 'paused'));
+const hasFailed = computed(() => downloads.tasks.some((t) => t.status === 'failed'));
+
+/** 功能扩展-10：批量选择相关 */
+const selectedCount = computed(() => selectedIds.value.size);
+const selectedTasks = computed(() => downloads.tasks.filter((t) => selectedIds.value.has(t.id)));
+const canBatchDelete = computed(() => selectedCount.value > 0);
+
+/** 功能扩展-10：格式化存储大小 */
+const storageText = computed(() => {
+  if (!storageUsage.value) return '计算中…';
+  const { totalBytes, fileCount } = storageUsage.value;
+  if (totalBytes === 0) return '暂无占用';
+  const mb = totalBytes / 1024 / 1024;
+  const gb = mb / 1024;
+  const sizeText = gb >= 1 ? `${gb.toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
+  return `${sizeText}（${fileCount} 个文件）`;
+});
 
 onMounted(async () => {
   try {
     await downloads.load();
+    await loadStorageUsage();
   } catch (e) {
     toast.error(toErrorShape(e).message);
   }
 });
+
+/** 功能扩展-10：加载存储占用 */
+async function loadStorageUsage(): Promise<void> {
+  try {
+    storageUsage.value = await downloads.calculateStorageUsage();
+  } catch {
+    storageUsage.value = null;
+  }
+}
+
+/** 功能扩展-10：切换批量模式 */
+function toggleBatchMode(): void {
+  batchMode.value = !batchMode.value;
+  if (!batchMode.value) {
+    selectedIds.value.clear();
+  }
+}
+
+/** 功能扩展-10：切换单个选择 */
+function toggleSelect(task: DownloadTask): void {
+  if (selectedIds.value.has(task.id)) {
+    selectedIds.value.delete(task.id);
+  } else {
+    selectedIds.value.add(task.id);
+  }
+}
+
+/** 功能扩展-10：全选当前筛选 */
+function selectAll(): void {
+  for (const task of filtered.value) {
+    selectedIds.value.add(task.id);
+  }
+}
+
+/** 功能扩展-10：取消全选 */
+function deselectAll(): void {
+  selectedIds.value.clear();
+}
+
+/** 功能扩展-10：反选 */
+function invertSelection(): void {
+  const newSet = new Set<string>();
+  for (const task of filtered.value) {
+    if (!selectedIds.value.has(task.id)) {
+      newSet.add(task.id);
+    }
+  }
+  selectedIds.value = newSet;
+}
+
+/** 功能扩展-10：批量删除 */
+async function batchDelete(): Promise<void> {
+  if (selectedCount.value === 0 || batchOperating.value) return;
+  const ok = await ui.confirm({
+    title: `删除 ${selectedCount.value} 个任务？`,
+    message: '将删除选中的下载任务与本地文件，此操作不可撤销。',
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  batchOperating.value = true;
+  try {
+    await downloads.removeMany(Array.from(selectedIds.value), true);
+    toast.success(`已删除 ${selectedCount.value} 个任务`);
+    selectedIds.value.clear();
+    batchMode.value = false;
+    await loadStorageUsage();
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    batchOperating.value = false;
+  }
+}
+
+/** 功能扩展-10：清理失败任务 */
+async function clearFailed(): Promise<void> {
+  menuOpen.value = false;
+  const failedCount = downloads.tasks.filter((t) => t.status === 'failed').length;
+  if (failedCount === 0) {
+    toast.info('没有失败的任务');
+    return;
+  }
+  const ok = await ui.confirm({
+    title: `清理 ${failedCount} 个失败任务？`,
+    message: '将删除所有状态为"失败"的任务记录与文件。',
+    confirmText: '清理',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await downloads.clearFailed();
+    toast.success(`已清理 ${failedCount} 个失败任务`);
+    await loadStorageUsage();
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
+}
 
 async function refresh(): Promise<void> {
   refreshing.value = true;
@@ -173,6 +294,21 @@ function goLibrary(): void {
   <SafeArea tabbar data-route="downloads">
     <AppHeader title="下载">
       <template #actions>
+        <!-- 功能扩展-10：批量模式切换 -->
+        <button
+          v-if="!isEmpty"
+          class="header-batch"
+          type="button"
+          :aria-label="batchMode ? '退出批量' : '批量操作'"
+          @click="toggleBatchMode"
+        >
+          <svg v-if="!batchMode" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M3 5h2V3c-1.1 0-2 .9-2 2zm0 8h2v-2H3v2zm4 8h2v-2H7v2zM3 9h2V7H3v2zm10-6h-2v2h2V3zm6 0v2h2c0-1.1-.9-2-2-2zM5 21v-2H3c0 1.1.9 2 2 2zm-2-4h2v-2H3v2zM9 3H7v2h2V3zm2 18h2v-2h-2v2zm8-8h2v-2h-2v2zm0 8c1.1 0 2-.9 2-2h-2v2zm0-12h2V7h-2v2zm0 8h2v-2h-2v2zm-4 4h2v-2h-2v2zm0-16h2V3h-2v2z" />
+          </svg>
+          <svg v-else viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
+          </svg>
+        </button>
         <button class="header-menu" type="button" aria-label="下载操作" @click="menuOpen = true">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
             <circle cx="5.5" cy="12" r="1.7" />
@@ -217,6 +353,12 @@ function goLibrary(): void {
 
         <DownloadSummary :summary="downloads.summary" />
 
+        <!-- 功能扩展-10：存储占用展示 -->
+        <div class="storage-info">
+          <span class="storage-info__label">本地存储</span>
+          <span class="storage-info__value">{{ storageText }}</span>
+        </div>
+
         <div class="downloads-filter">
           <SegmentedControl v-model="filter" :options="FILTER_OPTIONS" label="下载筛选" block />
         </div>
@@ -226,12 +368,15 @@ function goLibrary(): void {
             <DownloadItem
               :task="task"
               :offline="isOffline"
+              :batch-mode="batchMode"
+              :selected="selectedIds.has(task.id)"
               @play="onPlay"
               @pause="onPause"
               @resume="onResume"
               @retry="onRetry"
               @remove="onRemove"
               @select="onSelect"
+              @toggle-select="toggleSelect"
             />
           </li>
         </ul>
@@ -263,6 +408,11 @@ function goLibrary(): void {
         </li>
         <li>
           <button class="sheet-list__item" type="button" @click="clearCompleted">清除已完成记录</button>
+        </li>
+        <li>
+          <button class="sheet-list__item" type="button" :disabled="!hasFailed" @click="clearFailed">
+            清理失败任务
+          </button>
         </li>
         <li>
           <button class="sheet-list__item" type="button" @click="refresh">刷新</button>
@@ -301,6 +451,28 @@ function goLibrary(): void {
         </li>
       </ul>
     </BottomSheet>
+
+    <!-- 功能扩展-10：批量操作栏 -->
+    <Transition name="batch-bar">
+      <div v-if="batchMode && !isEmpty" class="batch-bar">
+        <div class="batch-bar__controls">
+          <button class="batch-bar__btn batch-bar__btn--text" type="button" @click="selectAll">全选</button>
+          <button class="batch-bar__btn batch-bar__btn--text" type="button" @click="deselectAll">取消全选</button>
+          <button class="batch-bar__btn batch-bar__btn--text" type="button" @click="invertSelection">反选</button>
+        </div>
+        <div class="batch-bar__actions">
+          <span class="batch-bar__count">已选 {{ selectedCount }} 项</span>
+          <button
+            class="batch-bar__btn batch-bar__btn--danger"
+            type="button"
+            :disabled="!canBatchDelete || batchOperating"
+            @click="batchDelete"
+          >
+            删除
+          </button>
+        </div>
+      </div>
+    </Transition>
   </SafeArea>
 </template>
 
@@ -433,5 +605,119 @@ function goLibrary(): void {
 
 .task-detail__line--error {
   color: var(--color-danger);
+}
+
+/* 功能扩展-10：批量模式按钮 */
+.header-batch {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  color: var(--color-text-primary);
+}
+
+.header-batch svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* 功能扩展-10：存储占用展示 */
+.storage-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  margin-top: var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-surface);
+}
+
+.storage-info__label {
+  font: var(--text-label);
+  color: var(--color-text-secondary);
+}
+
+.storage-info__value {
+  font: var(--text-body);
+  color: var(--color-text-primary);
+  font-weight: 500;
+}
+
+/* 功能扩展-10：批量操作栏 */
+.batch-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--layout-page-padding-x) calc(var(--space-3) + env(safe-area-inset-bottom, 0));
+  background-color: var(--color-bg-surface);
+  border-top: 1px solid var(--color-border);
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.08);
+  z-index: 100;
+}
+
+.batch-bar__controls {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.batch-bar__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.batch-bar__count {
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+}
+
+.batch-bar__btn {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-md);
+  font: var(--text-caption);
+  font-weight: 500;
+  transition: background-color 0.15s ease;
+}
+
+.batch-bar__btn--text {
+  background-color: var(--color-bg-elevated);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+}
+
+.batch-bar__btn--text:active {
+  background-color: var(--color-bg-hover);
+}
+
+.batch-bar__btn--danger {
+  background-color: var(--color-danger);
+  color: white;
+}
+
+.batch-bar__btn--danger:active {
+  background-color: var(--color-danger-dark);
+}
+
+.batch-bar__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 批量栏进出动画 */
+.batch-bar-enter-active,
+.batch-bar-leave-active {
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+
+.batch-bar-enter-from,
+.batch-bar-leave-to {
+  transform: translateY(100%);
+  opacity: 0;
 }
 </style>

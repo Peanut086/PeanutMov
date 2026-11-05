@@ -436,6 +436,43 @@ export const downloadService = {
     return completed.length;
   },
 
+  /** 功能扩展-10：批量删除（AC-80） */
+  async removeMany(ids: string[], opts?: { deleteFile?: boolean }): Promise<number> {
+    let count = 0;
+    for (const id of ids) {
+      try {
+        await this.remove(id, opts);
+        count++;
+      } catch {
+        // 单条失败不中断批量
+      }
+    }
+    return count;
+  },
+
+  /** 功能扩展-10：清理失败任务 */
+  async clearFailed(): Promise<number> {
+    const failed = await downloadRepo.listByStatus(['failed']);
+    for (const task of failed) {
+      await this.remove(task.id, { deleteFile: true });
+    }
+    return failed.length;
+  },
+
+  /** 功能扩展-10：计算存储占用（AC-79） */
+  async calculateStorageUsage(): Promise<{ totalBytes: number; fileCount: number }> {
+    const all = await downloadRepo.listAll();
+    let totalBytes = 0;
+    let fileCount = 0;
+    for (const task of all) {
+      if (task.totalBytes) {
+        totalBytes += task.totalBytes;
+        fileCount++;
+      }
+    }
+    return { totalBytes, fileCount };
+  },
+
   /** 本地播放地址（文件缺失 → E_FILE_MISSING，AC-78） */
   async getLocalPlayUrl(id: string): Promise<LocalPlayResult> {
     const task = await downloadRepo.get(id);

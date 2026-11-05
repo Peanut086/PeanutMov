@@ -160,6 +160,23 @@ export const useDownloadStore = defineStore('download', () => {
     await refresh();
   }
 
+  /** 功能扩展-10：批量删除 */
+  async function removeMany(ids: string[], deleteFile?: boolean): Promise<void> {
+    await downloadService.removeMany(ids, { deleteFile });
+    await refresh();
+  }
+
+  /** 功能扩展-10：清理失败任务 */
+  async function clearFailed(): Promise<void> {
+    await downloadService.clearFailed();
+    await refresh();
+  }
+
+  /** 功能扩展-10：存储占用 */
+  async function calculateStorageUsage(): Promise<{ totalBytes: number; fileCount: number }> {
+    return downloadService.calculateStorageUsage();
+  }
+
   function $dispose(): void {
     unsubscribe?.();
     unsubscribe = null;
@@ -179,9 +196,12 @@ export const useDownloadStore = defineStore('download', () => {
     cancel,
     retry,
     remove,
+    removeMany,
     pauseAll,
     resumeAll,
     clearCompleted,
+    clearFailed,
+    calculateStorageUsage,
     $dispose,
   };
 });
