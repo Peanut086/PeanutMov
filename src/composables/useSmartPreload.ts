@@ -6,6 +6,7 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
+import { getNetworkStatus, onNetworkChange, type NetworkStatus } from '@/native/network';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useLibraryStore } from '@/stores/libraryStore';
@@ -18,9 +19,9 @@ export function useSmartPreload() {
 
   const isWifi = ref(false);
 
-  /** 是否应显示预加载提示（WiFi + 设置未开启 + 有可预加载内容） */
+  /** 是否应显示预加载提示（WiFi + 设置已开启 + 有可预加载内容） */
   const canPreload = computed(
-    () => isWifi.value && !settings.settings?.smartPreloadEnabled,
+    () => isWifi.value && Boolean(settings.settings?.smartPreloadEnabled),
   );
 
   /** 预加载存储上限（字节） */
@@ -29,16 +30,13 @@ export function useSmartPreload() {
     return mb === 0 ? Infinity : mb * 1024 * 1024;
   });
 
-  /** 检测网络连接类型 */
-  function checkConnection(): void {
-    if (typeof navigator === 'undefined') return;
-    const conn = (navigator as Navigator & { connection?: { type?: string; effectiveType?: string } }).connection;
-    if (conn) {
-      isWifi.value = conn.type === 'wifi' || conn.effectiveType === '4g';
-    } else {
-      // REV-12: API 不可用时默认不提示，避免计量网络（4G/5G）下误引导
-      isWifi.value = false;
-    }
+  function applyStatus(status: NetworkStatus): void {
+    isWifi.value = status.connected && status.type === 'wifi';
+  }
+
+  /** 检测网络连接类型（原生插件区分 wifi/cellular，Web 端类型未知按非 WiFi 处理） */
+  async function checkConnection(): Promise<void> {
+    applyStatus(await getNetworkStatus());
   }
 
   /**
@@ -68,55 +66,17 @@ export function useSmartPreload() {
     }
   }
 
-  // REV-15: 生命周期 — 优先事件监听，setInterval 仅作最终兜底（60s）
-  let connectionTimer: ReturnType<typeof setInterval> | null = null;
-  let connectionApi: { type?: string; effectiveType?: string; addEventListener?: (type: string, handler: () => void) => void; removeEventListener?: (type: string, handler: () => void) => void } | null = null;
-
-  function onConnectionChange(): void {
-    checkConnection();
-  }
-
-  function onOnline(): void {
-    checkConnection();
-  }
-
-  function onOffline(): void {
-    isWifi.value = false;
-  }
+  // REV-15: 生命周期 — 原生插件事件驱动，挂载时补一次同步查询
+  let unsubscribeNetwork: (() => void) | null = null;
 
   onMounted(() => {
-    checkConnection();
-
-    if (typeof navigator !== 'undefined') {
-      // 优先：Network Information API change 事件
-      const nav = navigator as Navigator & { connection?: typeof connectionApi };
-      connectionApi = nav.connection ?? null;
-      if (connectionApi?.addEventListener) {
-        connectionApi.addEventListener('change', onConnectionChange);
-      }
-
-      // 优先：window online/offline 事件
-      window.addEventListener('online', onOnline);
-      window.addEventListener('offline', onOffline);
-    }
-
-    // 兜底：每 60 秒重新检测（覆盖 API 不支持事件监听的极端场景）
-    connectionTimer = setInterval(checkConnection, 60_000);
+    unsubscribeNetwork = onNetworkChange(applyStatus);
+    void checkConnection();
   });
 
   onBeforeUnmount(() => {
-    if (connectionApi?.removeEventListener) {
-      connectionApi.removeEventListener('change', onConnectionChange);
-    }
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
-    }
-    if (connectionTimer !== null) {
-      clearInterval(connectionTimer);
-      connectionTimer = null;
-    }
-    connectionApi = null;
+    unsubscribeNetwork?.();
+    unsubscribeNetwork = null;
   });
 
   return { isWifi, canPreload, checkConnection, preloadItem, preloadLimitBytes };
