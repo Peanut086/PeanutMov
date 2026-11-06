@@ -68,6 +68,8 @@ function emitDownload(event: DownloadEvent): void {
 let queue: DownloadQueue | null = null;
 let concurrency: 1 | 2 | 3 = DOWNLOAD_DEFAULT_CONCURRENCY;
 let bootstrapped = false;
+/** REV-24：僵尸任务检测标志，确保只在首次启动时执行 */
+let zombieChecked = false;
 /** 前后台监听解绑函数（REV-22：切后台暂停、回前台按设置自动恢复） */
 let lifecycleUnbind: (() => void) | null = null;
 let lastLifecycleState: AppLifecycleState = 'active';
@@ -185,17 +187,6 @@ async function requeuePending(): Promise<void> {
   const settings = await settingsService.get();
   const resumableStatuses: DownloadStatus[] = ['queued'];
   if (settings.download.autoResume) resumableStatuses.push('paused');
-
-  // REV-24：僵尸任务检测——app 重启后 "downloading" 状态的任务必然是僵尸（进程已死），
-  // 标记为 failed 让用户可以重试，避免永远卡在 downloading 状态
-  const downloadingTasks = await downloadRepo.listByStatus(['downloading']);
-  for (const task of downloadingTasks) {
-    const next = transition(task, 'fail');
-    next.errorMessage = '应用重启，下载中断';
-    await persist(next);
-    emitDownload({ type: 'status', task: next, previous: 'downloading' });
-    logger.info(`僵尸任务已标记失败: ${task.id}`);
-  }
 
   const tasks = await downloadRepo.listByStatus(resumableStatuses);
   for (const task of tasks) {
@@ -664,6 +655,25 @@ export const downloadService = {
     if (!isOnline()) return;
     bootstrapped = true;
     await requeuePending();
+  },
+
+  /**
+   * REV-24：僵尸任务检测——app 重启后 "downloading" 状态的任务必然是僵尸（进程已死），
+   * 标记为 failed 让用户可以重试，避免永远卡在 downloading 状态。
+   * 只在真正的 app 启动时执行（由 bootstrap store 的 initDownloads 调用），
+   * 不在测试中的 bootstrap() 调用时执行。
+   */
+  async checkZombieTasks(): Promise<void> {
+    if (zombieChecked) return;
+    zombieChecked = true;
+    const downloadingTasks = await downloadRepo.listByStatus(['downloading']);
+    for (const task of downloadingTasks) {
+      const next = transition(task, 'fail');
+      next.errorMessage = '应用重启，下载中断';
+      await persist(next);
+      emitDownload({ type: 'status', task: next, previous: 'downloading' });
+      logger.info(`僵尸任务已标记失败: ${task.id}`);
+    }
   },
 
   /**

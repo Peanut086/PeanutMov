@@ -55,10 +55,14 @@ export async function ensureDemoData(): Promise<void> {
  *    `settings.download.autoResume` 自动恢复；
  * 2. 重新入队可恢复任务（离线时跳过，回前台/联网后由生命周期再次触发）。
  *
+ * REV-24：僵尸任务检测在 bootstrap 之前执行，把 app 重启后残留的 "downloading"
+ * 任务标记为 failed（进程已死，任务必然是僵尸）。
+ *
  * 幂等；失败只记日志，不阻塞启动。
  */
 export async function initDownloads(): Promise<void> {
   try {
+    await downloadService.checkZombieTasks();
     await downloadService.bootstrap();
   } catch (e) {
     logger.error('下载队列初始化失败（不阻塞启动）', toAppError(e, 'E_DB'));

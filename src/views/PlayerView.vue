@@ -27,7 +27,7 @@ import type { PlayerLoadOptions } from '@/player/types';
 import { emptyEmbeddedTracks, type EmbeddedTrackState } from '@/player/PlayerController';
 import { shouldIgnoreShortcut } from '@/player/shortcutGuard';
 import { formatClock } from '@/shared/time';
-import { toErrorShape } from '@/shared/errors';
+import { toErrorShape, isCanceled } from '@/shared/errors';
 import { guidanceOf, magnetUrlOf } from '@/shared/sourceFailure';
 
 import PlayerSurface from '@/components/player/PlayerSurface.vue';

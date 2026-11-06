@@ -141,7 +141,8 @@ describe('源服务（AC-03 ~ AC-07）', () => {
     expect(updated.name).toBe('源 A 改名');
     expect(updated.baseUrl).toBe('https://alist2.example.com');
     expect(updated.health).toBe('unknown');
-    expect(await mediaRepo.countBySource(created.id)).toBe(0);
+    // REV-24：地址变化只清 lines/episodes/categories，保留 media（避免 history/favorites/downloads 断链）
+    expect(await mediaRepo.countBySource(created.id)).toBe(1);
     expect(await categoryRepo.listBySource(created.id)).toHaveLength(0);
   });
 
