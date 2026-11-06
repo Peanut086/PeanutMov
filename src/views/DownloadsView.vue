@@ -19,6 +19,7 @@ import BottomSheet from '@/components/common/BottomSheet.vue';
 import PullToRefresh from '@/components/common/PullToRefresh.vue';
 import DownloadSummary from '@/components/download/DownloadSummary.vue';
 import DownloadItem from '@/components/download/DownloadItem.vue';
+import DownloadBatchGroup from '@/components/download/DownloadBatchGroup.vue';
 import SkeletonPoster from '@/components/media/SkeletonPoster.vue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
@@ -26,6 +27,8 @@ import { useToast } from '@/composables/useToast';
 import { useHaptic } from '@/composables/useHaptic';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
+import type { BatchProgress } from '@/services/downloadBatch';
+import { downloadService } from '@/services/downloadService';
 
 const router = useRouter();
 const downloads = useDownloadStore();
@@ -97,6 +100,69 @@ const filtered = computed(() => {
 const activeDownloading = computed(() => downloads.tasks.some((t) => t.status === 'downloading'));
 const hasPaused = computed(() => downloads.tasks.some((t) => t.status === 'paused'));
 const hasFailed = computed(() => downloads.tasks.some((t) => t.status === 'failed'));
+
+// EXT-04：按 batchId 分组任务（有 batchId 的归组，无 batchId 的单独成组）
+const batchGroups = computed(() => {
+  const groups = new Map<string, { batchId: string; label: string; tasks: DownloadTask[] }>();
+  const noBatch: DownloadTask[] = [];
+
+  for (const task of filtered.value) {
+    if (task.batchId) {
+      if (!groups.has(task.batchId)) {
+        groups.set(task.batchId, {
+          batchId: task.batchId,
+          label: task.title || '本批下载',
+          tasks: [],
+        });
+      }
+      groups.get(task.batchId)!.tasks.push(task);
+    } else {
+      noBatch.push(task);
+    }
+  }
+
+  // 把无 batchId 的任务作为单独一组（batchId 为空字符串）
+  if (noBatch.length > 0) {
+    groups.set('', { batchId: '', label: '单独下载', tasks: noBatch });
+  }
+
+  return Array.from(groups.values());
+});
+
+// EXT-04：计算每个批次的进度
+function getBatchProgress(tasks: DownloadTask[]): BatchProgress {
+  return {
+    total: tasks.length,
+    completed: tasks.filter((t) => t.status === 'completed').length,
+    failed: tasks.filter((t) => t.status === 'failed').length,
+    active: tasks.filter((t) => t.status === 'downloading' || t.status === 'queued').length,
+    canceled: tasks.filter((t) => t.status === 'canceled').length,
+  };
+}
+
+// EXT-04：限速展示
+const speedLimitText = computed(() => {
+  const limit = downloadService.getSpeedLimit();
+  switch (limit) {
+    case 'low':
+      return '慢速 512KB/s';
+    case 'medium':
+      return '中速 2MB/s';
+    case 'high':
+      return '快速 5MB/s';
+    default:
+      return '不限速';
+  }
+});
+
+const currentSpeedText = computed(() => {
+  const speed = downloadService.getCurrentSpeed();
+  if (speed <= 0) return '—';
+  const kb = speed / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB/s`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(2)} MB/s`;
+});
 
 /** 功能扩展-10：批量选择相关 */
 const selectedCount = computed(() => selectedIds.value.size);
@@ -187,6 +253,54 @@ async function batchDelete(): Promise<void> {
     toast.success(`已删除 ${selectedCount.value} 个任务`);
     selectedIds.value.clear();
     batchMode.value = false;
+    await loadStorageUsage();
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    batchOperating.value = false;
+  }
+}
+
+// EXT-04：重试本批失败项
+async function retryBatch(batchId: string): Promise<void> {
+  if (!batchId || batchOperating.value) return;
+  batchOperating.value = true;
+  try {
+    const result = await downloadService.retryBatch(batchId);
+    if (result.retried > 0) {
+      toast.success(`已重试 ${result.retried} 个失败任务`);
+    } else {
+      toast.info('没有可重试的任务');
+    }
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    batchOperating.value = false;
+  }
+}
+
+// EXT-04：删除本批已完成
+async function deleteBatchCompleted(batchId: string): Promise<void> {
+  if (!batchId || batchOperating.value) return;
+  const group = batchGroups.value.find((g) => g.batchId === batchId);
+  if (!group) return;
+  const completedCount = group.tasks.filter((t) => t.status === 'completed').length;
+  if (completedCount === 0) {
+    toast.info('没有已完成的任务');
+    return;
+  }
+  const ok = await ui.confirm({
+    title: `删除 ${completedCount} 个已完成任务？`,
+    message: '将删除选中的下载任务与本地文件，此操作不可撤销。',
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  batchOperating.value = true;
+  try {
+    const completedIds = group.tasks.filter((t) => t.status === 'completed').map((t) => t.id);
+    await downloads.removeMany(completedIds, true);
+    toast.success(`已删除 ${completedCount} 个任务`);
     await loadStorageUsage();
   } catch (e) {
     toast.error(toErrorShape(e).message);
@@ -391,23 +505,42 @@ function goLibrary(): void {
           <SegmentedControl v-model="filter" :options="FILTER_OPTIONS" label="下载筛选" block />
         </div>
 
-        <ul class="downloads-list">
-          <li v-for="task in filtered" :key="task.id">
-            <DownloadItem
-              :task="task"
-              :offline="isOffline"
-              :batch-mode="batchMode"
-              :selected="selectedIds.has(task.id)"
-              @play="onPlay"
-              @pause="onPause"
-              @resume="onResume"
-              @retry="onRetry"
-              @remove="onRemove"
-              @select="onSelect"
-              @toggle-select="toggleSelect"
+        <!-- EXT-04：限速展示 -->
+        <div v-if="activeDownloading" class="downloads-speed">
+          <span class="speed-label">限速：{{ speedLimitText }}</span>
+          <span class="speed-value">当前：{{ currentSpeedText }}</span>
+        </div>
+
+        <!-- EXT-04：按批次分组展示 -->
+        <div v-if="batchGroups.length > 0" class="downloads-batches">
+          <div v-for="group in batchGroups" :key="group.batchId" class="batch-group">
+            <DownloadBatchGroup
+              v-if="group.batchId"
+              :progress="getBatchProgress(group.tasks)"
+              :label="group.label"
+              :busy="batchOperating"
+              @retry="retryBatch(group.batchId)"
+              @delete-completed="deleteBatchCompleted(group.batchId)"
             />
-          </li>
-        </ul>
+            <ul class="downloads-list">
+              <li v-for="task in group.tasks" :key="task.id">
+                <DownloadItem
+                  :task="task"
+                  :offline="isOffline"
+                  :batch-mode="batchMode"
+                  :selected="selectedIds.has(task.id)"
+                  @play="onPlay"
+                  @pause="onPause"
+                  @resume="onResume"
+                  @retry="onRetry"
+                  @remove="onRemove"
+                  @select="onSelect"
+                  @toggle-select="toggleSelect"
+                />
+              </li>
+            </ul>
+          </div>
+        </div>
 
         <EmptyState
           v-if="filtered.length === 0"
@@ -748,5 +881,43 @@ function goLibrary(): void {
 .batch-bar-leave-to {
   transform: translateY(100%);
   opacity: 0;
+}
+
+/* EXT-04：限速展示 */
+.downloads-speed {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+  background-color: var(--color-bg-surface);
+  border-radius: var(--radius-md);
+  font-size: var(--text-caption);
+}
+
+.downloads-speed .speed-label {
+  color: var(--color-text-secondary);
+}
+
+.downloads-speed .speed-value {
+  color: var(--color-primary);
+  font-weight: 500;
+}
+
+/* EXT-04：批次分组 */
+.downloads-batches {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.batch-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.batch-group .downloads-list {
+  margin-top: 0;
 }
 </style>
