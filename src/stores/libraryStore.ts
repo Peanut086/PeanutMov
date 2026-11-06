@@ -8,7 +8,7 @@ import { computed, ref } from 'vue';
 
 import { libraryService } from '@/services/libraryService';
 import { EMPTY_LIBRARY_FILTERS, markSourceFailedByError } from '@/services/libraryService';
-import { groupSearchResults, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
+import { failedSourceIds, groupSearchResults, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
 import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
 import { PAGE_SIZE, SEARCH_LOCAL_LIMIT } from '@/shared/constants';
@@ -463,16 +463,22 @@ export const useLibraryStore = defineStore('library', () => {
   /* ---------- v1.7/CHG-20：范围筛选与会话级退避 ---------- */
 
   /**
-   * P2-9：只重试失败的源。
+   * P2-9 / OPT-04：只重试失败的源。
    *
    * 真机实测一轮全量聚合搜索有 40+ 源失败，用户看到「N 个源失败」后没有下一步动作；
    * 全量重搜又要等 20~30s。这里只对失败源再扇出一次，并把结果并入当前列表
    * （已上屏内容不闪空、不重排）。
+   *
+   * - `sourceIds` 取失败源的去重集合 → 不重查成功的源；
+   * - `forceAll` 跳过体检结论过滤（失败源多半带 unreachable 结论，否则永远翻不了案）；
+   * - 重试成功的源同时清掉会话退避/超时连击计数，下一轮全量搜索不再被跳过；
+   * - 全量搜索进行中不并发重试（会与同一批源抢网络，且结果重复上屏）。
    */
   async function retryFailedSources(): Promise<void> {
     const kw = searchKeyword.value.trim();
-    const ids = [...new Set(searchFailed.value.map((failure) => failure.sourceId))];
+    const ids = failedSourceIds(searchFailed.value);
     if (kw.length === 0 || ids.length === 0 || searchRetrying.value) return;
+    if (searchState.value === 'loading') return;
     searchRetrying.value = true;
     try {
       const result = await libraryService.search({
@@ -483,20 +489,36 @@ export const useLibraryStore = defineStore('library', () => {
         pageSize: SEARCH_LOCAL_LIMIT,
       });
       const seenIds = new Set(searchResultsAll.value.map((item) => item.id));
-      const seenTitles = new Set(searchResults.value.map((item) => titleDedupKey(item.title, item.year)));
-      const fresh = result.items.filter((item) => {
-        const titleKey = titleDedupKey(item.title, item.year);
-        if (seenIds.has(item.id) || seenTitles.has(titleKey)) return false;
+      const freshAll = result.items.filter((item) => {
+        if (seenIds.has(item.id)) return false;
         seenIds.add(item.id);
+        return true;
+      });
+      if (freshAll.length > 0) searchResultsAll.value = [...searchResultsAll.value, ...freshAll];
+      const seenTitles = new Set(searchResults.value.map((item) => titleDedupKey(item.title, item.year)));
+      const fresh = freshAll.filter((item) => {
+        const titleKey = titleDedupKey(item.title, item.year);
+        if (seenTitles.has(titleKey)) return false;
         seenTitles.add(titleKey);
         return true;
       });
-      if (result.items.length > 0) searchResultsAll.value = [...searchResultsAll.value, ...result.items];
       if (fresh.length > 0) searchResults.value = sortByRelevance([...searchResults.value, ...fresh], kw);
+      for (const failure of result.failed) recordTimeoutStreak(failure.sourceId, failure.error.code);
       searchFailed.value = result.failed;
+      // 翻案成功：解除会话退避，后续全量搜索重新纳入这些源
+      const stillFailed = new Set(result.failed.map((failure) => failure.sourceId));
+      for (const id of ids) {
+        if (stillFailed.has(id)) continue;
+        searchTimeoutStreak.delete(id);
+        searchBackoffSources.value.delete(id);
+      }
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
     } catch (e) {
-      if (!isCanceled(e)) error.value = toErrorShape(e);
+      if (isCanceled(e)) return;
+      // 失败源整体仍不可用（libraryService 在「0 条且全部失败」时抛首个错误）：
+      // 保留原失败列表，但必须给用户反馈，否则按钮看起来「没反应」
+      error.value = toErrorShape(e);
+      appEvents.emit('toast', { text: '重试失败源未成功，可稍后再试或到源管理检查', type: 'info' });
     } finally {
       searchRetrying.value = false;
     }

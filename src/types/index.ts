@@ -550,6 +550,11 @@ export interface AppSettings {
   hapticEnabled?: boolean;
   /** OPT-06：自动进入画中画（页面不可见且正在播放时，默认关） */
   pipAutoEnter?: boolean;
+  /**
+   * OPT-04：搜索超时预算档位（缩放单源超时；缺省 = 'standard'，即既有
+   * 站点 8s / 爬虫 20s / 其它 5s 的行为不变）。文案与倍率见 `@/shared/searchBudget`。
+   */
+  searchBudget?: 'fast' | 'standard' | 'patient';
   /** OPT-15：智能预加载开关（WiFi 环境下提示预加载内容，默认关） */
   smartPreloadEnabled?: boolean;
   /** OPT-15：预加载存储上限（MB），0 表示无限制 */

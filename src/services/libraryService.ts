@@ -26,6 +26,8 @@ import {
 } from '@/shared/constants';
 import { AppError, isCanceled, toAppError, toErrorShape } from '@/shared/errors';
 import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
+import { resolveSearchTimeoutMs } from '@/shared/searchBudget';
+import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
@@ -321,6 +323,19 @@ function isNetworkError(e: unknown): boolean {
   return e.code === 'E_NETWORK' || e.code === 'E_TIMEOUT' || e.code === 'E_SOURCE_UNAVAILABLE';
 }
 
+/**
+ * OPT-04：读取当前搜索预算档位（settings 内存缓存，读失败回落默认 = 既有行为）。
+ * 档位只缩放单源超时，不改变「单源失败计入 failed 列表」的语义。
+ */
+async function searchBudgetPreset(): Promise<SearchBudgetPreset | undefined> {
+  try {
+    const settings = await settingsService.get();
+    return settings.searchBudget;
+  } catch {
+    return undefined;
+  }
+}
+
 /** 单源远程搜索，超时按适配器区分（CHG-15）：site 8s / spider 20s，缺省 5s（AC-24） */
 async function searchOneSource(
   source: Source,
@@ -332,7 +347,9 @@ async function searchOneSource(
   // P1-6：搜索扇出前预热（爬虫源 jar 加载与搜索并发；warmup 内部对同源去重）
   prewarm(adapter, source);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), adapter.searchTimeoutMs ?? TIMEOUT_SEARCH_MS);
+  // OPT-04：单源预算可配置（standard = 既有行为；fast/patient 按倍率缩放后钳制）
+  const budgetMs = resolveSearchTimeoutMs(adapter.searchTimeoutMs ?? TIMEOUT_SEARCH_MS, await searchBudgetPreset());
+  const timer = setTimeout(() => controller.abort(), budgetMs);
   const onAbort = (): void => controller.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   try {

@@ -20,6 +20,7 @@ import { withTx } from '@/db/index';
 import { DEMO_SOURCE_ID, seedDemoData } from '@/data/demo/demoSeed';
 import { appEvents } from '@/services/events';
 import { COMPLIANCE_VERSION, KV_KEY_SETTINGS, SEARCH_HISTORY_MAX } from '@/shared/constants';
+import { SEARCH_BUDGET_DEFAULT, isSearchBudgetPreset } from '@/shared/searchBudget';
 import { AppError } from '@/shared/errors';
 import type { AppSettings, DanmakuSettings, DeepPartial, DownloadSettings, GestureSettings, PlayerSettings } from '@/types';
 
@@ -77,6 +78,8 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
     hapticEnabled: true,
     /* OPT-06：自动进入画中画（默认关闭，避免用户误触） */
     pipAutoEnter: false,
+    /* OPT-04：搜索超时预算（standard = 既有 5s/8s/20s 单源超时） */
+    searchBudget: SEARCH_BUDGET_DEFAULT,
     /* OPT-15：智能预加载（默认关闭） */
     smartPreloadEnabled: false,
     /* OPT-15：预加载存储上限（默认 1GB = 1024MB） */
@@ -170,6 +173,8 @@ function sanitize(input: AppSettings): AppSettings {
     experimentalNativePlayer: Boolean(input.experimentalNativePlayer),
     hapticEnabled: input.hapticEnabled === undefined ? true : Boolean(input.hapticEnabled),
     pipAutoEnter: input.pipAutoEnter === undefined ? false : Boolean(input.pipAutoEnter),
+    // OPT-04：未知档位回落标准（旧设置/手改数据不会让搜索卡在非法预算上）
+    searchBudget: isSearchBudgetPreset(input.searchBudget) ? input.searchBudget : SEARCH_BUDGET_DEFAULT,
     smartPreloadEnabled: input.smartPreloadEnabled === undefined ? false : Boolean(input.smartPreloadEnabled),
     preloadStorageLimitMb: validatePreloadLimit(input.preloadStorageLimitMb, defaults.preloadStorageLimitMb!),
     danmaku,
