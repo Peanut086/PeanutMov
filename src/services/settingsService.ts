@@ -22,9 +22,70 @@ import { appEvents } from '@/services/events';
 import { COMPLIANCE_VERSION, KV_KEY_SETTINGS, SEARCH_HISTORY_MAX } from '@/shared/constants';
 import { SEARCH_BUDGET_DEFAULT, isSearchBudgetPreset } from '@/shared/searchBudget';
 import { AppError } from '@/shared/errors';
-import type { AppSettings, DanmakuSettings, DeepPartial, DownloadSettings, GestureSettings, PlayerSettings } from '@/types';
+import type { AppSettings, BackupSettings, DanmakuSettings, DeepPartial, DownloadSettings, GestureSettings, PlayerSettings } from '@/types';
 
 const SCHEMA_VERSION = 2;
+
+/**
+ * EXT-05：备份增强默认值。
+ *
+ * 故意不 import `backupService`（后者依赖本服务，反向引用会形成循环），
+ * 数值口径与 `backupService.BACKUP_RETENTION_*` / `defaultBackupSettings()` 保持一致：
+ * 保留 5 份、每天 03:00、周一。
+ */
+const BACKUP_DEFAULTS: BackupSettings = {
+  scheduleMode: 'off',
+  scheduleHour: 3,
+  scheduleWeekday: 1,
+  retentionCount: 5,
+  encryptionEnabled: false,
+  encryptionSalt: null,
+  encryptionVerifier: null,
+  lastScheduledAt: null,
+  lastBackupAt: null,
+  lastError: null,
+};
+
+const BACKUP_RETENTION_MIN = 1;
+const BACKUP_RETENTION_MAX = 20;
+
+/** 归一化备份设置（越界回落默认，避免脏数据让 UI/调度器崩） */
+function sanitizeBackup(input: unknown): BackupSettings {
+  const base = { ...BACKUP_DEFAULTS };
+  if (!isRecord(input)) return base;
+  const mode = input['scheduleMode'];
+  base.scheduleMode = mode === 'daily' || mode === 'weekly' ? mode : 'off';
+
+  const hour = Number(input['scheduleHour']);
+  base.scheduleHour = Number.isFinite(hour) ? Math.min(23, Math.max(0, Math.floor(hour))) : BACKUP_DEFAULTS.scheduleHour;
+
+  const weekday = Number(input['scheduleWeekday']);
+  base.scheduleWeekday = Number.isFinite(weekday)
+    ? Math.min(7, Math.max(1, Math.floor(weekday)))
+    : BACKUP_DEFAULTS.scheduleWeekday;
+
+  const retention = Number(input['retentionCount']);
+  base.retentionCount = Number.isFinite(retention)
+    ? Math.min(BACKUP_RETENTION_MAX, Math.max(BACKUP_RETENTION_MIN, Math.floor(retention)))
+    : BACKUP_DEFAULTS.retentionCount;
+
+  base.encryptionEnabled = Boolean(input['encryptionEnabled']);
+  base.encryptionSalt = typeof input['encryptionSalt'] === 'string' && input['encryptionSalt'].length > 0
+    ? input['encryptionSalt']
+    : null;
+  base.encryptionVerifier = typeof input['encryptionVerifier'] === 'string' && input['encryptionVerifier'].length > 0
+    ? input['encryptionVerifier']
+    : null;
+  // 没有 salt/校验块就不认为"已开启加密"，防止 UI 显示开启但无法产出 .enc
+  if (!base.encryptionSalt || !base.encryptionVerifier) base.encryptionEnabled = false;
+
+  const lastScheduledAt = Number(input['lastScheduledAt']);
+  base.lastScheduledAt = Number.isFinite(lastScheduledAt) && lastScheduledAt > 0 ? lastScheduledAt : null;
+  const lastBackupAt = Number(input['lastBackupAt']);
+  base.lastBackupAt = Number.isFinite(lastBackupAt) && lastBackupAt > 0 ? lastBackupAt : null;
+  base.lastError = typeof input['lastError'] === 'string' && input['lastError'].length > 0 ? input['lastError'] : null;
+  return base;
+}
 
 export function defaultSettings(now: number = Date.now()): AppSettings {
   return {
@@ -84,6 +145,8 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
     smartPreloadEnabled: false,
     /* OPT-15：预加载存储上限（默认 1GB = 1024MB） */
     preloadStorageLimitMb: 1024,
+    /* EXT-05 phase1：定时备份 / 版本保留 / 加密 */
+    backup: { ...BACKUP_DEFAULTS },
     updatedAt: now,
   };
 }
@@ -177,6 +240,7 @@ function sanitize(input: AppSettings): AppSettings {
     searchBudget: isSearchBudgetPreset(input.searchBudget) ? input.searchBudget : SEARCH_BUDGET_DEFAULT,
     smartPreloadEnabled: input.smartPreloadEnabled === undefined ? false : Boolean(input.smartPreloadEnabled),
     preloadStorageLimitMb: validatePreloadLimit(input.preloadStorageLimitMb, defaults.preloadStorageLimitMb!),
+    backup: sanitizeBackup(input.backup),
     danmaku,
     searchHistory: Array.isArray(input.searchHistory)
       ? input.searchHistory.filter((k): k is string => typeof k === 'string' && k.trim().length > 0).slice(0, SEARCH_HISTORY_MAX)

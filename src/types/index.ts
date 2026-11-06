@@ -325,6 +325,16 @@ export interface SearchResultGroup {
 }
 
 /* ---------- 历史 / 收藏 ---------- */
+/** REV-24：历史快照，用于缓存清理后自愈（可选字段，兼容旧记录） */
+export interface MediaSnapshot {
+  /** 源内条目 ID（自愈必需，adapter 用它重新拉详情） */
+  sourceItemId: string;
+  type: MediaType;
+  year: number | null;
+  episodeCount: number | null;
+  originalTitle: string | null;
+}
+
 export interface HistoryRecord {
   /** `${sourceId}:${mediaId}`，同一影片同源只保留一条 */
   id: string;
@@ -342,6 +352,8 @@ export interface HistoryRecord {
   totalEpisodes: number | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
+  /** REV-24：媒体快照，缓存清理后用于自愈（旧记录无此字段） */
+  mediaSnapshot?: MediaSnapshot;
 }
 
 export interface SaveProgressInput {
@@ -354,6 +366,8 @@ export interface SaveProgressInput {
   positionSec: number;
   durationSec: number;
   totalEpisodes: number | null;
+  /** REV-24：媒体快照 */
+  mediaSnapshot?: MediaSnapshot;
 }
 
 export interface FavoriteRecord {
@@ -544,6 +558,8 @@ export interface AppSettings {
   netdisk?: NetdiskSettings;
   /** 功能扩展-4：WebDAV 云备份配置 */
   webdav?: WebDAVSettings;
+  /** EXT-05 phase1：定时备份 / 版本保留 / 加密配置 */
+  backup?: BackupSettings;
   /** 功能扩展-9：暂停历史记录（隐私开关，默认关） */
   pauseHistoryRecording?: boolean;
   /** OPT-03：触觉反馈开关（默认开） */
@@ -580,6 +596,70 @@ export interface WebDAVSettings {
   password: string;
   /** 远程备份目录路径 */
   backupPath: string;
+}
+
+/* ---------- EXT-05 phase1：定时备份 / 版本保留 / 加密 ---------- */
+
+/** 定时模式：关闭 / 每天 / 每周 */
+export type BackupScheduleMode = 'off' | 'daily' | 'weekly';
+
+/** 备份来源：手动 / 定时 */
+export type BackupSource = 'manual' | 'scheduled';
+
+/** 备份存放位置：本机 / WebDAV */
+export type BackupLocation = 'local' | 'webdav';
+
+/**
+ * 备份增强设置（落在 `AppSettings.backup`）。
+ *
+ * 安全约束：**不存密码明文**。只落 PBKDF2 的 salt 与"校验块"（verifier），
+ * 派生密钥单独缓存在 kv（见 `backupService` 的 `BACKUP_KEY_KV_KEY`）。
+ */
+export interface BackupSettings {
+  /** 定时模式 */
+  scheduleMode: BackupScheduleMode;
+  /** 触发小时（0-23，本地时区） */
+  scheduleHour: number;
+  /** 触发星期（1=周一 … 7=周日，仅 weekly 生效） */
+  scheduleWeekday: number;
+  /** 版本保留数量（1-20） */
+  retentionCount: number;
+  /** 是否加密备份 */
+  encryptionEnabled: boolean;
+  /** PBKDF2 salt（base64），未加密时为 null */
+  encryptionSalt: string | null;
+  /** 密码校验块（base64，固定明文 "peanutmov-backup-key-check" 的 AES-GCM 密文），用于校验用户输入 */
+  encryptionVerifier: string | null;
+  /** 上次定时备份成功时间（用于「补执行」判定与 UI 展示） */
+  lastScheduledAt: Timestamp | null;
+  /** 上次任意备份成功时间 */
+  lastBackupAt: Timestamp | null;
+  /** 最近一次定时备份失败原因（成功即清空） */
+  lastError: string | null;
+}
+
+/**
+ * 备份索引条目（kv `backup-index`）。
+ *
+ * 只存元数据，正文在原生文件系统（`backups/`）或 kv（Web 无文件系统时）。
+ */
+export interface BackupRecord {
+  /** 稳定 id（`{timestamp}-{source}` 派生，便于同日多次区分） */
+  id: string;
+  /** 备份生成时间 */
+  timestamp: Timestamp;
+  /** 字节数 */
+  size: number;
+  /** 手动 / 定时 */
+  source: BackupSource;
+  /** 是否加密（.enc） */
+  encrypted: boolean;
+  /** 本机相对路径或 WebDAV 远程路径 */
+  path: string;
+  /** 存放位置 */
+  location: BackupLocation;
+  /** 文件名（列表展示用） */
+  fileName: string;
 }
 
 /* ---------- v1.7 增量（CHG-19 / CHG-22） ---------- */

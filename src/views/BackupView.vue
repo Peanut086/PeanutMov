@@ -9,21 +9,38 @@
  * - 配置 WebDAV 服务器（坚果云/Nextcloud 等）
  * - 上传备份到云端
  * - 从云端下载并导入备份
+ *
+ * EXT-05 phase1：定时备份 + 版本保留 + 加密备份
+ * - 定时：off/daily/weekly + 整点小时，静默执行；App 未运行时由原生提醒 + 下次启动补执行
+ * - 保留：最近 N 份（1-20），`backup_YYYYMMDD_HHmmss.json|.enc`，超出自动清理（本机/云端分别保留）
+ * - 加密：AES-256-GCM + PBKDF2，密码不落盘；恢复 `.enc` 备份需重新输入密码
+ * - 既有的手动导出 / 导入 / WebDAV 上传逻辑保持原样，新功能只新增区块
  */
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref } from 'vue';
 
-import type { BackupFile, BackupMode } from '@/types';
+import type { BackupFile, BackupMode, BackupRecord, BackupSettings } from '@/types';
 import type { WebDAVConfig, WebDAVFileEntry } from '@/services/webdavService';
-import { formatDateStamp } from '@/shared/time';
+import { formatDateStamp, formatRelativeTime } from '@/shared/time';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
 import SegmentedControl from '@/components/common/SegmentedControl.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
-import { backupService, normalizeBackupFile } from '@/services/backupService';
+import BackupScheduleSettings from '@/components/backup/BackupScheduleSettings.vue';
+import BackupEncryptionSettings from '@/components/backup/BackupEncryptionSettings.vue';
+import {
+  backupService,
+  disableBackupEncryption,
+  ensureBackupEncryptionKey,
+  normalizeBackupFile,
+  setupBackupEncryption,
+} from '@/services/backupService';
+import { describeNextRun, startBackupScheduler } from '@/services/backupScheduler';
 import { WebDAVClient, validateWebDAVConfig } from '@/services/webdavService';
+import { appEvents } from '@/services/events';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useSourceStore } from '@/stores/sourceStore';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
@@ -34,6 +51,7 @@ import { settingsService } from '@/services/settingsService';
 const sources = useSourceStore();
 const favorites = useFavoriteStore();
 const history = useHistoryStore();
+const settings = useSettingsStore();
 const toast = useToast();
 const ui = useUiStore();
 
@@ -69,6 +87,39 @@ const modeOptions = [
   { value: 'merge', label: '合并' },
   { value: 'overwrite', label: '覆盖' },
 ];
+
+// ========== EXT-05：定时 / 版本保留 / 加密 ==========
+const backupSettings = computed((): BackupSettings => settings.backup);
+
+/** 每分钟推进一次"下次定时备份"的相对时间（interval 在 onUnmounted 清理） */
+const nowTick = ref(Date.now());
+const nextRunText = computed(() => describeNextRun(backupSettings.value, nowTick.value));
+
+/** 本机是否缓存了派生密钥（决定定时加密备份能否无人值守） */
+const keyReady = ref(false);
+/** 受管理备份列表（本机 + 云端） */
+const records = ref<BackupRecord[]>([]);
+const listLoading = ref(false);
+const listError = ref<string | null>(null);
+const scheduleBusy = ref(false);
+const encryptionBusy = ref(false);
+/** 正在执行的备份目标（null = 空闲） */
+const backingUp = ref<'local' | 'webdav' | null>(null);
+const deletingId = ref<string | null>(null);
+const restoringId = ref<string | null>(null);
+/** 正在恢复的记录（非空时展示恢复面板） */
+const restoreTarget = ref<BackupRecord | null>(null);
+const restorePassword = ref('');
+const restoreError = ref<string | null>(null);
+
+let tickTimer: ReturnType<typeof setInterval> | null = null;
+let unsubscribeSettings: (() => void) | null = null;
+
+const lastBackupText = computed(() => {
+  const at = backupSettings.value.lastBackupAt;
+  if (typeof at !== 'number' || at <= 0) return '从未备份';
+  return `${formatRelativeTime(at, nowTick.value)}（${formatBackupTime(at)}）`;
+});
 
 const previewCounts = computed(() => {
   const b = parsed.value;
@@ -407,8 +458,230 @@ function formatWebDAVFileDate(timestamp: number): string {
   });
 }
 
+// ========== EXT-05：定时备份 / 版本保留 / 加密 ==========
+
+function formatBackupTime(timestamp: number): string {
+  if (!timestamp) return '未知时间';
+  return new Date(timestamp).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+/** 加载受管理备份列表（空列表属正常态，由模板展示空状态） */
+async function loadManagedBackups(): Promise<void> {
+  listLoading.value = true;
+  listError.value = null;
+  try {
+    records.value = await backupService.listBackups();
+  } catch (e) {
+    listError.value = toErrorShape(e, 'E_DB').message;
+  } finally {
+    listLoading.value = false;
+  }
+}
+
+/** 探测本机派生密钥是否存在（读失败按"未就绪"处理，不阻断页面） */
+async function refreshKeyReady(): Promise<void> {
+  try {
+    keyReady.value = (await ensureBackupEncryptionKey()) !== null;
+  } catch {
+    keyReady.value = false;
+  }
+}
+
+/** 定时设置变更：落盘 → 重排原生提醒 → 刷新"下次备份"文案 */
+async function onScheduleChange(patch: Partial<BackupSettings>): Promise<void> {
+  if (scheduleBusy.value) return;
+  scheduleBusy.value = true;
+  try {
+    // 局部更新基于"当前完整备份设置"合并，未加载时先补齐，避免把默认值写回去
+    if (!settings.ready) await settings.load();
+    await settings.updateBackup(patch);
+    nowTick.value = Date.now();
+    // startBackupScheduler 幂等；设置变化后由调度器重算原生提醒时间
+    await startBackupScheduler();
+    toast.success('定时备份设置已保存');
+  } catch (e) {
+    toast.error(`保存定时设置失败：${toErrorShape(e).message}`);
+  } finally {
+    scheduleBusy.value = false;
+  }
+}
+
+async function onEncryptionEnable(password: string): Promise<void> {
+  if (encryptionBusy.value) return;
+  encryptionBusy.value = true;
+  try {
+    await setupBackupEncryption(password);
+    keyReady.value = true;
+    toast.success('已启用加密备份，之后生成的备份为 .enc 文件');
+  } catch (e) {
+    toast.error(`启用加密失败：${toErrorShape(e).message}`);
+  } finally {
+    encryptionBusy.value = false;
+  }
+}
+
+async function onEncryptionChange(password: string): Promise<void> {
+  if (encryptionBusy.value) return;
+  encryptionBusy.value = true;
+  try {
+    await setupBackupEncryption(password);
+    keyReady.value = true;
+    toast.success('加密密码已更新，旧 .enc 备份仍需原密码恢复');
+  } catch (e) {
+    toast.error(`修改密码失败：${toErrorShape(e).message}`);
+  } finally {
+    encryptionBusy.value = false;
+  }
+}
+
+async function onEncryptionDisable(): Promise<void> {
+  if (encryptionBusy.value) return;
+  const ok = await ui.confirm({
+    title: '关闭加密备份？',
+    message: '关闭后新备份为未加密 JSON；已生成的 .enc 备份仍可用原密码恢复。',
+    confirmText: '关闭加密',
+    danger: true,
+  });
+  if (!ok) return;
+  encryptionBusy.value = true;
+  try {
+    await disableBackupEncryption();
+    keyReady.value = false;
+    toast.success('已关闭加密备份');
+  } catch (e) {
+    toast.error(`关闭加密失败：${toErrorShape(e).message}`);
+  } finally {
+    encryptionBusy.value = false;
+  }
+}
+
+/** 立即执行一次受管理备份（本机 / 云端），失败只提示不阻断页面 */
+async function runManagedBackup(target: 'local' | 'webdav'): Promise<void> {
+  if (backingUp.value) return;
+  if (target === 'webdav' && !webdavConnected.value) {
+    toast.error('请先连接 WebDAV 云盘');
+    return;
+  }
+  backingUp.value = target;
+  try {
+    const result = await backupService.runBackup({
+      source: 'manual',
+      includeCredentials: includeCredentials.value,
+      local: target === 'local',
+      webdav: target === 'webdav',
+    });
+    const prunedText = result.pruned.length > 0 ? `，已清理 ${result.pruned.length} 个旧版本` : '';
+    toast.success(`备份完成（${result.encrypted ? '已加密' : '未加密'}）${prunedText}`);
+    await loadManagedBackups();
+  } catch (e) {
+    toast.error(`备份失败：${toErrorShape(e).message}`);
+  } finally {
+    backingUp.value = null;
+  }
+}
+
+function startRestore(record: BackupRecord): void {
+  restoreError.value = null;
+  restorePassword.value = '';
+  restoreTarget.value = record;
+}
+
+function cancelRestore(): void {
+  restoreTarget.value = null;
+  restorePassword.value = '';
+  restoreError.value = null;
+}
+
+async function confirmRestore(): Promise<void> {
+  const record = restoreTarget.value;
+  if (!record || restoringId.value) return;
+  const mode = importMode.value;
+  if (mode === 'overwrite') {
+    const ok = await ui.confirm({
+      title: '覆盖现有数据？',
+      message: '覆盖模式会先删除现有源、收藏与历史，再导入该备份内容。',
+      confirmText: '覆盖恢复',
+      danger: true,
+    });
+    if (!ok) return;
+  }
+  restoringId.value = record.id;
+  restoreError.value = null;
+  try {
+    const report = await backupService.restoreBackup(record.id, {
+      password: record.encrypted ? restorePassword.value.trim() : undefined,
+      mode,
+    });
+    await Promise.all([sources.load(), favorites.load(), history.load()]);
+    toast.success(
+      `已从 ${record.fileName} 恢复 源${report.sources}/收藏${report.favorites}/历史${report.history}` +
+        (report.settingsRestored ? '（含设置）' : ''),
+    );
+    cancelRestore();
+  } catch (e) {
+    // 加密备份密码错误等失败原因留在面板内明确提示，不清空上下文
+    const message = toErrorShape(e).message;
+    restoreError.value = message;
+    toast.error(`恢复失败：${message}`);
+  } finally {
+    restoringId.value = null;
+  }
+}
+
+async function onDeleteBackup(record: BackupRecord): Promise<void> {
+  if (deletingId.value) return;
+  const ok = await ui.confirm({
+    title: '删除备份？',
+    message: `将永久删除 ${record.fileName}（${record.location === 'webdav' ? '云端' : '本机'}），此操作不可恢复。`,
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  deletingId.value = record.id;
+  try {
+    await backupService.deleteBackup(record.id);
+    toast.success('已删除备份');
+    await loadManagedBackups();
+  } catch (e) {
+    toast.error(`删除失败：${toErrorShape(e).message}`);
+  } finally {
+    deletingId.value = null;
+  }
+}
+
 onMounted(() => {
   void loadWebDAVConfig();
+  // 直接进入备份页（刷新/深链）时设置可能尚未加载，这里补齐
+  void settings.load();
+  void loadManagedBackups();
+  void refreshKeyReady();
+  // App 未运行期间的漏跑在启动/回到前台时补执行；失败不影响页面
+  void startBackupScheduler().catch(() => undefined);
+  tickTimer = setInterval(() => {
+    nowTick.value = Date.now();
+  }, 60_000);
+  // 定时备份 / 改设置后同步刷新列表与密钥状态
+  unsubscribeSettings = appEvents.on('settings:changed', () => {
+    void refreshKeyReady();
+    void loadManagedBackups();
+  });
+});
+
+onUnmounted(() => {
+  // 只清理本页面的定时器与订阅；调度器是 App 级单例（由 settingsStore 启动），
+  // 在此停止会漏掉后台定时备份，因此不调用 stopBackupScheduler。
+  if (tickTimer !== null) {
+    clearInterval(tickTimer);
+    tickTimer = null;
+  }
+  unsubscribeSettings?.();
+  unsubscribeSettings = null;
 });
 
 </script>
@@ -508,6 +781,174 @@ onMounted(() => {
           <li>覆盖模式会删除现有源、收藏与历史，操作前建议先导出一次。</li>
           <li>备份文件保存在本机，不上传服务器。</li>
         </ul>
+      </section>
+
+      <!-- EXT-05：定时备份 + 版本保留 -->
+      <section class="backup-section backup-auto">
+        <h2 class="backup-section__title">自动备份</h2>
+        <p class="backup-section__desc">
+          到点后静默执行，不弹窗打断操作；App 未运行时会在下次打开时补执行。超出保留数量的旧版本自动清理。
+        </p>
+
+        <BackupScheduleSettings
+          :settings="backupSettings"
+          :next-run-text="nextRunText"
+          :last-error="backupSettings.lastError"
+          :busy="scheduleBusy"
+          @change="onScheduleChange"
+        />
+
+        <p class="backup-hint">上次备份：{{ lastBackupText }}</p>
+
+        <div class="backup-auto__actions">
+          <button
+            class="btn btn--primary btn--md"
+            type="button"
+            :disabled="backingUp !== null"
+            @click="runManagedBackup('local')"
+          >
+            <LoadingSpinner v-if="backingUp === 'local'" :size="14" />
+            {{ backingUp === 'local' ? '备份中…' : '立即备份到本机' }}
+          </button>
+          <button
+            class="btn btn--secondary btn--md"
+            type="button"
+            :disabled="backingUp !== null || !webdavConnected"
+            @click="runManagedBackup('webdav')"
+          >
+            <LoadingSpinner v-if="backingUp === 'webdav'" :size="14" />
+            {{ backingUp === 'webdav' ? '上传中…' : '备份到云端' }}
+          </button>
+        </div>
+        <p class="backup-hint">
+          文件名格式 backup_YYYYMMDD_HHmmss.json，开启加密后扩展名为 .enc；本机与云端分别保留最近
+          {{ backupSettings.retentionCount }} 份。
+        </p>
+      </section>
+
+      <!-- EXT-05：加密备份 -->
+      <section class="backup-section backup-encrypt">
+        <h2 class="backup-section__title">加密备份</h2>
+        <p class="backup-section__desc">
+          使用 AES-256-GCM 加密备份内容，密钥由密码经 PBKDF2 派生；密码不会保存，忘记密码将无法恢复加密备份。
+        </p>
+        <BackupEncryptionSettings
+          :settings="backupSettings"
+          :key-ready="keyReady"
+          :busy="encryptionBusy"
+          @enable="onEncryptionEnable"
+          @change-password="onEncryptionChange"
+          @disable="onEncryptionDisable"
+        />
+      </section>
+
+      <!-- EXT-05：备份版本列表 -->
+      <section class="backup-section backup-versions">
+        <div class="backup-versions__header">
+          <h2 class="backup-section__title">备份版本</h2>
+          <button
+            class="btn btn--ghost btn--sm"
+            type="button"
+            :disabled="listLoading"
+            @click="loadManagedBackups"
+          >
+            刷新
+          </button>
+        </div>
+        <p class="backup-section__desc">按时间倒序排列，包含本机与云端备份。</p>
+
+        <div v-if="listLoading" class="backup-versions__hint">
+          <LoadingSpinner :size="16" />
+          <span>加载备份列表…</span>
+        </div>
+        <p v-else-if="listError" class="backup-error" role="alert">
+          {{ listError }}
+          <button class="btn btn--ghost btn--sm" type="button" @click="loadManagedBackups">重试</button>
+        </p>
+        <div v-else-if="records.length === 0" class="backup-versions__empty">
+          暂无备份版本，点击上方「立即备份到本机」生成第一份。
+        </div>
+        <ul v-else class="backup-versions__list">
+          <li v-for="record in records" :key="record.id" class="backup-version">
+            <div class="backup-version__main">
+              <div class="backup-version__title">
+                <span class="backup-version__name">{{ record.fileName }}</span>
+                <span
+                  v-if="record.encrypted"
+                  class="backup-version__lock"
+                  role="img"
+                  aria-label="已加密"
+                  title="已加密（.enc）"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="5" y="10.5" width="14" height="9.5" rx="2" />
+                    <path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" />
+                  </svg>
+                </span>
+              </div>
+              <span class="backup-version__meta">
+                {{ formatBackupTime(record.timestamp) }} · {{ formatBytes(record.size) }} ·
+                {{ record.source === 'scheduled' ? '定时' : '手动' }} ·
+                {{ record.location === 'webdav' ? '云端' : '本机' }}
+              </span>
+            </div>
+            <div class="backup-version__actions">
+              <button
+                class="btn btn--secondary btn--sm"
+                type="button"
+                :disabled="restoringId !== null"
+                @click="startRestore(record)"
+              >
+                恢复
+              </button>
+              <button
+                class="btn btn--ghost btn--sm backup-version__delete"
+                type="button"
+                :disabled="deletingId !== null"
+                @click="onDeleteBackup(record)"
+              >
+                {{ deletingId === record.id ? '删除中…' : '删除' }}
+              </button>
+            </div>
+          </li>
+        </ul>
+
+        <!-- 恢复面板（加密备份需输入密码） -->
+        <form v-if="restoreTarget" class="backup-restore" @submit.prevent="confirmRestore">
+          <h3 class="backup-restore__title">恢复 {{ restoreTarget.fileName }}</h3>
+          <p class="backup-restore__desc">
+            将按「{{ importMode === 'overwrite' ? '覆盖' : '合并' }}」方式导入（导入方式在上方「导入」中切换）。
+          </p>
+          <label v-if="restoreTarget.encrypted" class="backup-restore__field">
+            <span class="backup-restore__label">备份密码</span>
+            <input
+              v-model="restorePassword"
+              class="backup-restore__input"
+              type="password"
+              autocomplete="off"
+              placeholder="输入该备份的加密密码"
+            />
+          </label>
+          <p v-if="restoreError" class="backup-error" role="alert">{{ restoreError }}</p>
+          <div class="backup-restore__actions">
+            <button
+              class="btn btn--ghost btn--md"
+              type="button"
+              :disabled="restoringId !== null"
+              @click="cancelRestore"
+            >
+              取消
+            </button>
+            <button
+              class="btn btn--primary btn--md"
+              type="submit"
+              :disabled="restoringId !== null || (restoreTarget.encrypted && restorePassword.length === 0)"
+            >
+              <LoadingSpinner v-if="restoringId !== null" :size="14" />
+              {{ restoringId !== null ? '正在恢复…' : '确认恢复' }}
+            </button>
+          </div>
+        </form>
       </section>
 
       <!-- WebDAV 云备份 -->
@@ -822,6 +1263,165 @@ onMounted(() => {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
   line-height: 1.6;
+}
+
+/* ========== EXT-05：自动备份 / 加密 / 版本列表 ========== */
+.backup-auto__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.backup-versions__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.backup-versions__hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  font: var(--text-label);
+  color: var(--color-text-tertiary);
+}
+
+.backup-versions__empty {
+  padding: var(--space-4);
+  text-align: center;
+  font: var(--text-label);
+  color: var(--color-text-tertiary);
+  background-color: var(--color-bg-surface);
+  border-radius: var(--radius-md);
+  border: var(--border-default);
+}
+
+.backup-versions__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.backup-version {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background-color: var(--color-bg-surface);
+  border-radius: var(--radius-md);
+  border: var(--border-default);
+}
+
+.backup-version__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.backup-version__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.backup-version__name {
+  font: var(--text-label-strong);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-version__lock {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--color-brand);
+}
+
+.backup-version__lock svg {
+  width: 1em;
+  height: 1em;
+}
+
+.backup-version__meta {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.backup-version__actions {
+  display: flex;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+}
+
+.backup-version__delete {
+  color: var(--color-danger);
+}
+
+.backup-restore {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-elevated);
+  border: var(--border-default);
+}
+
+.backup-restore__title {
+  font: var(--text-label-strong);
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+
+.backup-restore__desc {
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.backup-restore__field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.backup-restore__label {
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+}
+
+.backup-restore__input {
+  width: 100%;
+  min-height: var(--touch-min);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-base);
+  border: var(--border-default);
+  color: var(--color-text-primary);
+  font: var(--text-label);
+}
+
+.backup-restore__input:focus-visible {
+  outline: none;
+  border-color: var(--color-brand);
+  box-shadow: var(--shadow-focus);
+}
+
+.backup-restore__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 
 /* ========== WebDAV 云备份 ========== */

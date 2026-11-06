@@ -8,7 +8,14 @@ import { settingsService } from '@/services/settingsService';
 import { appEvents } from '@/services/events';
 import { COMPLIANCE_VERSION } from '@/shared/constants';
 import { toErrorShape } from '@/shared/errors';
-import type { AppErrorShape, AppSettings, DeepPartial, NetdiskSettings } from '@/types';
+import { logger } from '@/shared/logger';
+import type {
+  AppErrorShape,
+  AppSettings,
+  BackupSettings,
+  DeepPartial,
+  NetdiskSettings,
+} from '@/types';
 
 export const useSettingsStore = defineStore('settings', () => {
   const settings = ref<AppSettings | null>(null);
@@ -20,8 +27,42 @@ export const useSettingsStore = defineStore('settings', () => {
   const gesture = computed(() => settings.value?.gesture ?? null);
   const download = computed(() => settings.value?.download ?? null);
   const netdisk = computed((): NetdiskSettings => settings.value?.netdisk ?? { quality: 'auto', threadCount: 4 });
+  /** EXT-05：备份增强设置（缺省时给关闭态兜底，避免页面读到 undefined） */
+  const backup = computed(
+    (): BackupSettings =>
+      settings.value?.backup ?? {
+        scheduleMode: 'off',
+        scheduleHour: 3,
+        scheduleWeekday: 1,
+        retentionCount: 5,
+        encryptionEnabled: false,
+        encryptionSalt: null,
+        encryptionVerifier: null,
+        lastScheduledAt: null,
+        lastBackupAt: null,
+        lastError: null,
+      },
+  );
 
   let unsubscribe: (() => void) | null = null;
+  let backupSchedulerBootstrapped = false;
+
+  /**
+   * EXT-05：借 App 启动（`App.vue` 在 onMounted 调 `load()`）拉起备份调度器。
+   *
+   * 之所以放在这里：`main.ts` / `stores/bootstrap.ts` 不在本任务允许修改的文件范围内，
+   * 而调度器必须"App 一启动就生效"才能补执行漏跑的定时备份。
+   * 用动态 import + 捕获异常，调度器不可用不影响设置加载。
+   */
+  function bootstrapBackupScheduler(): void {
+    if (backupSchedulerBootstrapped) return;
+    backupSchedulerBootstrapped = true;
+    void import('@/services/backupScheduler')
+      .then((mod) => mod.startBackupScheduler())
+      .catch((e: unknown) => {
+        logger.warn('备份调度器启动失败（不影响设置与手动备份）', e);
+      });
+  }
 
   async function load(): Promise<void> {
     if (ready.value && settings.value) return;
@@ -34,6 +75,7 @@ export const useSettingsStore = defineStore('settings', () => {
           void reload();
         });
       }
+      bootstrapBackupScheduler();
     } catch (e) {
       error.value = toErrorShape(e, 'E_DB');
       ready.value = false;
@@ -53,6 +95,12 @@ export const useSettingsStore = defineStore('settings', () => {
     settings.value = await settingsService.update(patch);
     ready.value = true;
     error.value = null;
+  }
+
+  /** EXT-05：局部更新备份设置（定时模式 / 保留数量等） */
+  async function updateBackup(patch: Partial<BackupSettings>): Promise<void> {
+    // `AppSettings.backup` 不参与 DeepPartial 展开，这里显式合并后整体写回
+    await update({ backup: { ...backup.value, ...patch } });
   }
 
   async function acceptCompliance(): Promise<void> {
@@ -79,8 +127,10 @@ export const useSettingsStore = defineStore('settings', () => {
     gesture,
     download,
     netdisk,
+    backup,
     load,
     update,
+    updateBackup,
     acceptCompliance,
     resetAllData,
     $dispose,
