@@ -128,7 +128,10 @@ dependencies {
     implementation project(':capacitor-android')
     // TVBox jar 爬虫运行时依赖：第三方 jar 内部直接用 okhttp/gson/slf4j
     implementation "com.squareup.okhttp3:okhttp:4.9.3"
-    implementation "com.google.code.gson:gson:2.8.6"
+    // gson 2.10.1：guard 系 jar（csp_*Guard）引用 ToNumberPolicy 等 2.8.9+ API，
+    // 宿主旧版 2.8.6 会让 jar init 抛 NoClassDefFoundError，半初始化后再被调用
+    // 会触发 jar 内 native 代码崩溃（真机 SIGSEGV，见 CrashSentinel crash_history）
+    implementation "com.google.code.gson:gson:2.10.1"
     implementation "org.slf4j:slf4j-android:1.7.36"
     // CHG-16 drpy 运行时：QuickJS 引擎（纯 Java 绑定，同步 API，支持 ES2020/async）+ jsoup（pdfh/pdfa 选择器）
     implementation "wang.harlon.quickjs:wrapper-android:3.2.3"

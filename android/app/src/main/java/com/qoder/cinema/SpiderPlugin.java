@@ -1042,7 +1042,18 @@ public class SpiderPlugin extends Plugin {
         }
         Spider spider = (Spider) instance;
 
-        invokeInit(spider, new GuardedSpiderContext(context), initExt, api, loader);
+        // 致命 init 失败（LinkageError 类：gson/okhttp 等宿主依赖版本不匹配）时
+        // 必须拒绝该源：guard jar 半初始化后继续 invoke 会在 jar 内 native 代码
+        // 触发 SIGSEGV/SIGABRT，Java 层无法捕获（真机 CrashSentinel 实证）。
+        Throwable initFatal = invokeInit(spider, new GuardedSpiderContext(context), initExt, api, loader);
+        if (initFatal != null) {
+            // 主动清除哨兵：这是可预期的加载失败而非崩溃
+            CrashSentinel.end();
+            throw new IllegalStateException(
+                    "爬虫初始化失败（" + api + "）：宿主依赖版本不匹配，已禁用该源（"
+                            + initFatal.getClass().getSimpleName() + ": " + initFatal.getMessage() + "）",
+                    initFatal);
+        }
         // 同样按实例类型调用，确保爬虫拿到 SpiderApi（基类 stub 是空实现）
         try {
             Method initApi = spider.getClass().getMethod("initApi", SpiderApi.class);
@@ -1401,7 +1412,7 @@ public class SpiderPlugin extends Plugin {
      * Init.getSpider(api) 获取真正的爬虫实例再委托 init。若 getSpider 返回 null
      * 则 NPE。这里在 init 失败时额外诊断 getSpider 状态，给出可读错误而非吞掉。
      */
-    private void invokeInit(Spider spider, Context context, String initExt, String api, ClassLoader loader) {
+    private Throwable invokeInit(Spider spider, Context context, String initExt, String api, ClassLoader loader) {
         Class<?> clazz = spider.getClass();
         try {
             Method method = clazz.getMethod("init", Context.class, String.class);
@@ -1411,22 +1422,35 @@ public class SpiderPlugin extends Plugin {
                 Method method = clazz.getMethod("init", Context.class);
                 method.invoke(spider, context);
             } catch (Exception inner) {
-                Log.w(TAG, "init(Context) failed for " + api, inner);
+                return handleInitFailure(unwrap(inner), api, loader, inner);
             }
         } catch (Exception e) {
-            Throwable cause = unwrap(e);
-            // Guard 系 init NPE 的典型表现：BaseSpiderGuard.init 委托内部 Spider 时
-            // Spider 为 null（Init.getSpider(api) 返回 null）。
-            if (cause instanceof NullPointerException) {
-                String diag = diagnoseGuardSpiderNull(api, loader);
-                Log.e(TAG, "init(Context, String) failed for " + api + ": NPE in guard spider init\n" + diag, cause);
-                
-                // 尝试降级：如果内部爬虫加载失败，跳过 init，让源可用但可能功能不完整
-                Log.w(TAG, "trying fallback: skipping init for guard spider");
-            } else {
-                Log.w(TAG, "init(Context, String) failed for " + api, e);
-            }
+            return handleInitFailure(unwrap(e), api, loader, e);
         }
+        return null;
+    }
+
+    /**
+     * init 失败分类处理：返回非 null 表示致命失败，调用方必须拒绝该源。
+     *
+     * LinkageError（NoClassDefFoundError / NoSuchMethodError / ClassFormatError）说明
+     * jar 与本 App 的依赖版本不兼容，init 没完成但对象已创建；继续 invoke 会进入
+     * jar 内 native 路径直接崩进程（真机实证：csp_SheQuwonAmns / csp_AppTTGuard）。
+     * 其余失败保留既有降级语义（例如 guard 内层为 null 的 NPE）。
+     */
+    private Throwable handleInitFailure(Throwable cause, String api, ClassLoader loader, Exception raw) {
+        // Guard 系 init NPE 的典型表现：BaseSpiderGuard.init 委托内部 Spider 时
+        // Spider 为 null（Init.getSpider(api) 返回 null）。
+        if (cause instanceof NullPointerException) {
+            String diag = diagnoseGuardSpiderNull(api, loader);
+            Log.e(TAG, "init(Context, String) failed for " + api + ": NPE in guard spider init\n" + diag, cause);
+
+            // 尝试降级：如果内部爬虫加载失败，跳过 init，让源可用但可能功能不完整
+            Log.w(TAG, "trying fallback: skipping init for guard spider");
+            return null;
+        }
+        Log.w(TAG, "init(Context, String) failed for " + api, raw);
+        return cause instanceof LinkageError ? cause : null;
     }
 
     /**
