@@ -116,7 +116,18 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       resizeMode: 'contain',
     },
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
-    download: { concurrency: 2, wifiOnly: false, autoResume: true, speedLimit: 'unlimited', segmentConcurrency: 6 },
+    download: {
+      concurrency: 2,
+      wifiOnly: false,
+      autoResume: true,
+      speedLimit: 'unlimited',
+      segmentConcurrency: 6,
+      /* EXT-04：转封装 / 字幕随片 / 默认清晰度 / 队列上限（全部可选字段，老配置深合并即读） */
+      remuxToMp4: true,
+      attachSubtitles: 'preferred',
+      hlsQuality: 'max',
+      maxQueueTasks: 200,
+    },
     searchHistory: [],
     /* v1.7 增量（CHG-22/24/21） */
     showRecommendedSubscriptions: true,
@@ -207,6 +218,28 @@ function sanitize(input: AppSettings): AppSettings {
   download.segmentConcurrency = ([3, 6, 8] as const).includes(download.segmentConcurrency as 3 | 6 | 8)
     ? download.segmentConcurrency
     : 6;
+  // EXT-04：越界回落（AC-149 档位持久化、FR-62 清晰度、FR-61 队列上限、FR-60/64 开关）
+  download.speedLimit = (['low', 'medium', 'high', 'unlimited'] as const).includes(
+    download.speedLimit as 'low' | 'medium' | 'high' | 'unlimited',
+  )
+    ? download.speedLimit
+    : 'unlimited';
+  download.remuxToMp4 = typeof download.remuxToMp4 === 'boolean' ? download.remuxToMp4 : true;
+  download.attachSubtitles = (['preferred', 'all', 'none'] as const).includes(
+    download.attachSubtitles as 'preferred' | 'all' | 'none',
+  )
+    ? download.attachSubtitles
+    : 'preferred';
+  download.hlsQuality = (['max', '1080p', '720p'] as const).includes(
+    download.hlsQuality as 'max' | '1080p' | '720p',
+  )
+    ? download.hlsQuality
+    : 'max';
+  download.maxQueueTasks = ([50, 100, 200, 500] as const).includes(
+    download.maxQueueTasks as 50 | 100 | 200 | 500,
+  )
+    ? download.maxQueueTasks
+    : 200;
 
   const danmakuPatch = input.danmaku as Partial<DanmakuSettings> | undefined;
   const danmaku: DanmakuSettings = { ...defaults.danmaku!, ...(danmakuPatch ?? {}) };

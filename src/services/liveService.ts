@@ -7,7 +7,10 @@
  * 不写历史与进度（v1 口径）。
  */
 import { liveRepo } from '@/db/repositories/liveRepo';
+import { channelPrefsRepo } from '@/db/repositories/channelPrefsRepo';
+import { reminderService } from '@/services/reminderService';
 import { AppError } from '@/shared/errors';
+import { normalizeChannelName } from '@/shared/channelKey';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { newId } from '@/shared/id';
 import { httpClient } from '@/sources/base/httpClient';
@@ -17,12 +20,20 @@ import {
   parseLiveList,
   type LiveChannel,
 } from '@/sources/live/liveParsers';
-import type { LiveGroup, LiveListFormat, LiveRecord } from '@/types';
+import { parseLiveExtras } from '@/sources/live/liveExtras';
+import type {
+  LiveChannelExtrasMap,
+  LiveGroup,
+  LiveListFormat,
+  LiveRecord,
+} from '@/types';
 
 const CHANNELS_CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface CacheEntry {
   channels: LiveChannel[];
+  /** EXT-06：以频道 URL 为键的旁路属性（tvg-id / catchup-*） */
+  extras: LiveChannelExtrasMap;
   fetchedAt: number;
 }
 
@@ -49,6 +60,32 @@ async function fetchListText(url: string, signal?: AbortSignal): Promise<string>
     throw new AppError('E_PARSE', '直播列表内容为空');
   }
   return text;
+}
+
+/** 频道拉取（5min 缓存 + 失败回落）：`channelsOf` / `channelsWithExtrasOf` 共用 */
+async function loadChannels(
+  record: LiveRecord,
+  opts?: { refresh?: boolean; signal?: AbortSignal },
+): Promise<{ channels: LiveChannel[]; extras: LiveChannelExtrasMap }> {
+  const cached = channelsCache.get(record.id);
+  if (!opts?.refresh && cached && Date.now() - cached.fetchedAt < CHANNELS_CACHE_TTL_MS) {
+    return { channels: cached.channels, extras: cached.extras };
+  }
+  try {
+    const text = await fetchListText(record.url, opts?.signal);
+    const channels = parseLiveList(text);
+    if (channels.length === 0) throw new AppError('E_PARSE', '未解析出任何频道');
+    // EXT-06：旁路解析 tvg-id / catchup-*（不改动 parseM3u 的取值规则）
+    const extras = parseLiveExtras(text);
+    channelsCache.set(record.id, { channels, extras, fetchedAt: Date.now() });
+    if (record.channelCount !== channels.length) {
+      await liveRepo.save({ ...record, channelCount: channels.length, updatedAt: Date.now() });
+    }
+    return { channels, extras };
+  } catch (e) {
+    if (cached) return { channels: cached.channels, extras: cached.extras };
+    throw e;
+  }
 }
 
 export const liveService = {
@@ -99,6 +136,11 @@ export const liveService = {
   async remove(id: string): Promise<void> {
     await liveRepo.remove(id);
     channelsCache.delete(id);
+    // EXT-06：直播源删除时级联清理分组/排序与提醒（加法调用）
+    await Promise.all([
+      channelPrefsRepo.remove(id).catch(() => undefined),
+      reminderService.cancelBySource(id).catch(() => undefined),
+    ]);
   },
 
   /**
@@ -106,35 +148,58 @@ export const liveService = {
    * 返回删除数量
    */
   async removeBySubscription(subscriptionId: string): Promise<number> {
+    // EXT-06：先取出将被删除的源 id，用于级联清理分组/排序与提醒
+    const doomed = (await liveRepo.list()).filter(
+      (record) => record.subscriptionId === subscriptionId,
+    );
     const removed = await liveRepo.removeBySubscription(subscriptionId);
     if (removed > 0) {
       // 清缓存：删除的直播源可能还在缓存中
       channelsCache.clear();
+      for (const record of doomed) {
+        channelsCache.delete(record.id);
+        await channelPrefsRepo.remove(record.id).catch(() => undefined);
+        await reminderService.cancelBySource(record.id).catch(() => undefined);
+      }
     }
     return removed;
   },
 
   /** 拉取并解析频道（5min 缓存）；失败时回落上一次成功缓存，缓存也没有才抛错 */
   async channelsOf(record: LiveRecord, opts?: { refresh?: boolean; signal?: AbortSignal }): Promise<LiveGroup[]> {
-    const cached = channelsCache.get(record.id);
-    if (!opts?.refresh && cached && Date.now() - cached.fetchedAt < CHANNELS_CACHE_TTL_MS) {
-      return groupChannels(cached.channels);
-    }
-    try {
-      const text = await fetchListText(record.url, opts?.signal);
-      const channels = parseLiveList(text);
-      if (channels.length === 0) throw new AppError('E_PARSE', '未解析出任何频道');
-      channelsCache.set(record.id, { channels, fetchedAt: Date.now() });
-      if (record.channelCount !== channels.length) {
-        await liveRepo.save({ ...record, channelCount: channels.length, updatedAt: Date.now() });
+    const loaded = await loadChannels(record, opts);
+    return groupChannels(loaded.channels);
+  },
+
+  /**
+   * EXT-06/FR-67：频道 + 旁路属性（tvg-id / catchup-*）一次返回。
+   * 与 `channelsOf` 共用 5min 缓存与失败回落语义（AC-124 口径不变）。
+   */
+  async channelsWithExtrasOf(
+    record: LiveRecord,
+    opts?: { refresh?: boolean; signal?: AbortSignal },
+  ): Promise<{ groups: LiveGroup[]; channels: LiveChannel[]; extras: LiveChannelExtrasMap }> {
+    const loaded = await loadChannels(record, opts);
+    return {
+      groups: groupChannels(loaded.channels),
+      channels: loaded.channels,
+      extras: loaded.extras,
+    };
+  },
+
+  /**
+   * 按频道名反查直播源 id（仅查 5min 内存缓存，不发网络请求）。
+   * 供节目单页在缺少 `source` 查询参数时定位回看/提醒的归属源。
+   */
+  findSourceIdByChannelName(name: string): string | null {
+    const target = normalizeChannelName(name);
+    if (!target) return null;
+    for (const [sourceId, entry] of channelsCache) {
+      if (entry.channels.some((channel) => normalizeChannelName(channel.name) === target)) {
+        return sourceId;
       }
-      return groupChannels(channels);
-    } catch (e) {
-      if (cached) {
-        return groupChannels(cached.channels);
-      }
-      throw e;
     }
+    return null;
   },
 
   /**

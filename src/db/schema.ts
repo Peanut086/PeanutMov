@@ -10,14 +10,18 @@ import type { DBSchema, IDBPTransaction } from 'idb';
 
 import type {
   Category,
+  ChannelGroupDef,
   DanmakuMatch,
   DownloadTask,
   Episode,
+  EpgMatchMode,
+  EpgProtocol,
   FavoriteRecord,
   HistoryRecord,
   LiveRecord,
   MediaItem,
   PlayLine,
+  ReminderState,
   Source,
   SourceType,
 } from '@/types';
@@ -37,6 +41,12 @@ export const STORE_NAMES = {
   lives: 'lives',
   danmakuCache: 'danmakuCache',
   epgCache: 'epgCache',
+  /** v4（EXT-06/FR-66）：多 EPG 源 */
+  epgSources: 'epgSources',
+  /** v4（EXT-06/FR-69）：按直播源隔离的分组/排序 */
+  channelPrefs: 'channelPrefs',
+  /** v4（EXT-06/FR-71）：节目提醒 */
+  reminders: 'reminders',
 } as const;
 
 /** Web 端下载内容（技术方案 5.1） */
@@ -138,10 +148,32 @@ export interface CinemaDB extends DBSchema {
     key: string;
     value: DanmakuCacheRecord;
   };
-  /** v3（CHG-23）：EPG 节目单缓存，key = `${channel}:${date}` */
+  /** v3（CHG-23）：EPG 节目单缓存，key = `epgv2:{sourceId}:{channelKey}:{yyyy-MM-dd}` */
   epgCache: {
     key: string;
     value: EpgCacheRecord;
+  };
+  /** v4（EXT-06）：EPG 源（内置 1 条 + 用户源 ≤10） */
+  epgSources: {
+    key: string;
+    value: EpgSourceRecord;
+    indexes: {
+      'by-priority': number;
+      /** boolean 不是合法 IDB 键，仅占位（过滤在内存完成，同 v1 `by-enabled`） */
+      'by-enabled': number;
+    };
+  };
+  /** v4（EXT-06）：每直播源 1 条分组/排序记录 */
+  channelPrefs: {
+    key: string;
+    value: ChannelPrefsRecord;
+    indexes: { 'by-updated': number };
+  };
+  /** v4（EXT-06）：节目提醒（非终态 ≤50） */
+  reminders: {
+    key: string;
+    value: ReminderRecord;
+    indexes: { 'by-notifyAt': number; 'by-channel': string; 'by-state': string };
   };
 }
 
@@ -162,8 +194,62 @@ export interface EpgCacheRecord {
     desc: string | null;
     startSec: number;
     endSec: number;
+    /** EXT-06：绝对时间（跨天/回看渲染用）；老缓存缺省 undefined */
+    startAt?: number;
+    endAt?: number;
+    /** EXT-06：`${startAt}:${title}`，提醒唯一键 */
+    key?: string;
+    /** EXT-06：命中源 id */
+    sourceId?: string;
   }>;
+  /** EXT-06：该源的匹配级别（1/2/3），缓存命中时用于还原"来源（Lx）"标识 */
+  matchLevel?: 1 | 2 | 3;
   fetchedAt: number;
+}
+
+/** EPG 源记录（v4 / EXT-06，字段与 `EpgSource` 一致，落库形态） */
+export interface EpgSourceRecord {
+  id: string;
+  name: string;
+  endpoint: string;
+  protocol: EpgProtocol;
+  matchMode: EpgMatchMode;
+  priority: number;
+  enabled: boolean;
+  builtin: boolean;
+  lastProbeAt: number | null;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** 频道偏好记录（v4 / EXT-06，keyPath = liveSourceId，字段与 `ChannelPrefs` 一致） */
+export interface ChannelPrefsRecord {
+  liveSourceId: string;
+  groups: ChannelGroupDef[];
+  assignments: Record<string, string>;
+  orders: Record<string, string[]>;
+  updatedAt: number;
+}
+
+/** 节目提醒记录（v4 / EXT-06，字段与 `Reminder` 一致，落库形态） */
+export interface ReminderRecord {
+  id: string;
+  liveSourceId: string;
+  epgSourceId: string | null;
+  channelKey: string;
+  channelName: string;
+  programmeKey: string;
+  programmeTitle: string;
+  startAt: number;
+  endAt: number;
+  leadMinutes: 0 | 5 | 10 | 15 | 30;
+  notifyAt: number;
+  state: ReminderState;
+  nativeId: number;
+  lastError: string | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
 /** store 名字面量联合（注意：`keyof CinemaDB` 含 DBSchema 的字符串索引，会退化为 string） */

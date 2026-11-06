@@ -3,6 +3,9 @@
  * 约定：所有时间戳为毫秒 Date.now()；可空字段显式 null
  * =======================================================*/
 
+/** EPG 节目条目定义在 `epgService`（既有契约）；此处仅做类型引用（type-only，无运行时循环依赖） */
+import type { EpgProgramme } from '@/services/epgService';
+
 export type Timestamp = number;
 
 /* ---------- 错误 ---------- */
@@ -404,6 +407,32 @@ export type DownloadStatus =
 
 export type DownloadSinkKind = 'filesystem' | 'idb-blob';
 
+/* ---------- 功能扩展-4：下载增强（EXT-04） ---------- */
+
+/** 下载清晰度档位（FR-62；`max` 取最高变体，其余按 RESOLUTION 高度封顶） */
+export type HlsQuality = 'max' | '1080p' | '720p';
+
+/** 产物容器（FR-60） */
+export type DownloadContainer = 'ts' | 'mp4' | 'fmp4' | 'other';
+
+/** 字幕随片下载策略（FR-64） */
+export type DownloadSubtitlePolicy = 'preferred' | 'all' | 'none';
+
+/** 转封装结果（FR-60，后端原生执行，前端只读） */
+export interface DownloadRemuxInfo {
+  status: 'none' | 'done' | 'skipped' | 'failed';
+  reason?: string;
+  durationMs?: number;
+}
+
+/** 预检摘要（FR-65） */
+export interface DownloadPreflightDigest {
+  at: number;
+  drmProtected: boolean;
+  latencyMs: number | null;
+  notes: string[];
+}
+
 export interface DownloadTask {
   /** uuid */
   id: string;
@@ -442,6 +471,23 @@ export interface DownloadTask {
   pendingSubtitleUrls?: Array<{ url: string; lang: string; format: 'vtt' | 'srt' }>;
   /** 待下载的封面 URL（创建时传入，下载完成后清空） */
   pendingCoverUrl?: string;
+  /* ---------- 功能扩展-4：下载增强（EXT-04，全部可选，老数据兼容） ---------- */
+  /** 批量分组标识；单集创建为 null（FR-61） */
+  batchId?: string | null;
+  /** 本次任务选定的清晰度档位；直链为 null（FR-62） */
+  hlsQuality?: HlsQuality | null;
+  /** 实际选中变体高度（变体无 RESOLUTION 时为 null）（FR-62） */
+  selectedHeight?: number | null;
+  /** 产物容器；null 表示尚未判定（FR-60） */
+  container?: DownloadContainer | null;
+  /** 转封装结果（FR-60；前端只读展示） */
+  remux?: DownloadRemuxInfo | null;
+  /** 预检估算体积（FR-65，仅展示与空间预留） */
+  estimatedBytes?: number | null;
+  /** 预检摘要（FR-65，任务详情与问题定位用） */
+  preflight?: DownloadPreflightDigest | null;
+  /** 创建时的字幕随片策略快照（FR-64） */
+  subtitleSelection?: DownloadSubtitlePolicy | null;
   errorCode: ErrorCode | null;
   /** P0-3: HLS 下载已完成的分片序号列表（用于暂停续传） */
   completedSegments?: number[];
@@ -467,6 +513,10 @@ export interface CreateDownloadInput {
   subtitleUrls?: Array<{ url: string; lang: string; format: 'vtt' | 'srt' }>;
   /** 封面图 URL（随视频一起下载） */
   coverUrl?: string;
+  /** 单次覆盖设置的清晰度档位（FR-62；直链忽略） */
+  hlsQuality?: HlsQuality;
+  /** 由 `createBatch` 注入的批次标识（FR-61；单集创建不传） */
+  batchId?: string;
 }
 
 export interface DownloadSummary {
@@ -534,6 +584,14 @@ export interface DownloadSettings {
   speedLimit: DownloadSpeedLimit;
   /** P0-6: HLS 分片并发下载数（3/6/8） */
   segmentConcurrency?: 3 | 6 | 8;
+  /** EXT-04/FR-60：完成后是否转封装为 MP4（仅 Android 生效，默认开） */
+  remuxToMp4?: boolean;
+  /** EXT-04/FR-64：字幕随片下载策略（默认 preferred） */
+  attachSubtitles?: DownloadSubtitlePolicy;
+  /** EXT-04/FR-62：默认下载清晰度（默认 max；直链不受影响） */
+  hlsQuality?: HlsQuality;
+  /** EXT-04/FR-61：队列非终态任务上限（默认 200） */
+  maxQueueTasks?: 50 | 100 | 200 | 500;
 }
 
 export interface AppSettings {
@@ -575,6 +633,8 @@ export interface AppSettings {
   smartPreloadEnabled?: boolean;
   /** OPT-15：预加载存储上限（MB），0 表示无限制 */
   preloadStorageLimitMb?: number;
+  /** EXT-06/FR-66：EPG 源上限（缺省取 constants 默认值） */
+  epg?: EpgSourceLimits;
   updatedAt: Timestamp;
 }
 
@@ -786,6 +846,8 @@ export interface LiveRecord {
   /** 最近一次成功拉取的频道数；从未成功为 null */
   channelCount: number | null;
   subscriptionId: string | null;
+  /** EXT-06/FR-68：回看配置（纯可选，老记录缺省视为不支持回看） */
+  catchup?: LiveCatchupSettings;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -857,4 +919,148 @@ export interface SourceAdapter {
   search(params: SearchParams): Promise<MediaItem[]>;
   getDetail(params: GetDetailParams): Promise<MediaDetail>;
   resolvePlayUrl(params: ResolvePlayParams): Promise<PlaybackSource>;
+}
+
+/* =========================================================
+ * EXT-06（2026-11-06）：IPTV/EPG 增强（FR-66 ~ FR-71）
+ * 全部为追加类型，既有数据类型不改字段语义。
+ * =======================================================*/
+
+/* ---------- FR-66/FR-67：EPG 多源 ---------- */
+export type EpgProtocol = 'auto' | 'diyp' | 'xmltv';
+
+/**
+ * 匹配模式：`auto` = L1(tvg-id) → L2(tvg-name) → L3(归一化名称) 依次尝试；
+ * 其余取值只跑指定级别（四级确定性匹配，不做模糊匹配，见 Q-16）。
+ */
+export type EpgMatchMode = 'auto' | 'channel-name' | 'xmltv-id';
+
+export interface EpgSource {
+  id: string;
+  name: string;
+  endpoint: string;
+  protocol: EpgProtocol;
+  matchMode: EpgMatchMode;
+  /** 合并优先级：1..N 唯一，数值小者优先 */
+  priority: number;
+  enabled: boolean;
+  /** 内置默认源不可删除（EPG_DEFAULT_ENDPOINT） */
+  builtin: boolean;
+  lastProbeAt: Timestamp | null;
+  lastError: string | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface EpgSourceInput {
+  name: string;
+  endpoint: string;
+  protocol?: EpgProtocol;
+  matchMode?: EpgMatchMode;
+  sampleChannel?: { name: string; tvgId?: string | null };
+}
+
+/** 频道侧引用（由 LiveChannel + liveExtras 合成，不落库） */
+export interface EpgChannelRef {
+  name: string;
+  tvgId: string | null;
+  tvgName: string | null;
+  url?: string;
+}
+
+/** 命中级别：1 = tvg-id，2 = tvg-name，3 = 归一化名称 */
+export type EpgMatchLevel = 1 | 2 | 3;
+
+export interface ChannelEpgResult {
+  channel: { name: string; tvgId: string | null; tvgName: string | null };
+  channelKey: string;
+  /** yyyy-MM-dd（设备本地时区） */
+  date: string;
+  programmes: EpgProgramme[];
+  matchedSource: { id: string; name: string; matchLevel: EpgMatchLevel } | null;
+  /** 源不可达时返回过期缓存 */
+  stale: boolean;
+  errors: Array<{ sourceId: string; code: ErrorCode; message: string }>;
+}
+
+/** AppSettings.epg：EPG 源上限（缺省取 constants 的 EPG_SOURCE_MAX / EPG_SOURCE_ENABLED_MAX） */
+export interface EpgSourceLimits {
+  maxSources: number;
+  maxEnabled: number;
+}
+
+/* ---------- FR-69/FR-70：频道分组与排序 ---------- */
+export interface ChannelGroupDef {
+  id: string;
+  name: string;
+  order: number;
+  createdAt: Timestamp;
+}
+
+export interface ChannelPrefs {
+  /** keyPath = 直播源 id（作用域隔离：不同直播源的分组互不影响） */
+  liveSourceId: string;
+  groups: ChannelGroupDef[];
+  /** channelKey → groupId（一频道最多一组） */
+  assignments: Record<string, string>;
+  /** scopeKey('all' | 'g:<id>' | 's:<源分组名>') → channelKey[] */
+  orders: Record<string, string[]>;
+  updatedAt: Timestamp;
+}
+
+/* ---------- FR-68：回看 ---------- */
+export interface LiveCatchupSettings {
+  enabled: boolean;
+  /** 模板，占位符白名单见 shared/catchupTemplate.ts */
+  template: string;
+  /** 回看天数 1..CATCHUP_MAX_DAYS */
+  days: number;
+}
+
+export type CatchupProbeState = 'unknown' | 'available' | 'auth_required' | 'not_found' | 'unreachable';
+
+export interface CatchupCapability {
+  key: string;
+  state: CatchupProbeState;
+  checkedAt: Timestamp | null;
+  days: number;
+  status: number | null;
+  reason: string | null;
+}
+
+/** m3u 旁路属性（不写入 LiveChannel，避免破坏既有解析契约） */
+export interface LiveChannelExtras {
+  tvgId: string | null;
+  tvgName: string | null;
+  /** m3u `catchup-source` */
+  catchupTemplate: string | null;
+  /** m3u `catchup-days` */
+  catchupDays: number | null;
+  /** m3u `catchup-correction` */
+  catchupCorrectionSec: number | null;
+}
+
+export type LiveChannelExtrasMap = Record<string /* channel url */, LiveChannelExtras>;
+
+/* ---------- FR-71：节目提醒 ---------- */
+export type ReminderState = 'scheduled' | 'firing' | 'fired' | 'missed' | 'cancelled';
+
+export interface Reminder {
+  id: string;
+  liveSourceId: string;
+  epgSourceId: string | null;
+  channelKey: string;
+  channelName: string;
+  programmeKey: string;
+  programmeTitle: string;
+  startAt: Timestamp;
+  endAt: Timestamp;
+  leadMinutes: 0 | 5 | 10 | 15 | 30;
+  notifyAt: Timestamp;
+  state: ReminderState;
+  /** 原生通知 id（32 位正整数，稳定哈希） */
+  nativeId: number;
+  lastError: string | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
 }

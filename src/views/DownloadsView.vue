@@ -142,7 +142,7 @@ function getBatchProgress(tasks: DownloadTask[]): BatchProgress {
 
 // EXT-04：限速展示
 const speedLimitText = computed(() => {
-  const limit = downloadService.getSpeedLimit();
+  const { limit } = downloadService.getSpeedLimit();
   switch (limit) {
     case 'low':
       return '慢速 512KB/s';
@@ -156,9 +156,9 @@ const speedLimitText = computed(() => {
 });
 
 const currentSpeedText = computed(() => {
-  const speed = downloadService.getCurrentSpeed();
-  if (speed <= 0) return '—';
-  const kb = speed / 1024;
+  const { totalBps } = downloadService.getCurrentSpeed();
+  if (totalBps <= 0) return '—';
+  const kb = totalBps / 1024;
   if (kb < 1024) return `${kb.toFixed(1)} KB/s`;
   const mb = kb / 1024;
   return `${mb.toFixed(2)} MB/s`;

@@ -11,12 +11,22 @@
  *   downloads/blobs/kv 共 10 个 store 及技术方案 5.1 列出的全部索引。回滚方式：无（首版）。
  * - v2（2026-10-24，CHG-13）：新增 lives store（直播播放列表，直播源 ≠ 影片源，独立管理）。
  *   回滚方式：删除该 store 即回到 v1 数据形态（v1 客户端忽略多出的 store）。
+ * - v4（2026-11-06，EXT-06）：新增 epgSources / channelPrefs / reminders 三个 store；
+ *   `epgCache` 键空间由 `{channel}:{date}` 升级为 `epgv2:{sourceId}:{channelKey}:{date}`，
+ *   因纯缓存且旧键无 sourceId 语义，升级时直接 clear()；同时写入内置默认 EPG 源。
+ *   回滚方式：客户端降级时 v3 及以下忽略多出的 store；旧键缓存已清空但可重建。
  */
-import type { IDBPDatabase } from 'idb';
+import type { IDBPDatabase, IDBPTransaction } from 'idb';
 
-import type { CinemaDB } from '@/db/schema';
+import type { CinemaDB, EpgSourceRecord, StoreName } from '@/db/schema';
+import { BUILTIN_EPG_SOURCE_ID, EPG_DEFAULT_ENDPOINT } from '@/shared/constants';
 
-export function upgrade(db: IDBPDatabase<CinemaDB>, oldVersion: number, _newVersion: number): void {
+export function upgrade(
+  db: IDBPDatabase<CinemaDB>,
+  oldVersion: number,
+  _newVersion: number,
+  tx: IDBPTransaction<CinemaDB, StoreName[], 'versionchange'>,
+): void {
   if (oldVersion < 1) {
     /* ---------- sources ---------- */
     const sources = db.createObjectStore('sources', { keyPath: 'id' });
@@ -81,5 +91,43 @@ export function upgrade(db: IDBPDatabase<CinemaDB>, oldVersion: number, _newVers
   if (oldVersion < 3) {
     db.createObjectStore('danmakuCache', { keyPath: 'key' });
     db.createObjectStore('epgCache', { keyPath: 'key' });
+  }
+  // v4（2026-11-06，EXT-06）：多 EPG 源 / 频道偏好 / 节目提醒。
+  if (oldVersion < 4) {
+    const epgSources = db.createObjectStore('epgSources', { keyPath: 'id' });
+    epgSources.createIndex('by-priority', 'priority');
+    // boolean 不是合法 IDB 键：占位索引，过滤在内存完成（同 v1 by-enabled）
+    epgSources.createIndex('by-enabled', 'enabled');
+
+    const prefs = db.createObjectStore('channelPrefs', { keyPath: 'liveSourceId' });
+    prefs.createIndex('by-updated', 'updatedAt');
+
+    const reminders = db.createObjectStore('reminders', { keyPath: 'id' });
+    reminders.createIndex('by-notifyAt', 'notifyAt');
+    reminders.createIndex('by-channel', 'channelKey');
+    reminders.createIndex('by-state', 'state');
+
+    // epgCache 键空间 v1(`ch:date`) → v2(`epgv2:src:chKey:date`)：纯缓存，直接清空
+    if (oldVersion >= 3) {
+      tx.objectStore('epgCache').clear();
+    }
+
+    // 内置默认源（不可删除）
+    const now = Date.now();
+    const builtin: EpgSourceRecord = {
+      id: BUILTIN_EPG_SOURCE_ID,
+      name: '内置默认源',
+      endpoint: EPG_DEFAULT_ENDPOINT,
+      protocol: 'auto',
+      matchMode: 'auto',
+      priority: 1,
+      enabled: true,
+      builtin: true,
+      lastProbeAt: null,
+      lastError: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    tx.objectStore('epgSources').put(builtin);
   }
 }

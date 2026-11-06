@@ -29,22 +29,52 @@ export const cacheRepo = {
     await db.put(STORE_NAMES.danmakuCache, record);
   },
 
-  /* ---------- EPG（key = `${channel}:${date}`） ---------- */
+  /* ---------- EPG（key = `epgv2:{sourceId}:{channelKey}:{yyyy-MM-dd}`） ---------- */
 
   async getEpg(key: string): Promise<EpgCacheRecord['programmes'] | null> {
+    const record = await cacheRepo.getEpgRecord(key);
+    return record ? record.programmes : null;
+  },
+
+  async putEpg(key: string, programmes: EpgCacheRecord['programmes']): Promise<void> {
+    await cacheRepo.putEpgRecord({ key, programmes, fetchedAt: Date.now() });
+  },
+
+  /**
+   * EXT-06：读整条缓存记录（含 `matchLevel`，供 UI 显示"来源 + L1/L2/L3"）。
+   * `allowExpired` 为真时不做过期删除，用于"源不可达 → 返回过期缓存并置 stale"。
+   */
+  async getEpgRecord(
+    key: string,
+    opts?: { allowExpired?: boolean },
+  ): Promise<EpgCacheRecord | null> {
     const db = await getDb();
     const record = await db.get(STORE_NAMES.epgCache, key);
     if (!record) return null;
+    if (opts?.allowExpired) return record;
     if (Date.now() - record.fetchedAt > EPG_CACHE_TTL_MS) {
       await db.delete(STORE_NAMES.epgCache, key);
       return null;
     }
-    return record.programmes;
+    return record;
   },
 
-  async putEpg(key: string, programmes: EpgCacheRecord['programmes']): Promise<void> {
+  async putEpgRecord(record: EpgCacheRecord): Promise<void> {
     const db = await getDb();
-    const record: EpgCacheRecord = { key, programmes, fetchedAt: Date.now() };
-    await db.put(STORE_NAMES.epgCache, record);
+    await db.put(STORE_NAMES.epgCache, { ...record, fetchedAt: record.fetchedAt || Date.now() });
+  },
+
+  /** EXT-06：按 key 前缀删除（`clearSourceCache` 用），返回删除条数 */
+  async deleteEpgByPrefix(prefix: string): Promise<number> {
+    const db = await getDb();
+    const keys = await db.getAllKeys(STORE_NAMES.epgCache);
+    let removed = 0;
+    for (const key of keys) {
+      if (typeof key === 'string' && key.startsWith(prefix)) {
+        await db.delete(STORE_NAMES.epgCache, key);
+        removed += 1;
+      }
+    }
+    return removed;
   },
 };

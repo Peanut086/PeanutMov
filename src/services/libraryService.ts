@@ -43,6 +43,7 @@ import type {
   LibraryFilters,
   MediaDetail,
   MediaItem,
+  SubtitleTrack,
   PageResult,
   PlaybackSource,
   SearchResult,
@@ -387,6 +388,45 @@ function searchCandidate(source: Source): boolean {
   const ext = (source.ext ?? {}) as { kind?: string; searchable?: boolean };
   if (ext.searchable === false) return false;
   return true;
+}
+
+
+/* ---------- EXT-04 / FR-64：字幕随片下载的选集策略 ---------- */
+
+function normalizeAttachPolicy(value: unknown): 'preferred' | 'all' | 'none' {
+  return value === 'all' || value === 'none' ? value : 'preferred';
+}
+
+function normalizeHlsQuality(value: unknown): 'max' | '1080p' | '720p' {
+  return value === '1080p' || value === '720p' ? value : 'max';
+}
+
+/**
+ * 按策略挑选要随片下载的字幕：
+ * - `none`：不下载；
+ * - `all`：全部远程字幕；
+ * - `preferred`：优先首选语言，没有匹配则取第一条（默认行为）。
+ * 只取远程字幕（`source==='remote'` 与未知来源）；本地/已下载字幕无需再下。
+ */
+function pickSubtitleUrls(
+  tracks: SubtitleTrack[],
+  policy: 'preferred' | 'all' | 'none',
+  preferredLang: string | null,
+): Array<{ url: string; lang: string; format: 'vtt' | 'srt' }> {
+  if (policy === 'none') return [];
+  const candidates = tracks.filter((track) => track.source !== 'downloaded' && Boolean(track.url));
+  const chosen = policy === 'all'
+    ? candidates
+    : (() => {
+        if (preferredLang) {
+          const hit = candidates.find(
+            (track) => track.lang.toLowerCase() === preferredLang.toLowerCase(),
+          );
+          if (hit) return [hit];
+        }
+        return candidates.slice(0, 1);
+      })();
+  return chosen.map((track) => ({ url: track.url, lang: track.lang, format: track.format }));
 }
 
 export const libraryService: LibraryService = {
@@ -871,10 +911,26 @@ export const libraryService: LibraryService = {
     const inputs: CreateDownloadInput[] = [];
     const failed: Array<{ episodeId: string; error: AppErrorShape }> = [];
 
+    // EXT-04/FR-64/FR-62：字幕随片策略与默认清晰度取自设置
+    // （设置读失败时按默认值：preferred + max，不阻断下载）
+    let subtitlePolicy: 'preferred' | 'all' | 'none' = 'preferred';
+    let preferredLang: string | null = null;
+    let defaultQuality: 'max' | '1080p' | '720p' = 'max';
+    try {
+      const appSettings = await settingsService.get();
+      subtitlePolicy = normalizeAttachPolicy(appSettings.download.attachSubtitles);
+      preferredLang = appSettings.player.subtitle.preferredLang ?? null;
+      defaultQuality = normalizeHlsQuality(appSettings.download.hlsQuality);
+    } catch (e) {
+      logger.debug('读取下载策略失败，使用默认值', toAppError(e).message);
+    }
+
     for (const episodeId of params.episodeIds) {
       try {
         const play = await libraryService.resolvePlay({ mediaId: params.mediaId, episodeId, lineId: params.lineId });
         const episode = episodes.find((entry) => entry.id === episodeId) ?? null;
+        const subtitleUrls = pickSubtitleUrls(play.subtitles ?? [], subtitlePolicy, preferredLang);
+        const isHls = play.format === 'hls' || /\.m3u8(\?|$)/i.test(play.url);
         inputs.push({
           sourceId: item.sourceId,
           mediaId: item.id,
@@ -887,6 +943,9 @@ export const libraryService: LibraryService = {
           headers: play.headers,
           format: play.format,
           quality: play.quality,
+          ...(subtitleUrls.length > 0 ? { subtitleUrls } : {}),
+          ...(item.posterUrl ? { coverUrl: item.posterUrl } : {}),
+          ...(isHls ? { hlsQuality: defaultQuality } : {}),
         });
       } catch (e) {
         failed.push({ episodeId, error: toErrorShape(e) });

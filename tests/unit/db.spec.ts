@@ -41,16 +41,18 @@ describe('DB 表结构与事务（AC-14）', () => {
     await resetAll();
   });
 
-  it('v3 建表：13 个 store（含 lives / danmakuCache / epgCache）与全部索引均存在', async () => {
+  it('v4 建表：16 个 store（v3 的 13 个 + epgSources / channelPrefs / reminders）与全部索引均存在', async () => {
     const db = await getDb();
     const stores = [...db.objectStoreNames].sort();
     expect(stores).toEqual(
       [
         'blobs',
         'categories',
+        'channelPrefs',
         'danmakuCache',
         'downloads',
         'epgCache',
+        'epgSources',
         'episodes',
         'favorites',
         'history',
@@ -58,11 +60,15 @@ describe('DB 表结构与事务（AC-14）', () => {
         'lives',
         'lines',
         'media',
+        'reminders',
         'sources',
       ].sort(),
     );
 
-    const tx = db.transaction(['sources', 'media', 'episodes', 'downloads', 'lives'], 'readonly');
+    const tx = db.transaction(
+      ['sources', 'media', 'episodes', 'downloads', 'lives', 'epgSources', 'channelPrefs', 'reminders'],
+      'readonly',
+    );
     expect([...tx.objectStore('sources').indexNames].sort()).toEqual(
       ['by-enabled', 'by-key', 'by-sort', 'by-type'].sort(),
     );
@@ -76,6 +82,14 @@ describe('DB 表结构与事务（AC-14）', () => {
       ['by-created', 'by-media', 'by-priority', 'by-status'].sort(),
     );
     expect([...tx.objectStore('lives').indexNames].sort()).toEqual(['by-created']);
+    // EXT-06（DB v4）新增索引
+    expect([...tx.objectStore('epgSources').indexNames].sort()).toEqual(
+      ['by-enabled', 'by-priority'].sort(),
+    );
+    expect([...tx.objectStore('channelPrefs').indexNames].sort()).toEqual(['by-updated']);
+    expect([...tx.objectStore('reminders').indexNames].sort()).toEqual(
+      ['by-channel', 'by-notifyAt', 'by-state'].sort(),
+    );
     await tx.done;
   });
 
@@ -115,7 +129,7 @@ describe('DB 表结构与事务（AC-14）', () => {
     await deleteDatabase();
     resetDbConnection();
     const db = await getDb();
-    expect([...db.objectStoreNames].length).toBe(13);
+    expect([...db.objectStoreNames].length).toBe(16);
     expect(await sourceRepo.count()).toBe(0);
   });
 

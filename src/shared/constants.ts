@@ -22,8 +22,11 @@ export const BUILD_TIME: number | null = (typeof __BUILD_TIME__ === 'string' && 
 
 /* ---------- IndexedDB ---------- */
 export const DB_NAME = 'cinema-db';
-/** v2（CHG-13）：新增 lives store（直播播放列表）；v3（CHG-22/23）：danmakuCache / epgCache */
-export const DB_VERSION = 3;
+/**
+ * v2（CHG-13）：新增 lives store（直播播放列表）；v3（CHG-22/23）：danmakuCache / epgCache；
+ * v4（EXT-06）：epgSources / channelPrefs / reminders + epgCache 键空间改版（`epgv2:`）
+ */
+export const DB_VERSION = 4;
 
 /** kv 表中存放应用设置的 key */
 export const KV_KEY_SETTINGS = 'app-settings';
@@ -139,6 +142,30 @@ export const DOWNLOAD_SPEED_LIMITS = {
   unlimited: Infinity,
 } as const;
 
+/* ---------- 功能扩展-4：下载增强（EXT-04） ---------- */
+/** 单次批量上限（FR-61 / AC-144） */
+export const DOWNLOAD_BATCH_MAX = 50;
+/** 队列非终态任务默认上限（FR-61）；实际值取 `settings.download.maxQueueTasks` */
+export const DOWNLOAD_QUEUE_MAX = 200;
+/** 队列上限可选档位（Q-12 A：可配置） */
+export const DOWNLOAD_QUEUE_MAX_OPTIONS = [50, 100, 200, 500] as const;
+/** 单任务预检超时（FR-65） */
+export const DOWNLOAD_PREFLIGHT_TIMEOUT_MS = 4000;
+/** 预检并发上限（FR-65；硬上限 4） */
+export const DOWNLOAD_PREFLIGHT_MAX_PARALLEL = 4;
+/** 清单预检缓存 TTL（FR-65：同 master 60s 复用，减少请求） */
+export const DOWNLOAD_PREFLIGHT_CACHE_TTL_MS = 60_000;
+/** 预检单分片探测读取字节数（`Range: bytes=0-65535`） */
+export const DOWNLOAD_PREFLIGHT_PROBE_BYTES = 64 * 1024;
+/** 清单预检缓存条目上限（与 LocalProxy MAX_TARGETS=100 兼容） */
+export const DOWNLOAD_PREFLIGHT_CACHE_MAX = 50;
+/** 转封装超时（FR-60；由后端原生侧执行，前端只做状态展示预留） */
+export const DOWNLOAD_REMUX_TIMEOUT_MS = 120_000;
+/** 速率统计滑窗（FR-63 / AC-148） */
+export const DOWNLOAD_RATE_WINDOW_MS = 3000;
+/** 令牌桶补充节拍（FR-63） */
+export const DOWNLOAD_RATE_TICK_MS = 50;
+
 /* ---------- 导入 / 备份 ---------- */
 /** 订阅文件与响应体大小上限 2MB（FR-05 / API-05） */
 export const MAX_SUBSCRIPTION_BYTES = 2 * 1024 * 1024;
@@ -220,3 +247,47 @@ export const EPG_DEFAULT_ENDPOINT = 'https://epg.112114.eu.org';
 /* ---------- v1.7：推荐订阅（CHG-24） ---------- */
 /** 内置推荐订阅清单版本（清单内容见 src/data/recommended/recommended.json） */
 export const RECOMMENDED_SUBSCRIPTIONS_VERSION = 1;
+
+/* ---------- EXT-06（FR-66 ~ FR-71）：IPTV/EPG 增强 ---------- */
+/** 内置默认 EPG 源 id（不可删除，端点为既有 EPG_DEFAULT_ENDPOINT） */
+export const BUILTIN_EPG_SOURCE_ID = 'epg-builtin';
+/** 用户新增 EPG 源数量上限（不含内置源，对齐 FR-66） */
+export const EPG_SOURCE_MAX = 10;
+/**
+ * 同时启用的 EPG 源上限。默认 5 对齐需求 AC-155「第 6 个启用源被拒绝」与方案 §4.4；
+ * 任务书 Q-15 记为 3，二者冲突已上报协调者，可在 `AppSettings.epg.maxEnabled` 覆盖。
+ */
+export const EPG_SOURCE_ENABLED_MAX = 5;
+/** 多源合并/预取并发闸门 */
+export const EPG_MERGE_CONCURRENCY = 3;
+/** 节目单预取频道数上限 */
+export const EPG_PREFETCH_MAX = 30;
+/** EPG 拉取超时（沿用既有 6s） */
+export const EPG_FETCH_TIMEOUT_MS = 6000;
+/** EPG 源探测超时 */
+export const EPG_PROBE_TIMEOUT_MS = 8000;
+/** EPG 缓存键前缀：`epgv2:{sourceId}:{channelKey}:{yyyy-MM-dd}` */
+export const EPG_CACHE_KEY_PREFIX = 'epgv2';
+
+/** 回看天数上限（缺省 1 天，见 LiveCatchupSettings.days） */
+export const CATCHUP_MAX_DAYS = 7;
+/** 回看能力探测结果 TTL（6h） */
+export const CATCHUP_PROBE_TTL_MS = 6 * 60 * 60 * 1000;
+/** 单次回看探测超时（HEAD → GET Range） */
+export const CATCHUP_PROBE_TIMEOUT_MS = 3000;
+/** kv 中存放回看探测结果的 key */
+export const KV_KEY_CATCHUP_PROBES = 'live-catchup-probes';
+
+/** 单直播源自定义分组数上限 */
+export const LIVE_GROUP_MAX = 20;
+/** 分组名长度上限 */
+export const LIVE_GROUP_NAME_MAX = 10;
+/** 单 scope 自定义排序项上限（超出禁止拖拽） */
+export const CHANNEL_ORDER_MAX = 300;
+
+/** 非终态节目提醒上限 */
+export const REMINDER_MAX = 50;
+/** 可选的提前量（分钟） */
+export const REMINDER_LEAD_OPTIONS = [0, 5, 10, 15, 30] as const;
+/** 提醒错过判定宽限：startAt + 10min 仍未触发 → missed */
+export const REMINDER_GRACE_MS = 10 * 60 * 1000;
