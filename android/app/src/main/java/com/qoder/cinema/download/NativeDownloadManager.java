@@ -35,6 +35,13 @@ import java.util.concurrent.Executors;
  * DEV-04 / AND-16：所有下载任务（含排队/暂停）统一登记在 pendingTasks /
  * activeDownloads / pausedTasks 三张表里，统一受 MAX_CONCURRENT 闸门约束，
  * 暂停、恢复、取消对排队任务与执行中任务语义一致。
+ *
+ * EXT-04 / FR-60（HLS→MP4 转封装）**不在本类实现**，原因有两条硬约束：
+ * 1. §8.1 禁止改动 `DownloadPlugin.start` 签名，本类拿不到"是否转封装"的入参，
+ *    原生侧也没有 `settings.download.remuxToMp4` 的读取通道（设置只存在于 JS/IndexedDB）；
+ * 2. 本类只处理直链（m3u8 已在 `start()` 入口硬拒，AND-14），产物不可能是 `.ts`。
+ * 因此转封装统一由 JS 编排层在 HLS 完成后调用 `MediaTool.remuxMp4`（D-06），
+ * 本类只承担一件事：转封装进行中不被 `stopServiceIfIdle()` 停掉前台服务。
  */
 public class NativeDownloadManager {
 
@@ -272,9 +279,19 @@ public class NativeDownloadManager {
     }
 
     /**
-     * 无活跃任务且无待执行任务时停止前台服务
+     * 无活跃任务且无待执行任务时停止前台服务。
+     *
+     * EXT-04 / FR-60：转封装期间**不停服务**。原生下载器的产物永远是直链文件
+     * （`start()` 已硬拒 m3u8，见 AND-14），`.ts` 只可能由 JS 侧 HlsDownloader 产生，
+     * 转封装由 JS 编排（技术方案 D-06 / §8.3.4）调用 `MediaTool.remuxMp4`。
+     * 该调用会先 `DownloadService.beginPostprocess()`，这里据此让服务存活到
+     * `MediaRemuxer` 完成，避免进程被回收留下 `.mp4.part` 残留。
      */
-    private void stopServiceIfIdle() {
+    public void stopServiceIfIdle() {
+        if (DownloadService.isPostprocessing()) {
+            com.qoder.cinema.AppLog.d(TAG, "Keep foreground service: remux in progress");
+            return;
+        }
         boolean hasRunnablePending = false;
         for (DownloadTask task : pendingTasks.values()) {
             if (!pausedTasks.containsKey(task.taskId)) {

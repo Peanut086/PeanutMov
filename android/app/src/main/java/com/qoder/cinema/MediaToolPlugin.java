@@ -1,0 +1,484 @@
+package com.qoder.cinema;
+
+import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+
+import com.qoder.cinema.download.DownloadService;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * MediaTool 原生插件（API-17：`remuxMp4` / `cancelRemux`）
+ *
+ * 定位：**薄适配层**。参数校验、路径安全、串行调度、取消注册、事件推送都在这里；
+ * 真正的转封装在 {@link MediaRemuxer}（解复用 + 复用，不转码）。
+ *
+ * 契约（技术方案 API-17，逐条落地）：
+ * - 只接受 `Directory.Data` 相对路径；拒绝空串、绝对路径、`..` 越界（§8.3.7）；
+ * - 输出内部写 `{outputPath}.part`，成功后原子 rename（AC-143 无残留）；
+ * - 转封装串行 1 个（§6.1），队列中的任务可被 `cancelRemux` 取消；
+ * - 事件 `remuxProgress`（processedUs / durationUs），节流由 {@link MediaRemuxer} 保证 ≤2 次/秒；
+ * - 失败不抛异常栈给 JS：统一返回 `{ ok:false, code, reason }`，由前端回退 `.ts`（AC-143）。
+ *
+ * 与前端 JS 桥的两处字段差异（**已上报协调者，未私改契约**，此处做双向兼容）：
+ * 1. `cancelRemux`：API-17 用 `taskId`，`src/native/mediaToolPlugin.ts` 用 `inputPath` → 两者都接受；
+ * 2. `remuxMp4`：API-17 有 `taskId`，JS 桥未传 → `taskId` 变可选，事件里同时回传 `inputPath` 供关联。
+ *
+ * 未实现（属 API-18，另一任务范围）：`getStorageInfo` / `setSpeedLimit`。
+ * 前端对这两个方法已有 try/catch 降级，调用失败不会中断预检与下载链路。
+ *
+ * @author xyp
+ */
+@CapacitorPlugin(name = "MediaTool")
+public class MediaToolPlugin extends Plugin {
+
+    private static final String TAG = "MediaToolPlugin";
+    private static final String EVENT_PROGRESS = "remuxProgress";
+    private static final String DATA_RELATIVE_ROOT = "downloads";
+    /** 启动清理只认这个后缀，避免误删 RangeDownloader 的下载 `.part` */
+    private static final String REMUX_PART_SUFFIX = ".mp4.part";
+    private static final int CLEANUP_MAX_DEPTH = 4;
+    private static final long DEFAULT_TIMEOUT_MS = MediaRemuxer.DEFAULT_TIMEOUT_MS;
+    private static final long MAX_TIMEOUT_MS = 600_000L;
+
+    /** 进行中 + 排队中的转封装任务，key 为输入文件规范化路径 */
+    private final Map<String, Job> jobs = new ConcurrentHashMap<>();
+    /** 已 begin 但尚未 end 的后处理计数；插件销毁时按它把前台服务计数补齐，避免泄漏 */
+    private final AtomicInteger openPostprocess = new AtomicInteger(0);
+    private ExecutorService worker;
+
+    // ========== 生命周期 ==========
+
+    @Override
+    public void load() {
+        super.load();
+        // FR-60 §6.1：转封装串行 1 个，独立线程，避免占用电容桥线程与下载队列
+        worker = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "media-remux");
+            thread.setPriority(Thread.NORM_PRIORITY - 1);
+            return thread;
+        });
+        // AC-143 / NFR 可靠性：上次进程被杀留下的 *.mp4.part 一律视为残留，启动即清理
+        try {
+            worker.execute(this::cleanupStaleParts);
+        } catch (RejectedExecutionException ignored) {
+        }
+        AppLog.i(TAG, "MediaTool loaded");
+    }
+
+    @Override
+    public void handleOnDestroy() {
+        for (Job job : jobs.values()) {
+            job.canceled.set(true);
+        }
+        jobs.clear();
+        if (worker != null) {
+            worker.shutdownNow();
+            worker = null;
+        }
+        // shutdownNow 会丢弃尚未开始的任务，它们的 runRemux 不会执行，
+        // 因此这里兜底把后处理计数归零，避免前台服务永远停在"转封装中"
+        int outstanding = openPostprocess.getAndSet(0);
+        for (int i = 0; i < outstanding; i++) {
+            DownloadService.endPostprocess(getContext());
+        }
+        super.handleOnDestroy();
+    }
+
+    /** 能力探测（加法方法，不改变 API-17 既有签名；前端仍以 isPluginAvailable 为准） */
+    @PluginMethod
+    public void isAvailable(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("available", true);
+        result.put("platform", "android");
+        result.put("engine", "MediaExtractor+MediaMuxer");
+        result.put("maxTimeoutMs", MAX_TIMEOUT_MS);
+        call.resolve(result);
+    }
+
+    // ========== API-17 ==========
+
+    /**
+     * TS → MP4 转封装。
+     *
+     * 入参：`inputPath` / `outputPath`（必填，相对 Directory.Data）、`taskId`、`container`、
+     * `deleteInput`（默认 true）、`timeoutMs`（默认 120000，上限 600000）。
+     */
+    @PluginMethod
+    public void remuxMp4(PluginCall call) {
+        String taskId = trimToNull(call.getString("taskId"));
+        String inputPath = trimToNull(call.getString("inputPath"));
+        String outputPath = trimToNull(call.getString("outputPath"));
+        String container = trimToNull(call.getString("container"));
+        Boolean deleteInputArg = call.getBoolean("deleteInput", Boolean.TRUE);
+        Long timeoutArg = call.getLong("timeoutMs");
+
+        if (inputPath == null || outputPath == null) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "inputPath/outputPath required");
+            return;
+        }
+
+        if ("fmp4".equalsIgnoreCase(container)) {
+            // AC-154：fMP4 本身就是 MP4 家族，直接以 .mp4 交付，不触碰解复用器、不产生临时副本
+            JSObject skipped = new JSObject();
+            skipped.put("ok", true);
+            skipped.put("success", true);
+            skipped.put("skipped", true);
+            skipped.put("reason", "fmp4-passthrough");
+            skipped.put("container", "fmp4");
+            skipped.put("durationMs", 0L);
+            skipped.put("tracks", new JSArray());
+            if (taskId != null) skipped.put("taskId", taskId);
+            skipped.put("inputPath", inputPath);
+            AppLog.i(TAG, "remux skipped (fmp4 passthrough) task=" + safe(taskId) + " input=" + inputPath);
+            call.resolve(skipped);
+            return;
+        }
+
+        long timeoutMs = DEFAULT_TIMEOUT_MS;
+        if (timeoutArg != null) {
+            if (timeoutArg <= 0) {
+                reject(call, MediaRemuxer.CODE_INVALID_INPUT, "timeoutMs must be > 0");
+                return;
+            }
+            timeoutMs = Math.min(timeoutArg, MAX_TIMEOUT_MS);
+        }
+
+        File filesDir = getContext().getFilesDir();
+        File input;
+        File output;
+        try {
+            input = resolveInData(filesDir, inputPath);
+            output = resolveInData(filesDir, outputPath);
+        } catch (IllegalArgumentException e) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, e.getMessage());
+            return;
+        }
+        if (input.equals(output)) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "input and output must differ");
+            return;
+        }
+        if (!output.getName().toLowerCase(java.util.Locale.US).endsWith(".mp4")) {
+            // 输出必须是 .mp4：既保证语义，也让 `{base}.mp4.part` 落在启动清理规则内（AC-143）
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "outputPath must end with .mp4");
+            return;
+        }
+        if (!input.isFile() || input.length() <= 0) {
+            reject(call, MediaRemuxer.CODE_FILE_MISSING, "input missing or empty");
+            return;
+        }
+
+        String key = canonicalOf(input);
+        boolean deleteInput = deleteInputArg == null || deleteInputArg;
+        Job job = new Job(key, taskId, input, output, inputPath, outputPath, deleteInput, timeoutMs);
+        if (jobs.putIfAbsent(key, job) != null) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "remux already running for this input");
+            return;
+        }
+
+        ExecutorService executor = worker;
+        if (executor == null || executor.isShutdown()) {
+            jobs.remove(key);
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "plugin not ready");
+            return;
+        }
+
+        // FR-60 / 集成点：转封装期间保持前台服务，避免后台被系统回收
+        beginPostprocess();
+        try {
+            executor.execute(() -> runRemux(job, call));
+        } catch (RejectedExecutionException e) {
+            jobs.remove(key);
+            endPostprocess();
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "remux executor rejected");
+        }
+    }
+
+    /**
+     * 取消转封装：置取消位 → 工作线程在下一个检查点返回 `E_CANCELED` 并删除 `.part`。
+     * 请求支持 `taskId`（API-17）或 `inputPath`（前端 JS 桥），未命中返回 `{canceled:false}`。
+     */
+    @PluginMethod
+    public void cancelRemux(PluginCall call) {
+        String taskId = trimToNull(call.getString("taskId"));
+        String inputPath = trimToNull(call.getString("inputPath"));
+        if (taskId == null && inputPath == null) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "taskId or inputPath required");
+            return;
+        }
+
+        Job target = null;
+        for (Job job : jobs.values()) {
+            if (taskId != null && taskId.equals(job.taskId)) {
+                target = job;
+                break;
+            }
+            if (inputPath != null && inputPath.equals(job.inputPath)) {
+                target = job;
+                break;
+            }
+        }
+
+        JSObject result = new JSObject();
+        if (target == null) {
+            result.put("canceled", false);
+        } else {
+            target.canceled.set(true);
+            result.put("canceled", true);
+            AppLog.i(TAG, "remux cancel requested task=" + safe(target.taskId) + " input=" + target.inputPath);
+        }
+        call.resolve(result);
+    }
+
+    // ========== 工作线程 ==========
+
+    private void runRemux(final Job job, final PluginCall call) {
+        JSObject response;
+        try {
+            response = remuxOrFailure(job);
+        } catch (Throwable t) {
+            // 禁止裸抛：任何意外都收敛成契约内的 code，前端据此回退 .ts
+            AppLog.e(TAG, "remux crashed task=" + safe(job.taskId) + " input=" + job.inputPath, t);
+            response = failureResponse(job, MediaRemuxer.CODE_UNSUPPORTED, "internal-error");
+        } finally {
+            jobs.remove(job.key);
+            endPostprocess();
+        }
+        try {
+            call.resolve(response);
+        } catch (Exception ignored) {
+            // WebView 已销毁时 resolve 会失败，忽略即可（任务侧按未完成处理）
+        }
+    }
+
+    private JSObject remuxOrFailure(Job job) {
+        if (job.canceled.get()) {
+            JSObject canceled = failureResponse(job, MediaRemuxer.CODE_CANCELED, MediaRemuxer.REASON_CANCELED);
+            AppLog.i(TAG, "remux canceled before start task=" + safe(job.taskId) + " input=" + job.inputPath);
+            return canceled;
+        }
+
+        MediaRemuxer.Result result = MediaRemuxer.remux(
+                job.input,
+                job.output,
+                job.deleteInput,
+                job.timeoutMs,
+                (processedUs, durationUs) -> emitProgress(job, processedUs, durationUs),
+                () -> job.canceled.get() || Thread.currentThread().isInterrupted());
+
+        JSObject response = new JSObject();
+        response.put("ok", result.ok);
+        // 任务书字段名（success）与 API-17（ok）并存，前端 TS 桥取 ok
+        response.put("success", result.ok);
+        response.put("skipped", result.skipped);
+        response.put("inputBytes", result.inputBytes);
+        response.put("outputBytes", result.outputBytes);
+        response.put("durationUs", result.durationUs);
+        response.put("durationMs", result.elapsedMs);
+        response.put("container", result.container != null ? result.container : "ts");
+        response.put("inputPath", job.inputPath);
+        if (job.taskId != null) response.put("taskId", job.taskId);
+        if (result.code != null) response.put("code", result.code);
+        if (result.reason != null) response.put("reason", result.reason);
+        if (result.outputPath != null) {
+            // 回传相对路径语义，避免把绝对路径泄露给 UI
+            response.put("outputPath", job.outputPath);
+        }
+        JSArray tracks = new JSArray();
+        for (MediaRemuxer.Track track : result.tracks) {
+            JSObject item = new JSObject();
+            item.put("type", track.type);
+            item.put("mime", track.mime);
+            if (track.width > 0) item.put("width", track.width);
+            if (track.height > 0) item.put("height", track.height);
+            if (track.channels > 0) item.put("channels", track.channels);
+            if (track.sampleRate > 0) item.put("sampleRate", track.sampleRate);
+            tracks.put(item);
+        }
+        response.put("tracks", tracks);
+
+        // §6.4：一条汇总日志，只记 taskId + 相对路径 + 耗时，不记 URL / headers
+        if (result.ok && !result.skipped) {
+            AppLog.i(TAG, "remux done task=" + safe(job.taskId) + " input=" + job.inputPath
+                    + " -> " + job.outputPath + " in " + result.elapsedMs + "ms"
+                    + " (" + result.inputBytes + " -> " + result.outputBytes + " bytes)");
+        } else if (result.skipped) {
+            AppLog.i(TAG, "remux skipped task=" + safe(job.taskId) + " reason=" + result.reason);
+        } else {
+            AppLog.w(TAG, "remux failed task=" + safe(job.taskId) + " code=" + result.code
+                    + " reason=" + result.reason + " in " + result.elapsedMs + "ms");
+        }
+        return response;
+    }
+
+    private JSObject failureResponse(Job job, String code, String reason) {
+        JSObject response = new JSObject();
+        response.put("ok", false);
+        response.put("success", false);
+        response.put("skipped", false);
+        response.put("code", code);
+        response.put("reason", reason);
+        // 失败时产物仍是原 .ts（AC-143），前端据此保留文件
+        response.put("container", "ts");
+        response.put("inputBytes", job.input.length());
+        response.put("outputBytes", 0L);
+        response.put("durationUs", 0L);
+        response.put("durationMs", 0L);
+        response.put("inputPath", job.inputPath);
+        if (job.taskId != null) response.put("taskId", job.taskId);
+        response.put("tracks", new JSArray());
+        return response;
+    }
+
+    /** 进度事件 + 前台通知同步（"转封装中 x%"），节流由 MediaRemuxer 负责 */
+    private void emitProgress(Job job, long processedUs, long durationUs) {
+        try {
+            if (durationUs > 0) {
+                int percent = (int) Math.min(100L, Math.max(0L, processedUs * 100L / durationUs));
+                DownloadService.updatePostprocessNotification(percent);
+            } else {
+                DownloadService.updatePostprocessNotification(-1);
+            }
+            JSObject data = new JSObject();
+            data.put("taskId", job.taskId != null ? job.taskId : "");
+            data.put("inputPath", job.inputPath);
+            data.put("outputPath", job.outputPath);
+            data.put("processedUs", processedUs);
+            data.put("durationUs", durationUs);
+            notifyListeners(EVENT_PROGRESS, data);
+        } catch (Exception ignored) {
+            // 事件推送失败不影响转封装
+        }
+    }
+
+    // ========== 路径安全 / 清理 ==========
+
+    /**
+     * 把 `Directory.Data` 相对路径解析为 File，并拒绝越界：空串、绝对路径、
+     * `..` 段、规范化后跳出数据目录的路径（§8.3.7）。
+     */
+    private File resolveInData(File root, String relativePath) {
+        String value = relativePath.trim();
+        if (value.isEmpty()) throw new IllegalArgumentException("empty-path");
+        if (value.startsWith("/") || value.startsWith("\\") || value.matches("^[A-Za-z]:.*")) {
+            throw new IllegalArgumentException("absolute-path");
+        }
+        for (String segment : value.split("[/\\\\]")) {
+            if ("..".equals(segment)) throw new IllegalArgumentException("path-traversal");
+        }
+        File target = new File(root, value);
+        try {
+            String rootCanonical = root.getCanonicalPath();
+            String targetCanonical = target.getCanonicalPath();
+            if (!targetCanonical.equals(rootCanonical)
+                    && !targetCanonical.startsWith(rootCanonical + File.separator)) {
+                throw new IllegalArgumentException("path-escape");
+            }
+        } catch (IOException e) {
+            throw new IllegalArgumentException("path-invalid");
+        }
+        return target;
+    }
+
+    /** 启动清理 `downloads/**&#47;*.mp4.part`（深度有上限，避免遍历失控） */
+    private void cleanupStaleParts() {
+        File root = new File(getContext().getFilesDir(), DATA_RELATIVE_ROOT);
+        if (!root.isDirectory()) return;
+        int removed = sweepStaleParts(root, 0);
+        if (removed > 0) {
+            AppLog.i(TAG, "cleaned stale remux parts: " + removed);
+        }
+    }
+
+    private int sweepStaleParts(File dir, int depth) {
+        int removed = 0;
+        File[] children = dir.listFiles();
+        if (children == null) return 0;
+        for (File child : children) {
+            if (child.isDirectory()) {
+                if (depth < CLEANUP_MAX_DEPTH) removed += sweepStaleParts(child, depth + 1);
+                continue;
+            }
+            if (child.getName().endsWith(REMUX_PART_SUFFIX) && MediaRemuxer.deleteQuietly(child)) {
+                removed++;
+            }
+        }
+        return removed;
+    }
+
+    // ========== 工具 ==========
+
+    /** 后处理计数 +1 并拉起前台服务（配对使用 {@link #endPostprocess()}） */
+    private void beginPostprocess() {
+        openPostprocess.incrementAndGet();
+        DownloadService.beginPostprocess(getContext());
+    }
+
+    /** 后处理计数 -1；已归零时不重复递减，避免插件销毁兜底后出现负数 */
+    private void endPostprocess() {
+        int previous = openPostprocess.getAndUpdate(value -> value > 0 ? value - 1 : 0);
+        if (previous > 0) {
+            DownloadService.endPostprocess(getContext());
+        }
+    }
+
+    private static void reject(PluginCall call, String code, String detail) {
+        AppLog.w(TAG, "remux rejected: " + code + " (" + detail + ")");
+        call.reject(code + ": " + detail);
+    }
+
+    private static String canonicalOf(File file) {
+        try {
+            return file.getCanonicalPath();
+        } catch (IOException e) {
+            return file.getAbsolutePath();
+        }
+    }
+
+    private static String trimToNull(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static String safe(String value) {
+        return value != null ? value : "-";
+    }
+
+    /** 一次转封装的登记项（含取消位）；只在 plugin 内部流转 */
+    private static final class Job {
+        final String key;
+        final String taskId;
+        final File input;
+        final File output;
+        final String inputPath;
+        final String outputPath;
+        final boolean deleteInput;
+        final long timeoutMs;
+        final AtomicBoolean canceled = new AtomicBoolean(false);
+
+        Job(String key, String taskId, File input, File output, String inputPath, String outputPath,
+            boolean deleteInput, long timeoutMs) {
+            this.key = key;
+            this.taskId = taskId;
+            this.input = input;
+            this.output = output;
+            this.inputPath = inputPath;
+            this.outputPath = outputPath;
+            this.deleteInput = deleteInput;
+            this.timeoutMs = timeoutMs;
+        }
+    }
+}

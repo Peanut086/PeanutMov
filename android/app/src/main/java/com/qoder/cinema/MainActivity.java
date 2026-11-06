@@ -43,6 +43,9 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(ExoPlayerPlugin.class);
         // Phase 1：Native 下载器插件
         registerPlugin(DownloadPlugin.class);
+        // EXT-04 / API-17：MediaTool（HLS→MP4 转封装）；本地插件不进 capacitor.plugins.json，
+        // 必须在 super.onCreate() 之前注册，否则桥 404（REV-21）
+        registerPlugin(MediaToolPlugin.class);
         // 网盘 cookie 写入/回读/登录页（src/native/netdiskPlugin.ts 调用；本地插件不会进 capacitor.plugins.json）
         registerPlugin(NetdiskPlugin.class);
         // AC-53：屏幕常亮插件（播放视频时防止熄屏）

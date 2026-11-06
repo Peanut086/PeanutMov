@@ -18,6 +18,9 @@ import androidx.core.app.NotificationCompat;
 import com.qoder.cinema.MainActivity;
 import com.qoder.cinema.R;
 
+import java.lang.ref.WeakReference;
+import java.util.concurrent.atomic.AtomicInteger;
+
 /**
  * 下载前台服务（Phase 1）
  *
@@ -29,6 +32,12 @@ import com.qoder.cinema.R;
  * 生命周期：
  * - 有下载任务时启动，所有任务完成/暂停后自动停止
  * - NativeDownloadManager 通过 updateNotification() 更新进度
+ *
+ * EXT-04 / FR-60：转封装（`MediaToolPlugin` → `MediaRemuxer`）期间也要求服务存活，
+ * 否则用户切后台后系统可能把进程回收，`.mp4.part` 变成残留半截文件。
+ * 因此引入"后处理计数"：`beginPostprocess()` / `endPostprocess()` 成对调用，
+ * 计数 > 0 时 {@link NativeDownloadManager#stopServiceIfIdle()} 不会停服务，
+ * 通知文案显示"转封装中 x%"，与下载进度区分开。
  */
 public class DownloadService extends Service {
 
@@ -37,12 +46,18 @@ public class DownloadService extends Service {
     private static final String CHANNEL_NAME = "下载";
     private static final int NOTIFICATION_ID = 1001;
 
+    /** 转封装等后处理任务计数（进程内，配对调用；<0 视为失衡并复位） */
+    private static final AtomicInteger postprocessCount = new AtomicInteger(0);
+    /** 当前服务实例（未启动时为 null），供静态方法刷新通知 */
+    private static volatile WeakReference<DownloadService> instanceRef = new WeakReference<>(null);
+
     private NotificationManager notificationManager;
     private boolean isForeground = false;
 
     @Override
     public void onCreate() {
         super.onCreate();
+        instanceRef = new WeakReference<>(this);
         notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         createNotificationChannel();
         Log.d(TAG, "DownloadService created");
@@ -66,6 +81,7 @@ public class DownloadService extends Service {
     public void onDestroy() {
         super.onDestroy();
         Log.d(TAG, "DownloadService destroyed");
+        instanceRef = new WeakReference<>(null);
         if (isForeground) {
             stopForeground(true);
             isForeground = false;
@@ -110,6 +126,18 @@ public class DownloadService extends Service {
         int progress = totalCount > 0 ? (downloadedCount * 100 / totalCount) : 0;
 
         Notification notification = buildNotification(content, progress, totalBytes, true);
+        notificationManager.notify(NOTIFICATION_ID, notification);
+    }
+
+    /**
+     * 刷新"转封装中"通知。
+     *
+     * @param percent 0–100；传 -1 表示进度未知（视频轨没有时长元数据，如部分 TS）
+     */
+    private void notifyPostprocess(int percent) {
+        if (!isForeground || notificationManager == null) return;
+        String content = percent >= 0 ? ("转封装中 " + percent + "%") : "转封装中...";
+        Notification notification = buildNotification(content, percent >= 0 ? Math.max(percent, 1) : 0, 0, percent < 0);
         notificationManager.notify(NOTIFICATION_ID, notification);
     }
 
@@ -179,5 +207,51 @@ public class DownloadService extends Service {
     public static void stop(Context context) {
         Intent intent = new Intent(context, DownloadService.class);
         context.stopService(intent);
+    }
+
+    // ========== EXT-04 / FR-60：转封装等后处理的前台保活 ==========
+
+    /** 是否有后处理（转封装）在进行中 */
+    public static boolean isPostprocessing() {
+        return postprocessCount.get() > 0;
+    }
+
+    /**
+     * 标记一个后处理开始：计数 +1 并确保前台服务运行。
+     * 必须与 {@link #endPostprocess(Context)} 成对调用（异常路径放在 finally 里）。
+     */
+    public static void beginPostprocess(Context context) {
+        postprocessCount.incrementAndGet();
+        try {
+            start(context);
+        } catch (Exception e) {
+            Log.w(TAG, "start foreground service for postprocess failed", e);
+        }
+    }
+
+    /**
+     * 标记一个后处理结束：计数 -1；归零后让管理器判断是否可以停服务
+     * （仍有下载任务时不会停，见 {@link NativeDownloadManager#stopServiceIfIdle()}）。
+     */
+    public static void endPostprocess(Context context) {
+        int remaining = postprocessCount.decrementAndGet();
+        if (remaining > 0) return;
+        if (remaining < 0) {
+            // 配对失衡（重复 end 或多线程竞争）时复位，避免服务永远不停
+            postprocessCount.set(0);
+        }
+        try {
+            NativeDownloadManager.getInstance(context).stopServiceIfIdle();
+        } catch (Exception e) {
+            Log.w(TAG, "stopServiceIfIdle after postprocess failed", e);
+        }
+    }
+
+    /** 外部（MediaToolPlugin）刷新"转封装中 x%"；服务未运行时静默忽略 */
+    public static void updatePostprocessNotification(int percent) {
+        DownloadService service = instanceRef.get();
+        if (service != null) {
+            service.notifyPostprocess(percent);
+        }
     }
 }
