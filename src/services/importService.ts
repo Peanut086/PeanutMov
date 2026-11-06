@@ -16,10 +16,34 @@
  * 不变量：`success + skipped + failed + 未勾选的合法条目 = preview.total`。
  * 即"预览共 N 个源 / 可导入 M 个"与提交结果可对账（M = success + 重复但被覆盖/保留的条目）。
  * `skipped` 不包含"合法但用户未勾选"的条目——那是用户主动排除，不是跳过。
+ *
+ * EXT-08（导入诊断）在此之上新增两个入口，均不改既有 `previewFromUrl / commit` 语义：
+ * - `prefetchImport`：拉取解析 + jar 可达性预取 + 下载耗时估算（只读，不写库）；
+ * - `importWithDiagnostic`：带诊断的导入（复用预取结果 → 只写勾选条目 → 失败分类 → 报告）。
  */
 import { withTx } from '@/db/index';
 import { sourceRepo, toStorableSource } from '@/db/repositories/sourceRepo';
 import { appEvents } from '@/services/events';
+import {
+  bucketFailures,
+  buildFailureItems,
+  buildFailureReport,
+  collectJarTargets,
+  diagnoseJarTargets,
+  estimateJarDownload,
+  IMPORT_DIAGNOSTIC_STAGES,
+  jarUrlOfEntry,
+  probeWarnings,
+  summarizeAliveSources,
+  toJarProbeSummaries,
+  type AliveSourceStats,
+  type ImportDiagnosticProgress,
+  type ImportDiagnosticStage,
+  type ImportFailureItem,
+  type ImportFailureReport,
+  type JarProbeSummary,
+  type JarTimeEstimate,
+} from '@/services/ImportDiagnosticService';
 import { probeJarUrls } from '@/services/jarProbe';
 import { subscriptionParser } from '@/services/subscriptionParser';
 import { liveService } from '@/services/liveService';
@@ -61,6 +85,92 @@ export interface ImportService {
   previewFromFile(file: File): Promise<ImportPreview>;
   commit(preview: ImportPreview, options: ImportCommitOptions): Promise<ImportResult>;
   refreshSubscription: typeof refreshSubscriptionImpl;
+  /** EXT-08：只读预取（解析 + jar 探测 + 耗时估算），不写库 */
+  prefetchImport(url: string, options?: ImportDiagnosticOptions): Promise<ImportDiagnosticPrefetch>;
+  /** EXT-08：带诊断的导入（可复用预取结果；支持取消） */
+  importWithDiagnostic(
+    url: string,
+    options?: ImportDiagnosticOptions,
+  ): Promise<ImportDiagnosticResult>;
+}
+
+/* ---------- EXT-08：导入诊断 ---------- */
+
+export interface ImportDiagnosticOptions {
+  signal?: AbortSignal;
+  /** 只导入命中的 key；不传 = 预览中「有效且默认勾选」的条目 */
+  selectedKeys?: string[];
+  /** 同名策略，默认 `skip`（与导入页一致） */
+  onDuplicate?: ImportCommitOptions['onDuplicate'];
+  /** 过程进度（阶段 + n/total + 解析后的预览） */
+  onProgress?: (progress: ImportDiagnosticProgress) => void;
+  /** 已预取的预览（含 jar 判定与勾选状态）：传入则跳过拉取与探测，避免二次网络开销 */
+  preview?: ImportPreview;
+  /** 与 `preview` 配套的 jar 探测结果；用于生成报告 */
+  probes?: JarProbeSummary[];
+  /** 导入后按「连续失败次数」自动禁用（默认 true，走 FR-51 同一口径） */
+  autoDisable?: boolean;
+  /** 是否探测 jar（默认 true） */
+  jarProbe?: boolean;
+}
+
+export interface ImportDiagnosticPrefetch {
+  subscriptionUrl: string;
+  /** 已按 jar 判定回写 `selected / warning` 的预览 */
+  preview: ImportPreview;
+  probes: JarProbeSummary[];
+  /** 可达 jar 的下载耗时估算；没有可达 jar 为 null */
+  estimate: JarTimeEstimate | null;
+  /** 死 jar / 未决 jar 的告警（导入前提前提示） */
+  warnings: string[];
+  startedAt: number;
+  finishedAt: number;
+}
+
+export type ImportDiagnosticStatus = 'done' | 'canceled';
+
+export interface ImportDiagnosticResult {
+  status: ImportDiagnosticStatus;
+  subscriptionUrl: string;
+  preview: ImportPreview | null;
+  probes: JarProbeSummary[];
+  estimate: JarTimeEstimate | null;
+  /** 取消时为 null（未写库） */
+  import: ImportResult | null;
+  failures: ImportFailureItem[];
+  /** 失败报告（可随时导出；取消时也产出，便于留证） */
+  report: ImportFailureReport;
+  alive: AliveSourceStats;
+  /** 本次导入后因连续失败被自动禁用的源数量 */
+  autoDisabled: number;
+  warnings: string[];
+  startedAt: number;
+  finishedAt: number;
+  durationMs: number;
+  /** 取消时未处理的条目数（进度文案用） */
+  pending: number;
+}
+
+const STAGE_LABELS = new Map<ImportDiagnosticStage, string>(
+  IMPORT_DIAGNOSTIC_STAGES.map((meta) => [meta.stage, meta.label]),
+);
+
+function reportProgress(
+  options: ImportDiagnosticOptions,
+  stage: ImportDiagnosticStage,
+  done: number,
+  total: number,
+  extra: { preview?: ImportPreview | null; jarUrl?: string | null } = {},
+): void {
+  if (!options.onProgress) return;
+  options.onProgress({
+    stage,
+    label: STAGE_LABELS.get(stage) ?? '',
+    done,
+    total,
+    preview: extra.preview ?? null,
+    jarUrl: extra.jarUrl ?? null,
+  });
 }
 
 export interface ImportRecord {
@@ -121,14 +231,38 @@ async function previewFromRaw(
 
 /* ---------- 爬虫 jar 预检（CHG-10；探测逻辑抽取至 jarProbe 供评测复用） ---------- */
 
-/** 提取爬虫条目的 jar 地址；非爬虫 jar 条目返回 null */
-function spiderJarUrlOf(entry: ImportPreviewEntry): string | null {
-  if (entry.type !== 'spider' || !entry.valid || !entry.normalized) return null;
-  const ext = entry.normalized.ext as { kind?: unknown; jarUrl?: unknown } | null;
-  if (!ext || ext.kind !== 'jar' || typeof ext.jarUrl !== 'string' || ext.jarUrl.length === 0) {
-    return null;
-  }
-  return ext.jarUrl;
+/**
+ * 把 jar 探测结论回写到预览：判死的条目取消默认勾选并追加警示。
+ * 预览（CHG-10）与诊断预取（EXT-08）共用，保证两处「选不选」口径一致。
+ * 幂等：已追加过同类警示的条目不再重复拼接（预取结果回传给导入时会再跑一次）。
+ * 无判死条目时原样返回，避免无意义的对象重建。
+ */
+function applyJarSummaries(preview: ImportPreview, probes: readonly JarProbeSummary[]): ImportPreview {
+  if (probes.length === 0) return preview;
+  const byUrl = new Map(probes.map((probe) => [probe.jarUrl, probe]));
+  let changed = false;
+  const entries = preview.entries.map((entry) => {
+    const jarUrl = jarUrlOfEntry(entry);
+    if (jarUrl === null) return entry;
+    const probe = byUrl.get(jarUrl);
+    if (!probe || probe.verdict !== 'dead') return entry;
+    if ((entry.warning ?? '').includes('jar 不可达（')) {
+      // 已经标记过（同一份预览被重复诊断）：只兜底勾选状态，不重复拼文案
+      if (!entry.selected) return entry;
+      changed = true;
+      return { ...entry, selected: false };
+    }
+    changed = true;
+    return {
+      ...entry,
+      selected: false,
+      // 文案被 `refreshSubscriptionImpl` 按「jar 不可达」聚合统计，改动需同步
+      warning: [entry.warning, `jar 不可达（${probe.detail ?? '请求失败'}），导入后无法浏览`]
+        .filter(Boolean)
+        .join('；'),
+    };
+  });
+  return changed ? { ...preview, entries } : preview;
 }
 
 /**
@@ -136,28 +270,10 @@ function spiderJarUrlOf(entry: ImportPreviewEntry): string | null {
  * 实测 4k.json 类订阅大半 jar 已 403 / 域名失效，预览时可见，导入后不再反复失败。
  */
 async function precheckSpiderJars(preview: ImportPreview, signal?: AbortSignal): Promise<ImportPreview> {
-  const targets = preview.entries.filter((entry) => spiderJarUrlOf(entry) !== null);
+  const targets = collectJarTargets(preview);
   if (targets.length === 0) return preview;
-
-  const verdicts = await probeJarUrls(
-    targets.map((entry) => spiderJarUrlOf(entry) as string),
-    signal,
-  );
-
-  const entries = preview.entries.map((entry) => {
-    const jarUrl = spiderJarUrlOf(entry);
-    if (!jarUrl) return entry;
-    const result = verdicts.get(jarUrl);
-    if (!result || result.verdict !== 'dead') return entry;
-    return {
-      ...entry,
-      selected: false,
-      warning: [entry.warning, `jar 不可达（${result.detail ?? '请求失败'}），导入后无法浏览`]
-        .filter(Boolean)
-        .join('；'),
-    };
-  });
-  return { ...preview, entries };
+  const results = await probeJarUrls(targets, signal);
+  return applyJarSummaries(preview, toJarProbeSummaries(results));
 }
 
 /* ---------- v1.7/CHG-18：URL 归一化变体 + 落地页嗅探拉取 ---------- */
@@ -355,6 +471,9 @@ export const importService: ImportService = {
   },
 
   refreshSubscription: refreshSubscriptionImpl,
+
+  prefetchImport: prefetchImportImpl,
+  importWithDiagnostic: importWithDiagnosticImpl,
 
   /**
    * 提交导入（单事务）。
@@ -653,4 +772,252 @@ async function refreshSubscriptionImpl(
   }
 
   return { updated: result.success, newCount, jarDead, livesSynced };
+}
+
+/* ---------- EXT-08：导入诊断实现 ---------- */
+
+/** 默认导入集合：预览里「有效 && 已归一化 && 默认勾选」的条目（判死 jar 已被取消勾选） */
+function defaultSelectedKeys(preview: ImportPreview): string[] {
+  return preview.entries
+    .filter((entry) => entry.valid && entry.normalized !== null && entry.selected)
+    .map((entry) => entry.key);
+}
+
+interface DiagnosticSnapshot {
+  subscriptionUrl: string;
+  preview: ImportPreview | null;
+  probes: JarProbeSummary[];
+  estimate: JarTimeEstimate | null;
+  warnings: string[];
+  startedAt: number;
+}
+
+/**
+ * 取消分支的统一结果：不写库，但仍产出报告与存活统计（留证）。
+ * `pending` = 尚未处理的条目数，供视图显示「已取消（剩余 n 个未处理）」。
+ */
+async function canceledDiagnosticResult(
+  snapshot: DiagnosticSnapshot,
+  pending: number,
+): Promise<ImportDiagnosticResult> {
+  const finishedAt = Date.now();
+  const sources = await sourceRepo.list().catch(() => [] as Source[]);
+  const alive = summarizeAliveSources(sources);
+  const failures = buildFailureItems({
+    preview: snapshot.preview,
+    probes: snapshot.probes,
+    importResult: null,
+    subscriptionId: snapshot.preview?.sourceUrl ?? null,
+  });
+  const report = buildFailureReport({
+    subscriptionUrl: snapshot.subscriptionUrl,
+    preview: snapshot.preview,
+    probes: snapshot.probes,
+    failures,
+    buckets: bucketFailures(failures),
+    alive,
+    warnings: snapshot.warnings,
+    startedAt: snapshot.startedAt,
+    finishedAt,
+    now: finishedAt,
+  });
+  return {
+    status: 'canceled',
+    subscriptionUrl: snapshot.subscriptionUrl,
+    preview: snapshot.preview,
+    probes: snapshot.probes,
+    estimate: snapshot.estimate,
+    import: null,
+    failures,
+    report,
+    alive,
+    autoDisabled: 0,
+    warnings: snapshot.warnings,
+    startedAt: snapshot.startedAt,
+    finishedAt,
+    durationMs: Math.max(0, finishedAt - snapshot.startedAt),
+    pending,
+  };
+}
+
+/**
+ * 只读预取：解析订阅 → 探测 jar → 估算下载耗时。
+ *
+ * 与 `previewFromUrl` 的差异：解析阶段关闭内置 jar 预检（`jarPrecheck: false`），
+ * 由本函数用 `diagnoseJarTargets` 统一探测并回报进度，避免同一批 jar HEAD 两遍。
+ * 传入 `options.preview` 时直接复用（视图「预取 → 确认导入」两步走的第二段）。
+ */
+async function prefetchImportImpl(
+  url: string,
+  options: ImportDiagnosticOptions = {},
+): Promise<ImportDiagnosticPrefetch> {
+  const startedAt = Date.now();
+  const subscriptionUrl = url.trim();
+
+  if (options.preview) {
+    const probes = [...(options.probes ?? [])];
+    return {
+      subscriptionUrl,
+      preview: options.preview,
+      probes,
+      estimate: estimateJarDownload(probes),
+      warnings: probeWarnings(probes),
+      startedAt,
+      finishedAt: Date.now(),
+    };
+  }
+
+  reportProgress(options, 'parse', 0, 1, { preview: null });
+  const parsed = await importService.previewFromUrl(subscriptionUrl, options.signal, {
+    jarPrecheck: false,
+  });
+  reportProgress(options, 'parse', 1, 1, { preview: parsed });
+
+  const targets = options.jarProbe === false ? [] : collectJarTargets(parsed);
+  const probes =
+    targets.length === 0
+      ? []
+      : await diagnoseJarTargets(targets, {
+          signal: options.signal,
+          onProgress: ({ done, total, jarUrl }) =>
+            reportProgress(options, 'probe', done, total, { preview: parsed, jarUrl }),
+        });
+  reportProgress(options, 'probe', probes.length, targets.length, { preview: parsed });
+
+  return {
+    subscriptionUrl,
+    preview: applyJarSummaries(parsed, probes),
+    probes,
+    estimate: estimateJarDownload(probes),
+    warnings: probeWarnings(probes),
+    startedAt,
+    finishedAt: Date.now(),
+  };
+}
+
+/**
+ * 带诊断的导入（EXT-08 主流程）。
+ *
+ * 顺序：预取（解析 + jar 探测）→ 取消检查 → 写入勾选条目 → 连续失败自动禁用
+ * → 存活统计 + 失败分类 → 报告。
+ *
+ * 只写「有效 && 已归一化 && 默认勾选」的条目：判死 jar 的源不会被写入（FR「只保留存活源」）。
+ * `selectedKeys` 显式传空数组表示「一个都不导入」，不会退化成 `commit` 的「全量导入」语义。
+ */
+async function importWithDiagnosticImpl(
+  url: string,
+  options: ImportDiagnosticOptions = {},
+): Promise<ImportDiagnosticResult> {
+  const startedAt = Date.now();
+  const subscriptionUrl = url.trim();
+  const duplicateStrategy = options.onDuplicate ?? 'skip';
+
+  let preview: ImportPreview | null = options.preview ?? null;
+  let probes: JarProbeSummary[] = [...(options.probes ?? [])];
+  let estimate: JarTimeEstimate | null = estimateJarDownload(probes);
+  let warnings: string[] = probeWarnings(probes);
+
+  if (preview === null) {
+    const prefetch = await prefetchImportImpl(subscriptionUrl, options);
+    preview = prefetch.preview;
+    probes = prefetch.probes;
+  } else {
+    // 调用方自带预览：缺探测结果时补一次，否则「jar 不可达」无法分类
+    if (probes.length === 0 && options.jarProbe !== false) {
+      const targets = collectJarTargets(preview);
+      if (targets.length > 0) {
+        probes = await diagnoseJarTargets(targets, {
+          signal: options.signal,
+          onProgress: ({ done, total, jarUrl }) =>
+            reportProgress(options, 'probe', done, total, { preview, jarUrl }),
+        });
+      }
+    }
+    // 无论探测结果来自预取还是调用方，都按结论重算勾选：判死 jar 的源绝不写入
+    preview = applyJarSummaries(preview, probes);
+  }
+  // 估算与告警始终按最终探测结果计算，避免调用方传入的旧值残留
+  estimate = estimateJarDownload(probes);
+  warnings = probeWarnings(probes);
+
+  const snapshot: DiagnosticSnapshot = {
+    subscriptionUrl,
+    preview,
+    probes,
+    estimate,
+    warnings,
+    startedAt,
+  };
+
+  const chosenKeys = options.selectedKeys ?? defaultSelectedKeys(preview);
+  if (options.signal?.aborted) {
+    return canceledDiagnosticResult(snapshot, chosenKeys.length);
+  }
+
+  reportProgress(options, 'import', 0, chosenKeys.length, { preview });
+  const importResult: ImportResult =
+    chosenKeys.length === 0
+      ? { success: 0, skipped: 0, failed: 0, sourceIds: [], issues: [] }
+      : await importService.commit(preview, {
+          selectedKeys: chosenKeys,
+          onDuplicate: duplicateStrategy,
+        });
+  reportProgress(options, 'import', importResult.success, chosenKeys.length, { preview });
+
+  // FR-51 同口径：连续 3 次体检 bad 的源自动禁用；动态 import 规避循环依赖
+  let autoDisabled = 0;
+  if (importResult.success > 0 && options.autoDisable !== false) {
+    try {
+      const { subscriptionLifecycleService } = await import('@/services/subscriptionLifecycleService');
+      autoDisabled = await subscriptionLifecycleService.applyHealthDegradation();
+    } catch (e) {
+      logger.warn('导入诊断：自动禁用连续失败源失败', subscriptionUrl, e);
+    }
+  }
+
+  const sources = await sourceRepo.list();
+  const alive = summarizeAliveSources(sources);
+  const failures = buildFailureItems({
+    preview,
+    probes,
+    importResult,
+    duplicateStrategy,
+    sources,
+    subscriptionId: preview.sourceUrl ?? null,
+  });
+  const buckets = bucketFailures(failures);
+  const finishedAt = Date.now();
+  const report = buildFailureReport({
+    subscriptionUrl,
+    preview,
+    importResult,
+    probes,
+    failures,
+    buckets,
+    alive,
+    warnings,
+    startedAt,
+    finishedAt,
+    now: finishedAt,
+  });
+
+  reportProgress(options, 'done', 1, 1, { preview });
+
+  return {
+    status: 'done',
+    subscriptionUrl,
+    preview,
+    probes,
+    estimate,
+    import: importResult,
+    failures,
+    report,
+    alive,
+    autoDisabled,
+    warnings,
+    startedAt,
+    finishedAt,
+    durationMs: Math.max(0, finishedAt - startedAt),
+    pending: 0,
+  };
 }

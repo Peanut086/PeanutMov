@@ -164,6 +164,13 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresLayout: false, depth: 1, title: '源健康中心' },
   },
   {
+    // EXT-08：导入诊断（jar 预取 + 失败分类 + 报告导出，二级页）
+    path: '/import-diagnostic',
+    name: 'import-diagnostic',
+    component: () => import('@/views/ImportDiagnosticView.vue'),
+    meta: { requiresLayout: false, depth: 1, title: '导入诊断' },
+  },
+  {
     path: '/settings/about',
     name: 'about',
     component: () => import('@/views/AboutView.vue'),
