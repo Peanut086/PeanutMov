@@ -92,11 +92,36 @@ describe('scoreRelevance（AC-121）', () => {
     expect(scoreRelevance(' 庆余年第二季 ', '庆余年')).toBeGreaterThan(scoreRelevance('庆', '庆余年'));
     expect(scoreRelevance('庆余年', '庆余年')).toBe(4);
     expect(scoreRelevance('庆余年第二季', '庆余年')).toBeGreaterThan(0);
-    // 分词 AND：两个词都在标题里、但不是连续子串 → 2
-    expect(scoreRelevance('流浪地球之庆余年传', '庆余年 流浪')).toBe(2);
+    // 分词 AND：两个词都在标题里、但不是连续子串 → 1
+    expect(scoreRelevance('流浪地球之庆余年传', '庆余年 流浪')).toBe(1);
     expect(scoreRelevance('流浪地球', '庆余年 流浪')).toBe(0);
     expect(scoreRelevance('三体', '庆余年')).toBe(0);
     expect(scoreRelevance('三体', '')).toBe(0);
+  });
+
+  it('精确匹配 4 分、前缀匹配 3 分，二者不再同分（OPT-08）', () => {
+    expect(scoreRelevance('庆余年', '庆余年')).toBe(4);
+    expect(scoreRelevance('庆余年第二季', '庆余年')).toBe(3);
+    expect(scoreRelevance('庆余年', '庆余年')).toBeGreaterThan(scoreRelevance('庆余年第二季', '庆余年'));
+  });
+
+  it('包含匹配 2 分：关键词在标题中段（非前缀）', () => {
+    expect(scoreRelevance('新庆余年', '庆余年')).toBe(2);
+    expect(scoreRelevance('新庆余年', '庆余年')).toBeLessThan(scoreRelevance('庆余年第二季', '庆余年'));
+    expect(scoreRelevance('新庆余年', '庆余年')).toBeGreaterThan(scoreRelevance('流浪地球之庆余年传', '庆余年 流浪'));
+  });
+
+  it('四档严格递减 4 > 3 > 2 > 1 > 0（OPT-08 边界）', () => {
+    const exact = scoreRelevance('庆余年', '庆余年');
+    const prefix = scoreRelevance('庆余年第二季', '庆余年');
+    const contains = scoreRelevance('新庆余年', '庆余年');
+    const tokens = scoreRelevance('流浪地球之庆余年传', '庆余年 流浪');
+    const none = scoreRelevance('三体', '庆余年');
+    expect([exact, prefix, contains, tokens, none]).toEqual([4, 3, 2, 1, 0]);
+    expect(exact).toBeGreaterThan(prefix);
+    expect(prefix).toBeGreaterThan(contains);
+    expect(contains).toBeGreaterThan(tokens);
+    expect(tokens).toBeGreaterThan(none);
   });
 });
 
@@ -110,6 +135,20 @@ describe('sortByRelevance', () => {
     const sorted = sortByRelevance(items, '庆余年');
     expect(sorted[0]!.title).toBe('庆余年');
     expect(sorted[1]!.title).toBe('庆余年第二季');
+  });
+
+  it('四档排序：精确 → 前缀 → 包含 → 分词 → 无关（OPT-08 排序回归）', () => {
+    const items = [
+      makeItem({ sourceId: 'n', title: '三体' }),
+      makeItem({ sourceId: 't', title: '流浪的地球' }),
+      makeItem({ sourceId: 'c', title: '新流浪地球' }),
+      makeItem({ sourceId: 'p', title: '流浪地球2' }),
+      makeItem({ sourceId: 'e', title: '流浪地球' }),
+    ];
+    // 关键词「流浪 地球」归一化后为「流浪地球」：精确 4 / 前缀 3 / 中段包含 2 / 分词 1 / 无关 0
+    const sorted = sortByRelevance(items, '流浪 地球');
+    expect(sorted.map((i) => i.sourceId)).toEqual(['e', 'p', 'c', 't', 'n']);
+    expect(sorted.map((i) => scoreRelevance(i.title, '流浪 地球'))).toEqual([4, 3, 2, 1, 0]);
   });
 });
 

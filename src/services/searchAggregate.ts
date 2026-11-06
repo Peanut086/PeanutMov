@@ -7,7 +7,7 @@
  * 本模块把结果按「归一化片名 + 年份」归并成组：
  * - 归一化复用豆瓣借播的既有口径（`stripTitleNoise`：去季/部/清晰度/年份后缀、全半角、繁简不区分）；
  * - 组内按 源健康 tier → 延迟 → sort 排序（与 `pickPlayCandidates` 同一口径）；
- * - 相关度排序：包含 > 前缀 > 分词包含 > 其它。
+ * - 相关度排序：精确 > 前缀 > 包含 > 分词包含 > 其它（分值严格递减）。
  */
 import type { MediaItem, SearchResultGroup, SourceHealth } from '@/types';
 import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
@@ -99,18 +99,20 @@ export function groupSearchResults(
 }
 
 /**
- * 相关度打分（v1.7/AC-121）：包含(4) > 前缀(3) > 分词包含(2) > 其它(0)。
+ * 相关度打分（v1.9/AC-121）：精确(4) > 前缀(3) > 包含(2) > 分词包含(1) > 无关(0)。
+ * 四档严格递减：精确匹配必须压过前缀命中（旧实现两者同为 4，违反 AC-121）。
  * 关键词空格分词 AND 命中才给分词分；空关键词返回 0。
  */
 export function scoreRelevance(title: string, keyword: string): number {
   const t = normalizeTitleForMatch(title);
   const k = normalizeTitleForMatch(keyword);
   if (t.length === 0 || k.length === 0) return 0;
-  if (t === k) return 4;
-  if (t.includes(k)) return t.startsWith(k) ? 4 : 3;
+  if (t === k) return 4; // 精确
+  if (t.startsWith(k)) return 3; // 前缀（含关键词但更长的标题）
+  if (t.includes(k)) return 2; // 包含（关键词落在标题中段）
   // 分词：空格分隔，全部命中才计分
   const words = keyword.trim().split(/\s+/).map((w) => normalizeTitleForMatch(w)).filter((w) => w.length > 0);
-  if (words.length > 1 && words.every((w) => t.includes(w))) return 2;
+  if (words.length > 1 && words.every((w) => t.includes(w))) return 1;
   return 0;
 }
 
