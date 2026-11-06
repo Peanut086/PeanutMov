@@ -10,6 +10,12 @@
  * 静默回退第一集（选第 5 集播第 1 集）。现在走 `EpisodeMappingService`：
  * 命中不了集数就报错，**不降级**。
  *
+ * EXT-03：集数映射升级为「跨源统一剧集」。
+ * - `getDetail()`：剧集/综艺条目把多源聚合到的集数并进详情（电影仍是一条「正片」），
+ *   用户能在豆瓣详情里看到别的源有多少集；
+ * - `resolvePlayUrl()`：先问 `unifiedEpisodeService` 要「第 N 集」的降级链，
+ *   聚合不到才回退 FIX-05 的逐候选映射——两条路径都不降级到第一集。
+ *
  * 参考实现：TVBox drpy 规则 `douban.js`（聚玩盒子4K 的 ext）。
  */
 import { AppError } from '@/shared/errors';
@@ -37,9 +43,14 @@ import {
   parseDoubanEpisodeId,
   type EpisodeMappingMiss,
 } from '@/sources/mapping/EpisodeMappingService';
+import {
+  unifiedEpisodeService,
+  type UnifiedEpisodeAggregate,
+} from '@/services/UnifiedEpisodeService';
 import type {
   BrowseParams,
   Category,
+  Episode,
   GetDetailParams,
   MediaDetail,
   MediaItem,
@@ -52,6 +63,14 @@ import type {
   Source,
   SourceType,
 } from '@/types';
+
+/** 一次播放尝试：把「哪条线路的哪一集」交给目标源适配器解析 */
+interface PlayAttempt {
+  source: Source;
+  item: MediaItem;
+  lineId: string;
+  episodeId: string;
+}
 
 /** 跨源播放解析器：由装配方注入，返回按质量排序的可播候选（首个优先，失败顺延） */
 export type DoubanPlayResolver = (params: {
@@ -207,7 +226,10 @@ export class DoubanAdapter extends BaseAdapter {
         throw e;
       }
     }
-    return this.toDetail(source, detail);
+    const local = this.toDetail(source, detail);
+    // 电影只有一条「正片」，聚合没有意义，还会让详情页平白多一次跨源搜索
+    if (detail.item.type === 'movie') return local;
+    return this.withUnifiedEpisodes(local, params.signal);
   }
 
   async resolvePlayUrl(params: ResolvePlayParams): Promise<PlaybackSource> {
@@ -240,33 +262,56 @@ export class DoubanAdapter extends BaseAdapter {
       throw new AppError('E_NO_PLAY_URL', '已启用的源里没有找到这部影片的可播放地址');
     }
 
-    // 把「豆瓣第 N 集」映射成「目标源的线路 id + 剧集 id」；映射不中不降级（FIX-05）。
-    const mapping = await doubanEpisodeMapping.resolve({
+    const year = item?.year ?? null;
+
+    // EXT-03：先问统一剧集服务要「第 N 集」的跨源降级链（多源聚合 + 健康档位排序）。
+    // 它比 FIX-05 的逐候选映射多出来的能力是：同一集在多个源都有时能按源质量排序，
+    // 且聚合结果有 5 分钟缓存，连续切集不会重复打源站。
+    const unified = await this.findUnifiedCandidates({
       title,
-      year: item?.year ?? null,
+      year,
       episodeIndex,
+      mediaId: params.mediaId,
       candidates,
       signal: params.signal,
     });
 
+    // 聚合未命中（源里搜不到/没有剧集清单）时沿用 FIX-05 的逐候选映射：
+    // 口径同样走 `TitleNormalizer` + `selectEpisodeInDetail`，不降级到第一集。
+    let attempts: PlayAttempt[] = unified ?? [];
+    let missDetail = '';
+    if (attempts.length === 0) {
+      const mapping = await doubanEpisodeMapping.resolve({
+        title,
+        year,
+        episodeIndex,
+        candidates,
+        signal: params.signal,
+      });
+      attempts = mapping.targets.map((target) => ({
+        source: target.source,
+        item: target.item,
+        lineId: target.lineId,
+        episodeId: target.episodeId,
+      }));
+      missDetail = describeMisses(mapping.misses);
+    }
+
     // 只有「第 1 集」才允许沿用旧的透传方式：单集电影/历史 id 场景下目标源可能
     // 连线路清单都拿不到，透传 episodeId 让目标源按自己的兜底逻辑取首集——
     // 首集就是用户点的集，不存在降级问题。
-    const attempts =
-      mapping.targets.length > 0
-        ? mapping.targets
-        : episodeIndex === 1
-          ? candidates.map((candidate) => ({
-              source: candidate.source,
-              item: candidate.item,
-              lineId: params.lineId,
-              episodeId: params.episodeId,
-            }))
-          : [];
+    if (attempts.length === 0 && episodeIndex === 1) {
+      attempts = candidates.map((candidate) => ({
+        source: candidate.source,
+        item: candidate.item,
+        lineId: params.lineId,
+        episodeId: params.episodeId,
+      }));
+    }
 
     if (attempts.length === 0) {
       throw new AppError('E_NO_PLAY_URL', `已启用的源里没有第 ${episodeIndex} 集`, {
-        detail: describeMisses(mapping.misses),
+        detail: missDetail,
       });
     }
 
@@ -294,6 +339,120 @@ export class DoubanAdapter extends BaseAdapter {
   }
 
   /* ---------------- 内部 ---------------- */
+
+  /**
+   * 跨源查找「第 N 集」的可播候选（EXT-03）。
+   *
+   * 已由 `resolvePlayFrom` 选出候选源时直接传 `candidates`：统一服务只取这些候选的详情，
+   * 不再自己搜一遍（候选本身就是片名/年份筛选的结论）。详情走 `doubanRuntime.adapterGetter`，
+   * 与 FIX-05 的映射服务共用同一条取数通道，测试替身也只需实现 `getDetail`。
+   *
+   * 任何异常都返回 null：调用方会回退到 FIX-05 映射，播放链不该因为聚合失败而中断。
+   */
+  private async findUnifiedCandidates(input: {
+    title: string;
+    year: number | null;
+    episodeIndex: number;
+    mediaId: string;
+    candidates: readonly PlayCandidate[];
+    signal?: AbortSignal;
+  }): Promise<PlayAttempt[] | null> {
+    try {
+      const hit = await unifiedEpisodeService.findBestEpisode(input.title, input.episodeIndex, {
+        mediaId: input.mediaId,
+        year: input.year,
+        candidates: input.candidates,
+        signal: input.signal,
+        detailOf: async (params) => {
+          const getter = doubanRuntime.adapterGetter;
+          if (getter === null) throw new AppError('E_NOT_IMPLEMENTED', '未配置可播放的来源');
+          const adapter = getter(params.source);
+          if (typeof adapter.getDetail !== 'function') {
+            throw new AppError('E_NOT_IMPLEMENTED', `「${params.source.name}」不支持剧集查询`);
+          }
+          return adapter.getDetail({
+            source: params.source,
+            sourceItemId: params.sourceItemId,
+            signal: params.signal,
+          });
+        },
+      });
+      if (hit === null) return null;
+      return hit.candidates.map((ref) => ({
+        source: ref.source,
+        item: ref.item,
+        lineId: ref.lineId,
+        episodeId: ref.episodeId,
+      }));
+    } catch (e) {
+      if (input.signal?.aborted) throw e;
+      logger.debug('统一剧集查找失败，回退逐候选映射', {
+        title: input.title,
+        episodeIndex: input.episodeIndex,
+        error: String(e),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * 详情页的统一剧集列表（EXT-03）：把多源聚合到的集数并进豆瓣详情。
+   *
+   * 聚合不到两集时保持豆瓣原生的「正片」占位——单集没有「多源」可言，
+   * 多一条同名线路只会让用户多点一次。
+   */
+  private async withUnifiedEpisodes(local: MediaDetail, signal?: AbortSignal): Promise<MediaDetail> {
+    try {
+      // 详情页对首帧敏感：最多问 4 个源（播放链路走 `resolvePlayUrl` 时会命中同一份 5 分钟缓存）
+      const aggregate = await unifiedEpisodeService.getUnifiedEpisodes(local.item.id, local.item.title, {
+        year: local.item.year,
+        signal,
+        maxSources: 4,
+      });
+      if (aggregate.episodes.length < 2) return local;
+      return this.toUnifiedDetail(local, aggregate);
+    } catch (e) {
+      if (signal?.aborted) throw e;
+      logger.debug('豆瓣详情聚合失败，回退单集占位', {
+        title: local.item.title,
+        error: String(e),
+      });
+      return local;
+    }
+  }
+
+  /**
+   * 聚合结果 → 豆瓣详情的线路/剧集。
+   *
+   * 剧集 id 必须仍是 `douban_{movieId}_{n}`：`resolvePlayUrl` 从 id 里解析集号，
+   * 且 `libraryService.refreshDetail` 会把这份清单落库（历史/收藏沿用同一套 id）。
+   */
+  private toUnifiedDetail(local: MediaDetail, aggregate: UnifiedEpisodeAggregate): MediaDetail {
+    const item: MediaItem = { ...local.item, episodeCount: aggregate.episodes.length };
+    const lineId = `douban-${item.id}`;
+    const line: PlayLine = {
+      id: lineId,
+      mediaId: item.id,
+      sourceId: item.sourceId,
+      name: '多源线路',
+      quality: null,
+      format: 'mp4',
+      index: 0,
+    };
+    const updatedAt = Date.now();
+    const episodes: Episode[] = aggregate.episodes.map((entry) => ({
+      id: buildDoubanEpisodeId(item.sourceItemId, entry.number),
+      mediaId: item.id,
+      sourceId: item.sourceId,
+      lineId,
+      number: entry.number,
+      title: entry.title,
+      durationSec: null,
+      subtitles: [],
+      updatedAt,
+    }));
+    return { item, lines: [line], episodes };
+  }
 
   private toDetail(source: Source, detail: DoubanDetail): MediaDetail {
     const base = this.toItem(source, detail.item);

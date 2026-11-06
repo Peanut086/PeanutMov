@@ -26,6 +26,9 @@ import { sniffPlayUrl } from '@/native/snifferPlugin';
 import { isNative } from '@/shared/platform';
 import { TIMEOUT_SEARCH_SITE_MS } from '@/shared/constants';
 import { resolveViaMultiple } from '@/services/resolverService';
+import { selectEpisodeInDetail } from '@/sources/mapping/EpisodeMappingService';
+import { titleMatches, titleMatchScore } from '@/sources/mapping/TitleNormalizer';
+import type { EpisodeLookupMatch } from '@/services/UnifiedEpisodeService';
 import type {
   BrowseParams,
   Category,
@@ -43,6 +46,14 @@ import type {
 function extOf(source: Source): SiteExt {
   return (source.ext ?? {}) as SiteExt;
 }
+
+/**
+ * 按「片名 + 集数序号」查到的剧集（EXT-03 跨源统一映射用）。
+ *
+ * 与 `SpiderAdapter` 的 `SpiderEpisodeMatch` 同构（都指向 FIX-05 的 `EpisodeMappingTarget`），
+ * 统一剧集服务可以不加区分地消费两个适配器的直查结果。
+ */
+export type SiteEpisodeMatch = EpisodeLookupMatch;
 
 /** 非订阅 JSON 的统一用户文案（17.7.2，四条 format 类共用；与管道同一常量） */
 const UNSUPPORTED_FORMAT_MESSAGE = UNSUPPORTED_FORMAT_MESSAGE_PIPELINE;
@@ -131,6 +142,63 @@ export class SiteAdapter extends BaseAdapter {
     const item = this.toItem(source, vod);
     const { lines, episodes } = this.buildLinesWithRaw(source, vod, mediaIdOf(source.id, vodIdOf(vod)));
     return { item, lines, episodes };
+  }
+
+  /**
+   * 按「片名 + 集数序号」找剧集（EXT-03）。
+   *
+   * 发现源（豆瓣）只知道片名与「第几集」，不知道本站的条目 id / 剧集 id：
+   * 这里先用 `search` 找片、按片名相似度排序（季号/续集号冲突直接排除），
+   * 再逐个取详情，用 `selectEpisodeInDetail` 按集号定位。
+   *
+   * 返回的命中自带 `source`（源标识）与可直接交给 `resolvePlayUrl` 的 `lineId` / `episodeId`。
+   * 找不到返回 null——**不返回第一集兜底**。
+   */
+  async findEpisodeByTitle(
+    title: string,
+    episodeIndex: number,
+    ctx: { source: Source; year?: number | null; signal?: AbortSignal; limit?: number },
+  ): Promise<SiteEpisodeMatch | null> {
+    const { source, year = null, signal, limit = 8 } = ctx;
+    this.assertEnabled(source);
+    const keyword = title.trim();
+    const index = Math.trunc(episodeIndex);
+    if (keyword.length === 0 || !Number.isFinite(index) || index < 1) return null;
+
+    const found = await this.search({ source, keyword, page: 1, pageSize: limit, signal });
+    const ranked = found
+      .filter((item) => titleMatches(keyword, item.title))
+      .filter((item) => year === null || item.year === null || item.year === year)
+      .map((item) => ({ item, score: titleMatchScore(keyword, item.title) }))
+      .sort((a, b) => b.score - a.score);
+    if (ranked.length === 0) return null;
+
+    let lastError: unknown = null;
+    let failures = 0;
+    for (const { item } of ranked) {
+      signal?.throwIfAborted();
+      try {
+        const detail = await this.getDetail({ source, sourceItemId: item.sourceItemId, signal });
+        const selection = selectEpisodeInDetail(detail, index);
+        if (selection === null) continue;
+        return {
+          source,
+          item: detail.item,
+          line: selection.line,
+          episode: selection.episode,
+          lineId: selection.line.id,
+          episodeId: selection.episode.id,
+          episodeNumber: selection.episode.number,
+          episodeTitle: selection.episode.title,
+        };
+      } catch (e) {
+        lastError = e;
+        failures += 1;
+      }
+    }
+    // 全部候选的详情都取不到：把真实故障抛出去（区别于「没有这一集」）
+    if (failures > 0 && failures === ranked.length) throw lastError;
+    return null;
   }
 
   async resolvePlayUrl(params: ResolvePlayParams): Promise<PlaybackSource> {

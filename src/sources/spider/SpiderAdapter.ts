@@ -46,10 +46,10 @@ import { selectEpisodeInDetail } from '@/sources/mapping/EpisodeMappingService';
 import { titleMatches, titleMatchScore } from '@/sources/mapping/TitleNormalizer';
 import { isPlayPageUrl, resolvePlayPage } from '@/sources/site/playPageResolver';
 import { getNetdiskConfig, formatConfigForSpider } from '@/services/netdiskConfig';
+import type { EpisodeLookupMatch } from '@/services/UnifiedEpisodeService';
 import type {
   BrowseParams,
   Category,
-  Episode,
   GetDetailParams,
   MediaDetail,
   MediaItem,
@@ -74,19 +74,14 @@ export interface SpiderSourceExt {
   searchable?: boolean;
 }
 
-/** 按「片名 + 集数序号」查到的剧集（FIX-05 跨源集数映射用） */
-export interface SpiderEpisodeMatch {
-  source: Source;
-  /** 命中的片子（目标源自己的条目，不是豆瓣的） */
-  item: MediaItem;
-  line: PlayLine;
-  episode: Episode;
-  lineId: string;
-  episodeId: string;
-  /** 集号（1 起） */
-  episodeNumber: number;
-  episodeTitle: string;
-}
+/**
+ * 按「片名 + 集数序号」查到的剧集（FIX-05 跨源集数映射 / EXT-03 统一剧集用）。
+ *
+ * 与 `SiteAdapter` 的 `SiteEpisodeMatch` 同构，统一指向 FIX-05 的 `EpisodeMappingTarget`
+ * （含 `source` 源标识与可直接交给 `resolvePlayUrl` 的 `lineId` / `episodeId`），
+ * 统一剧集服务可无差别消费两个适配器的直查结果。
+ */
+export type SpiderEpisodeMatch = EpisodeLookupMatch;
 
 function extOf(source: Source): SpiderSourceExt {
   const ext = (source.ext ?? {}) as Partial<SpiderSourceExt>;
