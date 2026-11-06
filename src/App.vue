@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onErrorCaptured, onMounted, ref, watch } from 'vue';
+import { computed, onErrorCaptured, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import AppTabBar from '@/components/layout/AppTabBar.vue';
@@ -7,8 +7,12 @@ import ToastHost from '@/components/common/ToastHost.vue';
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue';
 import { useTheme } from '@/composables/useTheme';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
+import { useToast } from '@/composables/useToast';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { setBackFallback } from '@/native/appLifecycle';
+import { reminderService } from '@/services/reminderService';
+import { logger } from '@/shared/logger';
+import type { Reminder } from '@/types';
 
 /**
  * 根组件：
@@ -53,7 +57,26 @@ const fatal = ref<Error | null>(null);
 
 const theme = useTheme();
 const settings = useSettingsStore();
+const toast = useToast();
 useOnlineStatus();
+
+/** REV-10：提醒自动对账的清理函数（卸载时调用，避免监听泄漏） */
+let stopReminderAutoReconcile: (() => void) | null = null;
+
+/** 到点提醒的页内提示（Web/前台降级路径） */
+function showReminderToasts(reminders: Reminder[]): void {
+  if (reminders.length === 0) return;
+  if (reminders.length === 1) {
+    const item = reminders[0]!;
+    toast.info(`${item.channelName} · ${item.programmeTitle} 即将开始`);
+    return;
+  }
+  const head = reminders
+    .slice(0, 2)
+    .map((item) => `${item.channelName} · ${item.programmeTitle}`)
+    .join('；');
+  toast.info(`${reminders.length} 个节目即将开始：${head}${reminders.length > 2 ? ' 等' : ''}`);
+}
 
 onMounted(async () => {
   /*
@@ -85,6 +108,22 @@ onMounted(async () => {
   } catch {
     /* 设置读取失败不阻塞启动；各页会单独展示错误态 */
   }
+
+  /*
+   * REV-10：提醒自动对账（启动即对账 + 回前台再对账 + 订阅原生通知）。
+   * 返回值必须保存并在卸载时调用，否则监听器会随 HMR/重建累积泄漏。
+   */
+  try {
+    stopReminderAutoReconcile = reminderService.startAutoReconcile(showReminderToasts);
+  } catch (error) {
+    stopReminderAutoReconcile = null;
+    logger.warn('提醒自动对账启动失败', error);
+  }
+});
+
+onUnmounted(() => {
+  stopReminderAutoReconcile?.();
+  stopReminderAutoReconcile = null;
 });
 
 watch(

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * EXT-06/FR-71：回看播放器
+ * EXT-06/FR-68：回看播放器
  *
  * - 复用 HlsEngine / VideoEngine（按 URL 头识别格式）与 Fullscreen / Orientation 控制器
  * - 直播播放器（LivePlayer）不支持进度；回看是"点播"语义，故独立组件，
@@ -288,7 +288,8 @@ onBeforeUnmount(() => {
 .replay-player {
   position: relative;
   width: 100%;
-  background-color: #000;
+  /* REV-35：播放画布底色统一走 token（与 player.css 的 --color-bg-sunken 同义） */
+  background-color: var(--color-bg-sunken);
   overflow: hidden;
 }
 
@@ -405,7 +406,8 @@ onBeforeUnmount(() => {
 .replay-player--fullscreen .replay-player__title,
 .replay-player--fullscreen .replay-player__time,
 .replay-player--fullscreen .replay-player__clock {
-  color: #fff;
+  /* REV-35：全屏控制条文字改走 token */
+  color: var(--color-text-primary);
 }
 
 .replay-player__title {
@@ -443,7 +445,8 @@ onBeforeUnmount(() => {
 .replay-player--fullscreen .replay-player__btn {
   background-color: rgba(255, 255, 255, 0.14);
   border-color: transparent;
-  color: #fff;
+  /* REV-35：全屏按钮文字改走 token */
+  color: var(--color-text-primary);
 }
 
 .replay-player__btn:disabled {

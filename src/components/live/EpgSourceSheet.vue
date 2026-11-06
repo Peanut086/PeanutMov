@@ -14,6 +14,7 @@ import type { EpgMatchMode, EpgProtocol, EpgSource, EpgSourceLimits } from '@/ty
 
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import { EPG_SOURCE_ENABLED_MAX, EPG_SOURCE_MAX } from '@/shared/constants';
 import { toErrorShape } from '@/shared/errors';
 import { epgSourceService } from '@/services/epgSourceService';
 
@@ -43,7 +44,14 @@ const loading = ref(false);
 const busy = ref(false);
 const errorText = ref<string | null>(null);
 const sources = ref<EpgSource[]>([]);
-const limits = ref<EpgSourceLimits>({ maxSources: 10, maxEnabled: 3 });
+/**
+ * REV-29：初值与 `src/shared/constants.ts` 同源，避免弹层未拿到服务端 limits 前
+ * 用一套（3）硬编码值、拿到后又跳成另一套（5）导致文案闪变 / 上限判断错位。
+ */
+const limits = ref<EpgSourceLimits>({
+  maxSources: EPG_SOURCE_MAX,
+  maxEnabled: EPG_SOURCE_ENABLED_MAX,
+});
 
 // 新增表单
 const formOpen = ref(false);
@@ -162,9 +170,11 @@ async function submitForm(): Promise<void> {
       protocol: formProtocol.value,
       matchMode: formMatchMode.value,
     });
-    probeText.value = `探测通过：${created.name}`;
     formOpen.value = false;
+    // REV-30：resetForm() 会清掉 probeText，必须先把表单收干净再写成功提示，
+    // 否则「探测通过」在同一次同步流程里被立刻清空，用户看不到任何反馈。
     resetForm();
+    probeText.value = `探测通过：${created.name}`;
     await load();
     emit('changed');
   } catch (e) {

@@ -2,8 +2,8 @@
 /**
  * 回看播放页（EXT-06 / FR-68，D-13）
  *
- * 路由：`/replay/:channelId/:programId`
- * - `channelId`：直播源 id（LiveView 导航时传 `record.id`）
+ * 路由：`/replay/:sourceId/:programId`
+ * - `sourceId`：直播源 id（LiveView / EpgView 导航时传 `record.id`；REV-31 由 `channelId` 更名）
  * - `programId`：节目唯一键（`${startAt}:${title}`，与提醒 / EPG 同口径）
  * - 频道与节目元信息优先按参数 + 查询串还原，再用 `epgService.programmesFor` 补全标题与时间
  * - 播放地址由 `replayService.resolve` 按声明式模板渲染（窗口校验失败会被拦在页内）
@@ -42,7 +42,7 @@ const endAt = ref(0);
 /** 回看窗口（天），用于页脚说明 */
 const windowDays = ref(1);
 
-const channelId = computed(() => String(route.params.channelId ?? ''));
+const sourceId = computed(() => String(route.params.sourceId ?? ''));
 const programId = computed(() => String(route.params.programId ?? ''));
 
 const timeLabel = computed(() => {
@@ -87,7 +87,7 @@ async function resolveTarget(): Promise<ResolvedTarget> {
   if (records.length === 0) throw new Error('还没有直播源，无法回看');
 
   const nameHint = queryText('ch');
-  let record = records.find((item) => item.id === channelId.value) ?? null;
+  let record = records.find((item) => item.id === sourceId.value) ?? null;
 
   // 拿不到源时按频道名反查（5min 内存缓存未命中则退回全量匹配）
   if (!record && nameHint) {
@@ -102,7 +102,7 @@ async function resolveTarget(): Promise<ResolvedTarget> {
   }
 
   const data = await liveService.channelsWithExtrasOf(record);
-  const wanted = nameHint || (channelId.value !== record.id ? channelId.value : '');
+  const wanted = nameHint || (sourceId.value !== record.id ? sourceId.value : '');
   const channel =
     data.channels.find((item) => item.name === wanted) ??
     data.channels.find((item) => keyOf(item) === wanted) ??

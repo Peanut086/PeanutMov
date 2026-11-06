@@ -5,6 +5,8 @@
  * - 分组上限 LIVE_GROUP_MAX（20）、组名 1~LIVE_GROUP_NAME_MAX（10）字符、禁止重名与保留名
  * - 当前频道可分配到某一个分组，或移出自定义分组（回到源分组）
  * - 分组数据按 liveSourceId 隔离（AC-165）
+ * - REV-22：分组可上移/下移（`reorderGroups` 整表覆盖），并可一键清理失效排序项
+ *   （`countOrphans` 统计 → `prune` 清理，计数为 0 时按钮禁用）
  * - 空态：尚无自定义分组 → 引导输入框（输入框始终可见）
  */
 import { computed, ref, watch } from 'vue';
@@ -24,6 +26,8 @@ const props = defineProps<{
   /** 当前频道 */
   channelKey: string;
   channelName: string;
+  /** REV-22：当前源「仍存在」的频道身份键（用于统计/清理失效排序项） */
+  channelKeys?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -37,6 +41,10 @@ const newName = ref('');
 /** 正在重命名的分组 id 与草稿名 */
 const renamingId = ref<string | null>(null);
 const renameDraft = ref('');
+/** REV-22：失效排序项数量（排序列表里已不存在的频道） */
+const orphanCount = ref(0);
+/** REV-22：清理结果提示 */
+const notice = ref<string | null>(null);
 
 const groups = computed(() => props.prefs?.groups ?? []);
 
@@ -59,11 +67,30 @@ watch(
   (open) => {
     if (open) {
       errorText.value = null;
+      notice.value = null;
       newName.value = '';
       renamingId.value = null;
     }
+    void refreshOrphans();
   },
+  { immediate: true },
 );
+
+/** REV-22：统计失效排序项（已不存在的频道留下的排序/归属项） */
+async function refreshOrphans(): Promise<void> {
+  if (!props.liveSourceId) {
+    orphanCount.value = 0;
+    return;
+  }
+  try {
+    orphanCount.value = await channelPrefsService.countOrphans(
+      props.liveSourceId,
+      props.channelKeys ?? [],
+    );
+  } catch {
+    orphanCount.value = 0;
+  }
+}
 
 async function run(task: () => Promise<unknown>): Promise<void> {
   if (busy.value) return;
@@ -72,11 +99,33 @@ async function run(task: () => Promise<unknown>): Promise<void> {
   try {
     await task();
     emit('changed');
+    await refreshOrphans();
   } catch (e) {
     errorText.value = toErrorShape(e).message;
   } finally {
     busy.value = false;
   }
+}
+
+/** REV-22：分组上移/下移（整表覆盖，越界即忽略） */
+function moveGroup(groupId: string, delta: -1 | 1): void {
+  const ids = groups.value.map((group) => group.id);
+  const from = ids.indexOf(groupId);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= ids.length) return;
+  const next = [...ids];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved!);
+  void run(() => channelPrefsService.reorderGroups(props.liveSourceId, next));
+}
+
+/** REV-22：清理失效排序项（计数为 0 时禁用） */
+function pruneOrphans(): void {
+  if (orphanCount.value === 0) return;
+  void run(async () => {
+    const result = await channelPrefsService.prune(props.liveSourceId, props.channelKeys ?? []);
+    notice.value = `已清理 ${result.removedOrders + result.removedAssignments} 项失效记录`;
+  });
 }
 
 function createGroup(): void {
@@ -187,6 +236,24 @@ function removeFromGroup(): void {
               <span class="truncate-1">{{ group.name }}</span>
               <span class="groups__count">{{ counts[group.id] ?? 0 }}</span>
             </button>
+            <button
+              class="groups__move"
+              type="button"
+              aria-label="分组上移"
+              :disabled="busy || groups[0]?.id === group.id"
+              @click="moveGroup(group.id, -1)"
+            >
+              ↑
+            </button>
+            <button
+              class="groups__move"
+              type="button"
+              aria-label="分组下移"
+              :disabled="busy || groups[groups.length - 1]?.id === group.id"
+              @click="moveGroup(group.id, 1)"
+            >
+              ↓
+            </button>
             <button class="btn btn--ghost btn--sm" type="button" :disabled="busy" @click="startRename(group.id, group.name)">
               重命名
             </button>
@@ -201,6 +268,16 @@ function removeFromGroup(): void {
           </template>
         </li>
       </ul>
+
+      <p v-if="notice" class="groups__notice" role="status">{{ notice }}</p>
+      <button
+        class="btn btn--secondary btn--md groups__prune"
+        type="button"
+        :disabled="busy || orphanCount === 0"
+        @click="pruneOrphans"
+      >
+        清理失效排序项（{{ orphanCount }}）
+      </button>
 
       <button
         v-if="currentGroupId"
@@ -318,6 +395,38 @@ function removeFromGroup(): void {
 
 .groups__danger {
   color: var(--color-danger);
+}
+
+/* REV-22：分组上下移 */
+.groups__move {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+  color: var(--color-text-secondary);
+  font: var(--text-caption);
+  cursor: pointer;
+  transition: background-color var(--duration-fast);
+}
+
+.groups__move:active:not(:disabled) {
+  background-color: var(--color-bg-pressed);
+}
+
+.groups__move:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.groups__notice {
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+}
+
+.groups__prune {
+  width: 100%;
 }
 
 .groups__leave {

@@ -8,7 +8,8 @@
  * 排序写入为「整表覆盖」，新增频道追加末尾、被删频道顺序项保留但不渲染（可一键清理）。
  */
 import { channelPrefsRepo } from '@/db/repositories/channelPrefsRepo';
-import { channelKeyOf, normalizeChannelName } from '@/shared/channelKey';
+import { normalizeChannelName } from '@/shared/channelKey';
+import { channelKeyFromLive } from '@/services/channelIdentity';
 import { CHANNEL_ORDER_MAX, LIVE_GROUP_MAX, LIVE_GROUP_NAME_MAX } from '@/shared/constants';
 import { AppError } from '@/shared/errors';
 import { newId } from '@/shared/id';
@@ -329,6 +330,10 @@ export const channelPrefsService = {
   /**
    * 分组视图：把频道按键分配到「全部 / 自定义分组 / 源分组」。
    * `sourceGroup` 为频道在 m3u 中的 `group-title`（无则「未分组」）。
+   *
+   * REV-13：入参在运行时**额外**允许携带 `tvgId`（LiveChannel + extras 合成后传入），
+   * 身份键统一走 `channelKeyFromLive`，与节目单页 / 提醒服务同口径；
+   * 未传 `tvgId` 时行为与旧版完全一致（`nm:` 前缀），既有调用方无需改动。
    */
   buildScopes(
     channels: Array<{ name: string; sourceGroup: string | null }>,
@@ -338,7 +343,7 @@ export const channelPrefsService = {
     const byGroup = new Map<string, string[]>();
     const bySource = new Map<string, string[]>();
     for (const channel of channels) {
-      const key = channelKeyOf({ name: channel.name });
+      const key = channelKeyFromLive(channel as { name: string; tvgId?: string | null });
       all.push(key);
       const groupId = prefs.assignments[key];
       if (groupId && prefs.groups.some((group) => group.id === groupId)) {

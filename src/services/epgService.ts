@@ -165,6 +165,52 @@ export function parseEpgResponse(text: string): EpgProgramme[] {
 /** 合并请求 in-flight 去重（AC-158：同一 key 并发调用只发一次网络请求） */
 const mergedInFlight = new Map<string, Promise<ChannelEpgResult>>();
 
+/**
+ * REV-17：失败源退避表（`sourceId → 可再次尝试的时间点`）。
+ * 单源拉取失败后 5 分钟内跳过该源，避免每次合并都等超时；成功即清除。
+ */
+const failedUntil = new Map<string, number>();
+const EPG_SOURCE_BACKOFF_MS = 5 * 60_000;
+
+/* ---------- REV-15：全局并发闸门（跨页面共享，上限 EPG_MERGE_CONCURRENCY） ---------- */
+
+let epgActiveRequests = 0;
+const epgSlotWaiters: Array<() => void> = [];
+
+/** 取一个并发槽位（满则排队）；释放时直接把槽位交接给下一个等待者 */
+async function acquireEpgSlot(): Promise<void> {
+  if (epgActiveRequests < EPG_MERGE_CONCURRENCY) {
+    epgActiveRequests += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => epgSlotWaiters.push(resolve));
+}
+
+function releaseEpgSlot(): void {
+  const next = epgSlotWaiters.shift();
+  if (next) {
+    // 槽位交接：active 计数不变，避免超发
+    next();
+    return;
+  }
+  epgActiveRequests = Math.max(0, epgActiveRequests - 1);
+}
+
+/** 在并发闸门内执行网络段 */
+async function withEpgSlot<T>(task: () => Promise<T>): Promise<T> {
+  await acquireEpgSlot();
+  try {
+    return await task();
+  } finally {
+    releaseEpgSlot();
+  }
+}
+
+/** 测试辅助：当前占用槽位数 / 排队数 */
+export function epgSlotStatsForTest(): { active: number; waiting: number } {
+  return { active: epgActiveRequests, waiting: epgSlotWaiters.length };
+}
+
 const DAY_SEC = 86_400;
 
 interface XmltvChannelEntry {
@@ -355,12 +401,15 @@ async function requestProgrammes(
   channel: EpgChannelRef,
   dateKey: string,
 ): Promise<{ programmes: EpgProgramme[]; level: EpgMatchLevel }> {
-  const text = await httpClient.request<string>(endpointUrlOf(source, channel, dateKey), {
-    responseType: 'text',
-    timeoutMs: EPG_FETCH_TIMEOUT_MS,
-    retries: 0,
-    headers: { Accept: 'application/json, text/xml, */*' },
-  });
+  // REV-15：网络段统一走全局闸门（多页面并发调用 programmesFor 时总并发仍 ≤ EPG_MERGE_CONCURRENCY）
+  const text = await withEpgSlot(() =>
+    httpClient.request<string>(endpointUrlOf(source, channel, dateKey), {
+      responseType: 'text',
+      timeoutMs: EPG_FETCH_TIMEOUT_MS,
+      retries: 0,
+      headers: { Accept: 'application/json, text/xml, */*' },
+    }),
+  );
   const trimmed = (text ?? '').trim();
   if (!trimmed) return { programmes: [], level: 3 };
 
@@ -394,12 +443,14 @@ async function requestProgrammes(
   return { programmes: enrichDiyp(items, dayStartOfKey(dateKey), source.id), level: 3 };
 }
 
-/** 单源读取：新鲜缓存 → 网络 → 过期缓存兜底（stale）；失败不写缓存 */
+/** 单源读取：新鲜缓存 → 网络 → 过期缓存兜底（stale，受 `allowStale` 控制）；失败不写缓存 */
 async function fetchFromSource(
   source: EpgSource,
   channel: EpgChannelRef,
   dateKey: string,
+  options?: { allowStale?: boolean },
 ): Promise<SourceFetchResult> {
+  const allowStale = options?.allowStale !== false;
   const cacheKey = epgCacheKeyOf(source.id, channelKeyOf(channel), dateKey);
   // 一次读出整条记录后自行判 TTL：若先用「会删过期」的读法，过期兜底（stale）就永远拿不到数据
   const cached = await cacheRepo.getEpgRecord(cacheKey, { allowExpired: true });
@@ -423,7 +474,8 @@ async function fetchFromSource(
     }
     return { programmes: fetched.programmes, level: fetched.level, stale: false };
   } catch (error) {
-    if (cached && cached.programmes.length > 0) {
+    // REV-16：显式 allowStale=false 时不再回落到过期缓存
+    if (allowStale && cached && cached.programmes.length > 0) {
       return {
         programmes: cached.programmes,
         level: cached.matchLevel ?? fallbackLevel(channel),
@@ -511,7 +563,11 @@ export const epgService = {
   ): Promise<ChannelEpgResult> {
     const dateKey = localDateKey(date);
     const channelKey = channelKeyOf(channel);
-    const inflightKey = `${channelKey}:${dateKey}`;
+    // REV-19：键纳入 sourceIds / allowStale，避免不同查询条件误共享同一 in-flight 结果
+    const inflightKey = `${channelKey}:${dateKey}:${(options?.sourceIds ?? [])
+      .slice()
+      .sort()
+      .join(',')}:${options?.allowStale !== false}`;
     const running = mergedInFlight.get(inflightKey);
     if (running) return running;
 
@@ -545,8 +601,17 @@ export const epgService = {
     if (enabled.length === 0) return result;
 
     for (const source of enabled) {
+      // REV-17：失败退避期内直接跳过（不再每轮都等一次超时）
+      const until = failedUntil.get(source.id) ?? 0;
+      if (until > Date.now()) {
+        logger.debug('EPG 源处于失败退避期，跳过', { sourceId: source.id, until });
+        continue;
+      }
       try {
-        const fetched = await fetchFromSource(source, channel, dateKey);
+        const fetched = await fetchFromSource(source, channel, dateKey, {
+          allowStale: options?.allowStale,
+        });
+        failedUntil.delete(source.id);
         if (fetched.programmes.length > 0) {
           result.programmes = fetched.programmes;
           result.matchedSource = { id: source.id, name: source.name, matchLevel: fetched.level };
@@ -554,6 +619,7 @@ export const epgService = {
           return result;
         }
       } catch (error) {
+        failedUntil.set(source.id, Date.now() + EPG_SOURCE_BACKOFF_MS);
         const appError = toAppError(error);
         result.errors.push({
           sourceId: source.id,
@@ -636,7 +702,10 @@ export const epgService = {
   },
 };
 
-/** 测试辅助：清空 in-flight 表 */
+/** 测试辅助：清空 in-flight 表、失败退避表与并发闸门 */
 export function resetEpgInFlightForTest(): void {
   mergedInFlight.clear();
+  failedUntil.clear();
+  epgSlotWaiters.length = 0;
+  epgActiveRequests = 0;
 }

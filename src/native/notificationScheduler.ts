@@ -109,6 +109,32 @@ export const notificationScheduler = {
     }
   },
 
+  /**
+   * REV-10：读取待触发通知及其排期时间（对账时判断原生时间是否漂移）。
+   * 插件返回的 `schedule.at` 可能是 Date、ISO 字符串或缺失；无法解析时 `at: null`。
+   */
+  async getPendingSchedules(): Promise<Array<{ nativeId: number; at: number | null }>> {
+    const mod = await loadPlugin();
+    if (!mod) return [];
+    try {
+      const pending = await mod.LocalNotifications.getPending();
+      return pending.notifications.map((item) => {
+        const raw = (item.schedule as { at?: unknown } | undefined)?.at;
+        let at: number | null = null;
+        if (raw instanceof Date) at = raw.getTime();
+        else if (typeof raw === 'number') at = raw;
+        else if (typeof raw === 'string') {
+          const parsed = Date.parse(raw);
+          at = Number.isFinite(parsed) ? parsed : null;
+        }
+        return { nativeId: item.id, at: Number.isFinite(at as number) ? at : null };
+      });
+    } catch (error) {
+      logger.warn('读取待触发通知排期失败', error);
+      return [];
+    }
+  },
+
   /** 前台收到通知（App 在前台也走这里，UI 负责不重复弹系统通知） */
   onReceived(callback: (payload: NativeNotificationPayload) => void): () => void {
     let disposed = false;

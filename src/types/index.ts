@@ -1045,6 +1045,9 @@ export type LiveChannelExtrasMap = Record<string /* channel url */, LiveChannelE
 /* ---------- FR-71：节目提醒 ---------- */
 export type ReminderState = 'scheduled' | 'firing' | 'fired' | 'missed' | 'cancelled';
 
+/** 提醒提前量（分钟）；0 = 节目开播时刻提醒（REV-20） */
+export type ReminderLead = 0 | 5 | 10 | 15 | 30;
+
 export interface Reminder {
   id: string;
   liveSourceId: string;

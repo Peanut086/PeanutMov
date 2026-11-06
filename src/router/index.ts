@@ -85,8 +85,9 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresLayout: false, depth: 1, title: '节目单' },
   },
   {
-    // EXT-06/FR-68：回看播放（channelId = 直播源 id，programId = 节目键 `${startAt}:${title}`）
-    path: '/replay/:channelId/:programId',
+    // EXT-06/FR-68：回看播放（sourceId = 直播源 id，programId = 节目键 `${startAt}:${title}`）
+    // REV-31：参数名与实义对齐（原 channelId 实际承载「直播源 id」）
+    path: '/replay/:sourceId/:programId',
     name: 'replay',
     component: () => import('@/views/ReplayPlayerView.vue'),
     meta: { requiresLayout: false, depth: 1, title: '回看' },

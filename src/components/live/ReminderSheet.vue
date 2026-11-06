@@ -2,14 +2,17 @@
 /**
  * EXT-06/FR-70：节目提醒设置弹层
  *
- * - 提前量选项固定为 5/10/15/30 分钟（REMINDER_LEAD_OPTIONS 的子集，不含 0）
+ * - 提前量选项**直接复用** `REMINDER_LEAD_OPTIONS`（0/5/10/15/30），
+ *   与服务层 `normalizeLead` 的允许集合保持单一事实来源（REV-20）
+ * - 0 分钟 = 节目开播时刻提醒（`notifyAt = startAt`）
  * - 已设置时显示当前提前量与"取消提醒"
  * - 权限被拒 / Web 环境：明确提示"仅 App 内提醒"（AC-168 降级口径）
  * - 空态：节目已开始 → 不可设置（按钮 disabled + 说明）
  */
 import { computed } from 'vue';
 
-import type { Reminder } from '@/types';
+import { REMINDER_LEAD_OPTIONS } from '@/shared/constants';
+import type { Reminder, ReminderLead } from '@/types';
 
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
@@ -30,18 +33,25 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void;
-  (e: 'confirm', leadMinutes: 5 | 10 | 15 | 30): void;
+  (e: 'confirm', leadMinutes: ReminderLead): void;
   (e: 'cancel-reminder'): void;
 }>();
 
-const LEAD_OPTIONS: Array<5 | 10 | 15 | 30> = [5, 10, 15, 30];
+/** 与服务层同源：0/5/10/15/30（不再本地硬编码子集） */
+const LEAD_OPTIONS: readonly ReminderLead[] = REMINDER_LEAD_OPTIONS;
+
+const DEFAULT_LEAD: ReminderLead = 5;
 
 const started = computed(() => props.startAt <= Date.now());
 
-const currentLead = computed<5 | 10 | 15 | 30>(() => {
-  const lead = props.reminder?.leadMinutes ?? 5;
-  return LEAD_OPTIONS.includes(lead as 5) ? (lead as 5 | 10 | 15 | 30) : 5;
+const currentLead = computed<ReminderLead>(() => {
+  const lead = props.reminder?.leadMinutes ?? DEFAULT_LEAD;
+  return LEAD_OPTIONS.includes(lead) ? lead : DEFAULT_LEAD;
 });
+
+function leadLabel(lead: ReminderLead): string {
+  return lead === 0 ? '开播时' : `${lead} 分钟`;
+}
 
 const startLabel = computed(() => {
   if (!Number.isFinite(props.startAt)) return '';
@@ -79,7 +89,7 @@ const startLabel = computed(() => {
             :aria-checked="lead === currentLead"
             @click="emit('confirm', lead)"
           >
-            {{ lead }} 分钟
+            {{ leadLabel(lead) }}
           </button>
         </div>
 
@@ -157,7 +167,7 @@ const startLabel = computed(() => {
 
 .reminder__leads {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: var(--space-2);
 }
 

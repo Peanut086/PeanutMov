@@ -110,7 +110,8 @@ async function mountView(): Promise<VueWrapper> {
 }
 
 beforeEach(() => {
-  routeMocks.params = { channelId: SOURCE_ID, programId: `${START_AT}:新闻联播` };
+  // REV-31：路由参数由 channelId 更名为 sourceId（实义为「直播源 id」）
+  routeMocks.params = { sourceId: SOURCE_ID, programId: `${START_AT}:新闻联播` };
   routeMocks.query = {
     ch: CHANNEL,
     tvgId: 'cctv1',
@@ -170,7 +171,7 @@ afterEach(() => {
 
 describe('ReplayPlayerView 跨源回退（REV-09）', () => {
   it('REV-09：源未知且频道名反查失败 → 报错，且不读取任何频道的频道表', async () => {
-    routeMocks.params = { channelId: 'ghost-source', programId: `${START_AT}:新闻联播` };
+    routeMocks.params = { sourceId: 'ghost-source', programId: `${START_AT}:新闻联播` };
     const wrapper = await mountView();
 
     expect(wrapper.text()).toContain('未找到该频道所属的直播源，请从直播页重新进入回看');
@@ -199,7 +200,7 @@ describe('ReplayPlayerView 跨源回退（REV-09）', () => {
   });
 
   it('频道名反查命中同一源时正常回看（未被 REV-09 误伤）', async () => {
-    routeMocks.params = { channelId: 'ghost-source', programId: `${START_AT}:新闻联播` };
+    routeMocks.params = { sourceId: 'ghost-source', programId: `${START_AT}:新闻联播` };
     vi.mocked(liveService.findSourceIdByChannelName).mockReturnValue(SOURCE_ID);
     const wrapper = await mountView();
 

@@ -128,3 +128,38 @@ describe('SCF 脚手架自检', () => {
     wrapper.unmount();
   });
 });
+
+/**
+ * REV-27 / REV-31：回看路由契约锁定。
+ *
+ * 实际路径为 `/replay/:sourceId/:programId`（方案 §7.2 写作 `/live/replay`；
+ * REV-31 把首参 `channelId` 更名为 `sourceId`，因其实际承载「直播源 id」），
+ * 在此把 name / 参数 / depth / requiresLayout 与页面外壳固化，避免后续被悄悄改掉。
+ */
+describe('REV-27 回看路由契约', () => {
+  beforeEach(() => {
+    mockSettingsService.__reset();
+    setComplianceGate(mockSettingsService);
+  });
+
+  it('replay 路由：name=replay、两个路径参数（sourceId / programId）、depth=1、requiresLayout=false', () => {
+    const route = routes.find((item) => item.name === 'replay');
+    expect(route, '路由表中必须存在 replay 路由').toBeTruthy();
+    expect(route!.path).toBe('/replay/:sourceId/:programId');
+    expect(route!.meta?.depth).toBe(1);
+    expect(route!.meta?.requiresLayout).toBe(false);
+    expect(route!.meta?.title).toBe('回看');
+  });
+
+  it('replay 页面挂载：渲染 data-route="replay" 外壳且不渲染 TabBar', async () => {
+    await mockSettingsService.acceptCompliance(COMPLIANCE_VERSION);
+    const wrapper = mount(App, { global: { plugins: [createPinia(), router] } });
+    await router.push('/replay/s1/pr1');
+    await router.isReady();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(router.currentRoute.value.name).toBe('replay');
+    expect(wrapper.find('[data-route="replay"]').exists()).toBe(true);
+    expect(wrapper.find('nav[aria-label="主导航"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+});

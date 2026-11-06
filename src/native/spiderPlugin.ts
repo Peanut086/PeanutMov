@@ -72,6 +72,10 @@ export interface SpiderPlugin {
   setCurrentOwner(options: { handle: string | null }): Promise<{ owner: string | null }>;
   /** 插件是否可用（原生环境恒 true） */
   isSupported(): Promise<{ supported: boolean }>;
+  /** 查询安全模式状态（近期多次崩溃后原生会暂停爬虫加载） */
+  getSafeMode(): Promise<{ active: boolean }>;
+  /** 手动退出安全模式并清空崩溃历史，恢复爬虫源加载 */
+  exitSafeMode(): Promise<{ ok: boolean }>;
   /** 设置详细日志开关 */
   setDebugLog(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
   /** 获取日志状态（开关、文件数、总字节、保留天数） */

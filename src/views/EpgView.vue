@@ -8,7 +8,7 @@
  * - EXT-06/FR-66：右上角「EPG 源管理」→ `EpgSourceSheet`
  * - EXT-06/FR-71：未开播节目可「设置提醒」→ `ReminderSheet`
  * - EXT-06/FR-68：**回看入口只在节目单页**——已结束且在回看窗口内的节目显示「回看」，
- *   点击先渲染地址、再探测能力（AC-162），可用才跳转 `/replay/:channelId/:programId`
+ *   点击先渲染地址、再探测能力（AC-162），可用才跳转 `/replay/:sourceId/:programId`
  * - 数据来源：epgService（多源合并，24h 缓存；源失败静默降级）
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
@@ -16,7 +16,7 @@ import { useRoute, useRouter } from 'vue-router';
 
 import type { EpgProgramme } from '@/services/epgService';
 import type { CatchupPlan } from '@/services/replayService';
-import type { CatchupCapability, ChannelEpgResult, EpgChannelRef, Reminder } from '@/types';
+import type { CatchupCapability, ChannelEpgResult, EpgChannelRef, Reminder, ReminderLead } from '@/types';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import SafeArea from '@/components/layout/SafeArea.vue';
@@ -28,7 +28,7 @@ import { epgSourceService } from '@/services/epgSourceService';
 import { liveService } from '@/services/liveService';
 import { reminderService } from '@/services/reminderService';
 import { replayService } from '@/services/replayService';
-import { channelKeyOf } from '@/shared/channelKey';
+import { channelKeyFromLive } from '@/services/channelIdentity';
 import { toErrorShape } from '@/shared/errors';
 import { useToast } from '@/composables/useToast';
 
@@ -39,16 +39,35 @@ const router = useRouter();
 const toast = useToast();
 
 const channelName = computed(() => String(route.query.ch ?? ''));
-const tvgId = computed(() => {
+const queryTvgId = computed(() => {
   const raw = route.query.tvgId;
   return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
 });
+const queryTvgName = computed(() => {
+  const raw = route.query.tvgName;
+  return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
+});
+/**
+ * REV-14：tvgId / tvgName 可能不在查询参数里（旧链接、从提醒点进来的链接）。
+ * 反查直播源旁路属性后补全，否则 `tvgName` 恒 null → L2（tvg-name）永不命中。
+ */
+const discoveredTvgId = ref<string | null>(null);
+const discoveredTvgName = ref<string | null>(null);
+const tvgId = computed(() => queryTvgId.value ?? discoveredTvgId.value);
+const tvgName = computed(() => queryTvgName.value ?? discoveredTvgName.value);
+/** 频道变了就丢弃旧的旁路属性，避免把上一个频道的 tvgId 带过来 */
+watch(channelName, () => {
+  discoveredTvgId.value = null;
+  discoveredTvgName.value = null;
+});
 /** 提醒 / 分组的频道身份键（与直播页同口径） */
-const channelKey = computed(() => channelKeyOf({ name: channelName.value, tvgId: tvgId.value }));
+const channelKey = computed(() =>
+  channelKeyFromLive({ name: channelName.value, tvgId: tvgId.value }),
+);
 const channelRef = computed<EpgChannelRef>(() => ({
   name: channelName.value,
   tvgId: tvgId.value,
-  tvgName: null,
+  tvgName: tvgName.value,
 }));
 
 /** 归属直播源：查询参数优先，其次从直播频道缓存反查（只读内存，不发请求） */
@@ -140,6 +159,9 @@ const replayPendingKey = ref<string | null>(null);
 /**
  * 载入回看上下文（频道 URL + 模板/天数）。
  * 失败静默：回看入口不出现，节目单照常展示。
+ *
+ * REV-14：同一份 `channelsWithExtrasOf` 结果顺带反查 tvgId / tvgName，
+ * 补齐查询参数缺失时（提醒跳转 / 旧链接）的频道身份，保证 L2（tvg-name）可命中。
  */
 async function loadReplayContext(): Promise<void> {
   replayContext.value = null;
@@ -156,11 +178,15 @@ async function loadReplayContext(): Promise<void> {
     const channel =
       data.channels.find((item) => item.name === channelName.value) ??
       data.channels.find(
-        (item) => channelKeyOf({ name: item.name }) === channelKeyOf({ name: channelName.value }),
+        (item) =>
+          channelKeyFromLive({ name: item.name, extras: data.extras[item.url] ?? null }) ===
+          channelKey.value,
       ) ??
       null;
     if (!channel) return;
     const extra = data.extras[channel.url] ?? null;
+    if (!queryTvgId.value) discoveredTvgId.value = extra?.tvgId ?? null;
+    if (!queryTvgName.value) discoveredTvgName.value = extra?.tvgName ?? null;
     replayContext.value = {
       url: channel.url,
       tvgId: extra?.tvgId ?? null,
@@ -245,7 +271,8 @@ async function openReplay(prog: EpgProgramme): Promise<void> {
     if (context.tvgId) query.tvgId = context.tvgId;
     await router.push({
       name: 'replay',
-      params: { channelId: sourceId, programId: replayKeyOf(prog) },
+      // REV-31：路径参数名与实义对齐（sourceId = 直播源 id）
+      params: { sourceId, programId: replayKeyOf(prog) },
       query,
     });
   } catch (e) {
@@ -257,6 +284,7 @@ async function openReplay(prog: EpgProgramme): Promise<void> {
 
 /* ---------- 提醒（FR-71） ---------- */
 
+/** key = `${channelKey}:${startAt}`（REV-21：跨频道/跨天隔离，避免只按 startAt 撞车） */
 const reminderMap = ref<Map<string, Reminder>>(new Map());
 const reminderOpen = ref(false);
 const reminderSaving = ref(false);
@@ -264,20 +292,33 @@ const reminderNotice = ref<string | null>(null);
 const reminderTarget = ref<{ title: string; startAt: number; endAt: number; key: string } | null>(null);
 
 const reminderStartAt = computed(() => reminderTarget.value?.startAt ?? 0);
+
+function reminderKeyOf(startAt: number, key: string | null | undefined = channelKey.value): string {
+  return `${key ?? ''}:${startAt}`;
+}
+
 const activeReminder = computed<Reminder | null>(() => {
   const target = reminderTarget.value;
   if (!target) return null;
-  return reminderMap.value.get(String(target.startAt)) ?? null;
+  return reminderMap.value.get(reminderKeyOf(target.startAt)) ?? null;
 });
 
+/**
+ * REV-21：读取**全部**提醒（含 fired / missed），不再只取 scheduled，
+ * 否则已提醒/已错过的节目在 UI 上会退化成「提醒」按钮。
+ */
 async function loadReminders(): Promise<void> {
   if (!channelKey.value) return;
   try {
-    const { reminders } = await reminderService.list({ state: 'scheduled' });
+    const { reminders } = await reminderService.list();
     const next = new Map<string, Reminder>();
     for (const item of reminders) {
       if (item.channelKey !== channelKey.value) continue;
-      next.set(String(item.startAt), item);
+      if (item.state === 'cancelled') continue;
+      const key = reminderKeyOf(item.startAt, item.channelKey);
+      const existing = next.get(key);
+      // 同一节目可能残留多条（状态机并发）；保留状态更靠后的一条
+      if (!existing || stateRank(item.state) >= stateRank(existing.state)) next.set(key, item);
     }
     reminderMap.value = next;
   } catch {
@@ -286,12 +327,40 @@ async function loadReminders(): Promise<void> {
   }
 }
 
+function stateRank(state: Reminder['state']): number {
+  if (state === 'fired') return 4;
+  if (state === 'missed') return 3;
+  if (state === 'firing') return 2;
+  return 1;
+}
+
 function reminderOf(prog: EpgProgramme): Reminder | null {
-  return reminderMap.value.get(String(startAtOf(prog))) ?? null;
+  return reminderMap.value.get(reminderKeyOf(startAtOf(prog))) ?? null;
+}
+
+/** 提醒按钮文案：scheduled/firing → 修改提醒；fired → 已提醒；missed → 已错过 */
+function reminderLabel(prog: EpgProgramme): string {
+  const reminder = reminderOf(prog);
+  if (!reminder) return '提醒';
+  if (reminder.state === 'fired') return '已提醒';
+  if (reminder.state === 'missed') return '已错过';
+  return '修改提醒';
+}
+
+/** 只有「未开播且未设提醒」或「待触发提醒」可继续操作 */
+function canEditReminder(prog: EpgProgramme): boolean {
+  const reminder = reminderOf(prog);
+  if (reminder) return reminder.state === 'scheduled' || reminder.state === 'firing';
+  return canRemind(prog);
+}
+
+/** 按钮是否需要渲染（已提醒/已错过的节目已开播，必须靠提醒记录驱动展示） */
+function showsReminder(prog: EpgProgramme): boolean {
+  return canRemind(prog) || reminderOf(prog) !== null;
 }
 
 function openReminder(prog: EpgProgramme): void {
-  if (!canRemind(prog)) return;
+  if (!canEditReminder(prog)) return;
   reminderNotice.value = null;
   reminderTarget.value = {
     title: prog.title,
@@ -302,7 +371,7 @@ function openReminder(prog: EpgProgramme): void {
   reminderOpen.value = true;
 }
 
-async function confirmReminder(leadMinutes: 5 | 10 | 15 | 30): Promise<void> {
+async function confirmReminder(leadMinutes: ReminderLead): Promise<void> {
   const target = reminderTarget.value;
   if (!target || reminderSaving.value) return;
   const source = liveSourceId.value;
@@ -374,6 +443,9 @@ async function loadEnabledCount(): Promise<void> {
 
 /* ---------- 数据加载 ---------- */
 
+/** REV-26：节目单请求序列号（防旧响应覆盖新结果） */
+let loadSeq = 0;
+
 function shiftDate(delta: number): void {
   const next = dateOffset.value + delta;
   if (next < -1 || next > 1) return;
@@ -389,15 +461,21 @@ async function loadProgrammes(): Promise<void> {
     loading.value = false;
     return;
   }
+  // REV-26：请求序列号，晚到的旧响应不得覆盖新结果（快速切换日期/来源时）
+  loadSeq += 1;
+  const mySeq = loadSeq;
   loading.value = true;
   errorMessage.value = null;
   try {
-    result.value = await epgService.programmesFor(channelRef.value, currentDate.value);
+    const next = await epgService.programmesFor(channelRef.value, currentDate.value);
+    if (mySeq !== loadSeq) return;
+    result.value = next;
   } catch (e) {
+    if (mySeq !== loadSeq) return;
     errorMessage.value = toErrorShape(e).message;
     result.value = null;
   } finally {
-    loading.value = false;
+    if (mySeq === loadSeq) loading.value = false;
   }
 }
 
@@ -560,16 +638,21 @@ function formatDuration(startSec: number, endSec: number): string {
               {{ replayPendingKey === replayKeyOf(prog) ? '探测中' : '回看' }}
             </button>
             <button
-              v-if="canRemind(prog)"
+              v-if="showsReminder(prog)"
               class="epg-item__remind"
-              :class="{ 'epg-item__remind--on': reminderOf(prog) !== null }"
+              :class="{
+                'epg-item__remind--on':
+                  reminderOf(prog) !== null &&
+                  (reminderOf(prog)?.state === 'scheduled' || reminderOf(prog)?.state === 'firing'),
+                'epg-item__remind--fired': reminderOf(prog)?.state === 'fired',
+                'epg-item__remind--missed': reminderOf(prog)?.state === 'missed',
+              }"
               type="button"
-              :aria-label="
-                reminderOf(prog) !== null ? `修改 ${prog.title} 的提醒` : `设置 ${prog.title} 的提醒`
-              "
+              :disabled="!canEditReminder(prog)"
+              :aria-label="`${reminderLabel(prog)} ${prog.title}`"
               @click.stop="openReminder(prog)"
             >
-              {{ reminderOf(prog) !== null ? '已提醒' : '提醒' }}
+              {{ reminderLabel(prog) }}
             </button>
           </li>
         </ul>
@@ -857,6 +940,20 @@ function formatDuration(startSec: number, endSec: number): string {
   background-color: var(--color-brand-soft);
   border-color: transparent;
   color: var(--color-brand-strong);
+}
+
+/* REV-21：已提醒 / 已错过为终态，按钮置灰不可点 */
+.epg-item__remind--fired {
+  color: var(--color-text-tertiary);
+}
+
+.epg-item__remind--missed {
+  color: var(--color-danger);
+}
+
+.epg-item__remind:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 /* EXT-06/FR-68：单条节目回看入口（仅在节目单页） */

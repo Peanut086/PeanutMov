@@ -77,7 +77,7 @@ import { epgSourceService } from '@/services/epgSourceService';
 import { liveService } from '@/services/liveService';
 import { reminderService } from '@/services/reminderService';
 import { replayService } from '@/services/replayService';
-import type { CatchupCapability, ChannelEpgResult, LiveRecord } from '@/types';
+import type { CatchupCapability, ChannelEpgResult, LiveRecord, Reminder } from '@/types';
 
 const CHANNEL = 'CCTV-1 综合';
 const TVG_ID = 'cctv1';
@@ -304,7 +304,8 @@ describe('EpgView 能力探测（REV-04 / AC-162）', () => {
     expect(routerMocks.push).toHaveBeenCalledWith({
       name: 'replay',
       params: {
-        channelId: SOURCE_ID,
+        // REV-31：路径参数更名为 sourceId
+        sourceId: SOURCE_ID,
         programId: `${programmes.ended.startAt}:新闻联播`,
       },
       query: {
@@ -387,5 +388,144 @@ describe('EpgView 节目单来源（REV-05）', () => {
     const line = wrapper.find('.epg-source-line');
     expect(line.text()).toContain('未匹配到节目单源');
     expect(line.text()).not.toContain('（L');
+  });
+});
+
+/* =====================================================================
+ * EXT-06 P1 复审整改：REV-14 / REV-21 / REV-26
+ * ===================================================================== */
+
+function reminderFor(startAt: number, state: string): Reminder {
+  return {
+    id: `r_${state}_${startAt}`,
+    liveSourceId: SOURCE_ID,
+    epgSourceId: null,
+    channelKey: `id:${TVG_ID}`,
+    channelName: CHANNEL,
+    programmeKey: `${startAt}:节目`,
+    programmeTitle: '节目',
+    startAt,
+    endAt: startAt + 3_600_000,
+    leadMinutes: 5,
+    notifyAt: startAt - 300_000,
+    state: state as Reminder['state'],
+    nativeId: 100,
+    lastError: null,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+describe('EpgView 频道身份（REV-14）', () => {
+  it('查询串缺 tvgId/tvgName 时用 channelsWithExtrasOf 反查并补进 channelRef', async () => {
+    routeMocks.query = { ch: CHANNEL, source: SOURCE_ID };
+    vi.mocked(liveService.channelsWithExtrasOf).mockResolvedValue({
+      groups: [],
+      channels: [{ name: CHANNEL, url: CHANNEL_URL, group: '央视', logo: null }],
+      extras: {
+        [CHANNEL_URL]: {
+          tvgId: TVG_ID,
+          tvgName: 'CCTV-1 综合',
+          catchupTemplate: TEMPLATE,
+          catchupDays: WINDOW_DAYS,
+          catchupCorrectionSec: 0,
+        },
+      },
+    });
+
+    await mountView();
+    const lastRef = vi.mocked(epgService.programmesFor).mock.calls.at(-1)![0];
+    expect(lastRef.tvgId).toBe(TVG_ID);
+    expect(lastRef.tvgName).toBe('CCTV-1 综合');
+  });
+
+  it('查询串自带 tvgName 时直接透传（直播页「完整节目单」跳转路径）', async () => {
+    routeMocks.query = { ch: CHANNEL, source: SOURCE_ID, tvgId: TVG_ID, tvgName: 'CCTV1 备用' };
+    await mountView();
+    const firstRef = vi.mocked(epgService.programmesFor).mock.calls[0]![0];
+    expect(firstRef).toMatchObject({ tvgId: TVG_ID, tvgName: 'CCTV1 备用' });
+  });
+});
+
+describe('EpgView 提醒状态（REV-21）', () => {
+  it('已提醒 / 已错过 / 修改提醒三种文案与可点性', async () => {
+    const hour = 3_600_000;
+    const future = makeProgramme('晚间新闻', Date.now() + 2 * hour, hour);
+    vi.mocked(epgService.programmesFor).mockResolvedValue(epgResult([...programmes.all, future]));
+    vi.mocked(reminderService.list).mockResolvedValue({
+      reminders: [
+        reminderFor(programmes.ended.startAt!, 'fired'),
+        reminderFor(programmes.expired.startAt!, 'missed'),
+        reminderFor(future.startAt!, 'scheduled'),
+      ],
+    });
+
+    const wrapper = await mountView();
+    const items = wrapper.findAll('.epg-item');
+    expect(items).toHaveLength(4);
+
+    // 已提醒（fired）：文案 + 置灰
+    const firedBtn = items[0].find('.epg-item__remind');
+    expect(firedBtn.exists()).toBe(true);
+    expect(firedBtn.text()).toBe('已提醒');
+    expect(firedBtn.attributes('disabled')).toBeDefined();
+    expect(firedBtn.classes()).toContain('epg-item__remind--fired');
+
+    // 已错过（missed）：文案 + 置灰
+    const missedBtn = items[2].find('.epg-item__remind');
+    expect(missedBtn.text()).toBe('已错过');
+    expect(missedBtn.attributes('disabled')).toBeDefined();
+    expect(missedBtn.classes()).toContain('epg-item__remind--missed');
+
+    // 待触发（scheduled）：可继续修改
+    const scheduledBtn = items[3].find('.epg-item__remind');
+    expect(scheduledBtn.text()).toBe('修改提醒');
+    expect(scheduledBtn.attributes('disabled')).toBeUndefined();
+  });
+
+  it('未开播且未设提醒 → 「提醒」；已开播且无记录 → 不渲染按钮', async () => {
+    const hour = 3_600_000;
+    const future = makeProgramme('晚间新闻', Date.now() + 2 * hour, hour);
+    vi.mocked(epgService.programmesFor).mockResolvedValue(epgResult([...programmes.all, future]));
+
+    const wrapper = await mountView();
+    const items = wrapper.findAll('.epg-item');
+    expect(items[3].find('.epg-item__remind').text()).toBe('提醒');
+    expect(items[1].find('.epg-item__remind').exists()).toBe(false);
+  });
+
+  it('按 (channelKey, startAt) 建索引：其它频道的同刻提醒不会串到本页', async () => {
+    vi.mocked(reminderService.list).mockResolvedValue({
+      reminders: [
+        { ...reminderFor(programmes.ended.startAt!, 'fired'), channelKey: 'nm:别的频道' },
+      ],
+    });
+    const wrapper = await mountView();
+    expect(wrapper.find('.epg-item__remind').exists()).toBe(false);
+  });
+});
+
+describe('EpgView 请求竞态（REV-26）', () => {
+  it('早发出的请求晚返回时不覆盖新结果', async () => {
+    const hour = 3_600_000;
+    let resolveFirst: ((value: ChannelEpgResult) => void) | null = null;
+    const pending = new Promise<ChannelEpgResult>((resolve) => {
+      resolveFirst = resolve;
+    });
+    vi.mocked(epgService.programmesFor).mockReturnValueOnce(pending);
+
+    const wrapper = await mountView();
+    // 初始请求仍挂起时切到「前一天」，第二次请求立即返回新数据
+    const fresh = makeProgramme('新节目', Date.now() + 2 * hour, hour);
+    vi.mocked(epgService.programmesFor).mockResolvedValue(epgResult([fresh]));
+    await wrapper.find('.epg-date-btn').trigger('click');
+    await settle();
+    expect(wrapper.text()).toContain('新节目');
+
+    // 旧请求此刻才返回：必须被序列号丢弃
+    resolveFirst!(epgResult([makeProgramme('旧节目', Date.now() + 5 * hour, hour)]));
+    await settle();
+    expect(wrapper.text()).not.toContain('旧节目');
+    expect(wrapper.text()).toContain('新节目');
   });
 });

@@ -9,8 +9,8 @@
  * - FR-68 回看入口**不在本页**（需求 §5.3 / REV-02）：回看入口只在节目单页（EpgView），
  *   本页只保留「完整节目单 ›」跳转
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
 import type { ChannelPrefs, EpgChannelRef, LiveChannelExtrasMap, LiveGroup, LiveRecord } from '@/types';
 import type { LiveChannel } from '@/sources/live/liveParsers';
@@ -27,14 +27,20 @@ import ChannelSortList from '@/components/live/ChannelSortList.vue';
 import { liveService } from '@/services/liveService';
 import { epgService } from '@/services/epgService';
 import { channelPrefsService, emptyPrefs, sortByCustomOrder } from '@/services/channelPrefsService';
+import {
+  channelKeyFromLive,
+  channelRefFromLive,
+  extrasOfUrl,
+} from '@/services/channelIdentity';
 import { kvRepo } from '@/db/repositories/kvRepo';
-import { channelKeyOf } from '@/shared/channelKey';
-import { LIVE_DEAD_STREAK } from '@/shared/constants';
+import { LIVE_DEAD_STREAK, EPG_PREFETCH_MAX } from '@/shared/constants';
 import { useToast } from '@/composables/useToast';
+import { logger } from '@/shared/logger';
 import { toErrorShape } from '@/shared/errors';
 
 const toast = useToast();
 const router = useRouter();
+const route = useRoute();
 
 const records = ref<LiveRecord[]>([]);
 const activeId = ref<string | null>(null);
@@ -87,21 +93,21 @@ function isDead(name: string): boolean {
   return deadNames.value.has(name);
 }
 
-/** EXT-06：与分组 / 排序服务同口径的频道身份键（只用频道名，与 buildScopes 一致） */
-function keyOf(channel: { name: string }): string {
-  return channelKeyOf({ name: channel.name });
+/**
+ * REV-13：与分组 / 排序 / 节目单 / 提醒服务同口径的频道身份键。
+ * 有 tvgId 用 `id:`，否则 `nm:`——统一走 `channelKeyFromLive`，不再只传频道名。
+ */
+function keyOf(channel: LiveChannel): string {
+  return channelKeyFromLive({
+    name: channel.name,
+    extras: extrasOfUrl(extras.value, channel.url),
+  });
 }
 
 function channelEpgRefByName(name: string): EpgChannelRef {
   const channel = allChannels.value.find((item) => item.name === name) ?? null;
   if (!channel) return { name, tvgId: null, tvgName: null };
-  const extra = extras.value[channel.url] ?? null;
-  return {
-    name: channel.name,
-    tvgId: extra?.tvgId ?? null,
-    tvgName: extra?.tvgName ?? null,
-    url: channel.url,
-  };
+  return channelRefFromLive(channel, extras.value);
 }
 
 /** EPG：频道切换后拉取当日节目单（失败静默，不影响播放） */
@@ -168,6 +174,9 @@ onBeforeUnmount(() => {
     clearTimeout(digitTimer);
     digitTimer = null;
   }
+  // REV-34：清掉挂起的排序提示定时器
+  cancelReorderToast();
+  clearFocusTimer();
 });
 
 /* ---------- v1.7/CHG-23：数字快速换台（1.5s 内连按数字，跳到第 N 个频道） ---------- */
@@ -199,8 +208,19 @@ async function reload(): Promise<void> {
       prefs.value = null;
       return;
     }
-    const next = records.value.find((r) => r.id === activeId.value) ?? records.value[0];
-    if (next) await selectRecord(next.id);
+    /*
+     * REV-11：优先按 `?source=` 选中记录；缺省时用 `?channel=` 反查所属源。
+     * focusName 一路透传到 selectRecord，走「只定位不播放」分支。
+     */
+    const focusName = queryChannelName();
+    const preferred =
+      querySourceId() ??
+      (focusName ? liveService.findSourceIdByChannelName(focusName) : null);
+    const next =
+      records.value.find((r) => r.id === preferred) ??
+      records.value.find((r) => r.id === activeId.value) ??
+      records.value[0];
+    if (next) await selectRecord(next.id, focusName);
   } catch (e) {
     error.value = describeSourceError(e);
   } finally {
@@ -230,18 +250,35 @@ function describeSourceError(e: unknown): string {
 const scopeList = computed(() => {
   const base = prefs.value ?? emptyPrefs(activeId.value ?? '');
   const scopes = channelPrefsService.buildScopes(
-    allChannels.value.map((channel) => ({ name: channel.name, sourceGroup: channel.group })),
+    allChannels.value.map((channel) => ({
+      name: channel.name,
+      sourceGroup: channel.group,
+      // REV-13：带上 tvgId，作用域身份键与节目单/提醒一致
+      tvgId: extrasOfUrl(extras.value, channel.url)?.tvgId ?? null,
+    })),
     base,
   );
-  // 「全部」始终可用；其余空分组不占位（分组仍在管理弹层里维护）
-  return scopes.filter((scope) => scope.key === 'all' || scope.channelKeys.length > 0);
+  /*
+   * REV-23：「全部」始终可用；自定义分组**即使为空也要保留**（否则刚建好/清空的
+   * 分组 chip 会消失，用户无处进入「从源分组添加频道」）；源分组按 m3u 生成，
+   * 空分组（理论上不存在）仍过滤。
+   */
+  return scopes.filter(
+    (scope) => scope.key === 'all' || scope.key.startsWith('g:') || scope.channelKeys.length > 0,
+  );
 });
 
-const channelByKey = computed<Map<string, LiveChannel>>(() => {
-  const map = new Map<string, LiveChannel>();
+/**
+ * REV-12：同名多路频道（同 channelKey、不同 url）全部保留。
+ * 此前 `Map<string, LiveChannel>` 只留第一路，切到备用线路就再也点不到。
+ */
+const channelsByKey = computed<Map<string, LiveChannel[]>>(() => {
+  const map = new Map<string, LiveChannel[]>();
   for (const channel of allChannels.value) {
     const key = keyOf(channel);
-    if (!map.has(key)) map.set(key, channel);
+    const list = map.get(key);
+    if (list) list.push(channel);
+    else map.set(key, [channel]);
   }
   return map;
 });
@@ -250,9 +287,13 @@ const scopeChannels = computed<LiveChannel[]>(() => {
   const scope = scopeList.value.find((item) => item.key === activeScope.value);
   if (!scope) return allChannels.value.slice();
   const list: LiveChannel[] = [];
+  const seenKeys = new Set<string>();
   for (const key of scope.channelKeys) {
-    const channel = channelByKey.value.get(key);
-    if (channel) list.push(channel);
+    // buildScopes 按频道逐条 push key，同名多路会出现重复 key：先去重再整组展开
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    const channels = channelsByKey.value.get(key);
+    if (channels) list.push(...channels);
   }
   return list;
 });
@@ -279,7 +320,85 @@ watch(scopeList, (list) => {
   if (!list.some((scope) => scope.key === activeScope.value)) activeScope.value = 'all';
 });
 
-async function selectRecord(id: string): Promise<void> {
+/* ---------- REV-11：从提醒/外部链接定位频道（只定位，不自动播放 AC-168） ---------- */
+
+/** 查询参数里的频道名（`/live?channel=<name>`） */
+function queryChannelName(): string | null {
+  const raw = route.query.channel;
+  return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
+}
+
+/** 查询参数里的直播源 id（`/live?source=<id>`） */
+function querySourceId(): string | null {
+  const raw = route.query.source;
+  return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
+}
+
+/** 高亮中的频道 url（2.5s 后自动清除） */
+const focusUrl = ref<string | null>(null);
+let focusTimer: ReturnType<typeof setTimeout> | null = null;
+let focusToken = 0;
+
+function clearFocusTimer(): void {
+  if (focusTimer !== null) {
+    clearTimeout(focusTimer);
+    focusTimer = null;
+  }
+}
+
+/**
+ * 滚动并高亮指定频道行。
+ * 只在「全部」作用域里找（REV-11：进入时 activeScope 固定为 all），不改变播放状态。
+ */
+async function focusChannel(name: string): Promise<void> {
+  const token = ++focusToken;
+  activeScope.value = 'all';
+  await nextTick();
+  if (token !== focusToken) return;
+  const list = visibleChannels.value;
+  const index = Math.max(
+    list.findIndex((channel) => channel.name === name),
+    list.findIndex((channel) => channel.name.startsWith(name)),
+  );
+  if (index < 0) return;
+  const target = list[index]!;
+  focusUrl.value = target.url;
+  await nextTick();
+  document.getElementById(`live-channel-${index}`)?.scrollIntoView({
+    block: 'center',
+    behavior: 'smooth',
+  });
+  clearFocusTimer();
+  focusTimer = setTimeout(() => {
+    focusUrl.value = null;
+    focusTimer = null;
+  }, 2500);
+}
+
+/**
+ * REV-18：频道列表就绪后预取 EPG（收藏 + 当前作用域前 10 个，服务层封顶 30/并发 3）。
+ * 失败静默、不阻塞渲染。
+ */
+const PREFETCH_SCOPE_HEAD = 10;
+
+function prefetchEpg(): void {
+  const favorites = allChannels.value.filter((channel) => isFavorite(channel.name));
+  const head = visibleChannels.value.slice(0, PREFETCH_SCOPE_HEAD);
+  const seen = new Set<string>();
+  const refs: EpgChannelRef[] = [];
+  for (const channel of [...favorites, ...head]) {
+    const key = keyOf(channel);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    refs.push(channelRefFromLive(channel, extras.value));
+  }
+  if (refs.length === 0) return;
+  void epgService
+    .prefetch(refs, new Date(), EPG_PREFETCH_MAX)
+    .catch((error) => logger.debug('EPG 预取失败（静默）', error));
+}
+
+async function selectRecord(id: string, focusName: string | null = null): Promise<void> {
   const record = records.value.find((r) => r.id === id);
   if (!record) return;
   activeId.value = id;
@@ -297,15 +416,22 @@ async function selectRecord(id: string): Promise<void> {
     allChannels.value = data.channels;
     extras.value = data.extras;
     prefs.value = nextPrefs;
-    // 默认选中第一个非空作用域并自动播第一个频道（打开即看，减少一次点击）
-    activeScope.value = pickDefaultScope();
-    const first = scopeChannels.value[0];
-    if (first) playing.value = { url: first.url, title: first.name };
+    if (focusName) {
+      // REV-11：定位模式——不自动播放，只滚动高亮（AC-168）
+      activeScope.value = 'all';
+    } else {
+      // 默认选中第一个非空作用域并自动播第一个频道（打开即看，减少一次点击）
+      activeScope.value = pickDefaultScope();
+      const first = scopeChannels.value[0];
+      if (first) playing.value = { url: first.url, title: first.name };
+    }
   } catch (e) {
     channelsError.value = describeSourceError(e);
   } finally {
     channelsLoading.value = false;
   }
+  if (focusName) await focusChannel(focusName);
+  prefetchEpg();
 }
 
 async function loadPrefs(): Promise<void> {
@@ -336,8 +462,10 @@ function openEpgFull(): void {
   const query: Record<string, string> = { ch: title };
   if (activeId.value) query.source = activeId.value;
   const channel = allChannels.value.find((item) => item.name === title) ?? null;
-  const tvgId = channel ? (extras.value[channel.url]?.tvgId ?? null) : null;
-  if (tvgId) query.tvgId = tvgId;
+  const extra = channel ? extrasOfUrl(extras.value, channel.url) : null;
+  if (extra?.tvgId) query.tvgId = extra.tvgId;
+  // REV-14：tvg-name 一并透传，否则节目单页 L2（tvg-name）匹配永远失效
+  if (extra?.tvgName) query.tvgName = extra.tvgName;
   void router.push({ name: 'epg', query });
 }
 
@@ -365,15 +493,41 @@ async function onGroupChanged(): Promise<void> {
   await loadPrefs();
 }
 
-async function onReorder(keys: string[]): Promise<void> {
+/** REV-34：↑/↓ 可连点，提示合并窗口（拖拽松手不受影响，仍即时提示） */
+const REORDER_TOAST_DELAY_MS = 300;
+let reorderToastTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelReorderToast(): void {
+  if (reorderToastTimer !== null) {
+    clearTimeout(reorderToastTimer);
+    reorderToastTimer = null;
+  }
+}
+
+function scheduleReorderToast(): void {
+  cancelReorderToast();
+  reorderToastTimer = setTimeout(() => {
+    reorderToastTimer = null;
+    toast.success('已保存频道顺序');
+  }, REORDER_TOAST_DELAY_MS);
+}
+
+async function onReorder(keys: string[], origin: 'drag' | 'button' = 'button'): Promise<void> {
   const sourceId = activeId.value;
   if (!sourceId || sortBusy.value) return;
   sortBusy.value = true;
   try {
     await channelPrefsService.setOrder(sourceId, activeScope.value, keys);
     await loadPrefs();
-    toast.success('已保存频道顺序');
+    if (origin === 'drag') {
+      cancelReorderToast();
+      toast.success('已保存频道顺序');
+    } else {
+      scheduleReorderToast();
+    }
   } catch (e) {
+    // 失败必须立刻可见，不能被合并窗口吞掉
+    cancelReorderToast();
     toast.error(toErrorShape(e).message);
   } finally {
     sortBusy.value = false;
@@ -392,6 +546,41 @@ async function resetOrder(): Promise<void> {
     toast.error(toErrorShape(e).message);
   } finally {
     sortBusy.value = false;
+  }
+}
+
+/* ---------- REV-23：空自定义分组 → 从源分组添加频道 ---------- */
+
+const addToGroupOpen = ref(false);
+
+/** 当前作用域对应的自定义分组 id（源分组/全部时为 null） */
+const activeCustomGroupId = computed<string | null>(() =>
+  activeScope.value.startsWith('g:') ? activeScope.value.slice(2) : null,
+);
+
+/** 可加入当前分组的频道（已在组内 / 已被其它分组占用的都列出，按归属状态展示） */
+const addableChannels = computed<LiveChannel[]>(() => {
+  const groupId = activeCustomGroupId.value;
+  if (!groupId) return [];
+  const assignments = prefs.value?.assignments ?? {};
+  return allChannels.value.filter((channel) => assignments[keyOf(channel)] !== groupId);
+});
+
+/** 当前源仍存在的频道身份键（分组弹层清理孤儿排序项用） */
+const channelKeysOfSource = computed<string[]>(() =>
+  allChannels.value.map((channel) => keyOf(channel)),
+);
+
+async function addChannelToGroup(channel: LiveChannel): Promise<void> {
+  const groupId = activeCustomGroupId.value;
+  const sourceId = activeId.value;
+  if (!groupId || !sourceId) return;
+  try {
+    await channelPrefsService.assign(sourceId, keyOf(channel), groupId);
+    await loadPrefs();
+    toast.success(`已把「${channel.name}」加入分组`);
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
   }
 }
 
@@ -538,15 +727,33 @@ async function removeRecord(record: LiveRecord): Promise<void> {
           </button>
         </p>
 
-        <p v-else-if="visibleChannels.length === 0" class="live-empty-scope">
-          该分组暂无频道
-        </p>
+        <!-- REV-23：空自定义分组给出「从源分组添加频道」入口，而不是一句死胡同文案 -->
+        <div v-else-if="visibleChannels.length === 0" class="live-empty-scope">
+          <p>该分组暂无频道</p>
+          <button
+            v-if="activeCustomGroupId"
+            class="btn btn--secondary btn--sm live-empty-scope__add"
+            type="button"
+            @click="addToGroupOpen = true"
+          >
+            从源分组添加频道
+          </button>
+        </div>
 
         <ul v-else class="live-channels">
-          <li v-for="channel in visibleChannels" :key="channel.url" class="live-channel-row">
+          <li
+            v-for="(channel, idx) in visibleChannels"
+            :id="`live-channel-${idx}`"
+            :key="channel.url"
+            class="live-channel-row"
+          >
             <button
               class="live-channel"
-              :class="{ 'live-channel--playing': playing?.url === channel.url, 'live-channel--dead': isDead(channel.name) }"
+              :class="{
+                'live-channel--playing': playing?.url === channel.url,
+                'live-channel--dead': isDead(channel.name),
+                'live-channel--focus': focusUrl === channel.url,
+              }"
               type="button"
               @click="playChannel(channel)"
             >
@@ -646,6 +853,28 @@ async function removeRecord(record: LiveRecord): Promise<void> {
       </div>
     </BottomSheet>
 
+    <!-- REV-23：从源分组添加频道到当前自定义分组（复用 channelPrefsService.assign） -->
+    <BottomSheet v-model="addToGroupOpen" title="添加到分组">
+      <div class="live-add-form">
+        <p v-if="addableChannels.length === 0" class="live-empty-scope">该分组的频道已包含全部频道</p>
+        <ul v-else class="live-manage">
+          <li v-for="channel in addableChannels" :key="channel.url" class="live-manage__row">
+            <span class="live-manage__name truncate-1">
+              {{ channel.name }}
+              <span class="live-manage__count">{{ channel.group || '未分组' }}</span>
+            </span>
+            <button
+              class="btn btn--secondary btn--sm"
+              type="button"
+              @click="addChannelToGroup(channel)"
+            >
+              加入
+            </button>
+          </li>
+        </ul>
+      </div>
+    </BottomSheet>
+
     <!-- EXT-06/FR-69：分组管理 -->
     <ChannelGroupSheet
       v-model="groupSheetOpen"
@@ -653,6 +882,7 @@ async function removeRecord(record: LiveRecord): Promise<void> {
       :prefs="prefs"
       :channel-key="currentChannelKey"
       :channel-name="playing?.title ?? ''"
+      :channel-keys="channelKeysOfSource"
       @changed="onGroupChanged"
     />
   </main>
@@ -770,6 +1000,17 @@ async function removeRecord(record: LiveRecord): Promise<void> {
   text-align: center;
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+.live-empty-scope__add {
+  margin-top: var(--space-3);
+}
+
+/* REV-11：从通知/外部链接定位到频道时的高亮（2.5s 后自动消退） */
+.live-channel--focus {
+  border-color: var(--color-brand);
+  background-color: var(--color-brand-soft);
+  box-shadow: var(--shadow-2);
 }
 
 .live-channels {

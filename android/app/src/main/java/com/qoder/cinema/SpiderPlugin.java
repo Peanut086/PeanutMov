@@ -1042,15 +1042,14 @@ public class SpiderPlugin extends Plugin {
         }
         Spider spider = (Spider) instance;
 
-        // 致命 init 失败（LinkageError 类：gson/okhttp 等宿主依赖版本不匹配）时
-        // 必须拒绝该源：guard jar 半初始化后继续 invoke 会在 jar 内 native 代码
-        // 触发 SIGSEGV/SIGABRT，Java 层无法捕获（真机 CrashSentinel 实证）。
+        // init 失败必须拒绝该源：guard jar 半初始化后继续 invoke 会在 jar 内 native
+        // 代码触发 SIGSEGV/SIGABRT，Java 层无法捕获（真机 CrashSentinel 实证）。
         Throwable initFatal = invokeInit(spider, new GuardedSpiderContext(context), initExt, api, loader);
         if (initFatal != null) {
             // 主动清除哨兵：这是可预期的加载失败而非崩溃
             CrashSentinel.end();
             throw new IllegalStateException(
-                    "爬虫初始化失败（" + api + "）：宿主依赖版本不匹配，已禁用该源（"
+                    "爬虫初始化失败（" + api + "）：已禁用该源（"
                             + initFatal.getClass().getSimpleName() + ": " + initFatal.getMessage() + "）",
                     initFatal);
         }
@@ -1431,26 +1430,25 @@ public class SpiderPlugin extends Plugin {
     }
 
     /**
-     * init 失败分类处理：返回非 null 表示致命失败，调用方必须拒绝该源。
+     * init 失败处理：返回非 null 表示致命失败，调用方必须拒绝该源。
      *
-     * LinkageError（NoClassDefFoundError / NoSuchMethodError / ClassFormatError）说明
-     * jar 与本 App 的依赖版本不兼容，init 没完成但对象已创建；继续 invoke 会进入
-     * jar 内 native 路径直接崩进程（真机实证：csp_SheQuwonAmns / csp_AppTTGuard）。
-     * 其余失败保留既有降级语义（例如 guard 内层为 null 的 NPE）。
+     * 任何 init 失败都拒绝——不存在"跳过 init 仍可用"的安全降级。guard jar 带原生
+     * .so，init 未完成（依赖不匹配的 LinkageError、内层为 null 的 NPE、缺 ext 配置
+     * 的 RuntimeException 等）时对象已创建但内部状态不一致，继续 invoke 会进入 jar
+     * 内 native 路径直接 SIGSEGV/SIGABRT 崩进程，Java 层无法捕获（真机实证：
+     * csp_SheQuwonAmns / csp_AppTTGuard / csp_AppGet / csp_WexAppV7Guard）。
+     * 干净拒绝后该源计入搜索失败明细，健康源不受影响。
      */
     private Throwable handleInitFailure(Throwable cause, String api, ClassLoader loader, Exception raw) {
         // Guard 系 init NPE 的典型表现：BaseSpiderGuard.init 委托内部 Spider 时
-        // Spider 为 null（Init.getSpider(api) 返回 null）。
+        // Spider 为 null（Init.getSpider(api) 返回 null）——仅补充诊断日志，仍拒绝。
         if (cause instanceof NullPointerException) {
             String diag = diagnoseGuardSpiderNull(api, loader);
             Log.e(TAG, "init(Context, String) failed for " + api + ": NPE in guard spider init\n" + diag, cause);
-
-            // 尝试降级：如果内部爬虫加载失败，跳过 init，让源可用但可能功能不完整
-            Log.w(TAG, "trying fallback: skipping init for guard spider");
-            return null;
+        } else {
+            Log.w(TAG, "init(Context, String) failed for " + api, raw);
         }
-        Log.w(TAG, "init(Context, String) failed for " + api, raw);
-        return cause instanceof LinkageError ? cause : null;
+        return cause;
     }
 
     /**

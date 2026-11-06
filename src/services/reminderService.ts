@@ -288,10 +288,18 @@ export const reminderService = {
     // 原生排期对齐：仅当通知可用时检查（Web 恒 unsupported，避免每次白跑）
     const permission = await notificationScheduler.ensurePermission();
     if (permission === 'granted') {
-      const pendingIds = new Set(await notificationScheduler.getPendingIds());
+      const pending = await notificationScheduler.getPendingSchedules();
+      const pendingMap = new Map<number, number | null>(
+        pending.map((item) => [item.nativeId, item.at]),
+      );
       const stillScheduled = all.filter((record) => record.state === 'scheduled');
       for (const record of stillScheduled) {
-        if (pendingIds.has(record.nativeId)) continue;
+        if (pendingMap.has(record.nativeId)) {
+          // REV-10：原生排期时间与 notifyAt 偏差超过 60s 才重排（允许系统取整误差）
+          const pendingAt = pendingMap.get(record.nativeId);
+          if (pendingAt === null || pendingAt === undefined) continue;
+          if (Math.abs(pendingAt - record.notifyAt) <= 60_000) continue;
+        }
         const scheduled = await scheduleNative(record as Reminder);
         const updated = { ...record, lastError: scheduled.error, updatedAt: now };
         await reminderRepo.save(updated);
@@ -374,7 +382,7 @@ export const reminderService = {
   },
 
   /**
-   * 启动自动对账：立即对账一次 + 回前台再对账 + 订阅原生通知。
+   * 启动自动对账：立即对账一次 + 回前台再对账 + 订阅原生通知（前台到达也走页内提示）。
    * 返回取消函数（页面卸载时调用，避免监听泄漏）。
    */
   startAutoReconcile(
@@ -394,9 +402,15 @@ export const reminderService = {
     const offState = onAppStateChange((state) => {
       if (state === 'active') run();
     });
+    // 前台收到原生通知时也给出页内提示（真机场景；Web 恒无事件）
+    const offNative = reminderService.onNativeReceived((event) => {
+      if (disposed) return;
+      if (event.kind === 'received' && event.reminder) onFired?.([event.reminder]);
+    });
     return () => {
       disposed = true;
       offState();
+      offNative();
     };
   },
 };

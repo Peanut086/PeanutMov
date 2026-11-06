@@ -58,8 +58,10 @@ public class MainApplication extends Application {
             // 根据哨兵内容生成隔离签名
             String signature = buildQuarantineSignature(sentinel);
             if (signature != null) {
-                // 检查是否已经在 24 小时内崩溃过 2 次
-                if (shouldQuarantine(signature)) {
+                // 爬虫原生崩溃归因可靠（哨兵紧贴 invoke 写入/清除）：首次即隔离该 jar+api，
+                // 避免同一坏源反复崩进程；7 天后自动过期，也可在健康管理手动解除。
+                // 其余签名（exoplayer）沿用 24h 内 2 次阈值——播放崩溃更可能与具体内容相关。
+                if (signature.startsWith("spider:") || shouldQuarantine(signature)) {
                     CrashSentinel.quarantine(this, signature);
                     Log.w(TAG, "quarantined: " + signature);
                 }
@@ -88,6 +90,12 @@ public class MainApplication extends Application {
             } catch (Exception e) {
                 Log.w(TAG, "failed to read ApplicationExitInfo", e);
             }
+        }
+
+        // 3. 稳定启动（无新崩溃）时自动静默退出安全模式——用户无感，爬虫源立即恢复
+        if (sentinel == null && isSafeMode(this)) {
+            exitSafeMode(this);
+            Log.i(TAG, "stable launch: auto-exited safe mode");
         }
     }
 
@@ -144,8 +152,10 @@ public class MainApplication extends Application {
     // ========== REV-24 P2：安全模式 ==========
 
     private static final String KEY_SAFE_MODE = "safe_mode";
+    private static final String KEY_SAFE_MODE_SINCE = "safe_mode_since";
     private static final long SAFE_MODE_WINDOW_MS = 60 * 1000L; // 60 秒
     private static final int SAFE_MODE_THRESHOLD = 2; // 60 秒内 2 次崩溃进入安全模式
+    private static final long SAFE_MODE_DURATION_MS = 24 * 60 * 60 * 1000L; // 24h 自动过期，避免永久卡死
 
     /**
      * 检查是否应进入安全模式（60 秒内崩溃 2 次）
@@ -167,7 +177,10 @@ public class MainApplication extends Application {
         if (recentCrashes >= SAFE_MODE_THRESHOLD) {
             Log.w(TAG, "entering safe mode: " + recentCrashes + " crashes in 60s");
             android.content.SharedPreferences prefs = getSharedPreferences("crash-sentinel-prefs", MODE_PRIVATE);
-            prefs.edit().putBoolean(KEY_SAFE_MODE, true).apply();
+            prefs.edit()
+                    .putBoolean(KEY_SAFE_MODE, true)
+                    .putLong(KEY_SAFE_MODE_SINCE, System.currentTimeMillis())
+                    .apply();
         }
     }
 
@@ -177,7 +190,14 @@ public class MainApplication extends Application {
     public static boolean isSafeMode(Context context) {
         try {
             android.content.SharedPreferences prefs = context.getSharedPreferences("crash-sentinel-prefs", MODE_PRIVATE);
-            return prefs.getBoolean(KEY_SAFE_MODE, false);
+            if (!prefs.getBoolean(KEY_SAFE_MODE, false)) return false;
+            long since = prefs.getLong(KEY_SAFE_MODE_SINCE, 0L);
+            if (since > 0 && System.currentTimeMillis() - since > SAFE_MODE_DURATION_MS) {
+                prefs.edit().putBoolean(KEY_SAFE_MODE, false).remove(KEY_SAFE_MODE_SINCE).apply();
+                Log.i(TAG, "safe mode auto-expired after 24h");
+                return false;
+            }
+            return true;
         } catch (Exception e) {
             return false;
         }
@@ -189,7 +209,7 @@ public class MainApplication extends Application {
     public static void exitSafeMode(Context context) {
         try {
             android.content.SharedPreferences prefs = context.getSharedPreferences("crash-sentinel-prefs", MODE_PRIVATE);
-            prefs.edit().putBoolean(KEY_SAFE_MODE, false).apply();
+            prefs.edit().putBoolean(KEY_SAFE_MODE, false).remove(KEY_SAFE_MODE_SINCE).apply();
             CrashSentinel.clearCrashHistory(context);
             Log.i(TAG, "safe mode exited");
         } catch (Exception e) {
