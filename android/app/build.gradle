@@ -1,41 +1,88 @@
 apply plugin: 'com.android.application'
 
-// OPT-06 / REF-05：版本号优先取仓库根 package.json（与 Vite define 的
-// __APP_VERSION__ 同源，避免 Gradle 与前端展示漂移）。
+// OPT-06 / REF-05：App 版本号单一来源 = 仓库根 package.json 的 `version`。
+// 与 Vite define 的 __APP_VERSION__（设置页/关于页展示）同源，避免 Gradle 与前端漂移。
+//
+// 派生规则（唯一权威说明；SRS §6.2「版本号口径」与之同步，改规则须同时改两处）：
+//   versionName = semver 核心 x.y.z（去掉 v 前缀、-prerelease、+build 元数据）
+//   versionCode = x * 10000 + y * 100 + z        // 0.1.0 → 100
+//   ⇒ 约束：y、z ≤ 99（每满 100 必须进位到高位），x ≤ 199（Android 上限 2100000000）
 //
 // REV-33：package.json 不可读（文件缺失、JSON 损坏、构建环境缺少 Groovy JSON
 // 支持等）时回退到下面的字面版本，保证离线/裁剪环境仍可构建。Gradle 解析
 // package.json 使用的是内置 groovy.json.JsonSlurper，不依赖 node；回退分支
 // 通过临时移走 package.json 验证（见 docs/09-后端自测/DEV-05 文档）。
+//
+// OPT-06：回退值必须与 package.json 当前版本保持一致（现为 0.1.0），
+// 否则"可读/不可读"两条构建路径会产出不同 versionCode，覆盖安装会被拒。
 def FALLBACK_VERSION_NAME = '0.1.0'
 def FALLBACK_VERSION_CODE = 100 // 0.1.0 → 100，与 semver 编码规则一致
 
+// versionCode 编码上限（超出即发生版本号碰撞，见上方派生规则）
+def VERSION_CODE_MAJOR_MAX = 199
+def VERSION_CODE_SEGMENT_MAX = 99
+
 def resolveVersion = {
-    def versionName = FALLBACK_VERSION_NAME
-    def versionCode = FALLBACK_VERSION_CODE
+    def pkgFile = rootProject.file('../package.json')
+    if (!pkgFile.exists()) {
+        logger.lifecycle("WARN: package.json not found, fallback to "
+                + "${FALLBACK_VERSION_NAME} (${FALLBACK_VERSION_CODE})")
+        return [FALLBACK_VERSION_NAME, FALLBACK_VERSION_CODE]
+    }
+
+    def rawVersion = ''
+    def parts = null
     try {
-        def pkgFile = rootProject.file('../package.json')
-        if (pkgFile.exists()) {
-            def pkgJson = new groovy.json.JsonSlurper().parseText(pkgFile.text)
-            def semverCore = (pkgJson.version ?: '0.0.0').toString().tokenize('-')[0]
-            def parts = semverCore.tokenize('.').collect { part -> part.isInteger() ? part.toInteger() : 0 }
-            while (parts.size() < 3) { parts << 0 }
-            if (parts[0] > 0 || parts[1] > 0 || parts[2] > 0) {
-                versionName = "${parts[0]}.${parts[1]}.${parts[2]}"
-                // 保证 versionCode 随 semver 单调递增（上架/覆盖安装要求）
-                versionCode = parts[0] * 10000 + parts[1] * 100 + parts[2]
-            } else {
-                logger.lifecycle("WARN: package.json version is empty/zero, fallback to "
-                        + "${FALLBACK_VERSION_NAME} (${FALLBACK_VERSION_CODE})")
-            }
-        } else {
-            logger.lifecycle("WARN: package.json not found, fallback to "
-                    + "${FALLBACK_VERSION_NAME} (${FALLBACK_VERSION_CODE})")
+        def pkgJson = new groovy.json.JsonSlurper().parseText(pkgFile.text)
+        // 兼容 "v1.2.3" 写法；先切预发布（-beta.1）再切构建元数据（+5），
+        // 避免 "0.1.0+5" 被当成第三段 "0+5" 而静默降级成 0.1.0。
+        rawVersion = (pkgJson.version ?: '').toString().trim()
+        def semverCore = rawVersion.tokenize('-')[0].tokenize('+')[0]
+        if (semverCore.startsWith('v') || semverCore.startsWith('V')) {
+            semverCore = semverCore.substring(1)
         }
+        parts = semverCore.tokenize('.').collect { part -> part.isInteger() ? part.toInteger() : -1 }
     } catch (Throwable ignored) {
         logger.lifecycle("WARN: package.json unreadable (" + ignored.getClass().getSimpleName()
                 + "), fallback to ${FALLBACK_VERSION_NAME} (${FALLBACK_VERSION_CODE})")
+        return [FALLBACK_VERSION_NAME, FALLBACK_VERSION_CODE]
     }
+
+    if (parts.isEmpty() || parts.any { it < 0 }) {
+        logger.lifecycle("WARN: package.json version '${rawVersion}' is not semver numeric, fallback to "
+                + "${FALLBACK_VERSION_NAME} (${FALLBACK_VERSION_CODE})")
+        return [FALLBACK_VERSION_NAME, FALLBACK_VERSION_CODE]
+    }
+    while (parts.size() < 3) { parts << 0 }
+    if (parts.size() > 3) {
+        logger.lifecycle("WARN: package.json version '${rawVersion}' has more than 3 segments, "
+                + "only ${parts[0]}.${parts[1]}.${parts[2]} is used")
+        parts = parts.take(3)
+    }
+    if (parts[0] == 0 && parts[1] == 0 && parts[2] == 0) {
+        logger.lifecycle("WARN: package.json version is empty/zero, fallback to "
+                + "${FALLBACK_VERSION_NAME} (${FALLBACK_VERSION_CODE})")
+        return [FALLBACK_VERSION_NAME, FALLBACK_VERSION_CODE]
+    }
+    if (parts[0] > VERSION_CODE_MAJOR_MAX
+            || parts[1] > VERSION_CODE_SEGMENT_MAX
+            || parts[2] > VERSION_CODE_SEGMENT_MAX) {
+        // 不中断构建（回退会让 versionCode 倒退），但必须显式暴露：此时 versionCode 会与
+        // 相邻版本碰撞（如 0.1.100 与 0.2.0 同为 200），上架/覆盖安装会失败。
+        logger.lifecycle("WARN: version '${rawVersion}' exceeds versionCode encoding bounds "
+                + "(major <= ${VERSION_CODE_MAJOR_MAX}, minor/patch <= ${VERSION_CODE_SEGMENT_MAX}); "
+                + "bump major/minor before releasing")
+    }
+
+    def versionName = "${parts[0]}.${parts[1]}.${parts[2]}"
+    if (rawVersion != versionName) {
+        logger.lifecycle("INFO: versionName uses semver core only ('${rawVersion}' -> '${versionName}'); "
+                + "pre-release/build suffix is tracked by __BUILD_TIME__")
+    }
+    // 保证 versionCode 随 semver 单调递增（上架/覆盖安装要求）
+    def versionCode = parts[0] * 10000 + parts[1] * 100 + parts[2]
+    logger.lifecycle("VERSION: versionName=${versionName} versionCode=${versionCode} "
+            + "(source=../package.json '${rawVersion}')")
     return [versionName, versionCode]
 }
 

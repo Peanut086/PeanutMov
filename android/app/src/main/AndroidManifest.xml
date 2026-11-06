@@ -19,7 +19,8 @@
     
     <!-- P0: 网盘账号登录需要写 /sdcard/TVBox/ 目录（TVBox jar 爬虫约定路径） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <!-- AND-05 修复：OPT-06 抬 minSdk 到 29 后，API 29 仍需 WRITE_EXTERNAL_STORAGE 配合 requestLegacyExternalStorage -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
 
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />

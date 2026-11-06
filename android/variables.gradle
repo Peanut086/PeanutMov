@@ -1,5 +1,13 @@
 ext {
-    minSdkVersion = 23
+    // OPT-06（2026-11-06）：minSdk 23 → 29（Android 10），与 SRS §1.4 / NFR-C01 对齐。
+    // 决策依据（代码事实，见 docs/09-后端自测/OPT-06-自测-2026-11-06.md §2）：
+    //   1. 原生层只有 API 26/28/30/34 的 SDK_INT 分支，没有 API 23–28 专有逻辑；
+    //      抬到 29 后 API < 29 的分支成为无害死代码（不删除，避免无谓 diff）。
+    //   2. 业务数据（下载、drpy 规则、爬虫 jar、日志、投递播控临时文件）全部落在
+    //      getFilesDir() 应用私有目录，不依赖 API 28 之前的宽松存储权限。
+    //   3. 唯一的共享存储写入是网盘 cookie（/sdcard/TVBox），本来就要求 API 29 的
+    //      requestLegacyExternalStorage 或 API 30+ 的 MANAGE_EXTERNAL_STORAGE。
+    minSdkVersion = 29
     compileSdkVersion = 35
     targetSdkVersion = 35
     androidxActivityVersion = '1.9.2'
