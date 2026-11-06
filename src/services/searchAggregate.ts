@@ -9,9 +9,11 @@
  * - 组内按 源健康 tier → 延迟 → sort 排序（与 `pickPlayCandidates` 同一口径）；
  * - 相关度排序：精确 > 前缀 > 包含 > 分词包含 > 其它（分值严格递减）。
  */
-import type { MediaItem, SearchResultGroup, SourceHealth } from '@/types';
+import type { AppErrorShape, MediaItem, SearchResultGroup, SourceHealth } from '@/types';
 import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
 import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
+import { classifySourceFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
+import type { SourceFailureKind } from '@/shared/sourceFailure';
 
 /** 组键：归一化根标题 + 年份（缺失为 unknown） */
 function groupKeyOf(title: string, year: number | null): string {
@@ -133,4 +135,101 @@ export function sortByRelevance(items: MediaItem[], keyword: string): MediaItem[
 export function titleDedupKey(title: string, year: number | null): string {
   const normalized = title.trim().toLowerCase().replace(/\s+/g, '');
   return `${normalized}:${year ?? 'unknown'}`;
+}
+
+/* ---------- OPT-04：失败源汇总（结果页「失败源默认折叠」面板的数据来源） ---------- */
+
+/**
+ * 失败原因 → 搜索场景短标签。
+ *
+ * 分类口径唯一：`classifySourceFailure`（`shared/sourceFailure.ts`）；这里只换措辞——
+ * 该模块的 `guidanceOf` 面向「播放失败」，搜索场景的 `unknown` 说「播放失败」会误导。
+ */
+/**
+ * 失败原因短标签（面板「一句话原因」用）
+ *
+ * 与 `@/shared/sourceFailure` 的 `guidanceOf().title` 同一口径，只在措辞上
+ * 压短到面板一行放得下（如「规则脚本异常（源站问题）」→「规则脚本异常」），
+ * 不新增第二套分类。
+ */
+export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
+  source_dead: '源站已失效',
+  timeout: '解析超时',
+  protocol_unsupported: '格式不支持',
+  rule_script: '规则脚本异常',
+  source_internal: '源侧执行异常',
+  auth: '需要登录',
+  unknown: '原因未知',
+};
+
+/** 汇总里最多列几类原因（面板一行放得下；明细行仍逐源可查） */
+export const SEARCH_FAILURE_REASON_LIMIT = 2;
+
+/** 面板明细行（一源一行；`detail` 已收敛脚本内部异常） */
+export interface SearchFailureRow {
+  sourceId: string;
+  kind: SourceFailureKind;
+  label: string;
+  detail: string;
+}
+
+export interface SearchFailureSummary {
+  /** 失败源数（按 sourceId 去重） */
+  total: number;
+  rows: SearchFailureRow[];
+  /** 原因聚类（count 降序，同数保持首次出现顺序） */
+  reasons: Array<{ label: string; count: number }>;
+  /** 一句话原因（如「33 源站已失效 · 5 规则脚本异常」）；无失败为空串 */
+  text: string;
+}
+
+/** 失败源 id 列表（去重、保持首次出现顺序）：只重试这些源，不重查全部 */
+export function failedSourceIds(
+  failures: ReadonlyArray<{ sourceId: string; error: AppErrorShape }>,
+): string[] {
+  return [...new Set(failures.map((failure) => failure.sourceId))];
+}
+
+/**
+ * 失败源汇总：按 sourceId 去重（同一源只算一次，保留最后一次错误），
+ * 再按 `classifySourceFailure` 聚类成一句话。任何输入都不抛错。
+ */
+export function summarizeSearchFailures(
+  failures: ReadonlyArray<{ sourceId: string; error: AppErrorShape }>,
+  opts?: { reasonLimit?: number },
+): SearchFailureSummary {
+  const rowsBySource = new Map<string, SearchFailureRow>();
+  for (const failure of failures) {
+    const error = failure.error;
+    const kind = classifySourceFailure(error);
+    const detail = sanitizeSourceMessage(error?.detail || error?.message);
+    rowsBySource.set(failure.sourceId, {
+      sourceId: failure.sourceId,
+      kind,
+      label: SEARCH_FAILURE_LABELS[kind],
+      detail,
+    });
+  }
+  const rows = [...rowsBySource.values()];
+
+  const counts = new Map<string, { label: string; count: number; order: number }>();
+  rows.forEach((row, index) => {
+    const found = counts.get(row.kind);
+    if (found) found.count += 1;
+    else counts.set(row.kind, { label: row.label, count: 1, order: index });
+  });
+  const reasons = [...counts.values()]
+    .sort((a, b) => (b.count !== a.count ? b.count - a.count : a.order - b.order))
+    .map(({ label, count }) => ({ label, count }));
+
+  const limit = Math.max(0, Math.min(opts?.reasonLimit ?? SEARCH_FAILURE_REASON_LIMIT, reasons.length));
+  return {
+    total: rows.length,
+    rows,
+    reasons,
+    text: reasons
+      .slice(0, limit)
+      .map((reason) => `${reason.count} ${reason.label}`)
+      .join(' · '),
+  };
 }
