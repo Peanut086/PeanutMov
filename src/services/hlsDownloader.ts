@@ -69,6 +69,18 @@ interface HlsPlaylist {
   endList?: boolean;
 }
 
+/**
+ * 清单文档：正文 + 解析基线（FIX-04）
+ *
+ * 清单里的相对引用必须按「302 跟随后的落地地址」解析，因此拉取清单时把基线一并带出，
+ * 而不是在解析处一律使用任务里的原始请求地址。
+ */
+interface ManifestDocument {
+  text: string;
+  /** 解析相对引用应使用的基线地址（302 落地地址；取不到时为请求地址） */
+  baseUrl: string;
+}
+
 /** 并行下载控制 */
 const DEFAULT_PARALLEL_SEGMENTS = 6;
 const MAX_SEGMENT_RETRIES = 2;
@@ -268,6 +280,24 @@ function isLocalhostUrl(url: string): boolean {
 }
 
 /**
+ * 清单解析基线（FIX-04）。
+ *
+ * 清单里的相对引用必须按「302 跟随后的落地地址」解析：签名地址常见
+ * `/master.m3u8 → 302 → /real/dir/index.m3u8`，若仍按原始请求地址取目录，会把
+ * `seg0.ts` 拼成 `/seg0.ts` → 404。
+ *
+ * `response.url` 是运行时自报的落地地址：直连 `fetch` 默认跟随跳转，这里拿到的就是
+ * 跟随后的地址。本机回环代理地址（`127.0.0.1/p/{token}`）只有 token、不含上游路径
+ * 语义，不能当基线；代理路径的落地方向已由原生侧以落地地址为基线改写清单体现
+ * （见 `unwrapPlaylistUrls`），因此回落到请求地址。
+ */
+function manifestBaseUrl(reportedUrl: string | undefined, requestedUrl: string): string {
+  if (!reportedUrl) return requestedUrl;
+  if (isLocalhostUrl(reportedUrl)) return requestedUrl;
+  return /^https?:\/\//i.test(reportedUrl) ? reportedUrl : requestedUrl;
+}
+
+/**
  * 还原本机代理改写过的资源地址。
  *
  * LocalProxy 转发 m3u8 时会把清单内的 URL 改写成 `/p/{token}/{urlencoded}`，
@@ -405,9 +435,10 @@ export class HlsDownloader {
     // 1. 获取并解析播放列表
     let playlist: HlsPlaylist;
     try {
-      const manifest = await this.fetchManifestText(task.url, task.headers, proxyBase, fetchImpl, signal, '获取 m3u8 清单失败');
-      assertSupportedKeyMethods(manifest);
-      playlist = parseM3u8(manifest, task.url);
+      const document = await this.fetchManifestText(task.url, task.headers, proxyBase, fetchImpl, signal, '获取 m3u8 清单失败');
+      assertSupportedKeyMethods(document.text);
+      // 相对引用按拉取到清单时的落地地址解析（302 后目录可能已变）
+      playlist = parseM3u8(document.text, document.baseUrl);
       unwrapPlaylistUrls(playlist, proxyBase);
     } catch (e) {
       if (e instanceof AppError) throw e;
@@ -427,10 +458,10 @@ export class HlsDownloader {
       });
 
       try {
-        const manifest = await this.fetchManifestText(selected.url, task.headers, proxyBase, fetchImpl, signal, '获取 media playlist 失败');
-        assertSupportedKeyMethods(manifest);
-        // 相对地址必须以变体流的原始地址为基准解析（代理返回的清单可能被改写成回环地址）
-        playlist = parseM3u8(manifest, selected.url);
+        const document = await this.fetchManifestText(selected.url, task.headers, proxyBase, fetchImpl, signal, '获取 media playlist 失败');
+        assertSupportedKeyMethods(document.text);
+        // 相对地址以「拉取到子清单的落地地址」为基准解析（代理返回的清单可能被改写成回环地址）
+        playlist = parseM3u8(document.text, document.baseUrl);
         unwrapPlaylistUrls(playlist, proxyBase);
       } catch (e) {
         if (e instanceof AppError) throw e;
@@ -660,6 +691,8 @@ export class HlsDownloader {
    * 优先经本机回环代理：代理侧手动跟随 302，规避 CapacitorHttp 对 3xx 的硬拒绝；
    * 代理不可用、返回非 2xx 或抛错时回退直连（非原生环境本来就只有直连）。
    * 取消信号在两条路径上都生效，避免暂停/取消后仍挂住。
+   *
+   * 返回 `baseUrl`：清单内的相对引用按「302 落地地址」解析（见 `manifestBaseUrl`）。
    */
   private async fetchManifestText(
     url: string,
@@ -668,7 +701,7 @@ export class HlsDownloader {
     fetchImpl: typeof fetch,
     signal: AbortSignal,
     label: string,
-  ): Promise<string> {
+  ): Promise<ManifestDocument> {
     if (signal.aborted) throw new AppError('E_ABORTED');
     if (proxyBase && !isLocalhostUrl(url)) {
       try {
@@ -677,7 +710,9 @@ export class HlsDownloader {
           signal,
           cache: 'no-store',
         });
-        if (response.ok) return await response.text();
+        if (response.ok) {
+          return { text: await response.text(), baseUrl: manifestBaseUrl(response.url, url) };
+        }
         logger.warn('清单代理请求返回非 2xx，回退直连', { url, status: response.status });
       } catch (e) {
         if (signal.aborted) throw new AppError('E_ABORTED');
@@ -691,7 +726,7 @@ export class HlsDownloader {
       cache: 'no-store',
     });
     if (!response.ok) throw this.mapHttpError(response.status, label);
-    return await response.text();
+    return { text: await response.text(), baseUrl: manifestBaseUrl(response.url, url) };
   }
 
   /**
