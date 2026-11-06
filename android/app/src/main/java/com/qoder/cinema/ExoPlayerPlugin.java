@@ -1,6 +1,7 @@
 package com.qoder.cinema;
 
 import android.app.PictureInPictureParams;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Handler;
@@ -13,13 +14,16 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import androidx.annotation.OptIn;
+import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
+import androidx.media3.common.TrackGroup;
+import androidx.media3.common.TrackSelectionOverride;
+import androidx.media3.common.TrackSelectionParameters;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.common.Format;
-import androidx.media3.common.TrackGroup;
 import androidx.media3.common.Tracks;
 import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
@@ -80,6 +84,30 @@ public class ExoPlayerPlugin extends Plugin {
     private java.util.List<JSObject> videoTracks = new java.util.ArrayList<>();
     /** v1.8 优化：字幕轨列表 */
     private java.util.List<JSObject> textTracks = new java.util.ArrayList<>();
+    /** EXT-07：音轨列表（语言/名称/声道数） */
+    private java.util.List<JSObject> audioTracks = new java.util.ArrayList<>();
+    /**
+     * EXT-07：轨道选择引用。
+     *
+     * 上报给 JS 的 `id` 是本列表下标（顺序索引与列表一致）；
+     * `TrackSelectionOverride` 需要原始 `TrackGroup` + 组内下标，所以两份都留。
+     */
+    private java.util.List<TrackRef> textTrackRefs = new java.util.ArrayList<>();
+    private java.util.List<TrackRef> audioTrackRefs = new java.util.ArrayList<>();
+    /** 当前选中的字幕/音轨 id；-1 = 字幕关闭 / 音轨未知 */
+    private int activeTextId = -1;
+    private int activeAudioId = -1;
+
+    /** 轨道引用（TrackGroup + 组内下标） */
+    private static final class TrackRef {
+        final TrackGroup group;
+        final int index;
+
+        TrackRef(TrackGroup group, int index) {
+            this.group = group;
+            this.index = index;
+        }
+    }
     /** v1.8 优化：播放质量指标 */
     private long bufferEvents = 0;
     private long bufferDurationMs = 0;
@@ -201,9 +229,15 @@ public class ExoPlayerPlugin extends Plugin {
                         // v1.8 优化：提取视频轨列表（清晰度切换）
                         videoTracks.clear();
                         textTracks.clear();
+                        audioTracks.clear();
+                        textTrackRefs.clear();
+                        audioTrackRefs.clear();
+                        activeTextId = -1;
+                        activeAudioId = -1;
                         for (int groupIndex = 0; groupIndex < tracks.getGroups().size(); groupIndex++) {
                             Tracks.Group group = tracks.getGroups().get(groupIndex);
-                            if (group.getMediaTrackGroup().type == androidx.media3.common.C.TRACK_TYPE_VIDEO) {
+                            int trackType = group.getMediaTrackGroup().type;
+                            if (trackType == C.TRACK_TYPE_VIDEO) {
                                 for (int i = 0; i < group.length; i++) {
                                     if (group.isTrackSupported(i)) {
                                         Format f = group.getTrackFormat(i);
@@ -218,29 +252,62 @@ public class ExoPlayerPlugin extends Plugin {
                                         }
                                     }
                                 }
-                            } else if (group.getMediaTrackGroup().type == androidx.media3.common.C.TRACK_TYPE_TEXT) {
+                            } else if (trackType == C.TRACK_TYPE_TEXT) {
+                                // EXT-07：字幕轨（语言/名称），id = 顺序下标，切换时原样回传
                                 for (int i = 0; i < group.length; i++) {
-                                    if (group.isTrackSupported(i)) {
-                                        Format f = group.getTrackFormat(i);
-                                        JSObject track = new JSObject();
-                                        track.put("id", textTracks.size());
-                                        track.put("label", f.language != null ? f.language : "字幕 " + (textTracks.size() + 1));
-                                        track.put("mimeType", f.sampleMimeType);
-                                        textTracks.add(track);
-                                    }
+                                    if (!group.isTrackSupported(i)) continue;
+                                    Format f = group.getTrackFormat(i);
+                                    boolean selected = group.isTrackSelected(i);
+                                    JSObject track = new JSObject();
+                                    track.put("id", textTracks.size());
+                                    track.put("label", trackLabel(f, textTracks.size(), true));
+                                    track.put("language", (Object) f.language);
+                                    track.put("mimeType", (Object) f.sampleMimeType);
+                                    track.put("selected", selected);
+                                    textTracks.add(track);
+                                    textTrackRefs.add(new TrackRef(group.getMediaTrackGroup(), i));
+                                    if (selected) activeTextId = textTracks.size() - 1;
+                                }
+                            } else if (trackType == C.TRACK_TYPE_AUDIO) {
+                                // EXT-07：音轨（语言/名称/声道数）
+                                for (int i = 0; i < group.length; i++) {
+                                    if (!group.isTrackSupported(i)) continue;
+                                    Format f = group.getTrackFormat(i);
+                                    boolean selected = group.isTrackSelected(i);
+                                    JSObject track = new JSObject();
+                                    track.put("id", audioTracks.size());
+                                    track.put("label", trackLabel(f, audioTracks.size(), false));
+                                    track.put("language", (Object) f.language);
+                                    track.put("mimeType", (Object) f.sampleMimeType);
+                                    track.put("channels", f.channelCount);
+                                    track.put("selected", selected);
+                                    audioTracks.add(track);
+                                    audioTrackRefs.add(new TrackRef(group.getMediaTrackGroup(), i));
+                                    if (selected) activeAudioId = audioTracks.size() - 1;
                                 }
                             }
                         }
+                        // 同名轨道加序号：菜单里不允许出现两条一模一样的「中文」
+                        dedupeLabels(textTracks);
+                        dedupeLabels(audioTracks);
                         // 通知 JS 侧清晰度列表更新
                         JSObject data = new JSObject();
                         data.put("state", "qualities");
                         data.put("qualities", new JSArray(videoTracks));
                         notifyListeners("exostate", data);
-                        // 通知 JS 侧字幕列表更新
+                        // 通知 JS 侧字幕列表更新（兼容既有载荷）
                         JSObject subData = new JSObject();
                         subData.put("state", "textTracks");
                         subData.put("textTracks", new JSArray(textTracks));
                         notifyListeners("exostate", subData);
+                        // EXT-07：字幕 + 音轨 + 双方选中项一次下发
+                        JSObject tracksData = new JSObject();
+                        tracksData.put("state", "embeddedTracks");
+                        tracksData.put("textTracks", new JSArray(textTracks));
+                        tracksData.put("audioTracks", new JSArray(audioTracks));
+                        tracksData.put("activeTextId", activeTextId);
+                        tracksData.put("activeAudioId", activeAudioId);
+                        notifyListeners("exostate", tracksData);
                     }
                 });
                 // v1.8/CHG-25：丢帧计数（AC-125 转正门槛的量化指标）
@@ -388,33 +455,83 @@ public class ExoPlayerPlugin extends Plugin {
         });
     }
 
-    /** v1.8 优化：获取字幕轨列表 */
+    /** v1.8 优化：获取字幕轨列表（EXT-07 追加当前选中项） */
     @PluginMethod
     public void getTextTracks(PluginCall call) {
         JSObject result = new JSObject();
         result.put("textTracks", new JSArray(textTracks));
+        result.put("activeTextId", activeTextId);
         call.resolve(result);
     }
 
-    /** v1.8 优化：切换字幕轨（-1 表示关闭） */
+    /**
+     * EXT-07：切换内嵌字幕轨（-1 = 关闭字幕）。
+     *
+     * 旧实现用 `setPreferredTextLanguage(label)`：label 是中/英文显示名而非语言码，
+     * 且无「关闭」路径。这里改为基于 `TrackGroup` 的精确覆盖选择：
+     * - 选中：`setOverrideForType(new TrackSelectionOverride(group, index))` + 重新启用 TEXT 类型
+     * - 关闭：`setTrackTypeDisabled(TEXT, true)` + 清空 TEXT 覆盖
+     */
     @PluginMethod
     public void setTextTrack(PluginCall call) {
         Integer id = call.getInt("id");
         getBridge().executeOnMainThread(() -> {
-            if (player != null && id != null && id >= 0 && id < textTracks.size()) {
-                // 简化实现：通过 TrackSelectionParameters 选择字幕轨
-                // 注意：Media3 的字幕轨选择 API 较复杂，这里只做基础实现
-                try {
-                    androidx.media3.common.TrackSelectionParameters params = player.getTrackSelectionParameters()
-                            .buildUpon()
-                            .setPreferredTextLanguage(textTracks.get(id).getString("label", "zh"))
-                            .build();
-                    player.setTrackSelectionParameters(params);
-                } catch (Exception e) {
-                    // 字幕轨切换失败不影响播放
+            if (player == null || id == null) {
+                call.resolve();
+                return;
+            }
+            try {
+                TrackSelectionParameters.Builder builder = player.getTrackSelectionParameters().buildUpon();
+                builder.clearOverridesOfType(C.TRACK_TYPE_TEXT);
+                if (id < 0) {
+                    builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true);
+                } else if (id < textTrackRefs.size()) {
+                    TrackRef ref = textTrackRefs.get(id);
+                    builder.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false);
+                    builder.setOverrideForType(new TrackSelectionOverride(ref.group, ref.index));
                 }
+                player.setTrackSelectionParameters(builder.build());
+            } catch (Exception e) {
+                // 字幕切换失败不影响播放（与旧实现同口径）
+                Log.w("ExoPlayerPlugin", "setTextTrack failed: " + e.getMessage());
             }
             call.resolve();
+        });
+    }
+
+    /** EXT-07：获取音轨列表 + 当前选中项 */
+    @PluginMethod
+    public void getAudioTracks(PluginCall call) {
+        JSObject result = new JSObject();
+        result.put("audioTracks", new JSArray(audioTracks));
+        result.put("activeAudioId", activeAudioId);
+        call.resolve(result);
+    }
+
+    /** EXT-07：切换内嵌音轨（基于 TrackGroup 精确覆盖） */
+    @PluginMethod
+    public void setAudioTrack(PluginCall call) {
+        Integer id = call.getInt("id");
+        getBridge().executeOnMainThread(() -> {
+            if (player == null || id == null) {
+                call.resolve();
+                return;
+            }
+            if (id < 0 || id >= audioTrackRefs.size()) {
+                call.reject("invalid audio track id: " + id);
+                return;
+            }
+            try {
+                TrackRef ref = audioTrackRefs.get(id);
+                TrackSelectionParameters.Builder builder = player.getTrackSelectionParameters().buildUpon();
+                builder.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false);
+                builder.clearOverridesOfType(C.TRACK_TYPE_AUDIO);
+                builder.setOverrideForType(new TrackSelectionOverride(ref.group, ref.index));
+                player.setTrackSelectionParameters(builder.build());
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("switch audio track failed: " + e.getMessage());
+            }
         });
     }
 
@@ -444,17 +561,50 @@ public class ExoPlayerPlugin extends Plugin {
         });
     }
 
-    /** v1.8 优化：进入画中画模式 */
+    /** EXT-07：画中画能力探测（Android 8.0+ 且系统声明 FEATURE_PICTURE_IN_PICTURE） */
+    @PluginMethod
+    public void isPipSupported(PluginCall call) {
+        boolean supported = false;
+        try {
+            supported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    && getContext().getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+                    && getActivity() != null;
+        } catch (Exception e) {
+            supported = false;
+        }
+        JSObject result = new JSObject();
+        result.put("supported", supported);
+        call.resolve(result);
+    }
+
+    /** EXT-07：当前 Activity 是否处于画中画（JS 侧轮询该值同步按钮态/退出恢复） */
+    @PluginMethod
+    public void isPipActive(PluginCall call) {
+        getBridge().executeOnMainThread(() -> {
+            boolean active = false;
+            try {
+                active = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                        && getActivity() != null
+                        && getActivity().isInPictureInPictureMode();
+            } catch (Exception e) {
+                active = false;
+            }
+            JSObject result = new JSObject();
+            result.put("active", active);
+            call.resolve(result);
+        });
+    }
+
+    /** v1.8 优化 / EXT-07：进入画中画模式（宽高比按视频尺寸推导并限幅 16:9 / 4:3） */
     @PluginMethod
     public void enterPip(PluginCall call) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             getBridge().executeOnMainThread(() -> {
                 try {
-                    Rational aspectRatio = new Rational(16, 9);
-                    PictureInPictureParams params = new PictureInPictureParams.Builder()
-                            .setAspectRatio(aspectRatio)
-                            .build();
-                    getActivity().enterPictureInPictureMode(params);
+                    PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder();
+                    int[] size = currentVideoSize();
+                    if (size != null) builder.setAspectRatio(pipAspectRatio(size[0], size[1]));
+                    getActivity().enterPictureInPictureMode(builder.build());
                     call.resolve();
                 } catch (Exception e) {
                     call.reject("进入画中画失败: " + e.getMessage());
@@ -511,6 +661,13 @@ public class ExoPlayerPlugin extends Plugin {
 
     private void releasePlayerQuietly() {
         cancelWatchdog();
+        // EXT-07：轨道引用指向已释放播放器的 TrackGroup，必须一起清掉
+        textTracks.clear();
+        audioTracks.clear();
+        textTrackRefs.clear();
+        audioTrackRefs.clear();
+        activeTextId = -1;
+        activeAudioId = -1;
         if (player != null) {
             try {
                 player.release();
@@ -518,6 +675,94 @@ public class ExoPlayerPlugin extends Plugin {
             }
             player = null;
         }
+    }
+
+    /* ---------- EXT-07：轨道显示名 ---------- */
+
+    /** 语言码 → 中文显示名（未收录回落原始码大写；未知/und 返回 null） */
+    private static String languageName(String language) {
+        if (language == null) return null;
+        String key = language.trim().toLowerCase(java.util.Locale.ROOT).replace('_', '-');
+        if (key.isEmpty() || "und".equals(key)) return null;
+        if (key.length() > 2 && key.charAt(2) == '-') key = key.substring(0, 2);
+        switch (key) {
+            case "zh": return "中文";
+            case "en": return "英语";
+            case "ja": return "日语";
+            case "ko": return "韩语";
+            case "fr": return "法语";
+            case "de": return "德语";
+            case "es": return "西班牙语";
+            case "ru": return "俄语";
+            case "it": return "意大利语";
+            case "pt": return "葡萄牙语";
+            case "th": return "泰语";
+            case "vi": return "越南语";
+            case "id": return "印尼语";
+            case "ms": return "马来语";
+            case "ar": return "阿拉伯语";
+            case "hi": return "印地语";
+            case "tr": return "土耳其语";
+            default: return language.trim().toUpperCase(java.util.Locale.ROOT);
+        }
+    }
+
+    /**
+     * 轨道显示名：码流自带 NAME（HLS EXT-X-MEDIA NAME 等）优先，
+     * 其次语言中文名，最后「字幕 N / 音轨 N」兜底（异常数据不留空标签）。
+     */
+    private static String trackLabel(Format format, int index, boolean text) {
+        String fallback = (text ? "字幕 " : "音轨 ") + (index + 1);
+        if (format.label != null && !format.label.trim().isEmpty()) return format.label.trim();
+        String lang = languageName(format.language);
+        return lang != null ? lang : fallback;
+    }
+
+    /** 同名轨道追加序号，避免菜单里出现两条无法区分的中文轨 */
+    private static void dedupeLabels(java.util.List<JSObject> tracks) {
+        java.util.Map<String, Integer> seen = new java.util.HashMap<>();
+        for (JSObject track : tracks) {
+            String label = track.getString("label", "");
+            int count = seen.containsKey(label) ? seen.get(label) + 1 : 1;
+            seen.put(label, count);
+            if (count > 1) track.put("label", label + " " + count);
+        }
+    }
+
+    /* ---------- EXT-07：画中画比例 ---------- */
+
+    /** 当前选中视频轨的宽高（拿不到返回 null） */
+    private int[] currentVideoSize() {
+        if (player == null) return null;
+        try {
+            Tracks tracks = player.getCurrentTracks();
+            for (Tracks.Group group : tracks.getGroups()) {
+                if (group.getMediaTrackGroup().type != C.TRACK_TYPE_VIDEO) continue;
+                for (int i = 0; i < group.length; i++) {
+                    if (!group.isTrackSelected(i)) continue;
+                    Format f = group.getTrackFormat(i);
+                    if (f.width > 0 && f.height > 0) return new int[]{f.width, f.height};
+                }
+            }
+        } catch (Exception e) {
+            Log.w("ExoPlayerPlugin", "currentVideoSize failed: " + e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * PiP 宽高比：四舍五入到最接近的 16:9 / 4:3（系统对 PiP 比例有上下限，
+     * 直接传 2.35:1 之类的宽银幕比例会被裁剪），竖屏视频取倒数。
+     */
+    private static Rational pipAspectRatio(int width, int height) {
+        boolean portrait = height > width;
+        int longSide = Math.max(width, height);
+        int shortSide = Math.min(width, height);
+        double aspect = shortSide > 0 ? (double) longSide / shortSide : 16.0 / 9.0;
+        boolean fourThree = Math.abs(aspect - 4.0 / 3.0) < Math.abs(aspect - 16.0 / 9.0);
+        int rw = fourThree ? 4 : 16;
+        int rh = fourThree ? 3 : 9;
+        return portrait ? new Rational(rh, rw) : new Rational(rw, rh);
     }
 
     private void startWatchdog() {

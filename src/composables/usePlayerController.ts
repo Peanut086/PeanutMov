@@ -58,6 +58,8 @@ export interface UsePlayerControllerOptions {
     title: string;
     posterUrl: string | null;
     totalEpisodes: number | null;
+    /** REV-24：媒体快照 */
+    mediaSnapshot?: SaveProgressInput['mediaSnapshot'];
   } | null;
 }
 
@@ -261,6 +263,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
             positionSec: snapshot.positionSec,
             durationSec: snapshot.durationSec,
             totalEpisodes: desc.totalEpisodes,
+            // REV-24：媒体快照，用于缓存清理后自愈
+            mediaSnapshot: desc.mediaSnapshot,
           });
         } catch (e) {
           // 写库失败只记录，不打断播放（下次采样会重试）

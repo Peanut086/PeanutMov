@@ -24,6 +24,7 @@ import type {
   SubtitleSettings,
 } from '@/types';
 import type { PlayerLoadOptions } from '@/player/types';
+import { emptyEmbeddedTracks, type EmbeddedTrackState } from '@/player/PlayerController';
 import { shouldIgnoreShortcut } from '@/player/shortcutGuard';
 import { formatClock } from '@/shared/time';
 import { toErrorShape } from '@/shared/errors';
@@ -37,6 +38,8 @@ import GestureHelpOverlay from '@/components/player/GestureHelpOverlay.vue';
 import PlayerHud from '@/components/player/PlayerHud.vue';
 import SpeedSheet from '@/components/player/SpeedSheet.vue';
 import SubtitleSheet from '@/components/player/SubtitleSheet.vue';
+import SubtitleTrackMenu from '@/components/player/SubtitleTrackMenu.vue';
+import AudioTrackMenu from '@/components/player/AudioTrackMenu.vue';
 import QualitySheet from '@/components/player/QualitySheet.vue';
 import DisplayModeSheet from '@/components/player/DisplayModeSheet.vue';
 import PlayerErrorPanel from '@/components/player/PlayerErrorPanel.vue';
@@ -53,6 +56,7 @@ import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
 import { useLibraryStore } from '@/stores/libraryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useSourceStore } from '@/stores/sourceStore';
 import { castService } from '@/services/castService';
 import { useBackButton } from '@/composables/useBackButton';
 import { usePlayerController } from '@/composables/usePlayerController';
@@ -67,6 +71,7 @@ import { brightnessToDimOpacity, dimOpacityToBrightness } from '@/player/brightn
 import { PLAYER_FAILOVER_WINDOW_MS } from '@/shared/constants';
 import { localProxyUrl } from '@/native/localProxy';
 import { pipService } from '@/native/pipService';
+import { onAppStateChange } from '@/native/appLifecycle';
 import { libraryService } from '@/services/libraryService';
 import { sourceService } from '@/services/sourceService';
 import { pickPlayCandidates } from '@/sources/douban/playMatch';
@@ -79,6 +84,7 @@ const history = useHistoryStore();
 const favorites = useFavoriteStore();
 const downloads = useDownloadStore();
 const settings = useSettingsStore();
+const sources = useSourceStore();
 const ui = useUiStore();
 const toast = useToast();
 
@@ -95,6 +101,43 @@ const loadError = ref<string | null>(null);
 /** P0-1/P1-4：解析失败的结构化错误（分类 + 磁力地址需要 detail，字符串不够用） */
 const loadErrorShape = ref<AppErrorShape | null>(null);
 const pageLoading = ref(true);
+
+/**
+ * REV-24：详情加载失败时，区分三种场景并给出可恢复的提示：
+ * - 源已移除：sourceRepo 找不到该 sourceId → 明确告知，提供删除记录入口
+ * - 缓存已清理：media 缺失但源存在 → 提示需要联网或内容已下线
+ * - 内容下线：源存在但 adapter 报 E_NOT_FOUND → 提示内容已从源中移除
+ */
+const detailErrorKind = computed<'source-removed' | 'cache-cleared' | 'content-gone' | null>(() => {
+  if (library.detailState !== 'error' || !library.error) return null;
+  const code = library.error.code;
+  if (code !== 'E_NOT_FOUND' && code !== 'E_SOURCE_UNAVAILABLE') return null;
+
+  // 从历史记录中查找该 mediaId 对应的 sourceId
+  const historyRecord = history.items.find((r) => r.mediaId === mediaId.value);
+  if (!historyRecord) return 'content-gone'; // 无历史记录 → 内容下线
+
+  const source = sources.sources.find((s) => s.id === historyRecord.sourceId);
+  if (!source) return 'source-removed'; // 源不存在 → 源已移除
+
+  return 'cache-cleared'; // 源存在但 media 缺失 → 缓存已清理
+});
+
+/** REV-24：详情失败时的上下文文案（覆盖全局 E_NOT_FOUND 的 "资源不存在(404)"） */
+const detailErrorMessage = computed(() => {
+  const kind = detailErrorKind.value;
+  if (kind === 'source-removed') return '该源已被移除，无法继续播放';
+  if (kind === 'cache-cleared') return '本地缓存已清理，恢复失败（需要联网或内容已下线）';
+  if (kind === 'content-gone') return '该内容已从源中下线';
+  return loadError.value;
+});
+
+/** REV-24：详情失败时的标题兜底（从历史记录取 title，不再显示"播放"） */
+const fallbackTitle = computed(() => {
+  if (item.value?.title) return item.value.title;
+  const record = history.items.find((r) => r.mediaId === mediaId.value);
+  return record?.title ?? '播放';
+});
 
 const item = computed(() => library.detail?.item ?? null);
 const lines = computed(() => library.detail?.lines ?? []);
@@ -232,6 +275,14 @@ const playerCtl = usePlayerController({
       title: it.title,
       posterUrl: it.posterUrl,
       totalEpisodes: episodes.value.length > 0 ? episodes.value.length : null,
+      // REV-24：媒体快照，用于缓存清理后自愈
+      mediaSnapshot: {
+        sourceItemId: it.sourceItemId,
+        type: it.type,
+        year: it.year,
+        episodeCount: it.episodeCount,
+        originalTitle: it.originalTitle,
+      },
     };
   },
 });
@@ -268,11 +319,15 @@ const {
   cancelAutoNext,
   resumeFromBackground,
   pauseAutoHide,
+  setControlsVisible,
 } = playerCtl;
 
 /* ---------- 面板 ---------- */
 const speedOpen = ref(false);
 const subtitleOpen = ref(false);
+// EXT-07：内嵌字幕轨 / 音轨菜单（与原「字幕」面板相互独立）
+const subtitleTrackOpen = ref(false);
+const audioTrackOpen = ref(false);
 const qualityOpen = ref(false);
 const displayModeOpen = ref(false);
 const episodeOpen = ref(false);
@@ -292,7 +347,7 @@ function closeGestureHelp(): void {
 
 /** P1-3：任一面板打开时暂停控制条自动隐藏 */
 watch(
-  () => [speedOpen.value, subtitleOpen.value, qualityOpen.value, displayModeOpen.value, episodeOpen.value, moreOpen.value, pickerOpen.value, gestureHelpVisible.value],
+  () => [speedOpen.value, subtitleOpen.value, subtitleTrackOpen.value, audioTrackOpen.value, qualityOpen.value, displayModeOpen.value, episodeOpen.value, moreOpen.value, pickerOpen.value, gestureHelpVisible.value],
   (states) => {
     if (states.some(Boolean)) {
       pauseAutoHide();
@@ -401,6 +456,50 @@ async function preparePlayback(playback: PlaybackSource): Promise<PlaybackSource
  * 既不能把错误面板盖到新画面上，也不能让慢的旧任务反过来顶掉新任务。
  */
 let loadEpoch = 0;
+
+/**
+ * REV-24：详情加载失败但本地有下载完成的任务时，直接加载本地播放。
+ * 不走 resolveAndLoad（它依赖 item/episodes），而是直接构造播放参数。
+ */
+async function loadLocalPlay(
+  playback: PlaybackSource,
+  title: string,
+  posterUrl: string | null,
+  episodeId: string,
+): Promise<void> {
+  pageLoading.value = true;
+  loadError.value = null;
+  startLoadingHint();
+  try {
+    const prepared = await preparePlayback(playback);
+    currentPlayback.value = prepared;
+    // 从历史记录获取起播位置
+    const record = history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === episodeId);
+    let start = 0;
+    if (record && !restart.value) {
+      start = record.positionSec;
+    }
+    if (stageRef.value && !controller.value) {
+      createController(stageRef.value);
+    }
+    await controller.value?.load({
+      url: prepared.url,
+      headers: prepared.headers,
+      subtitles: prepared.subtitles,
+      format: prepared.format,
+      startSec: start,
+      title,
+      posterUrl,
+      episodeLabel: `第 ? 集`, // 本地播放时不知道集号，用占位
+    });
+  } catch (e) {
+    if (isCanceled(e)) return;
+    loadError.value = toErrorShape(e, 'E_NO_PLAY_URL').message;
+  } finally {
+    pageLoading.value = false;
+    clearLoadingHint();
+  }
+}
 
 /**
  * 解析并加载当前集/线路。
@@ -512,7 +611,8 @@ async function resolveAndLoad(): Promise<boolean> {
 
 onMounted(async () => {
   void detectCastSupport();
-  await Promise.all([settings.load(), history.load(), favorites.load(), downloads.load()]);
+  // REV-24：sources 用于详情失败时判断源是否存在
+  await Promise.all([settings.load(), history.load(), favorites.load(), downloads.load(), sources.load()]);
   // P1-4：记忆音量/亮度
   if (settings.player?.rememberVolumeBrightness) {
     player.patch({
@@ -523,11 +623,33 @@ onMounted(async () => {
   await library.loadDetail(mediaId.value);
   detailReady.value = true;
   if (library.detailState === 'error') {
+    // REV-24：详情失败但本地有下载完成的任务时，允许直接本地播放
+    const episodeId = route.params.episodeId as string | undefined;
+    if (episodeId) {
+      const localPlay = await downloadService.findLocalPlay(mediaId.value, episodeId);
+      if (localPlay) {
+        // 本地播放可用，跳过详情加载错误，直接进入播放
+        if (stageRef.value) createController(stageRef.value);
+        // 构造一个最小化的 item 描述用于进度写回
+        const record = history.items.find((r) => r.mediaId === mediaId.value);
+        if (record) {
+          // 直接调用 resolveAndLoad 会失败（因为 item 为 null），
+          // 所以这里手动构造播放参数
+          pageLoading.value = false;
+          loadError.value = null;
+          // 直接加载本地播放地址
+          await loadLocalPlay(localPlay, record.title, record.posterUrl, episodeId);
+          return;
+        }
+      }
+    }
     loadError.value = library.error?.message ?? '详情加载失败';
     pageLoading.value = false;
     return;
   }
   if (stageRef.value) createController(stageRef.value);
+  // EXT-07：控制器建好后订阅内嵌轨道状态（切集由控制器自己重置）
+  bindEmbeddedTracks();
   await resolveAndLoad();
   // AC-68：记录集号已下线时明确提示，而不是静默从第 1 集起播
   announceOfflineEpisode();
@@ -550,7 +672,7 @@ onBeforeUnmount(() => {
 });
 
 /* ---------- 标题/集标签 ---------- */
-const titleText = computed(() => item.value?.title ?? '播放');
+const titleText = computed(() => fallbackTitle.value);
 const episodeLabel = computed(() => {
   const ep = currentEpisode.value;
   if (!ep) return '';
@@ -590,6 +712,15 @@ useBackButton({
 
 function openDetail(): void {
   void router.replace({ name: 'detail', params: { mediaId: mediaId.value } });
+}
+
+/** REV-24：源已移除时，删除该历史记录并返回首页 */
+async function removeHistoryAndGoBack(): Promise<void> {
+  const record = history.items.find((r) => r.mediaId === mediaId.value);
+  if (record) {
+    await history.remove(record.id);
+  }
+  void router.replace({ name: 'home' });
 }
 
 /* ---------- 切换线路（AC-31 保持集号 / AC-55 失败回退原线路） ---------- */
@@ -1076,8 +1207,188 @@ async function toggleDanmaku(): Promise<void> {
 
 /** v1.8 修复：原生引擎 surface 移到 WebView 之下，DOM 层（弹幕/字幕）可见，无需互斥 */
 
-/** v1.8 修复：字幕面板入口——原生引擎下 DOM 层可见，无需互斥 */
+/* ---------- EXT-07：内嵌字幕 / 音轨（原生引擎） ---------- */
+
+/**
+ * 音轨偏好的本地存储 key。
+ *
+ * `settings.player` 契约没有音频字段（不在本次可改范围），按仓库既有先例
+ * （如 `shared/healthTier` 的排序偏好）先存 localStorage，并已在自测记录里
+ * 列为「待协调：迁移到 settings schema」。字幕偏好走 settings 的 `preferredLang`。
+ */
+const AUDIO_LANG_STORAGE_KEY = 'peanutmov.player.audio-language';
+
+const embeddedTracks = ref<EmbeddedTrackState>(emptyEmbeddedTracks());
+const tracksLoading = ref(false);
+const tracksError = ref<string | null>(null);
+/** 本集是否已应用过偏好（同一集内不再覆盖用户的手动选择） */
+let trackPrefsAppliedFor: string | null = null;
+let detachTrackSubscription: (() => void) | null = null;
+
+const engineIsNative = computed(() => player.engineKind === 'native');
+const activeAudioTrack = computed(
+  () => embeddedTracks.value.audio.find((t) => t.id === embeddedTracks.value.activeAudioId) ?? null,
+);
+/** 沉浸态浮动音轨入口文案：有选中轨时带名称 */
+const audioChipLabel = computed(() =>
+  activeAudioTrack.value ? `音轨 · ${activeAudioTrack.value.label}` : '音轨',
+);
+
+/** 订阅控制器轨道状态（控制器在 onMounted 里创建，创建后调用一次） */
+function bindEmbeddedTracks(): void {
+  const c = playerCtl.controller.value;
+  if (!c || detachTrackSubscription) return;
+  embeddedTracks.value = c.getEmbeddedTracks();
+  detachTrackSubscription = c.onEmbeddedTracksChange((state) => {
+    embeddedTracks.value = state;
+    if (state.loaded) {
+      tracksLoading.value = false;
+      tracksError.value = null;
+    }
+  });
+}
+
+function readAudioLanguagePref(): string | null {
+  try {
+    return globalThis.localStorage?.getItem(AUDIO_LANG_STORAGE_KEY) ?? null;
+  } catch {
+    // localStorage 不可用（隐私模式/配额满）→ 无偏好
+    return null;
+  }
+}
+
+function writeAudioLanguagePref(value: string): void {
+  try {
+    globalThis.localStorage?.setItem(AUDIO_LANG_STORAGE_KEY, value);
+  } catch {
+    // 写失败不影响本次会话内已生效的切换
+  }
+}
+
+/** 偏好作用域：按集（同一影片切集也重新应用一次） */
+function trackPrefsKey(): string {
+  return `${mediaId.value}:${currentEpisode.value?.id ?? ''}`;
+}
+
+/**
+ * 起播后应用一次偏好：
+ * - 字幕：`settings.player.subtitle.preferredLang`（语言码；null = 上次主动关闭）
+ * - 音轨：localStorage 里的语言码（无语言码时按标签匹配）
+ * 只在「本集尚未应用过」时执行，避免每次轨道回调都覆盖用户手动选择。
+ */
+async function applyTrackPreferencesOnce(): Promise<void> {
+  const c = playerCtl.controller.value;
+  if (!c || !engineIsNative.value || !embeddedTracks.value.loaded) return;
+  const key = trackPrefsKey();
+  if (trackPrefsAppliedFor === key) return;
+  trackPrefsAppliedFor = key;
+
+  const textLang = subtitleSettings.value.preferredLang;
+  if (textLang && embeddedTracks.value.activeTextId === null) {
+    const hit = embeddedTracks.value.text.find((t) => t.language === textLang);
+    if (hit) {
+      try {
+        await c.setEmbeddedSubtitleTrack(hit.id);
+      } catch {
+        // 旧安装包无此能力：保持播放器默认字幕
+      }
+    }
+  }
+
+  const audioLang = readAudioLanguagePref();
+  if (audioLang && embeddedTracks.value.audio.length > 0) {
+    const hit =
+      embeddedTracks.value.audio.find((t) => t.language === audioLang) ??
+      embeddedTracks.value.audio.find((t) => t.label === audioLang);
+    if (hit && hit.id !== embeddedTracks.value.activeAudioId) {
+      try {
+        await c.setAudioTrack(hit.id);
+      } catch {
+        // 同上：失败不打断播放
+      }
+    }
+  }
+}
+
+watch(embeddedTracks, () => void applyTrackPreferencesOnce());
+
+async function refreshEmbeddedTracks(): Promise<void> {
+  const c = playerCtl.controller.value;
+  if (!c) {
+    tracksLoading.value = false;
+    return;
+  }
+  try {
+    await c.refreshEmbeddedTracks();
+    embeddedTracks.value = c.getEmbeddedTracks();
+    tracksError.value = null;
+  } catch (e) {
+    tracksError.value = toErrorShape(e, 'E_NOT_IMPLEMENTED').message;
+  } finally {
+    tracksLoading.value = false;
+  }
+}
+
+async function openEmbeddedSubtitleMenu(): Promise<void> {
+  subtitleTrackOpen.value = true;
+  tracksError.value = null;
+  if (!embeddedTracks.value.loaded) tracksLoading.value = true;
+  await refreshEmbeddedTracks();
+}
+
+async function openEmbeddedAudioMenu(): Promise<void> {
+  audioTrackOpen.value = true;
+  tracksError.value = null;
+  if (!embeddedTracks.value.loaded) tracksLoading.value = true;
+  await refreshEmbeddedTracks();
+}
+
+async function onSelectEmbeddedSubtitle(id: number | null): Promise<void> {
+  const c = playerCtl.controller.value;
+  if (!c) return;
+  try {
+    await c.setEmbeddedSubtitleTrack(id);
+    const track = id === null ? null : embeddedTracks.value.text.find((t) => t.id === id) ?? null;
+    localSubtitles.value = { ...localSubtitles.value, enabled: id !== null };
+    // 记住偏好：语言码；「关闭字幕」落 null，下次起播保持关闭
+    void settings
+      .update({ player: { subtitle: { ...subtitleSettings.value, preferredLang: track?.language ?? null } } })
+      .catch(() => undefined);
+    toast.info(track ? `已切换字幕：${track.label}` : '字幕已关闭', 1500);
+  } catch (e) {
+    toast.info(toErrorShape(e, 'E_NOT_IMPLEMENTED').message);
+  }
+}
+
+async function onSelectAudioTrack(id: number): Promise<void> {
+  const c = playerCtl.controller.value;
+  if (!c) return;
+  const track = embeddedTracks.value.audio.find((t) => t.id === id) ?? null;
+  try {
+    await c.setAudioTrack(id);
+    if (track) {
+      writeAudioLanguagePref(track.language ?? track.label);
+      toast.info(`已切换音轨：${track.label}`, 1500);
+    }
+  } catch (e) {
+    toast.info(toErrorShape(e, 'E_NOT_IMPLEMENTED').message);
+  }
+}
+
+function openExternalSubtitleSheet(): void {
+  subtitleOpen.value = true;
+}
+
+/**
+ * 字幕入口（控制条图标）：
+ * - 原生引擎：打开内嵌字幕轨菜单（菜单底部可跳转外挂字幕与样式）
+ * - WebView 引擎：维持原有外挂字幕面板
+ */
 function openSubtitlePanel(): void {
+  if (engineIsNative.value) {
+    void openEmbeddedSubtitleMenu();
+    return;
+  }
   subtitleOpen.value = true;
 }
 
@@ -1205,13 +1516,68 @@ onBeforeUnmount(() => {
 /* ---------- 亮度显示值 ---------- */
 const brightnessPercent = computed(() => dimOpacityToBrightness(player.dim));
 
-/* ---------- OPT-06：画中画（PiP） ---------- */
+/* ---------- OPT-06 / EXT-07：画中画（PiP） ---------- */
 const pipSupported = ref(false);
 const pipActive = ref(false);
+/** true = 原生 Activity PiP（ExoPlayer 引擎）；false = 浏览器 Web PiP（<video>） */
+const pipNative = ref(false);
 let pipCleanup: (() => void) | null = null;
+let pipPollTimer: ReturnType<typeof setInterval> | null = null;
+let detachAppState: (() => void) | null = null;
+/**
+ * 原生 PiP 状态轮询间隔。
+ *
+ * Activity 进出 PiP 没有事件桥可监听（MainActivity 不在本次可改范围），
+ * 只能轮询插件 `isPipActive()`；1.5s 足够跟上用户操作且开销可忽略。
+ */
+const PIP_POLL_MS = 1500;
 
-/** 探测 PiP 能力并注册事件监听 */
+function stopPipPolling(): void {
+  if (pipPollTimer !== null) clearInterval(pipPollTimer);
+  pipPollTimer = null;
+}
+
+/** 同步原生 PiP 激活态：进入隐藏 DOM UI，退出恢复 UI 并停止轮询 */
+function syncNativePipActive(active: boolean): void {
+  if (active === pipActive.value) return;
+  pipActive.value = active;
+  if (active) {
+    setControlsVisible(false);
+    return;
+  }
+  setControlsVisible(true);
+  stopPipPolling();
+}
+
+function startPipPolling(): void {
+  if (pipPollTimer !== null) return;
+  pipPollTimer = setInterval(() => {
+    void (async () => {
+      const active = (await playerCtl.controller.value?.isNativePipActive()) ?? false;
+      syncNativePipActive(active);
+    })();
+  }, PIP_POLL_MS);
+}
+
+/** 探测 PiP 能力并注册事件监听（引擎切换后重新探测） */
 async function initPip(): Promise<void> {
+  // 引擎切换会重入：先拆上一轮监听/轮询
+  pipCleanup?.();
+  pipCleanup = null;
+  pipActive.value = false;
+  stopPipPolling();
+
+  if (player.engineKind === 'native') {
+    pipNative.value = true;
+    try {
+      pipSupported.value = (await playerCtl.controller.value?.isNativePipSupported()) ?? false;
+    } catch {
+      pipSupported.value = false;
+    }
+    return;
+  }
+
+  pipNative.value = false;
   try {
     pipSupported.value = await pipService.isSupported();
   } catch {
@@ -1235,7 +1601,42 @@ async function initPip(): Promise<void> {
   });
 }
 
+// 引擎切换（含原生→WebView 回退）时重新判定 PiP 通道
+watch(
+  () => player.engineKind,
+  () => void initPip(),
+);
+
+/**
+ * 原生 PiP 下 WebView 会收到 hidden → composable 会暂停播放并挂「回前台续播」提示。
+ * 小窗里必须继续播：一旦发现「PiP 中 + 被后台暂停」立即恢复。
+ */
+watch(backgroundPaused, (paused) => {
+  if (!paused || !pipActive.value) return;
+  resumeFromBackground();
+  void playerCtl.controller.value?.play();
+  setControlsVisible(false);
+});
+
 async function togglePip(): Promise<void> {
+  if (pipNative.value) {
+    if (pipActive.value) {
+      // Android 没有主动退出 PiP 的 API：引导用户操作小窗
+      toast.info('在画中画窗口里点关闭按钮或返回全屏即可退出', 2200);
+      return;
+    }
+    try {
+      await playerCtl.controller.value?.enterNativePip();
+      syncNativePipActive(true);
+      startPipPolling();
+    } catch (e) {
+      // PiP 失败不阻断播放，仅提示（部分 ROM/设置会拒绝）
+      toast.info(toErrorShape(e, 'E_NOT_IMPLEMENTED').message);
+      syncNativePipActive(false);
+    }
+    return;
+  }
+
   try {
     if (pipActive.value) {
       await pipService.exit();
@@ -1256,6 +1657,16 @@ function onVisibilityChangeForPip(): void {
   if (!player.playing) return;
   if (player.fullscreen) return;
   if (pipActive.value) return;
+  if (pipNative.value) {
+    void playerCtl.controller.value
+      ?.enterNativePip()
+      .then(() => {
+        syncNativePipActive(true);
+        startPipPolling();
+      })
+      .catch(() => undefined);
+    return;
+  }
   void pipService.enter().catch(() => {
     // 自动进入失败不打扰用户
   });
@@ -1264,14 +1675,29 @@ function onVisibilityChangeForPip(): void {
 onMounted(() => {
   void initPip();
   document.addEventListener('visibilitychange', onVisibilityChangeForPip);
+  // 回前台时补一次原生 PiP 状态（用户在小窗里点回 App 时退出 PiP）
+  detachAppState = onAppStateChange((state) => {
+    if (state !== 'active' || !pipNative.value) return;
+    void (async () => {
+      const active = (await playerCtl.controller.value?.isNativePipActive()) ?? false;
+      syncNativePipActive(active);
+      if (active) startPipPolling();
+    })();
+  });
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener('visibilitychange', onVisibilityChangeForPip);
+  detachAppState?.();
+  detachAppState = null;
+  stopPipPolling();
   pipCleanup?.();
   pipCleanup = null;
-  // 离开页面时退出 PiP（避免残留浮窗）
-  if (pipActive.value) {
+  // EXT-07：解除轨道订阅（控制器销毁时也会清订阅表，这里显式断开避免闭包留着 View）
+  detachTrackSubscription?.();
+  detachTrackSubscription = null;
+  // 离开页面时退出 PiP（避免残留浮窗；原生 PiP 随 Activity 退出自动结束）
+  if (pipActive.value && !pipNative.value) {
     void pipService.exit().catch(() => undefined);
   }
 });
@@ -1280,7 +1706,11 @@ onBeforeUnmount(() => {
 <template>
   <main
     class="player-root"
-    :class="{ 'player-root--landscape': immersive, 'player-root--native': player.engineKind === 'native' }"
+    :class="{
+      'player-root--landscape': immersive,
+      'player-root--native': player.engineKind === 'native',
+      'player-root--pip': pipActive,
+    }"
     data-route="player"
   >
     <!-- 竖屏顶部占位（保持返回按钮可见） -->
@@ -1357,6 +1787,18 @@ onBeforeUnmount(() => {
             @toggle-pip="togglePip"
           />
 
+          <!-- EXT-07：沉浸态音轨入口（横屏控制条没有音轨位，用浮动胶囊补齐） -->
+          <button
+            v-if="engineIsNative && immersive && !pipActive && embeddedTracks.audio.length > 0"
+            class="player-audio-chip"
+            type="button"
+            :aria-label="`音轨：${audioChipLabel}`"
+            data-test="player-audio-chip"
+            @click="openEmbeddedAudioMenu"
+          >
+            {{ audioChipLabel }}
+          </button>
+
           <!-- loading -->
           <div v-if="pageLoading && !loadError" class="player-loading" role="status" aria-live="polite">
             <LoadingSpinner :size="32" />
@@ -1382,13 +1824,23 @@ onBeforeUnmount(() => {
 
           <!-- 页面级错误（详情/解析失败） -->
           <div v-if="loadError && !player.error" class="player-loading" role="alert">
-            <p class="player-loading__text">{{ loadError }}</p>
+            <!-- REV-24：详情失败时用上下文文案，否则用原始 loadError -->
+            <p class="player-loading__text">{{ detailErrorMessage ?? loadError }}</p>
             <!-- P0-1：给出可行动原因（源站死 / 超时 / 磁力 / 规则脚本异常） -->
             <p v-if="loadErrorGuidance" class="player-loading__hint">{{ loadErrorGuidance.hint }}</p>
             <div class="player-loading__actions">
+              <!-- REV-24：源已移除时提供删除记录入口 -->
+              <button
+                v-if="detailErrorKind === 'source-removed'"
+                class="btn btn--primary btn--sm"
+                type="button"
+                @click="removeHistoryAndGoBack"
+              >
+                删除记录并返回
+              </button>
               <!-- P1-4：磁力链接只能外部打开，重试无意义 -->
               <button
-                v-if="loadErrorMagnet"
+                v-else-if="loadErrorMagnet"
                 class="btn btn--primary btn--sm"
                 type="button"
                 @click="openExternalUrl(loadErrorMagnet)"
@@ -1396,7 +1848,7 @@ onBeforeUnmount(() => {
                 用外部应用打开
               </button>
               <button
-                v-if="!loadErrorMagnet"
+                v-else-if="!loadErrorMagnet"
                 class="btn btn--primary btn--sm"
                 type="button"
                 @click="resolveAndLoad"
@@ -1528,6 +1980,27 @@ onBeforeUnmount(() => {
             <IconCast :size="18" />
             投屏
           </button>
+          <!-- EXT-07：内嵌轨道入口（仅原生引擎；WebView 引擎没有内嵌轨可切） -->
+          <template v-if="engineIsNative">
+            <button
+              class="player-info__action"
+              :class="{ 'player-info__action--on': embeddedTracks.activeTextId !== null }"
+              type="button"
+              data-test="open-subtitle-tracks"
+              @click="openEmbeddedSubtitleMenu"
+            >
+              字幕轨
+            </button>
+            <button
+              class="player-info__action"
+              :class="{ 'player-info__action--on': embeddedTracks.audio.length > 1 }"
+              type="button"
+              data-test="open-audio-tracks"
+              @click="openEmbeddedAudioMenu"
+            >
+              音轨
+            </button>
+          </template>
         </div>
 
         <section v-if="episodes.length > 0" class="player-info__section">
@@ -1604,6 +2077,27 @@ onBeforeUnmount(() => {
         </button>
       </template>
     </BottomSheet>
+
+    <!-- EXT-07：码流内嵌字幕轨 / 音轨（与外挂字幕面板相互独立） -->
+    <SubtitleTrackMenu
+      v-model="subtitleTrackOpen"
+      :tracks="embeddedTracks.text"
+      :active-id="embeddedTracks.activeTextId"
+      :loading="tracksLoading"
+      :error="tracksError"
+      @select="onSelectEmbeddedSubtitle"
+      @retry="refreshEmbeddedTracks"
+      @open-external="openExternalSubtitleSheet"
+    />
+    <AudioTrackMenu
+      v-model="audioTrackOpen"
+      :tracks="embeddedTracks.audio"
+      :active-id="embeddedTracks.activeAudioId"
+      :loading="tracksLoading"
+      :error="tracksError"
+      @select="onSelectAudioTrack"
+      @retry="refreshEmbeddedTracks"
+    />
   </main>
 </template>
 
@@ -1653,6 +2147,53 @@ onBeforeUnmount(() => {
 
 .player-root--native :deep(.player-surface) {
   background-color: transparent;
+}
+
+/* EXT-07：原生 PiP 小窗只留画面——信息区收起、画面铺满、浮动入口隐藏 */
+.player-root--pip .player-page {
+  height: 100%;
+}
+
+.player-root--pip .player-stage {
+  flex: 1 1 auto;
+  aspect-ratio: auto;
+  height: 100%;
+}
+
+.player-root--pip .player-info {
+  display: none;
+}
+
+.player-root--pip .player-audio-chip {
+  display: none;
+}
+
+/* EXT-07：沉浸态音轨胶囊（右侧垂直居中，避开底部控制条与进度条） */
+.player-audio-chip {
+  position: absolute;
+  top: 50%;
+  right: var(--space-3);
+  z-index: var(--z-content);
+  max-width: 40vw;
+  min-height: var(--touch-min);
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-full);
+  border: 1px solid var(--color-border-glass);
+  background-color: var(--color-bg-glass);
+  backdrop-filter: var(--blur-player-hud);
+  -webkit-backdrop-filter: var(--blur-player-hud);
+  color: var(--color-text-primary);
+  font: var(--text-button-sm);
+  line-height: var(--touch-min);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateY(-50%);
+  transition: var(--transition-color);
+}
+
+.player-audio-chip:active {
+  background-color: var(--color-bg-glass-strong);
 }
 
 .player-root--landscape .player-page {

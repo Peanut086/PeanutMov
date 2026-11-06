@@ -14,7 +14,7 @@ import type { PluginListenerHandle } from '@capacitor/core';
 
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 import { assertSourceSupported } from '@/player/sourceGuard';
-import { ExoPlayer, exoHeadersOf, type ExoQuality, type ExoTextTrack } from '@/native/exoPlayerPlugin';
+import { ExoPlayer, exoHeadersOf, type ExoQuality } from '@/native/exoPlayerPlugin';
 
 // P2-2: 进度轮询从 500ms 放宽到 1000ms，减少 CPU 开销
 const PROGRESS_POLL_MS = 1000;
@@ -28,11 +28,88 @@ export interface NativeEngineEvents {
   onError: (error: AppErrorShape) => void;
   /** v1.8 优化：清晰度列表更新 */
   onQualitiesChange?: (qualities: string[]) => void;
-  /** v1.8 优化：字幕轨列表更新 */
-  onTextTracksChange?: (tracks: Array<{ id: number; label: string }>) => void;
+  /** EXT-07：内嵌字幕/音轨列表与选中项更新 */
+  onEmbeddedTracksChange?: (state: EmbeddedTrackState) => void;
 }
 
-type ExoStateData = { state: string; message?: string; duration?: number };
+/* ---------- EXT-07：内嵌字幕 / 音轨 ---------- */
+
+/**
+ * 内嵌字幕轨（来自 ExoPlayer TrackGroup）。
+ *
+ * 与 `playback.subtitles`（外挂 SRT/VTT，由 SubtitleManager 渲染到 DOM）是**两条独立通道**：
+ * 本菜单只切换码流内嵌轨，外挂字幕仍走原「字幕」面板。
+ */
+export interface EmbeddedTextTrack {
+  /** Java 侧顺序 id，切换时原样回传 */
+  id: number;
+  label: string;
+  /** ISO 语言码（如 `zh` / `eng`）；未知为 null */
+  language: string | null;
+  mimeType: string | null;
+}
+
+/** 内嵌音轨 */
+export interface EmbeddedAudioTrack {
+  id: number;
+  label: string;
+  language: string | null;
+  mimeType: string | null;
+  /** 声道数；未知为 null */
+  channels: number | null;
+}
+
+/** 内嵌字幕/音轨面板数据（空数据 = loaded:false + 空数组） */
+export interface EmbeddedTrackState {
+  /** Java onTracksChanged 已回报过一次（false = 仍在探测） */
+  loaded: boolean;
+  text: EmbeddedTextTrack[];
+  audio: EmbeddedAudioTrack[];
+  /** 当前字幕轨 id；null = 字幕关闭 */
+  activeTextId: number | null;
+  /** 当前音轨 id；null = 未知（播放器自选） */
+  activeAudioId: number | null;
+}
+
+/** 空状态（首次加载 / 切集重置用） */
+export function emptyEmbeddedTracks(): EmbeddedTrackState {
+  return { loaded: false, text: [], audio: [], activeTextId: null, activeAudioId: null };
+}
+
+/** Java 侧 `exostate` 的原始轨道载荷（音轨/选中态是 EXT-07 新增字段） */
+interface RawEmbeddedTrack {
+  id: number;
+  label?: string | null;
+  language?: string | null;
+  mimeType?: string | null;
+  channels?: number | null;
+}
+
+type ExoStateData = {
+  state: string;
+  message?: string;
+  duration?: number;
+  qualities?: ExoQuality[];
+  textTracks?: RawEmbeddedTrack[];
+  audioTracks?: RawEmbeddedTrack[];
+  activeTextId?: number;
+  activeAudioId?: number;
+};
+
+/**
+ * EXT-07 新增桥接方法。
+ *
+ * `src/native/exoPlayerPlugin.ts` 不在本次文件范围内（插件契约由架构师维护），
+ * 因此新增能力用局部结构类型描述：运行期走 Capacitor 代理的
+ * 「未声明方法 → Promise reject」路径，调用方逐个兜底；既有字段一个不动。
+ */
+interface ExoPlayerExtBridge {
+  getAudioTracks(): Promise<{ audioTracks?: RawEmbeddedTrack[]; activeAudioId?: number }>;
+  setAudioTrack(options: { id: number }): Promise<void>;
+  getTextTracks(): Promise<{ textTracks?: RawEmbeddedTrack[]; activeTextId?: number }>;
+  isPipSupported(): Promise<{ supported: boolean }>;
+  isPipActive(): Promise<{ active: boolean }>;
+}
 
 export class NativeEngine implements PlayableEngine {
   readonly capabilities: EngineCapabilities = { kind: 'hls', supportsHeaders: true };
@@ -53,8 +130,8 @@ export class NativeEngine implements PlayableEngine {
   private ready = false;
   /** v1.8 优化：当前清晰度列表 */
   private qualities: ExoQuality[] = [];
-  /** v1.8 优化：当前字幕轨列表 */
-  private textTracks: ExoTextTrack[] = [];
+  /** EXT-07：内嵌字幕/音轨状态（Java 推送 + 本地乐观更新） */
+  private tracks: EmbeddedTrackState = emptyEmbeddedTracks();
 
   constructor(private readonly events: NativeEngineEvents) {}
 
@@ -70,6 +147,8 @@ export class NativeEngine implements PlayableEngine {
     this.ready = false;
     this.positionSec = 0;
     this.durationSec = 0;
+    // EXT-07：切集/换线重置轨道面板，避免上一集字幕/音轨残留在菜单里
+    this.patchTracks(emptyEmbeddedTracks());
 
     // PluginListenerHandle 是 { remove } 对象不是函数（Capacitor 7）：
     // 旧代码 `this.detachState?.()` 每次抛 TypeError，release 被跳过 →
@@ -155,6 +234,88 @@ export class NativeEngine implements PlayableEngine {
     }
   }
 
+  /* ---------- EXT-07：内嵌字幕 / 音轨 ---------- */
+
+  /** 当前内嵌字幕/音轨状态（含选中项），返回副本避免调用方改到内部状态 */
+  getEmbeddedTracks(): EmbeddedTrackState {
+    return {
+      ...this.tracks,
+      text: [...this.tracks.text],
+      audio: [...this.tracks.audio],
+    };
+  }
+
+  /** 切换内嵌字幕轨；`null` = 关闭字幕（Java 侧 -1） */
+  async setEmbeddedSubtitle(id: number | null): Promise<void> {
+    await ExoPlayer.setTextTrack({ id: id ?? -1 });
+    this.patchTracks({ activeTextId: id });
+  }
+
+  /** 切换内嵌音轨（契约代理尚未声明该方法，经局部结构类型调用） */
+  async setAudioTrack(id: number): Promise<void> {
+    const ext = this.extBridge();
+    if (!ext.setAudioTrack) throw new AppError('E_NOT_IMPLEMENTED', '当前安装包不支持音轨切换');
+    await ext.setAudioTrack({ id });
+    this.patchTracks({ activeAudioId: id });
+  }
+
+  /** 主动重拉一次轨道列表（菜单「重试」用；常态由 Java 推送驱动） */
+  async refreshEmbeddedTracks(): Promise<void> {
+    const ext = this.extBridge();
+    try {
+      const [text, audio] = await Promise.all([
+        ext.getTextTracks ? ext.getTextTracks() : Promise.resolve(undefined),
+        ext.getAudioTracks ? ext.getAudioTracks() : Promise.resolve(undefined),
+      ]);
+      const textList = text?.textTracks?.map(toTextTrack) ?? null;
+      const audioList = audio?.audioTracks?.map(toAudioTrack) ?? null;
+      if (!textList && !audioList) return;
+      this.patchTracks({
+        loaded: true,
+        text: textList ?? this.tracks.text,
+        audio: audioList ?? this.tracks.audio,
+        activeTextId: normalizeTrackId(text?.activeTextId) ?? this.tracks.activeTextId,
+        activeAudioId: normalizeTrackId(audio?.activeAudioId) ?? this.tracks.activeAudioId,
+      });
+    } catch (e) {
+      // 旧安装包没有这些方法：保持推送状态，不当作播放错误
+      logger.debug('ExoPlayer 轨道列表拉取失败', e);
+    }
+  }
+
+  /* ---------- EXT-07：画中画（Android 8.0+） ---------- */
+
+  /** 设备/系统是否支持 PiP（原生插件 + 系统特性双判定） */
+  async isPipSupported(): Promise<boolean> {
+    try {
+      const ext = this.extBridge();
+      if (!ext.isPipSupported) return false;
+      const result = await ext.isPipSupported();
+      return result?.supported === true;
+    } catch (e) {
+      logger.debug('ExoPlayer isPipSupported 不可用', e);
+      return false;
+    }
+  }
+
+  /** 进入 PiP（宽高比由 Java 侧按视频尺寸推导并限幅 16:9 / 4:3） */
+  async enterPip(): Promise<void> {
+    await ExoPlayer.enterPip();
+  }
+
+  /** 当前 Activity 是否处于 PiP（Android 无主动退出 API，靠轮询感知退出） */
+  async isPipActive(): Promise<boolean> {
+    try {
+      const ext = this.extBridge();
+      if (!ext.isPipActive) return false;
+      const result = await ext.isPipActive();
+      return result?.active === true;
+    } catch (e) {
+      logger.debug('ExoPlayer isPipActive 不可用', e);
+      return false;
+    }
+  }
+
   setResizeMode(mode: ResizeMode): void {
     void ExoPlayer.setResizeMode({ mode }).catch((e: unknown) =>
       logger.debug('ExoPlayer setResizeMode 失败', e),
@@ -179,6 +340,7 @@ export class NativeEngine implements PlayableEngine {
     this.detachState = null;
     this.pending = null;
     this.ready = false;
+    this.tracks = emptyEmbeddedTracks();
     try {
       const p = ExoPlayer.release();
       logger.info('NativeEngine.destroy: release 桥接已发出');
@@ -190,7 +352,7 @@ export class NativeEngine implements PlayableEngine {
 
   /* ---------- 内部 ---------- */
 
-  private onState(data: { state: string; message?: string; duration?: number; qualities?: ExoQuality[]; textTracks?: ExoTextTrack[] }): void {
+  private onState(data: ExoStateData): void {
     switch (data.state) {
       case 'ready': {
         if (typeof data.duration === 'number' && data.duration > 0) {
@@ -200,6 +362,8 @@ export class NativeEngine implements PlayableEngine {
         this.events.onLoadedMetadata(this.durationSec);
         this.pending?.resolve();
         this.pending = null;
+        // EXT-07：READY 后补拉一次轨道（兜住「Java 上报早于 JS 监听」的窗口）
+        void this.refreshEmbeddedTracks();
         break;
       }
       case 'buffering':
@@ -218,11 +382,21 @@ export class NativeEngine implements PlayableEngine {
         break;
       }
       case 'textTracks': {
-        // v1.8 优化：字幕轨列表更新
+        // 兼容旧载荷（仅字幕列表）：音轨/选中态由 `embeddedTracks` 负责
         if (data.textTracks) {
-          this.textTracks = data.textTracks;
-          this.events.onTextTracksChange?.(this.textTracks.map((t) => ({ id: t.id, label: t.label })));
+          this.patchTracks({ loaded: true, text: data.textTracks.map(toTextTrack) });
         }
+        break;
+      }
+      case 'embeddedTracks': {
+        // EXT-07：字幕轨 + 音轨 + 双方选中项一次到位
+        this.patchTracks({
+          loaded: true,
+          text: (data.textTracks ?? []).map(toTextTrack),
+          audio: (data.audioTracks ?? []).map(toAudioTrack),
+          activeTextId: normalizeTrackId(data.activeTextId),
+          activeAudioId: normalizeTrackId(data.activeAudioId),
+        });
         break;
       }
       case 'error': {
@@ -238,6 +412,17 @@ export class NativeEngine implements PlayableEngine {
       default:
         break;
     }
+  }
+
+  /** 合并轨道状态并通知订阅者（UI 只认这一个出口，避免多处各拼一份） */
+  private patchTracks(patch: Partial<EmbeddedTrackState>): void {
+    this.tracks = { ...this.tracks, ...patch };
+    this.events.onEmbeddedTracksChange?.(this.getEmbeddedTracks());
+  }
+
+  /** EXT-07 新增桥接方法视图（见 `ExoPlayerExtBridge` 注释） */
+  private extBridge(): Partial<ExoPlayerExtBridge> {
+    return ExoPlayer as unknown as Partial<ExoPlayerExtBridge>;
   }
 
   private startPolling(): void {
@@ -292,6 +477,37 @@ export class NativeEngine implements PlayableEngine {
       this.onWindowResize = null;
     }
   }
+}
+
+/* ---------- EXT-07：轨道载荷归一化（异常数据兜底） ---------- */
+
+function normalizeTrackId(id: number | undefined | null): number | null {
+  return typeof id === 'number' && Number.isFinite(id) && id >= 0 ? id : null;
+}
+
+/** Java 侧 label 可能为空（无 language 也无 NAME）：给可读占位，超长交给 CSS 省略 */
+function toTextTrack(raw: RawEmbeddedTrack): EmbeddedTextTrack {
+  return {
+    id: raw.id,
+    label: normalizeLabel(raw.label, `字幕 ${raw.id + 1}`),
+    language: raw.language ?? null,
+    mimeType: raw.mimeType ?? null,
+  };
+}
+
+function toAudioTrack(raw: RawEmbeddedTrack): EmbeddedAudioTrack {
+  return {
+    id: raw.id,
+    label: normalizeLabel(raw.label, `音轨 ${raw.id + 1}`),
+    language: raw.language ?? null,
+    mimeType: raw.mimeType ?? null,
+    channels: typeof raw.channels === 'number' && raw.channels > 0 ? raw.channels : null,
+  };
+}
+
+function normalizeLabel(label: string | null | undefined, fallback: string): string {
+  const text = (label ?? '').trim();
+  return text.length > 0 ? text : fallback;
 }
 
 /** host 元素的 CSS px rect（Java 侧 ×density 换算物理像素） */

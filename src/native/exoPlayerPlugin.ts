@@ -45,6 +45,14 @@ export interface ExoTextTrack {
   mimeType: string;
 }
 
+export interface ExoAudioTrack {
+  id: number;
+  label: string;
+  language: string | null;
+  mimeType: string | null;
+  channels: number | null;
+}
+
 export interface ExoPlayerPlugin {
   isSupported(): Promise<{ supported: boolean }>;
   prepare(options: ExoPrepareOptions): Promise<void>;
@@ -63,9 +71,17 @@ export interface ExoPlayerPlugin {
   /** v1.8 优化：切换视频轨（清晰度） */
   setQuality(options: { id: number }): Promise<void>;
   /** v1.8 优化：获取字幕轨列表 */
-  getTextTracks(): Promise<{ textTracks: ExoTextTrack[] }>;
+  getTextTracks(): Promise<{ textTracks: ExoTextTrack[]; activeTextId: number }>;
   /** v1.8 优化：切换字幕轨（-1 表示关闭） */
   setTextTrack(options: { id: number }): Promise<void>;
+  /** EXT-07：获取音轨列表 */
+  getAudioTracks(): Promise<{ audioTracks: ExoAudioTrack[]; activeAudioId: number }>;
+  /** EXT-07：切换音轨 */
+  setAudioTrack(options: { id: number }): Promise<void>;
+  /** EXT-07：画中画能力探测 */
+  isPipSupported(): Promise<{ supported: boolean }>;
+  /** EXT-07：当前是否处于画中画 */
+  isPipActive(): Promise<{ active: boolean }>;
   /** v1.8 优化：获取播放质量指标 */
   getPlaybackStats(): Promise<{
     bufferEvents: number;
@@ -83,10 +99,17 @@ export interface ExoPlayerPlugin {
   exitPip(): Promise<void>;
   /** P1 画面比例：contain/cover/fill → Media3 resize_mode */
   setResizeMode(options: { mode: string }): Promise<void>;
-  /** 状态监听（ready / buffering / ended / error / qualities / textTracks）；返回解绑 handle */
+  /** 状态监听（ready / buffering / ended / error / qualities / textTracks / audioTracks）；返回解绑 handle */
   addListener(
     eventName: 'exostate',
-    cb: (data: { state: string; message?: string; duration?: number; qualities?: ExoQuality[]; textTracks?: ExoTextTrack[] }) => void,
+    cb: (data: {
+      state: string;
+      message?: string;
+      duration?: number;
+      qualities?: ExoQuality[];
+      textTracks?: ExoTextTrack[];
+      audioTracks?: ExoAudioTrack[];
+    }) => void,
   ): Promise<PluginListenerHandle>;
 }
 

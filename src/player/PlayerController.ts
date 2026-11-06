@@ -37,7 +37,13 @@ import {
 import { clampBrightness } from '@/player/brightness';
 import { canPlayNativeHls, VideoEngine } from '@/player/VideoEngine';
 import { HlsEngine, isHlsSupported } from '@/player/HlsEngine';
-import { NativeEngine } from '@/player/NativeEngine';
+import {
+  NativeEngine,
+  emptyEmbeddedTracks,
+  type EmbeddedAudioTrack,
+  type EmbeddedTextTrack,
+  type EmbeddedTrackState,
+} from '@/player/NativeEngine';
 import { isExoPlayerAvailable } from '@/native/exoPlayerPlugin';
 import { SubtitleManager } from '@/player/SubtitleManager';
 import { GestureRecognizer, type GestureIntent } from '@/player/GestureRecognizer';
@@ -45,6 +51,15 @@ import { ProgressReporter, type ProgressSnapshot } from '@/player/ProgressReport
 import { FullscreenController } from '@/player/FullscreenController';
 import { OrientationController } from '@/player/OrientationController';
 import { assertSourceSupported, scanManifestForDrm } from '@/player/sourceGuard';
+
+/**
+ * EXT-07：内嵌字幕/音轨面板类型与空状态。
+ *
+ * 转导出而非让 View 直接依赖 NativeEngine——面板展示的是控制器状态，
+ * 引擎替换（后续可能加入别的原生实现）时 View 无需改动。
+ */
+export { emptyEmbeddedTracks };
+export type { EmbeddedAudioTrack, EmbeddedTextTrack, EmbeddedTrackState };
 
 /** 帧统计（`getFrameStats` 的返回；原生 surface 引擎为 null） */
 export interface FrameStats {
@@ -102,6 +117,18 @@ export class PlayerController {
   private brightness = 100;
   private quality: string = QUALITY_AUTO;
   private resizeMode: ResizeMode = 'contain';
+
+  /* ---------- EXT-07：内嵌字幕/音轨 ---------- */
+
+  /** 最近一次引擎上报的轨道状态（切集重置为空状态） */
+  private embeddedTracks: EmbeddedTrackState = emptyEmbeddedTracks();
+  /**
+   * 轨道订阅者。
+   *
+   * 不复用 `PlayerEventMap`：`src/player/types.ts` 的公开事件契约不在本次改动范围内，
+   * 这里用独立订阅 API（`onEmbeddedTracksChange`）承载新增能力。
+   */
+  private trackListeners = new Set<(state: EmbeddedTrackState) => void>();
 
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
   /** 网络错误自动重试定时器（REV-06）：必须可取消，避免页面销毁/切集后仍触发 */
@@ -201,6 +228,8 @@ export class PlayerController {
     this.options = opts;
     this.networkRetries = 0;
     this.lastSubtitleText = '';
+    // EXT-07：切集清空内嵌轨道，避免上一集的字幕/音轨留在菜单里
+    this.setEmbeddedTracks(emptyEmbeddedTracks());
     this.subtitles.setTracks(opts.playback.subtitles);
     this.emit('subtitlechange', {
       activeId: this.subtitles.getActiveId(),
@@ -273,6 +302,8 @@ export class PlayerController {
         onEnded: () => this.handleEnded(),
         onError: (error) => this.handleEngineError(error),
         onQualitiesChange: (qualities) => this.emit('qualitychange', { quality: this.quality, levels: qualities }),
+        // EXT-07：内嵌字幕/音轨状态（两个原生引擎构造点都要接）
+        onEmbeddedTracksChange: (state) => this.setEmbeddedTracks(state),
       });
       nativeEngine.attach(host);
       try {
@@ -377,6 +408,8 @@ export class PlayerController {
         onWaiting: () => this.emit('statechange', { playing: true, waiting: true }),
         onEnded: () => this.handleEnded(),
         onError: (error) => this.handleEngineError(error),
+        // EXT-07：WebView 失败降级到原生时同样要接轨道状态
+        onEmbeddedTracksChange: (state) => this.setEmbeddedTracks(state),
       });
       nativeEngine.attach(host);
       try {
@@ -711,6 +744,74 @@ export class PlayerController {
     return this.quality;
   }
 
+  /* ================= EXT-07：内嵌字幕 / 音轨 ================= */
+
+  /** 订阅轨道状态变化，返回解绑函数（View 卸载时调用） */
+  onEmbeddedTracksChange(cb: (state: EmbeddedTrackState) => void): () => void {
+    this.trackListeners.add(cb);
+    return () => {
+      this.trackListeners.delete(cb);
+    };
+  }
+
+  /** 当前轨道状态（打开菜单前先读一次，避免空等推送） */
+  getEmbeddedTracks(): EmbeddedTrackState {
+    return this.embeddedTracks;
+  }
+
+  /** 切换内嵌字幕轨；`null` = 关闭字幕。仅原生引擎支持 */
+  async setEmbeddedSubtitleTrack(id: number | null): Promise<void> {
+    const engine = this.nativeEngine();
+    if (!engine) throw new AppError('E_NOT_IMPLEMENTED', '当前播放器不支持内嵌字幕切换');
+    await engine.setEmbeddedSubtitle(id);
+    this.setEmbeddedTracks({ ...this.embeddedTracks, activeTextId: id });
+  }
+
+  /** 切换内嵌音轨。仅原生引擎支持 */
+  async setAudioTrack(id: number): Promise<void> {
+    const engine = this.nativeEngine();
+    if (!engine) throw new AppError('E_NOT_IMPLEMENTED', '当前播放器不支持音轨切换');
+    await engine.setAudioTrack(id);
+    this.setEmbeddedTracks({ ...this.embeddedTracks, activeAudioId: id });
+  }
+
+  /** 重拉轨道列表（菜单「重试」） */
+  async refreshEmbeddedTracks(): Promise<void> {
+    await this.nativeEngine()?.refreshEmbeddedTracks();
+  }
+
+  /** 原生 PiP 是否可用（WebView 引擎一律 false，走旧的 web PiP 服务） */
+  async isNativePipSupported(): Promise<boolean> {
+    return (await this.nativeEngine()?.isPipSupported()) ?? false;
+  }
+
+  /** 进入原生 PiP（Android 8.0+；比例由 Java 侧按视频尺寸限幅） */
+  async enterNativePip(): Promise<void> {
+    const engine = this.nativeEngine();
+    if (!engine) throw new AppError('E_NOT_IMPLEMENTED', '当前播放器不支持画中画');
+    await engine.enterPip();
+  }
+
+  /** 当前是否在 PiP 中（Android 无主动退出 API，View 轮询该值同步状态） */
+  async isNativePipActive(): Promise<boolean> {
+    return (await this.nativeEngine()?.isPipActive()) ?? false;
+  }
+
+  private nativeEngine(): NativeEngine | null {
+    return this.engine instanceof NativeEngine ? this.engine : null;
+  }
+
+  private setEmbeddedTracks(next: EmbeddedTrackState): void {
+    this.embeddedTracks = next;
+    for (const cb of this.trackListeners) {
+      try {
+        cb(next);
+      } catch {
+        /* 单个订阅者异常不影响其它订阅者 */
+      }
+    }
+  }
+
   /* ================= 全屏 ================= */
 
   async enterFullscreen(): Promise<void> {
@@ -894,6 +995,9 @@ export class PlayerController {
     // （真机实证：flush 抛错中断 destroy → 离开播放页后声音不停）
     this.destroyEngine();
     this.engineKind = null;
+    // EXT-07：轨道状态与订阅者一并释放（不通知，View 正在卸载）
+    this.embeddedTracks = emptyEmbeddedTracks();
+    this.trackListeners.clear();
     try {
       await this.progress.flush();
     } catch {
