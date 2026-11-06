@@ -55,6 +55,14 @@ function openImport(): void {
   void router.push({ name: 'source-import' });
 }
 
+function openHealthCenter(): void {
+  void router.push('/health-center');
+}
+
+function openImportDiagnostic(): void {
+  void router.push('/import-diagnostic');
+}
+
 /* ---------- 排序与质量概览（AC-106 / AC-108） ---------- */
 const SORT_OPTIONS = [
   { value: 'manual', label: '手动排序' },
@@ -493,11 +501,17 @@ onMounted(() => {
       </button>
     </div>
 
-    <!-- 操作栏：新增 + 导入 + 健康检查（支持取消 / 仅失败源） -->
+    <!-- 操作栏：新增 + 导入 + 诊断 + 健康中心 + 健康检查（支持取消 / 仅失败源） -->
     <div class="source-manage__actions">
       <button class="btn btn--primary btn--sm" type="button" @click="openAdd">新增源</button>
       <button class="btn btn--secondary btn--sm" type="button" @click="openImport">
         导入订阅
+      </button>
+      <button class="btn btn--secondary btn--sm" type="button" @click="openImportDiagnostic">
+        导入诊断
+      </button>
+      <button class="btn btn--secondary btn--sm" type="button" @click="openHealthCenter">
+        健康中心
       </button>
       <button
         v-if="!healthChecking"

@@ -1,6 +1,11 @@
 import { fileURLToPath, URL } from 'node:url';
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
+
+// 直接读取 package.json 版本号，避免 npx vite build 时 process.env.npm_package_version 为 "0.0.0"
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8'));
+const appVersion = pkg.version ?? '0.0.0';
 
 export default defineConfig({
   plugins: [vue()],
@@ -10,7 +15,7 @@ export default defineConfig({
     },
   },
   define: {
-    __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? '0.0.0'),
+    __APP_VERSION__: JSON.stringify(appVersion),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
   },
   build: {
