@@ -119,6 +119,31 @@ describe('replayService.plan（模板来源与开关）', () => {
     const plan = await replayService.plan({ liveSourceId: 'live_missing', channel: CHANNEL });
     expect(plan.supported).toBe(false);
   });
+
+  it('REV-07：天数取源级与频道级的较大值（不是频道级覆盖源级）', async () => {
+    await liveRepo.save(
+      liveRecord({
+        catchup: { enabled: true, template: 'https://a.example.com/{date}', days: 5 },
+      }),
+    );
+    // 频道声明 2 天 < 源级 5 天 → 5（旧实现返回 2，窗口被错误收窄）
+    expect(
+      (await replayService.plan({ liveSourceId: 'live-a', channel: CHANNEL, extrasDays: 2 })).days,
+    ).toBe(5);
+    // 频道声明 6 天 > 源级 5 天 → 6
+    expect(
+      (await replayService.plan({ liveSourceId: 'live-a', channel: CHANNEL, extrasDays: 6 })).days,
+    ).toBe(6);
+    // 上限 7 天
+    expect(
+      (await replayService.plan({ liveSourceId: 'live-a', channel: CHANNEL, extrasDays: 99 })).days,
+    ).toBe(7);
+    // 源级 3 天 + 频道未声明 → 3
+    await liveRepo.save(
+      liveRecord({ catchup: { enabled: true, template: 'https://a.example.com/{date}', days: 3 } }),
+    );
+    expect((await replayService.plan({ liveSourceId: 'live-a', channel: CHANNEL })).days).toBe(3);
+  });
 });
 
 describe('replayService.resolve（渲染编排）', () => {
@@ -162,6 +187,24 @@ describe('replayService.resolve（渲染编排）', () => {
         programme: { startAt: now - 60 * 60_000, endAt: now - 30 * 60_000 },
       }),
     ).rejects.toMatchObject({ code: 'E_NOT_IMPLEMENTED' });
+  });
+
+  it('REV-07：源级 5 天 + 频道级 2 天 → 4 天前的节目仍可回看', async () => {
+    await liveRepo.save(
+      liveRecord({
+        catchup: { enabled: true, template: 'https://cdn.example.com/{channelId}/{date}', days: 5 },
+      }),
+    );
+    const now = Date.now();
+    const startAt = now - 4 * 86_400_000;
+    const endAt = startAt + 3_600_000;
+    const result = await replayService.resolve({
+      liveSourceId: 'live-a',
+      channel: CHANNEL,
+      programme: { startAt, endAt },
+      overrideDays: 2,
+    });
+    expect(result).toMatchObject({ days: 5, withinWindow: true });
   });
 });
 

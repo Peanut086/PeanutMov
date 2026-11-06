@@ -23,7 +23,7 @@ import { epgService } from '@/services/epgService';
 import { liveService } from '@/services/liveService';
 import { replayService } from '@/services/replayService';
 import { channelKeyOf } from '@/shared/channelKey';
-import { toErrorShape } from '@/shared/errors';
+import { AppError, toErrorShape } from '@/shared/errors';
 
 defineOptions({ name: 'ReplayPlayerView' });
 
@@ -94,16 +94,22 @@ async function resolveTarget(): Promise<ResolvedTarget> {
     const byName = liveService.findSourceIdByChannelName(nameHint);
     record = records.find((item) => item.id === byName) ?? null;
   }
-  if (!record) record = records[0] ?? null;
-  if (!record) throw new Error('未找到该频道所属的直播源');
+  // REV-09：不跨源回退——回看能力属于该直播源，静默换源会拼出别的源的地址
+  // 用 AppError 承载文案：`toErrorShape` 对原生 Error 只保留 E_UNKNOWN 的通用文案，
+  // 直接 throw Error 会让用户看不到「请从直播页重新进入回看」这句关键指引。
+  if (!record) {
+    throw new AppError('E_NOT_FOUND', '未找到该频道所属的直播源，请从直播页重新进入回看');
+  }
 
   const data = await liveService.channelsWithExtrasOf(record);
   const wanted = nameHint || (channelId.value !== record.id ? channelId.value : '');
   const channel =
     data.channels.find((item) => item.name === wanted) ??
     data.channels.find((item) => keyOf(item) === wanted) ??
-    (data.channels.length === 1 ? data.channels[0] : null);
-  if (!channel) throw new Error('未找到该频道，请从直播页重新进入回看');
+    null;
+  if (!channel) {
+    throw new AppError('E_NOT_FOUND', '未找到该频道，请从直播页重新进入回看');
+  }
 
   // programId 形如 `${startAt}:${title}`，缺查询串时用它反推节目时间
   const keyStart = Number(programId.value.split(':')[0]);

@@ -7,13 +7,16 @@
  * - 时间轴：按时间顺序列出所有节目，当前正在播的高亮并自动滚动到视口
  * - EXT-06/FR-66：右上角「EPG 源管理」→ `EpgSourceSheet`
  * - EXT-06/FR-71：未开播节目可「设置提醒」→ `ReminderSheet`
+ * - EXT-06/FR-68：**回看入口只在节目单页**——已结束且在回看窗口内的节目显示「回看」，
+ *   点击先渲染地址、再探测能力（AC-162），可用才跳转 `/replay/:channelId/:programId`
  * - 数据来源：epgService（多源合并，24h 缓存；源失败静默降级）
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type { EpgProgramme } from '@/services/epgService';
-import type { ChannelEpgResult, EpgChannelRef, Reminder } from '@/types';
+import type { CatchupPlan } from '@/services/replayService';
+import type { CatchupCapability, ChannelEpgResult, EpgChannelRef, Reminder } from '@/types';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import SafeArea from '@/components/layout/SafeArea.vue';
@@ -24,6 +27,7 @@ import { epgService } from '@/services/epgService';
 import { epgSourceService } from '@/services/epgSourceService';
 import { liveService } from '@/services/liveService';
 import { reminderService } from '@/services/reminderService';
+import { replayService } from '@/services/replayService';
 import { channelKeyOf } from '@/shared/channelKey';
 import { toErrorShape } from '@/shared/errors';
 import { useToast } from '@/composables/useToast';
@@ -115,6 +119,140 @@ function endAtOf(prog: EpgProgramme): number {
 /** 未开播才允许设置提醒 */
 function canRemind(prog: EpgProgramme): boolean {
   return startAtOf(prog) > nowTick.value;
+}
+
+/* ---------- EXT-06/FR-68：回看（入口在节目单页，不在直播页） ---------- */
+
+/** 频道侧回看素材：渲染 `{base}`/`{tvgId}` 需要频道 URL 与 m3u 旁路属性 */
+interface ReplayContext {
+  url: string;
+  tvgId: string | null;
+  catchupTemplate: string | null;
+  catchupDays: number | null;
+}
+
+const replayContext = ref<ReplayContext | null>(null);
+const replayPlan = ref<CatchupPlan | null>(null);
+/** AC-162：能力探测结果（kv 已 6h 缓存，这里只负责 UI 呈现） */
+const replayCapability = ref<CatchupCapability | null>(null);
+const replayPendingKey = ref<string | null>(null);
+
+/**
+ * 载入回看上下文（频道 URL + 模板/天数）。
+ * 失败静默：回看入口不出现，节目单照常展示。
+ */
+async function loadReplayContext(): Promise<void> {
+  replayContext.value = null;
+  replayPlan.value = null;
+  replayCapability.value = null;
+  replayPendingKey.value = null;
+  const sourceId = liveSourceId.value;
+  if (!sourceId || !channelName.value) return;
+  try {
+    const records = await liveService.list();
+    const record = records.find((item) => item.id === sourceId) ?? null;
+    if (!record) return;
+    const data = await liveService.channelsWithExtrasOf(record);
+    const channel =
+      data.channels.find((item) => item.name === channelName.value) ??
+      data.channels.find(
+        (item) => channelKeyOf({ name: item.name }) === channelKeyOf({ name: channelName.value }),
+      ) ??
+      null;
+    if (!channel) return;
+    const extra = data.extras[channel.url] ?? null;
+    replayContext.value = {
+      url: channel.url,
+      tvgId: extra?.tvgId ?? null,
+      catchupTemplate: extra?.catchupTemplate ?? null,
+      catchupDays: extra?.catchupDays ?? null,
+    };
+    replayPlan.value = await replayService.plan({
+      liveSourceId: sourceId,
+      channel: { name: channel.name, tvgId: extra?.tvgId ?? null, url: channel.url },
+      extrasTemplate: extra?.catchupTemplate ?? null,
+      extrasDays: extra?.catchupDays ?? null,
+    });
+  } catch {
+    replayContext.value = null;
+    replayPlan.value = null;
+  }
+}
+
+/** 节目是否展示回看入口：模板侧支持 + 已结束 + 在回看窗口内（AC-162） */
+function canReplay(prog: EpgProgramme): boolean {
+  const plan = replayPlan.value;
+  if (!plan || !plan.supported || !replayContext.value) return false;
+  return replayService.withinWindow(startAtOf(prog), endAtOf(prog), plan.days, nowTick.value);
+}
+
+/** 探测失败且判定为「不可用」时的置灰原因（AC-162） */
+const replayBlockedReason = computed<string | null>(() => {
+  const capability = replayCapability.value;
+  if (!capability) return null;
+  if (capability.state === 'not_found' || capability.state === 'unreachable') {
+    return replayService.describeFailure(capability);
+  }
+  return null;
+});
+
+function replayKeyOf(prog: EpgProgramme): string {
+  return prog.key ?? `${startAtOf(prog)}:${prog.title}`;
+}
+
+async function openReplay(prog: EpgProgramme): Promise<void> {
+  const sourceId = liveSourceId.value;
+  const context = replayContext.value;
+  const plan = replayPlan.value;
+  if (!sourceId || !context || !plan || replayPendingKey.value !== null) return;
+  if (replayBlockedReason.value) {
+    toast.info(replayBlockedReason.value);
+    return;
+  }
+  const startAt = startAtOf(prog);
+  const endAt = endAtOf(prog);
+  replayPendingKey.value = replayKeyOf(prog);
+  try {
+    const resolved = await replayService.resolve({
+      liveSourceId: sourceId,
+      channel: { name: channelName.value, tvgId: context.tvgId, url: context.url },
+      programme: { startAt, endAt },
+      overrideTemplate: context.catchupTemplate,
+      overrideDays: context.catchupDays,
+    });
+    const capability = await replayService.capabilityOf({
+      liveSourceId: sourceId,
+      channelKey: channelKey.value,
+      url: resolved.url,
+      days: plan.days,
+    });
+    replayCapability.value = capability;
+    if (capability.state === 'auth_required') {
+      toast.error('该源可能不支持回看（403：可能需要鉴权）');
+      return;
+    }
+    if (capability.state !== 'available') {
+      toast.error(replayService.describeFailure(capability));
+      return;
+    }
+    const query: Record<string, string> = {
+      source: sourceId,
+      ch: channelName.value,
+      title: prog.title,
+      start: String(startAt),
+      end: String(endAt),
+    };
+    if (context.tvgId) query.tvgId = context.tvgId;
+    await router.push({
+      name: 'replay',
+      params: { channelId: sourceId, programId: replayKeyOf(prog) },
+      query,
+    });
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    replayPendingKey.value = null;
+  }
 }
 
 /* ---------- 提醒（FR-71） ---------- */
@@ -273,18 +411,19 @@ async function scrollToNow(): Promise<void> {
   }
 }
 
-watch([channelKey, () => currentDate.value], () => {
+watch([channelKey, liveSourceId, () => currentDate.value], () => {
   void loadProgrammes().then(() => {
     if (isToday.value) void scrollToNow();
   });
   void loadReminders();
+  void loadReplayContext();
 });
 
 onMounted(async () => {
   clockTimer = setInterval(() => {
     nowTick.value = Date.now();
   }, 30_000);
-  await Promise.all([loadEnabledCount(), loadProgrammes(), loadReminders()]);
+  await Promise.all([loadEnabledCount(), loadProgrammes(), loadReminders(), loadReplayContext()]);
   if (isToday.value) void scrollToNow();
 });
 
@@ -376,12 +515,16 @@ function formatDuration(startSec: number, endSec: number): string {
         <!-- 命中来源 / 缓存降级提示 -->
         <p class="epg-source-line">
           <span v-if="result?.matchedSource" class="epg-source-line__name">
-            来源：{{ result.matchedSource.name }}
+            来源：{{ result.matchedSource.name }}（L{{ result.matchedSource.matchLevel }}）
           </span>
+          <span v-else-if="result" class="epg-source-line__none">未匹配到节目单源</span>
           <span v-if="result?.stale" class="epg-source-line__stale">缓存数据</span>
           <span v-if="result && result.errors.length > 0" class="epg-source-line__failed">
             {{ result.errors.length }} 个源拉取失败
           </span>
+        </p>
+        <p v-if="replayBlockedReason" class="epg-replay-blocked" role="status">
+          回看不可用：{{ replayBlockedReason }}
         </p>
 
         <ul class="epg-list">
@@ -405,6 +548,17 @@ function formatDuration(startSec: number, endSec: number): string {
               <span class="epg-item__duration">{{ formatDuration(prog.startSec, prog.endSec) }}</span>
             </span>
             <span v-if="idx === nowPlayingIndex" class="epg-item__badge">正在播</span>
+            <button
+              v-if="canReplay(prog)"
+              class="epg-item__replay"
+              :class="{ 'epg-item__replay--disabled': replayBlockedReason !== null }"
+              type="button"
+              :disabled="replayBlockedReason !== null || replayPendingKey !== null"
+              :aria-label="`回看 ${prog.title}`"
+              @click.stop="openReplay(prog)"
+            >
+              {{ replayPendingKey === replayKeyOf(prog) ? '探测中' : '回看' }}
+            </button>
             <button
               v-if="canRemind(prog)"
               class="epg-item__remind"
@@ -574,6 +728,18 @@ function formatDuration(startSec: number, endSec: number): string {
   color: var(--color-danger);
 }
 
+.epg-source-line__none {
+  flex: 0 0 auto;
+  color: var(--color-text-tertiary);
+}
+
+/* AC-162：探测判定不可用 → 入口置灰 + 原因 */
+.epg-replay-blocked {
+  margin: 0 0 var(--space-2);
+  font: var(--text-caption);
+  color: var(--color-warning);
+}
+
 /* ---------- 节目列表 ---------- */
 .epg-list {
   list-style: none;
@@ -691,5 +857,33 @@ function formatDuration(startSec: number, endSec: number): string {
   background-color: var(--color-brand-soft);
   border-color: transparent;
   color: var(--color-brand-strong);
+}
+
+/* EXT-06/FR-68：单条节目回看入口（仅在节目单页） */
+.epg-item__replay {
+  flex: 0 0 auto;
+  align-self: center;
+  min-width: 44px;
+  height: 28px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+  color: var(--color-brand-text);
+  font: var(--text-caption);
+  cursor: pointer;
+  transition: background-color var(--duration-fast);
+}
+
+.epg-item__replay:active:not(:disabled) {
+  background-color: var(--color-bg-pressed);
+}
+
+.epg-item__replay:disabled,
+.epg-item__replay--disabled {
+  color: var(--color-text-disabled);
+  border-color: transparent;
+  background-color: var(--color-bg-surface);
+  cursor: default;
 }
 </style>

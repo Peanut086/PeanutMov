@@ -210,7 +210,7 @@ export const epgSourceService = {
     return record;
   },
 
-  /** 更新：端点变更需重新探测成功才保存；协议/匹配模式变更清该源缓存 */
+  /** 更新：端点变更需重新探测成功才保存；端点/协议/匹配模式变更清该源缓存 */
   async update(
     id: string,
     patch: Partial<Pick<EpgSource, 'name' | 'endpoint' | 'protocol' | 'matchMode' | 'enabled'>>,
@@ -256,8 +256,13 @@ export const epgSourceService = {
     next.updatedAt = Date.now();
     await epgSourceRepo.save(next);
 
+    // REV-06：端点变更同样让该源缓存失效（协议/匹配模式之外漏检 endpoint 时，
+    // 换地址后仍会读旧地址的 24h 缓存，表现为"改了地址节目单不变"）
+    const endpointChanged = next.endpoint !== current.endpoint;
     const cacheInvalidated =
-      next.protocol !== current.protocol || next.matchMode !== current.matchMode;
+      endpointChanged ||
+      next.protocol !== current.protocol ||
+      next.matchMode !== current.matchMode;
     if (cacheInvalidated) await epgService.clearSourceCache(id);
     return next;
   },

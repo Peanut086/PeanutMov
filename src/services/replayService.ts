@@ -187,7 +187,12 @@ export const replayService = {
     const template = channelTemplate || sourceTemplate;
     const templateSource: 'channel' | 'source' = channelTemplate ? 'channel' : 'source';
     const enabled = catchup?.enabled !== false;
-    const days = clampCatchupDays(input.extrasDays ?? catchup?.days ?? 1);
+    // FR-68：回看天数取「源级设置」与「频道级 catchup-days」中较大者（上限 7 天），
+    // 而不是频道级简单覆盖源级——否则源声明 5 天、频道声明 2 天时窗口会被错误收窄（REV-07）。
+    const days = Math.max(
+      clampCatchupDays(input.extrasDays ?? 1),
+      clampCatchupDays(catchup?.days ?? 1),
+    );
     return {
       supported: Boolean(template) && enabled,
       template: template || null,

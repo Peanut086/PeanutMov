@@ -8,7 +8,7 @@
  * - 状态：idle / loading / playing / paused / ended / error
  * - 事件：`retry`（重新加载）/ `back`（返回节目单）
  */
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { FullscreenController } from '@/player/FullscreenController';
 import { HlsEngine } from '@/player/HlsEngine';
@@ -116,6 +116,15 @@ function destroyEngine(): void {
   engine = null;
 }
 
+/** 日志只保留 host（需求「安全与隐私」：不记录完整回看 URL） */
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '<invalid>';
+  }
+}
+
 async function load(url: string): Promise<void> {
   destroyEngine();
   errorMessage.value = null;
@@ -151,12 +160,21 @@ async function load(url: string): Promise<void> {
     await next.play();
   } catch (e) {
     if (engine !== next) return;
-    logger.warn('回看加载失败', url, e);
+    logger.warn(
+      '回看加载失败',
+      { host: safeHost(url), channel: props.channelName, template: props.programmeTitle },
+      e,
+    );
     state.value = 'error';
     errorMessage.value = e instanceof Error ? e.message : '回看加载失败';
   }
 }
 
+/**
+ * REV-01：首次挂载时 `props.url` 往往已就绪，而 `watch` 默认不带 `immediate`
+ * 不会触发 → 状态停在 idle（黑屏且无错误）。挂载后主动加载一次；
+ * 之后的 url 变化（重试 / 换节目）继续由 watch 处理。
+ */
 watch(
   () => props.url,
   (url) => {
@@ -168,6 +186,10 @@ watch(
     void load(url);
   },
 );
+
+onMounted(() => {
+  if (props.url) void load(props.url);
+});
 
 function togglePlay(): void {
   if (!engine) return;

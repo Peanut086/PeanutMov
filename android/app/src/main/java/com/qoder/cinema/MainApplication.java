@@ -34,6 +34,10 @@ public class MainApplication extends Application {
         super.onCreate();
         // 初始化日志仓库（启动时恢复开关状态，清理过期日志）
         SpiderLogStore.init(this);
+        // EXT-06 / FR-71（API-24）：节目提醒渠道 + 投递能力快照。
+        // 必须在这里（进程启动、Capacitor 插件 load 之前）完成，渠道才以本工程的
+        // 名称/重要性登记；排期、持久化、重启恢复仍由 @capacitor/local-notifications 负责。
+        ReminderNotifications.bootstrap(this);
         // P3：安装全局崩溃处理器，写 FATAL 日志后交还默认处理
         installCrashHandler();
         // REV-24：初始化崩溃哨兵并检查上次异常退出

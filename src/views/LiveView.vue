@@ -6,14 +6,14 @@
  * 频道按需拉取解析（liveService 5min 缓存），不落库、不写历史（v1 口径）。
  * EXT-06 新增：
  * - FR-69 分组管理（`ChannelGroupSheet`）与自定义排序（`ChannelSortList`，AC-166/167）
- * - FR-68 回看入口：源级 / 频道级回看模板存在 + 节目在回看窗口内 → `/replay/:channelId/:programId`
+ * - FR-68 回看入口**不在本页**（需求 §5.3 / REV-02）：回看入口只在节目单页（EpgView），
+ *   本页只保留「完整节目单 ›」跳转
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import type { ChannelPrefs, EpgChannelRef, LiveChannelExtrasMap, LiveGroup, LiveRecord } from '@/types';
 import type { LiveChannel } from '@/sources/live/liveParsers';
-import type { CatchupPlan } from '@/services/replayService';
 import type { EpgProgramme } from '@/services/epgService';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
@@ -27,7 +27,6 @@ import ChannelSortList from '@/components/live/ChannelSortList.vue';
 import { liveService } from '@/services/liveService';
 import { epgService } from '@/services/epgService';
 import { channelPrefsService, emptyPrefs, sortByCustomOrder } from '@/services/channelPrefsService';
-import { replayService } from '@/services/replayService';
 import { kvRepo } from '@/db/repositories/kvRepo';
 import { channelKeyOf } from '@/shared/channelKey';
 import { LIVE_DEAD_STREAK } from '@/shared/constants';
@@ -40,7 +39,7 @@ const router = useRouter();
 const records = ref<LiveRecord[]>([]);
 const activeId = ref<string | null>(null);
 const groups = ref<LiveGroup[]>([]);
-/** EXT-06：频道平铺表（分组 / 排序 / 回看判定共用） */
+/** EXT-06：频道平铺表（分组 / 排序共用；回看判定已迁至 EpgView） */
 const allChannels = ref<LiveChannel[]>([]);
 const extras = ref<LiveChannelExtrasMap>({});
 const prefs = ref<ChannelPrefs | null>(null);
@@ -93,7 +92,9 @@ function keyOf(channel: { name: string }): string {
   return channelKeyOf({ name: channel.name });
 }
 
-function channelEpgRef(channel: LiveChannel): EpgChannelRef {
+function channelEpgRefByName(name: string): EpgChannelRef {
+  const channel = allChannels.value.find((item) => item.name === name) ?? null;
+  if (!channel) return { name, tvgId: null, tvgName: null };
   const extra = extras.value[channel.url] ?? null;
   return {
     name: channel.name,
@@ -101,11 +102,6 @@ function channelEpgRef(channel: LiveChannel): EpgChannelRef {
     tvgName: extra?.tvgName ?? null,
     url: channel.url,
   };
-}
-
-function channelEpgRefByName(name: string): EpgChannelRef {
-  const channel = allChannels.value.find((item) => item.name === name) ?? null;
-  return channel ? channelEpgRef(channel) : { name, tvgId: null, tvgName: null };
 }
 
 /** EPG：频道切换后拉取当日节目单（失败静默，不影响播放） */
@@ -293,18 +289,14 @@ async function selectRecord(id: string): Promise<void> {
   channelsLoading.value = true;
   channelsError.value = null;
   try {
-    const [data, nextPrefs, plan] = await Promise.all([
+    const [data, nextPrefs] = await Promise.all([
       liveService.channelsWithExtrasOf(record),
       channelPrefsService.get(record.id),
-      replayService
-        .plan({ liveSourceId: record.id, channel: { name: '', tvgId: null, url: '' } })
-        .catch(() => null),
     ]);
     groups.value = data.groups;
     allChannels.value = data.channels;
     extras.value = data.extras;
     prefs.value = nextPrefs;
-    sourcePlan.value = plan;
     // 默认选中第一个非空作用域并自动播第一个频道（打开即看，减少一次点击）
     activeScope.value = pickDefaultScope();
     const first = scopeChannels.value[0];
@@ -347,82 +339,6 @@ function openEpgFull(): void {
   const tvgId = channel ? (extras.value[channel.url]?.tvgId ?? null) : null;
   if (tvgId) query.tvgId = tvgId;
   void router.push({ name: 'epg', query });
-}
-
-/* ---------- EXT-06 / FR-68：回看 ---------- */
-
-/** 源级回看模板（`replayService.plan` 结果；频道级模板在 extras 内覆盖） */
-const sourcePlan = ref<CatchupPlan | null>(null);
-
-function catchupTemplateOf(channel: LiveChannel): string {
-  return (extras.value[channel.url]?.catchupTemplate ?? '').trim();
-}
-
-function catchupDaysOf(channel: LiveChannel): number {
-  return extras.value[channel.url]?.catchupDays ?? sourcePlan.value?.days ?? 1;
-}
-
-/** 频道是否可能支持回看（模板侧判定，不发网络；真实可用性在播放时兜底） */
-function canReplay(channel: LiveChannel): boolean {
-  if (catchupTemplateOf(channel).length > 0) return true;
-  return sourcePlan.value?.supported === true;
-}
-
-const replayPending = ref<string | null>(null);
-
-async function openReplay(channel: LiveChannel): Promise<void> {
-  const record = activeRecord.value;
-  if (!record || replayPending.value !== null) return;
-  replayPending.value = channel.url;
-  try {
-    const merged = await epgService.programmesFor(channelEpgRef(channel), new Date());
-    const days = catchupDaysOf(channel);
-    const now = Date.now();
-    const dayStart = new Date(now);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayStartMs = dayStart.getTime();
-    const ended: Array<{ programme: EpgProgramme; startAt: number; endAt: number }> = [];
-    for (const programme of merged.programmes) {
-      const startAt =
-        typeof programme.startAt === 'number' && programme.startAt > 0
-          ? programme.startAt
-          : dayStartMs + programme.startSec * 1000;
-      const endAt =
-        typeof programme.endAt === 'number' && programme.endAt > 0
-          ? programme.endAt
-          : startAt + Math.max(60, programme.endSec - programme.startSec) * 1000;
-      if (endAt > now) continue;
-      ended.push({ programme, startAt, endAt });
-    }
-    ended.sort((a, b) => b.startAt - a.startAt);
-    const target = ended.find((item) =>
-      replayService.withinWindow(item.startAt, item.endAt, days, now),
-    );
-    if (!target) {
-      toast.info('该频道暂无可回看的节目（可能无节目单或已超出回看窗口）');
-      return;
-    }
-    const query: Record<string, string> = {
-      ch: channel.name,
-      title: target.programme.title,
-      start: String(target.startAt),
-      end: String(target.endAt),
-    };
-    const tvgId = extras.value[channel.url]?.tvgId ?? null;
-    if (tvgId) query.tvgId = tvgId;
-    void router.push({
-      name: 'replay',
-      params: {
-        channelId: record.id,
-        programId: target.programme.key ?? `${target.startAt}:${target.programme.title}`,
-      },
-      query,
-    });
-  } catch (e) {
-    toast.error(toErrorShape(e).message);
-  } finally {
-    replayPending.value = null;
-  }
 }
 
 /* ---------- EXT-06 / FR-69：分组管理与自定义排序 ---------- */
@@ -511,7 +427,6 @@ async function removeRecord(record: LiveRecord): Promise<void> {
     allChannels.value = [];
     extras.value = {};
     prefs.value = null;
-    sourcePlan.value = null;
   }
   await reload();
 }
@@ -637,16 +552,6 @@ async function removeRecord(record: LiveRecord): Promise<void> {
             >
               <span class="live-channel__name truncate-1">{{ channel.name }}</span>
               <span v-if="isDead(channel.name)" class="live-channel__dead-badge">失效</span>
-            </button>
-            <button
-              v-if="canReplay(channel)"
-              class="live-channel__replay"
-              type="button"
-              :disabled="replayPending === channel.url"
-              :aria-label="`回看 ${channel.name}`"
-              @click.stop="openReplay(channel)"
-            >
-              回看
             </button>
             <button
               class="live-channel__fav"
@@ -926,22 +831,6 @@ async function removeRecord(record: LiveRecord): Promise<void> {
 .live-channel__dead-badge {
   font: var(--text-caption);
   color: var(--color-danger);
-}
-
-/* EXT-06/FR-68：回看入口 */
-.live-channel__replay {
-  flex: 0 0 auto;
-  min-width: 40px;
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-md);
-  background-color: var(--color-bg-surface);
-  border: var(--border-default);
-  color: var(--color-brand-text);
-  font: var(--text-caption);
-}
-
-.live-channel__replay:disabled {
-  opacity: 0.4;
 }
 
 .live-channel__fav {

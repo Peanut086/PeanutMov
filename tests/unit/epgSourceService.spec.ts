@@ -272,6 +272,22 @@ describe('epgSourceService.update / remove / reorder', () => {
     expect(renamed.name).toBe('A2');
   });
 
+  it('REV-06：改端点（探测成功）同样清该源缓存', async () => {
+    const a = await epgSourceService.add({ name: 'A', endpoint: 'https://epg.example.com/a' });
+    const cacheKey = `${EPG_CACHE_KEY_PREFIX}:${a.id}:nm:cctv1:2026-11-06`;
+    await cacheRepo.putEpgRecord({ key: cacheKey, programmes: [], fetchedAt: Date.now() });
+    expect(await cacheRepo.getEpgRecord(cacheKey)).not.toBeNull();
+
+    const updated = await epgSourceService.update(a.id, {
+      endpoint: 'https://epg.example.com/a3',
+      protocol: 'auto',
+      matchMode: 'auto',
+    });
+    expect(updated.endpoint).toBe('https://epg.example.com/a3');
+    // 端点变了但协议/匹配模式未变：旧实现漏检 endpoint，缓存会残留 24h
+    expect(await cacheRepo.getEpgRecord(cacheKey)).toBeNull();
+  });
+
   it('markError 只记录原因，不改变启用状态', async () => {
     const a = await epgSourceService.add({ name: 'A', endpoint: 'https://epg.example.com/a' });
     await epgSourceService.markError(a.id, '上次失败：连接超时');

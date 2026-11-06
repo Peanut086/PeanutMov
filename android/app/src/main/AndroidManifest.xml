@@ -7,8 +7,10 @@
       · WAKE_LOCK：播放时保持屏幕常亮（@capacitor-community/keep-awake）；
       · FOREGROUND_SERVICE：下载服务前台运行，切后台不中断；
       · FOREGROUND_SERVICE_DATA_SYNC：Android 14+ 前台服务类型声明；
-      · POST_NOTIFICATIONS：Android 13+ 下载进度通知；
-      · ACCESS_NETWORK_STATE：检测网络类型（WiFi/移动数据）决定是否下载。
+      · POST_NOTIFICATIONS：Android 13+ 下载进度通知 + 节目提醒（EXT-06）；
+      · ACCESS_NETWORK_STATE：检测网络类型（WiFi/移动数据）决定是否下载；
+      · SCHEDULE_EXACT_ALARM：节目提醒需准点触发（Android 12+，EXT-06/AC-168）；
+      · RECEIVE_BOOT_COMPLETED：重启后重建已排期的节目提醒（EXT-06/AC-170）。
     -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
@@ -16,6 +18,28 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      EXT-06 / FR-71（API-24）：节目提醒的准点触发。
+      · Android 12/12L（31/32）：声明即授予；缺失时 AlarmManager.canScheduleExactAlarms()
+        恒为 false，@capacitor/local-notifications 会静默退化为非精确闹钟；
+      · Android 13（33）：默认授予，用户可在系统设置撤销；
+      · Android 14+（34+，本工程 targetSdk 35）：默认**不**授予，需用户在
+        「设置 → 应用 → 特殊权限 → 闹钟和提醒」手动开启，否则提醒仍会触发但可能延迟。
+        运行期实际状态由 ReminderNotifications 在启动时写入应用日志
+        （filesDir/logs/spider-YYYY-MM-DD.log，本地日志查看页可读）。
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!--
+      EXT-06 / AC-170：设备重启后重建已排期的提醒。
+      receiver 本身由 @capacitor/local-notifications 的 manifest 合并提供
+      （LocalNotificationRestoreReceiver，监听 BOOT_COMPLETED / LOCKED_BOOT_COMPLETED /
+      QUICKBOOT_POWERON），它同时自带同权限声明；此处显式声明以固化意图，
+      重复声明由 manifest merger 去重。本工程**不**另建 BOOT receiver：两套恢复逻辑
+      会各自排期同一通知 id，属于重复状态源。
+    -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     
     <!-- P0: 网盘账号登录需要写 /sdcard/TVBox/ 目录（TVBox jar 爬虫约定路径） -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
