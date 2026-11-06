@@ -4,18 +4,23 @@
  * 补上「导入之后」的半程：订阅会慢慢坏掉（jar 403、域名失效、家庭宽带掉线），
  * 没有闭环时用户只会在检索/播放时撞上死源。
  *
- * 四件事：
- * 1. `maybeAutoRefresh` —— 启动/前台触发，距上次成功刷新超过 24h（TTL）的订阅
+ * 五件事：
+ * 1. `maybeAutoRefresh` —— 逐订阅 TTL 判定，距上次成功刷新超过 24h（TTL）的订阅
  *    后台静默刷新（并发 ≤2，失败只累计不打扰）；
- * 2. `summarize` —— 按 subscriptionId 聚合源数 / 存活 / 死亡 / jar 死 / 最近刷新；
- * 3. `applyHealthDegradation` —— 连续 3 次体检 bad 的源自动禁用（可 `restore` 一键恢复）；
- * 4. `evaluateMultiRepo` —— 多仓索引逐仓展开评测，供 UI 推荐最优仓库。
+ * 2. `bindAutoRefresh` / `autoRefreshIfDue` —— FIX-06（Q-05=A）：启动 + App 回前台
+ *    触发刷新，触发层再做一次 24h TTL 去重与在途合并（不引入常驻定时器）；
+ * 3. `summarize` —— 按 subscriptionId 聚合源数 / 存活 / 死亡 / jar 死 / 最近刷新；
+ * 4. `applyHealthDegradation` —— 连续 3 次体检 bad 的源自动禁用（可 `restore` 一键恢复）；
+ * 5. `evaluateMultiRepo` —— 多仓索引逐仓展开评测，供 UI 推荐最优仓库。
  *
  * 计数状态存 kv（`subscription-refresh-state` / `source-health-streak`），
  * 不新增 Source 字段以外的表；自动禁用标记在 `Source.autoDisabledAt`。
+ * 触发闸门（`autoRefreshRunAt` / 在途 Promise）只存内存，不落库。
  */
 import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { kvRepo } from '@/db/repositories/kvRepo';
+import { onAppStateChange, type AppLifecycleState } from '@/native/appLifecycle';
+import { isOnline } from '@/native/network';
 import { importService, listImportRecords } from '@/services/importService';
 import { subscriptionEvalService, type SubscriptionEvalResult } from '@/services/subscriptionEvalService';
 import {
@@ -92,6 +97,83 @@ async function refreshOne(url: string): Promise<number | null> {
   }
 }
 
+/** `maybeAutoRefresh` 的结果（刷新成功条数 / 失败条数） */
+export interface SubscriptionRefreshResult {
+  refreshed: number;
+  failed: number;
+}
+
+/** 自动刷新触发来源：启动 / 回前台（仅用于日志与排查） */
+export type AutoRefreshTrigger = 'startup' | 'resume';
+
+/** 自动刷新闸门跳过原因：TTL 未过期 / 已有在途刷新 / 离线 */
+export type AutoRefreshSkip = 'ttl' | 'inflight' | 'offline';
+
+/** 触发层自动刷新的结果 */
+export interface AutoRefreshOutcome extends SubscriptionRefreshResult {
+  /** 本次调用是否真正发起了刷新（false 表示被闸门拦下或复用了在途刷新） */
+  triggered: boolean;
+  /** `triggered=false` 时的跳过原因；`triggered=true` 为 null */
+  skipped: AutoRefreshSkip | null;
+}
+
+/**
+ * 触发层闸门（模块级，不落库）。
+ *
+ * - `autoRefreshRunAt`：最近一次**发起**刷新的时刻，用于 24h TTL 去重（Q-05=A 口径：
+ *   启动与回前台共用同一闸门，24h 内只拉一次，避免切来切去反复请求）。
+ *   刻意不持久化：进程重启后由启动触发兜底，而逐订阅的 TTL 状态已存在 kv
+ *   （`subscription-refresh-state`），重启后 `maybeAutoRefresh` 的 due 为空即直接返回，
+ *   不会真的重复拉取。
+ * - `autoRefreshInFlight`：在途刷新 Promise。快速连续回前台（切后台→回前台→再切）时
+ *   复用同一次执行，既不并发拉取也不丢触发语义。
+ */
+let autoRefreshRunAt: number | null = null;
+let autoRefreshInFlight: Promise<SubscriptionRefreshResult> | null = null;
+let autoRefreshUnbind: (() => void) | null = null;
+/** 上一次生命周期状态；null = 尚未收到过事件（首次 active 视为一次回前台） */
+let lastAppState: AppLifecycleState | null = null;
+
+/**
+ * 启动 / 回前台触发：TTL 与并发去重后执行一次 `maybeAutoRefresh`。
+ *
+ * 不抛异常（失败只记 debug 日志），调用方可安全 fire-and-forget。
+ * 手动刷新（源管理页「刷新全部」）走 `maybeAutoRefresh`，不受本闸门限制。
+ */
+async function autoRefreshIfDue(trigger: AutoRefreshTrigger): Promise<AutoRefreshOutcome> {
+  if (autoRefreshInFlight) {
+    const result = await autoRefreshInFlight;
+    logger.debug('订阅自动刷新合并到在途任务', trigger);
+    return { ...result, triggered: false, skipped: 'inflight' };
+  }
+
+  const now = Date.now();
+  if (autoRefreshRunAt !== null && now - autoRefreshRunAt < SUBSCRIPTION_REFRESH_TTL_MS) {
+    logger.debug('订阅自动刷新跳过（TTL 未过期）', trigger, now - autoRefreshRunAt);
+    return { triggered: false, skipped: 'ttl', refreshed: 0, failed: 0 };
+  }
+  if (!isOnline()) {
+    logger.debug('订阅自动刷新跳过（离线）', trigger);
+    return { triggered: false, skipped: 'offline', refreshed: 0, failed: 0 };
+  }
+
+  // 先落闸门再执行：同步段无 await，两次连续触发不会都进入执行分支。
+  // 失败（含抛出）不回退闸门——否则每次回前台都会重试，反而变成请求风暴；
+  // 未刷成功的订阅在 `subscription-refresh-state` 里没有新时间戳，下个 24h 窗口还会被扫到。
+  autoRefreshRunAt = now;
+  const run = subscriptionLifecycleService.maybeAutoRefresh().catch((e: unknown) => {
+    logger.debug('订阅自动刷新失败（静默）', trigger, e);
+    return { refreshed: 0, failed: 0 };
+  });
+  autoRefreshInFlight = run;
+  try {
+    const result = await run;
+    return { ...result, triggered: true, skipped: null };
+  } finally {
+    if (autoRefreshInFlight === run) autoRefreshInFlight = null;
+  }
+}
+
 export const subscriptionLifecycleService = {
   /**
    * 启动/前台触发：距上次成功刷新超过 TTL 的订阅静默刷新（并发 ≤2）。
@@ -131,6 +213,50 @@ export const subscriptionLifecycleService = {
     );
     if (refreshed > 0) await kvRepo.set(KV_REFRESH_STATE, nextState);
     return { refreshed, failed };
+  },
+
+  /**
+   * FIX-06 / AC-119：启动 + App 回前台触发（Q-05=A）。
+   *
+   * 触发层再做一次 24h TTL 去重与在途合并；`skipped` 说明被拦原因。
+   * 不抛异常，可 fire-and-forget。
+   */
+  autoRefreshIfDue,
+
+  /**
+   * 接线应用前后台切换：仅在「切到前台」时补触发一次（后台不做任何事）。
+   *
+   * 只在本模块注册一次（重复调用返回同一个 unbind，幂等），
+   * 与 `downloadService.bindLifecycle()` 的做法一致。
+   * 返回取消订阅函数（测试/热重载用）。
+   */
+  bindAutoRefresh(): () => void {
+    if (autoRefreshUnbind) return autoRefreshUnbind;
+    lastAppState = null;
+    const unbindBase = onAppStateChange((state) => {
+      if (state === lastAppState) return;
+      lastAppState = state;
+      if (state !== 'active') return;
+      // 回前台：TTL 未过期 / 离线 / 已有在途刷新时由闸门直接跳过
+      void subscriptionLifecycleService.autoRefreshIfDue('resume');
+    });
+    const unbind = (): void => {
+      unbindBase();
+      lastAppState = null;
+      if (autoRefreshUnbind === unbind) autoRefreshUnbind = null;
+    };
+    autoRefreshUnbind = unbind;
+    return unbind;
+  },
+
+  /** 测试辅助：清空触发闸门与生命周期订阅（不触发任何刷新） */
+  __resetAutoRefreshState(): void {
+    const unbind = autoRefreshUnbind;
+    autoRefreshUnbind = null;
+    lastAppState = null;
+    autoRefreshRunAt = null;
+    autoRefreshInFlight = null;
+    unbind?.();
   },
 
   /** 按订阅来源聚合健康摘要（subscriptionId 为 null 的手工源不参与） */

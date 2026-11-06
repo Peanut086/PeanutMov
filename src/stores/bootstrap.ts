@@ -85,21 +85,17 @@ export function initDoubanRuntime(): void {
 }
 
 /**
- * v1.7/CHG-19：订阅自动刷新（启动触发）。
+ * FIX-06 / FR-51 / AC-119：订阅自动刷新（启动 + 回前台触发，Q-05=A）。
  *
- * 距上次成功刷新超过 24h（TTL）的订阅后台静默刷新（并发 ≤2、失败静默），
- * 只在在线时触发。fire-and-forget，不阻塞启动；TTL 之外重复调用无副作用。
+ * - 启动即触发一次；
+ * - 同时接线应用生命周期：仅在「回前台」时补触发（进后台不做任何事）；
+ * - 24h TTL 去重、在途合并、离线跳过全部在 `subscriptionLifecycleService.autoRefreshIfDue`
+ *   内部完成，**不使用 `setInterval` 等常驻定时器**；
+ * - 全部 fire-and-forget（服务层不抛异常），不阻塞启动。
  */
 export function initSubscriptionAutoRefresh(): void {
-  void (async () => {
-    try {
-      const { isOnline } = await import('@/native/network');
-      if (!isOnline()) return;
-      await subscriptionLifecycleService.maybeAutoRefresh();
-    } catch (e) {
-      logger.debug('订阅自动刷新失败（静默）', e);
-    }
-  })();
+  void subscriptionLifecycleService.autoRefreshIfDue('startup');
+  subscriptionLifecycleService.bindAutoRefresh();
 }
 
 let unbindToasts: (() => void) | null = null;
