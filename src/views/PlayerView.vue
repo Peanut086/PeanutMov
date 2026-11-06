@@ -1071,7 +1071,7 @@ async function toggleDanmaku(): Promise<void> {
     return;
   }
   const loaded = await loadDanmaku();
-  toast.info(loaded ? '弹幕已开启' : '当前集没有匹配到弹幕（可换弹幕源或稍后再试）', loaded ? 1800 : 2800);
+  toast.info(loaded ? '弹幕已开启' : '当前集没有匹配到弹幕（B 站/腾讯可能都没有该片）', loaded ? 1800 : 2800);
 }
 
 /** v1.8 修复：原生引擎 surface 移到 WebView 之下，DOM 层（弹幕/字幕）可见，无需互斥 */
@@ -1087,6 +1087,9 @@ watch(danmakuReady, (ready) => {
     const overlay = new DanmakuOverlay({
       settings: danmakuSettings.value,
       getTime: () => player.currentTime,
+      // 原生引擎 1s 才轮询一次进度：帧内按播放状态/倍速在锚点上插值
+      isPlaying: () => player.playing,
+      getRate: () => player.rate,
     });
     overlay.attach(stageRef.value);
     danmakuOverlay.value = overlay;

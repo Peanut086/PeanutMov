@@ -3,8 +3,9 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { parseBilibiliXml, aggregateProvider } from '@/services/danmaku/provider';
-import { danmakuService } from '@/services/danmakuService';
+import { parseBilibiliXml } from '@/services/danmaku/bilibiliXml';
+import { clearBilibiliCache } from '@/services/danmaku/bilibili';
+import { danmakuService, thinComments } from '@/services/danmakuService';
 import { httpClient } from '@/sources/base/httpClient';
 
 vi.mock('@/sources/base/httpClient', () => ({
@@ -36,19 +37,21 @@ describe('parseBilibiliXml（本地 Provider，AC-126）', () => {
   });
 });
 
-describe('danmakuService 三级回退（AC-126）', () => {
+describe('danmakuService 回退链（AC-126）', () => {
   const mockedRequest = vi.mocked(httpClient.request);
 
   beforeEach(() => {
     mockedRequest.mockReset();
-    // dandanplay Provider 需凭据（localStorage）；aggregate 无凭据可用
+    clearBilibiliCache();
+    // dandanplay Provider 需凭据（localStorage）；B 站源无凭据恒可用
     globalThis.localStorage?.setItem('peanutmov.danmaku.dandanplay.appId', 'test-app');
     globalThis.localStorage?.setItem('peanutmov.danmaku.dandanplay.secret', 'test-secret');
   });
 
-  it('主源失败自动用备源；成功结果写入缓存（二次调用不发请求）', async () => {
+  it('B 站无结果时回退 dandanplay；成功结果写入缓存（二次调用不发请求）', async () => {
     mockedRequest
-      .mockRejectedValueOnce(new Error('aggregate down'))
+      .mockRejectedValueOnce(new Error('bilibili down')) // B 站源失败
+      .mockRejectedValueOnce(new Error('tencent down')) // 腾讯源也失败 → 回退 dandanplay
       .mockResolvedValueOnce({ matched: true, matches: [{ animeTitle: '庆余年', episodes: [{ episodeId: 42, episodeTitle: '第01集' }] }] })
       .mockResolvedValueOnce({ count: 1, comments: [[10, 1, 16777215, '前方高能']] });
 
@@ -63,8 +66,34 @@ describe('danmakuService 三级回退（AC-126）', () => {
     expect(mockedRequest).not.toHaveBeenCalled();
   });
 
+  it('B 站无结果时先走腾讯源，腾讯命中就不再请求 dandanplay', async () => {
+    mockedRequest
+      .mockRejectedValueOnce(new Error('bilibili down'))
+      .mockResolvedValueOnce({
+        ret: 0,
+        data: {
+          areaBoxList: [
+            { boxId: 'MainNeed', itemList: [{ doc: { id: 'cover1' }, videoInfo: { title: '庆余年', year: 2019 } }] },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({ c: { title: '庆余年', video_ids: ['vidEp1', 'vidEp2'] } })
+      .mockResolvedValueOnce({ segment_index: { '0': { segment_start: '0', segment_name: 't/v1/0/30000' } } })
+      .mockResolvedValueOnce({ barrage_list: [{ content: '腾讯弹幕', time_offset: '5000' }] });
+
+    // 集号 2：避开上一个用例写入同一缓存键
+    const result = await danmakuService.match('庆余年', 2019, 2);
+
+    expect(result).not.toBeNull();
+    expect(result!.provider).toBe('tencent');
+    expect(result!.comments).toEqual([{ time: 5, mode: 'scroll', color: 0xffffff, text: '腾讯弹幕' }]);
+    expect(mockedRequest).toHaveBeenCalledTimes(5);
+  });
+
   it('远端题名与查询片名不符时不采用（防串片）', async () => {
     mockedRequest
+      .mockRejectedValueOnce(new Error('nav down'))
+      .mockRejectedValueOnce(new Error('tencent down'))
       .mockResolvedValueOnce({ matched: true, matches: [{ animeTitle: '完全无关的片', episodes: [{ episodeId: 1, episodeTitle: '第01集' }] }] })
       .mockResolvedValueOnce({ count: 1, comments: [[1, 1, 16777215, '弹幕']] });
     const result = await danmakuService.match('伪装者', 2015, 1);
@@ -87,8 +116,29 @@ describe('danmakuService 三级回退（AC-126）', () => {
     ]);
     expect(merged.length).toBe(2);
   });
+});
 
-  it('aggregateProvider 可用性恒真（无凭据主力）', () => {
-    expect(aggregateProvider.available()).toBe(true);
+describe('thinComments（单集上限抽稀）', () => {
+  it('超过上限时均匀抽稀，覆盖整集时间轴', () => {
+    const input = Array.from({ length: 25_000 }, (_, index) => ({
+      time: index * 0.1,
+      mode: 'scroll' as const,
+      color: 0,
+      text: `c${index}`,
+    }));
+
+    const out = thinComments(input);
+
+    expect(out.length).toBe(10_000);
+    expect(out[0]!.time).toBe(0);
+    expect(out[out.length - 1]!.time).toBeGreaterThan(2400);
+    for (let i = 1; i < out.length; i += 1) {
+      expect(out[i]!.time).toBeGreaterThanOrEqual(out[i - 1]!.time);
+    }
+  });
+
+  it('未超过上限时原样返回', () => {
+    const input = [{ time: 1, mode: 'scroll' as const, color: 0, text: 'a' }];
+    expect(thinComments(input)).toBe(input);
   });
 });

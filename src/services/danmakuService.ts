@@ -3,14 +3,17 @@
  *
  * `danmakuService.match(title, year, episode, localXml)`：
  *   缓存命中 → 直接返回（离线可用）
- *   未命中   → aggregate（无凭据主力）→ dandanplay（凭据就绪后自动生效）→ local-xml
+ *   未命中   → bilibili（无凭证主力）→ tencent（国产剧兜底）→ dandanplay（凭据就绪后自动生效）→ local-xml
  *
  * 结果（含偏移）写 `danmakuCache`；总开关关闭时调用方不得调用本服务（零第三方请求，AC-126）。
  */
 import { cacheRepo } from '@/db/repositories/cacheRepo';
-import { aggregateProvider, dandanplayProvider, localXmlProvider, type DanmakuQuery } from '@/services/danmaku/provider';
+import { bilibiliProvider } from '@/services/danmaku/bilibili';
+import { tencentProvider } from '@/services/danmaku/tencent';
+import { dandanplayProvider, localXmlProvider, type DanmakuQuery } from '@/services/danmaku/provider';
 import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
 import { logger } from '@/shared/logger';
+import { DANMAKU_MAX_PER_EPISODE } from '@/shared/constants';
 import type { DanmakuComment, DanmakuMatch } from '@/types';
 
 /** 匹配阈值：归一化片名相等才采用（宁缺毋滥，串片比没弹幕更糟） */
@@ -20,6 +23,22 @@ function isTitleMatched(queryTitle: string, matchedTitle: string | null): boolea
   const b = stripTitleNoise(matchedTitle);
   if (a.length === 0 || b.length === 0) return normalizeTitleForMatch(queryTitle) === normalizeTitleForMatch(matchedTitle);
   return a === b;
+}
+
+/**
+ * 单集超过上限时按时间均匀抽稀：保留整集密度分布，避免缓存/预取膨胀。
+ * 腾讯源一集可达 5 万条，而同屏上限只有几十条，抽稀对观感几乎无影响。
+ */
+export function thinComments(comments: DanmakuComment[]): DanmakuComment[] {
+  if (comments.length <= DANMAKU_MAX_PER_EPISODE) return comments;
+  const sorted = [...comments].sort((a, b) => a.time - b.time);
+  const step = sorted.length / DANMAKU_MAX_PER_EPISODE;
+  const out: DanmakuComment[] = [];
+  for (let i = 0; i < DANMAKU_MAX_PER_EPISODE; i += 1) {
+    const picked = sorted[Math.floor(i * step)];
+    if (picked !== undefined) out.push(picked);
+  }
+  return out;
 }
 
 export const danmakuService = {
@@ -36,7 +55,7 @@ export const danmakuService = {
     if (cached) return cached;
 
     // ② 网络源按序回退（远端题名与查询片名归一化相等才采用，防串片）
-    const providers = [aggregateProvider, dandanplayProvider];
+    const providers = [bilibiliProvider, tencentProvider, dandanplayProvider];
     for (const provider of providers) {
       if (!provider.available()) continue;
       try {
@@ -46,7 +65,7 @@ export const danmakuService = {
             provider: provider.id,
             matchedTitle: result.matchedTitle,
             offsetSec: 0,
-            comments: result.comments,
+            comments: thinComments(result.comments),
           };
           await cacheRepo.putDanmaku(cacheKey, match);
           return match;

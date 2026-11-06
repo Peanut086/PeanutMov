@@ -3,8 +3,9 @@
  *
  * `<canvas>` 覆盖层 + rAF 驱动，不依赖播放器引擎：
  * - `tick(currentTimeSec)` 由外部在 timeupdate 事件注入（倍速/暂停天然对齐）；
+ * - 原生引擎 1s 才轮询一次进度，帧内用 rAF 时钟在 anchor 上插值，避免弹幕每秒跳一次；
  * - 滚动 / 顶部 / 底部三模式；同屏密度上限 `DANMAKU_MAX_ONSCREEN`；
- * - 底部安全区（字幕区）禁显；文字带描边保证可读。
+ * - 底部安全区（字幕区）禁显；文字入场时栅格化成位图，每帧只贴图（描边文字逐帧重绘极慢）。
  *
  * 设计取舍：不用 DOM 弹幕（数百节点调度易掉帧），canvas 绘制成本恒定。
  */
@@ -21,9 +22,20 @@ interface Track {
   duration: number;
   x: number;
   width: number;
+  /** 文字位图（入场时渲染一次，字体/像素比变化后按需重建） */
+  bitmap: HTMLCanvasElement | null;
+  bitmapFontSize: number;
+  bitmapDpr: number;
+  bitmapPad: number;
+  bitmapHeight: number;
 }
 
 const SCROLL_LANE_HEIGHT_RATIO = 0.12;
+/** 画面重绘上限 30fps：弹幕不需要 60fps，把 GPU/CPU 留给视频 */
+const FRAME_INTERVAL_MS = 33;
+/** 进度轮询间隔 1s，帧内插值最多向前补 1.2s，避免轮询迟到后弹幕跑飞 */
+const MAX_EXTRAPOLATE_SEC = 1.2;
+
 
 export class DanmakuOverlay {
   private canvas: HTMLCanvasElement | null = null;
@@ -34,13 +46,29 @@ export class DanmakuOverlay {
   private tracks: Track[] = [];
   private settings: DanmakuSettings;
   private getTime: () => number;
+  private isPlaying: () => boolean;
+  private getRate: () => number;
   private lastTime = -1;
+  /** 最近一次 timeupdate 的媒体时间与到达时刻（帧内插值的锚点） */
+  private anchorTime = 0;
+  private anchorStamp = 0;
+  private wasPlaying = false;
+  private dpr = 1;
+  private lastFrameAt = 0;
+  private lastDrawnTime = Number.NaN;
   private canvasWidth = 0;
   private canvasHeight = 0;
 
-  constructor(options: { settings: DanmakuSettings; getTime: () => number }) {
+  constructor(options: {
+    settings: DanmakuSettings;
+    getTime: () => number;
+    isPlaying?: () => boolean;
+    getRate?: () => number;
+  }) {
     this.settings = options.settings;
     this.getTime = options.getTime;
+    this.isPlaying = options.isPlaying ?? (() => false);
+    this.getRate = options.getRate ?? (() => 1);
   }
 
   /** 挂载到容器（覆盖层，pointer-events:none 不挡手势） */
@@ -67,6 +95,8 @@ export class DanmakuOverlay {
   setSettings(settings: DanmakuSettings): void {
     this.settings = settings;
     this.resize();
+    // 字号/密度变化后必须重画，否则上一帧画面会一直停到下次 timeupdate
+    this.lastDrawnTime = Number.NaN;
   }
 
   /** 全量替换弹幕（已按时间排序；merge 由服务层完成） */
@@ -92,6 +122,27 @@ export class DanmakuOverlay {
       if (this.cursor < 0) this.cursor = this.comments.length;
     }
     this.lastTime = currentTimeSec;
+    this.anchorTime = currentTimeSec;
+    this.anchorStamp = performance.now();
+  }
+
+  /** 帧内时间：暂停时停在锚点，播放中按真实时钟在锚点上补间 */
+  private currentTime(): number {
+    if (!this.isPlaying()) {
+      // 暂停/缓冲：媒体时间不前进，直接以播放器时间为准
+      this.anchorTime = this.getTime();
+      this.anchorStamp = performance.now();
+      this.wasPlaying = false;
+      return this.anchorTime;
+    }
+    if (!this.wasPlaying || this.anchorStamp === 0) {
+      // 开始/恢复播放：以当前锚点为起点重新计时，避免把暂停时长算进补间
+      if (this.anchorStamp === 0) this.anchorTime = this.getTime();
+      this.anchorStamp = performance.now();
+      this.wasPlaying = true;
+    }
+    const elapsed = ((performance.now() - this.anchorStamp) / 1000) * this.getRate();
+    return this.anchorTime + Math.max(0, Math.min(elapsed, MAX_EXTRAPOLATE_SEC));
   }
 
   private resize(): void {
@@ -102,9 +153,12 @@ export class DanmakuOverlay {
     const dpr = Math.min(globalThis.devicePixelRatio || 1, 2);
     canvas.width = Math.max(1, Math.round(rect.width * dpr));
     canvas.height = Math.max(1, Math.round(rect.height * dpr));
-    this.canvasWidth = canvas.width;
-    this.canvasHeight = canvas.height;
+    // 逻辑坐标用 CSS px：绘制时 ctx 已被 dpr 缩放，这里再用设备像素会让弹幕画到屏幕外
+    this.canvasWidth = Math.max(1, rect.width);
+    this.canvasHeight = Math.max(1, rect.height);
+    this.dpr = dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.lastDrawnTime = Number.NaN;
   }
 
   private start(): void {
@@ -123,11 +177,12 @@ export class DanmakuOverlay {
 
   private frame(): void {
     if (!this.ctx) return;
-    const now = this.getTime();
-    if (now !== this.lastTime) {
-      // 外部尚未 tick 到本帧时间（低频 timeupdate）：插入光标推进按真实时钟兜底
-      this.lastTime = now;
-    }
+    const stamp = performance.now();
+    if (stamp - this.lastFrameAt < FRAME_INTERVAL_MS) return;
+    this.lastFrameAt = stamp;
+    const now = this.currentTime();
+    if (now === this.lastDrawnTime) return; // 暂停/缓冲画面不变：跳过重绘
+    this.lastDrawnTime = now;
     this.spawn(now);
     this.redraw(now);
   }
@@ -144,7 +199,19 @@ export class DanmakuOverlay {
       const duration = Math.max(4, 10 / Math.max(0.5, this.settings.speed));
       const lane = this.allocateLane(comment, width, duration, now);
       if (lane < 0) continue; // 该模式通道已满，丢弃（密度上限语义）
-      this.tracks.push({ comment, lane, bornAt: now, duration, x: this.canvasWidth, width });
+      this.tracks.push({
+        comment,
+        lane,
+        bornAt: now,
+        duration,
+        x: this.canvasWidth,
+        width,
+        bitmap: null,
+        bitmapFontSize: 0,
+        bitmapDpr: 0,
+        bitmapPad: 0,
+        bitmapHeight: 0,
+      });
     }
   }
 
@@ -190,15 +257,17 @@ export class DanmakuOverlay {
     const ctx = this.ctx;
     const canvas = this.canvas;
     if (!ctx || !canvas) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
     const w = this.canvasWidth;
     const h = this.canvasHeight;
-    const alpha = this.settings.opacity;
     const fontSize = this.settings.fontSize;
-    ctx.font = `${fontSize}px sans-serif`;
-    ctx.textBaseline = 'middle';
-    ctx.lineWidth = Math.max(2, fontSize / 8);
-    ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+    // 同屏透明度统一设置一次，避免每条弹幕都改状态
+    ctx.globalAlpha = this.settings.opacity;
+
+    const usableH = h * (this.settings.areaPercent / 100);
+    const fixedSlots = Math.max(1, Math.floor(usableH / (fontSize + 8)));
+    const slotH = usableH / fixedSlots;
+    const bottomEdge = h - this.safeBottomPx();
 
     const still: Track[] = [];
     for (const track of this.tracks) {
@@ -209,32 +278,57 @@ export class DanmakuOverlay {
         const x = w - progress * (w + track.width);
         track.x = x;
         const y = 20 + track.lane * h * SCROLL_LANE_HEIGHT_RATIO + fontSize / 2;
-        this.drawComment(ctx, track.comment, x, y, alpha);
+        this.drawTrack(ctx, track, x, y);
         still.push(track);
       } else {
         if (age > 4) continue;
-        const slotH = this.canvasHeight * (this.settings.areaPercent / 100) / Math.max(1, this.laneCount(track.comment.mode));
-        const y = track.comment.mode === 'top' ? slotH * track.lane + slotH / 2 : h - this.safeBottomPx() - slotH * track.lane - slotH / 2;
-        const xCenter = (w - this.measure(track.comment.text)) / 2;
-        this.drawComment(ctx, track.comment, xCenter, y, alpha);
+        const y = track.comment.mode === 'top' ? slotH * track.lane + slotH / 2 : bottomEdge - slotH * track.lane - slotH / 2;
+        this.drawTrack(ctx, track, (w - track.width) / 2, y);
         still.push(track);
       }
     }
+    ctx.globalAlpha = 1;
     this.tracks = still;
   }
 
-  private drawComment(
-    ctx: CanvasRenderingContext2D,
-    comment: DanmakuComment,
-    x: number,
-    y: number,
-    alpha: number,
-  ): void {
-    const color = `#${(comment.color & 0xffffff).toString(16).padStart(6, '0')}`;
-    ctx.globalAlpha = alpha;
-    ctx.strokeText(comment.text, x, y);
-    ctx.fillStyle = color;
-    ctx.fillText(comment.text, x, y);
-    ctx.globalAlpha = 1;
+  /** 贴已栅格化的文字位图（位图在入场时生成一次） */
+  private drawTrack(ctx: CanvasRenderingContext2D, track: Track, x: number, y: number): void {
+    const bitmap = this.ensureBitmap(track);
+    const pad = track.bitmapPad;
+    ctx.drawImage(bitmap, x - pad, y - track.bitmapHeight / 2, bitmap.width / this.dpr, bitmap.height / this.dpr);
+  }
+
+  /** 文字 → 离屏位图：描边+填充只做一次，每帧只 drawImage */
+  private ensureBitmap(track: Track): HTMLCanvasElement {
+    const fontSize = this.settings.fontSize;
+    const dpr = this.dpr;
+    if (track.bitmap !== null && track.bitmapFontSize === fontSize && track.bitmapDpr === dpr) {
+      return track.bitmap;
+    }
+    const lineWidth = Math.max(2, fontSize / 8);
+    const pad = Math.ceil(lineWidth / 2) + 2;
+    const height = Math.ceil(fontSize * 1.5);
+    const width = Math.max(1, Math.ceil(track.width + pad * 2));
+    const bitmap = document.createElement('canvas');
+    bitmap.width = Math.max(1, Math.round(width * dpr));
+    bitmap.height = Math.max(1, Math.round(height * dpr));
+    const bctx = bitmap.getContext('2d');
+    if (bctx) {
+      bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      bctx.font = `${fontSize}px sans-serif`;
+      bctx.textBaseline = 'middle';
+      bctx.lineWidth = lineWidth;
+      bctx.strokeStyle = 'rgba(0,0,0,0.7)';
+      const baseline = height / 2;
+      bctx.strokeText(track.comment.text, pad, baseline);
+      bctx.fillStyle = `#${(track.comment.color & 0xffffff).toString(16).padStart(6, '0')}`;
+      bctx.fillText(track.comment.text, pad, baseline);
+    }
+    track.bitmap = bitmap;
+    track.bitmapFontSize = fontSize;
+    track.bitmapDpr = dpr;
+    track.bitmapPad = pad;
+    track.bitmapHeight = height;
+    return bitmap;
   }
 }

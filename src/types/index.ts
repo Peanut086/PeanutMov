@@ -591,7 +591,7 @@ export interface SubscriptionSummary {
 
 /* ---------- 弹幕（CHG-22，只读不发） ---------- */
 
-export type DanmakuProviderId = 'dandanplay' | 'aggregate' | 'local-xml';
+export type DanmakuProviderId = 'bilibili' | 'tencent' | 'dandanplay' | 'local-xml';
 
 export interface DanmakuComment {
   /** 相对视频起点的秒数 */

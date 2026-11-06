@@ -200,12 +200,16 @@ export const LIVE_DEAD_STREAK = 2;
 /* ---------- v1.7：弹幕（CHG-22） ---------- */
 /** 同屏弹幕密度上限 */
 export const DANMAKU_MAX_ONSCREEN = 150;
+/**
+ * 单集弹幕保存上限（超出按时间均匀抽稀）。
+ * 腾讯每 30s 最多下发 600 条，一集可达 5 万+、缓存 3.4MB；渲染层同屏仅几十条，
+ * 整季预取累加会到百 MB 级，因此按时间分布抽稀而不是全量保存。
+ */
+export const DANMAKU_MAX_PER_EPISODE = 10_000;
 /** 弹幕缓存 TTL（30 天；命中缓存不发网络请求） */
 export const DANMAKU_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** dandanplay 匹配接口基址（appId/secret 就绪前不启用该 Provider） */
 export const DANMAKU_DANDANPLAY_BASE = 'https://api.dandanplay.net';
-/** 社区聚合弹幕端点（备源） */
-export const DANMAKU_AGGREGATE_BASE = 'https://api.danmu.icu';
 
 /* ---------- v1.7：EPG（CHG-23） ---------- */
 /** EPG 缓存 TTL */

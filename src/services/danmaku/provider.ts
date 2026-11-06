@@ -1,19 +1,21 @@
 /**
  * 弹幕数据 Provider（v1.7 / CHG-22，只读不发）
  *
- * 三级回退（`danmakuService.match` 按序尝试）：
- * 1. `dandanplay` —— 官方匹配 API，需要 appId/secret（用户在设置里配置前**不启用**，
+ * 回退顺序（`danmakuService.match` 按序尝试）：
+ * 1. `bilibili` —— B 站直连（见 `./bilibili`），无凭据主力源；
+ * 2. `tencent` —— 腾讯视频直连（见 `./tencent`），国产剧/独播剧兜底；
+ * 3. `dandanplay` —— 官方匹配 API，需要 appId/secret（用户在设置里配置前**不启用**，
  *    避免无凭据请求打官方接口）；
- * 2. `aggregate` —— 社区聚合端点（dandanplay 兼容协议），无凭据可用，为主力源；
- * 3. `local-xml` —— 用户本地 B 站格式 xml（下载目录/手动粘贴），纯解析不发请求。
+ * 4. `local-xml` —— 用户本地 B 站格式 xml（下载目录/手动粘贴），纯解析不发请求。
  *
  * 匹配口径与豆瓣借播一致（`stripTitleNoise`）：片名归一化相等 + 集号由调用方传入。
  * 隐私约束：请求只携带片名/年份/集号，绝不携带用户标识。
  */
-import { DANMAKU_AGGREGATE_BASE, DANMAKU_DANDANPLAY_BASE } from '@/shared/constants';
+import { DANMAKU_DANDANPLAY_BASE } from '@/shared/constants';
 import { stripTitleNoise } from '@/sources/douban/playMatch';
 import type { DanmakuComment } from '@/types';
 import { httpClient } from '@/sources/base/httpClient';
+import { modeOf, parseBilibiliXml } from './bilibiliXml';
 
 /** 匹配查询：片名归一化由 provider 内部完成 */
 export interface DanmakuQuery {
@@ -37,7 +39,7 @@ export function getDandanplayCredentials(): { appId: string; secret: string } | 
   return appId.length > 0 && secret.length > 0 ? { appId, secret } : null;
 }
 
-/* ---------- dandanplay 协议响应（aggregate 兼容同一形态） ---------- */
+/* ---------- dandanplay 协议响应 ---------- */
 
 interface DdpMatchEpisode {
   episodeId: number;
@@ -55,13 +57,6 @@ interface DdpMatchResponse {
 }
 /** 弹幕内容行：`[时间(秒), 模式, 颜色, 文本]` */
 type DdpCommentRow = [number, number, number, string];
-
-/** 模式映射（dandanplay/B 站惯例：1~3 滚动、4 底部、5 顶部） */
-function modeOf(raw: number): DanmakuComment['mode'] {
-  if (raw === 4) return 'bottom';
-  if (raw === 5) return 'top';
-  return 'scroll';
-}
 
 function rowsToComments(rows: DdpCommentRow[]): DanmakuComment[] {
   const out: DanmakuComment[] = [];
@@ -95,7 +90,7 @@ function pickEpisodeId(
 /* ---------- Provider 实现 ---------- */
 
 export interface DanmakuProvider {
-  readonly id: 'dandanplay' | 'aggregate';
+  readonly id: 'bilibili' | 'tencent' | 'dandanplay';
   /** 该 Provider 当前是否可用（凭据缺失等） */
   available(): boolean;
   /** 匹配成功返回弹幕与远端回传的题名（供阈值校验）；无匹配返回 null */
@@ -148,45 +143,7 @@ export const dandanplayProvider: DanmakuProvider = {
   },
 };
 
-export const aggregateProvider: DanmakuProvider = {
-  id: 'aggregate',
-  available: () => true,
-  async match(query) {
-    return matchViaCompatibleApi(DANMAKU_AGGREGATE_BASE, query, {});
-  },
-};
-
-/* ---------- 本地 B 站 xml 解析（纯函数，供 Provider 与单测共用） ---------- */
-
-function unescapeXmlText(value: string): string {
-  return value
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&apos;/gi, "'")
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 10)))
-    .replace(/&amp;/gi, '&');
-}
-
-/**
- * B 站弹幕 xml → 弹幕列表。
- * `<d p="time,mode,size,color,timestamp,pool,uid,rowid">文本</d>`；
- * 兼容 CIDATA 包裹与属性引号缺失的宽松形态。
- */
-export function parseBilibiliXml(xml: string): DanmakuComment[] {
-  const out: DanmakuComment[] = [];
-  const pattern = /<d\s+[^>]*p\s*=\s*"([^"]+)"[^>]*>([\s\S]*?)<\/d\s*>/gi;
-  for (const match of xml.matchAll(pattern)) {
-    const parts = (match[1] ?? '').split(',');
-    const text = unescapeXmlText(match[2] ?? '').trim();
-    const time = Number.parseFloat(parts[0] ?? '');
-    if (!Number.isFinite(time) || text.length === 0) continue;
-    const rawMode = Number.parseInt(parts[1] ?? '1', 10) || 1;
-    const color = Number.parseInt(parts[3] ?? '16777215', 10) || 0xffffff;
-    out.push({ time, mode: modeOf(rawMode), color, text });
-  }
-  return out;
-}
+/* ---------- 本地 B 站 xml 兜底 ---------- */
 
 export const localXmlProvider = {
   id: 'local-xml' as const,

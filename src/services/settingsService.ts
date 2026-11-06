@@ -23,7 +23,7 @@ import { COMPLIANCE_VERSION, KV_KEY_SETTINGS, SEARCH_HISTORY_MAX } from '@/share
 import { AppError } from '@/shared/errors';
 import type { AppSettings, DanmakuSettings, DeepPartial, DownloadSettings, GestureSettings, PlayerSettings } from '@/types';
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 export function defaultSettings(now: number = Date.now()): AppSettings {
   return {
@@ -60,7 +60,7 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
     showRecommendedSubscriptions: true,
     experimentalNativePlayer: true,
     danmaku: {
-      enabled: false,
+      enabled: true,
       fontSize: 16,
       opacity: 0.8,
       speed: 1,
@@ -195,7 +195,12 @@ async function load(): Promise<AppSettings> {
   }
   if (stored.schemaVersion !== SCHEMA_VERSION) {
     // 旧版本设置：代码层兼容（补默认值），不删数据
-    const migrated = sanitize({ ...defaultSettings(), ...stored });
+    const base = { ...defaultSettings(), ...stored };
+    // v1 → v2：弹幕接入 B 站直连，旧默认「关闭」只是因为没有可用弹幕源，升级时开启一次
+    if ((stored.schemaVersion ?? 0) < 2) {
+      base.danmaku = { ...defaultSettings().danmaku!, ...stored.danmaku, enabled: true };
+    }
+    const migrated = sanitize(base);
     await kvRepo.set(KV_KEY_SETTINGS, migrated);
     cached = migrated;
     return migrated;
