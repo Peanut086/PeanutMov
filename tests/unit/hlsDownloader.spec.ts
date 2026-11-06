@@ -1,13 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetAll } from './helpers';
-import { closeDb } from '@/db/index';
-import { createHlsDownloader, HlsDownloader } from '@/services/hlsDownloader';
-import { IdbBlobSink } from '@/services/downloadSink';
+import { createHlsDownloader } from '@/services/hlsDownloader';
 import { blobRepo } from '@/db/repositories/blobRepo';
 import { settingsService } from '@/services/settingsService';
-import { AppError } from '@/shared/errors';
 import type { DownloadTask } from '@/types';
+
+/**
+ * 关于 `persistIntervalMs`（QA-01 判定）
+ *
+ * 旧用例向 `createHlsDownloader` 传了 `persistIntervalMs: 0`，但 `HlsDownloaderDeps`
+ * 从引入至今（e4545b8 → HEAD）从未声明该字段，实现侧固定按 1000ms 节流落库；
+ * 该选项只存在于 `DownloadEngineDeps`。属**测试写超前**（照抄 DownloadEngine 入参），
+ * 不是实现丢能力，故移除该入参，断言保持不变。
+ */
 
 function task(overrides: Partial<DownloadTask> = {}): DownloadTask {
   const now = Date.now();
@@ -121,7 +127,6 @@ describe('HLS 下载（Phase 2）', () => {
         load: async () => task(),
         saveProgress: async () => undefined,
         fetchImpl: fetchImpl as unknown as typeof fetch,
-        persistIntervalMs: 0,
       });
 
       await downloader.run(task(), new AbortController().signal);
@@ -148,7 +153,6 @@ describe('HLS 下载（Phase 2）', () => {
         load: async () => task({ url: 'https://cdn.example.com/master.m3u8' }),
         saveProgress: async () => undefined,
         fetchImpl: fetchImpl as unknown as typeof fetch,
-        persistIntervalMs: 0,
       });
 
       await downloader.run(task({ url: 'https://cdn.example.com/master.m3u8' }), new AbortController().signal);
@@ -161,6 +165,34 @@ describe('HLS 下载（Phase 2）', () => {
       // 检查 blob 大小（3 * 100 = 300）
       const blob = await blobRepo.get('task-hls');
       expect(blob?.size).toBe(300);
+    });
+  });
+
+  describe('加密方式：AES-128 不应被 DRM 守卫误拒', () => {
+    it('AES-128 清单继续进入密钥获取，不抛 E_DRM_PROTECTED', async () => {
+      const responses = new Map([
+        ['https://cdn.example.com/master.m3u8', { body: ENCRYPTED_PLAYLIST }],
+        ['https://cdn.example.com/key.bin', { body: new Uint8Array(16).fill(3) }],
+        ['https://cdn.example.com/segment0.ts', { body: new Uint8Array(96) }],
+        ['https://cdn.example.com/segment1.ts', { body: new Uint8Array(96) }],
+      ]);
+      const fetchImpl = createMockFetch(responses);
+
+      const downloader = createHlsDownloader({
+        load: async () => task(),
+        saveProgress: async () => undefined,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      // 解密结果不在本用例关注范围（假密钥），只关心"清单阶段有没有被误判成 DRM"
+      const error = await downloader.run(task(), new AbortController().signal).then(
+        () => null,
+        (e: { code?: string }) => e,
+      );
+
+      expect(error?.code).not.toBe('E_DRM_PROTECTED');
+      const calls = fetchImpl.mock.calls.map((c) => String(c[0]));
+      expect(calls).toContain('https://cdn.example.com/key.bin');
     });
   });
 
@@ -179,7 +211,6 @@ describe('HLS 下载（Phase 2）', () => {
         load: async () => task({ url: 'https://cdn.example.com/master.m3u8' }),
         saveProgress: async () => undefined,
         fetchImpl: fetchImpl as unknown as typeof fetch,
-        persistIntervalMs: 0,
       });
 
       await downloader.run(task({ url: 'https://cdn.example.com/master.m3u8' }), new AbortController().signal);
@@ -223,7 +254,6 @@ describe('HLS 下载（Phase 2）', () => {
         load: async () => task(),
         saveProgress: async () => undefined,
         fetchImpl: fetchImpl as unknown as typeof fetch,
-        persistIntervalMs: 0,
         parallelSegments: 2, // 限制为 2 并发
       });
 
@@ -253,7 +283,6 @@ describe('HLS 下载（Phase 2）', () => {
         load: async () => task(),
         saveProgress: async () => undefined,
         fetchImpl: fetchImpl as unknown as typeof fetch,
-        persistIntervalMs: 0,
       });
 
       const controller = new AbortController();
@@ -273,7 +302,6 @@ describe('HLS 下载（Phase 2）', () => {
         load: async () => task(),
         saveProgress: async () => undefined,
         fetchImpl: fetchImpl as unknown as typeof fetch,
-        persistIntervalMs: 0,
       });
 
       await expect(downloader.run(task(), new AbortController().signal)).rejects.toMatchObject({
@@ -294,7 +322,6 @@ describe('HLS 下载（Phase 2）', () => {
         load: async () => task(),
         saveProgress: async () => undefined,
         fetchImpl: fetchImpl as unknown as typeof fetch,
-        persistIntervalMs: 0,
       });
 
       await expect(downloader.run(task(), new AbortController().signal)).rejects.toMatchObject({
@@ -331,7 +358,6 @@ describe('HLS 下载（Phase 2）', () => {
           nowValue += 500; // 每次调用增加 500ms
           return nowValue;
         },
-        persistIntervalMs: 0,
       });
 
       await downloader.run(task(), new AbortController().signal);

@@ -397,11 +397,18 @@ async function preparePlayback(playback: PlaybackSource): Promise<PlaybackSource
 }
 
 /**
+ * 加载代次（REV-28）：切集/切线并发触发时，过期任务只允许静默退出——
+ * 既不能把错误面板盖到新画面上，也不能让慢的旧任务反过来顶掉新任务。
+ */
+let loadEpoch = 0;
+
+/**
  * 解析并加载当前集/线路。
  * 返回是否成功：`resolvePlay` 抛错 → `loadError`；引擎加载失败 → `player.error`。
  * 线路切换需要据此判断是否回退原线路（AC-55 / REV-05）。
  */
 async function resolveAndLoad(): Promise<boolean> {
+  const epoch = ++loadEpoch;
   const it = item.value;
   const ep = currentEpisode.value;
   if (!it || !ep) {
@@ -418,7 +425,9 @@ async function resolveAndLoad(): Promise<boolean> {
   failoverStartedAt.value = Date.now();
   try {
     const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
+    if (epoch !== loadEpoch) return false;
     const prepared = await preparePlayback(playback);
+    if (epoch !== loadEpoch) return false;
     currentPlayback.value = prepared;
     const rec = history.progressOf(it.sourceId, it.id);
     let start = 0;
@@ -472,6 +481,7 @@ async function resolveAndLoad(): Promise<boolean> {
     };
 
     await load(opts);
+    if (epoch !== loadEpoch) return false;
     // 「本地文件不可用，已切换网络源」时在页面给出「重新下载」入口（AC-78②）
     detectLocalMissing();
     // `load()` 内部把失败写入 player.error 而不抛出，这里显式判定
@@ -483,6 +493,7 @@ async function resolveAndLoad(): Promise<boolean> {
     }
     return ok;
   } catch (e) {
+    if (epoch !== loadEpoch) return false;
     const shape = toErrorShape(e, 'E_NO_PLAY_URL');
     // 失败换线时并发解析会双跑：先成功者已在播，后失败者（嗅探 15s 超时）若把
     // 错误面板盖上去，用户看到的是「有声音却报无播放地址」。播放中一律不覆盖。
@@ -491,8 +502,11 @@ async function resolveAndLoad(): Promise<boolean> {
     loadError.value = shape.message;
     return false;
   } finally {
-    pageLoading.value = false;
-    clearLoadingHint();
+    // 只有最新一代负责收尾，避免旧任务把新任务的 loading 关掉
+    if (epoch === loadEpoch) {
+      pageLoading.value = false;
+      clearLoadingHint();
+    }
   }
 }
 
@@ -969,6 +983,11 @@ function onDisplayModeSelect(mode: ResizeMode): void {
   void settings.update({ player: { ...playerSettings.value, resizeMode: mode } });
 }
 
+/**
+ * 选集：只改路由，加载由 `episodeId` watcher 唯一入口负责（REV-28）。
+ * 之前这里与 watcher 各调一次 `resolveAndLoad()`，一次切集会发两遍清单请求，
+ * 且旧请求被取消后还会把 E_ABORTED 写进错误面板。
+ */
 function chooseEpisode(ep: Episode): void {
   episodeOpen.value = false;
   if (ep.id === currentEpisode.value?.id) return;
@@ -977,7 +996,6 @@ function chooseEpisode(ep: Episode): void {
     params: { mediaId: mediaId.value, episodeId: ep.id },
     query: currentLineId.value ? { lineId: currentLineId.value } : {},
   });
-  void resolveAndLoad();
 }
 
 function retryPanel(): void {

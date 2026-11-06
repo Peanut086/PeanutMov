@@ -11,6 +11,7 @@
 import { AppError, toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { DOWNLOAD_PROGRESS_PERSIST_MS, DOWNLOAD_WEB_SIZE_WARN_BYTES, DOWNLOAD_SPEED_LIMITS } from '@/shared/constants';
+import { isM3u8Url } from '@/player/sourceGuard';
 import { createSink, nativeFilePathOf, type DownloadSink } from '@/services/downloadSink';
 import { createHlsDownloader } from '@/services/hlsDownloader';
 import { appEvents } from '@/services/events';
@@ -74,24 +75,21 @@ export class DownloadEngine {
   async run(task: DownloadTask, signal: AbortSignal): Promise<void> {
     // HLS 分片下载：委托给 HlsDownloader（暂不支持 Native）
     if (task.format === 'hls') {
-      // P0-6: 从设置读取 segmentConcurrency
-      const settings = await settingsService.get();
-      const parallelSegments = settings.download.segmentConcurrency ?? 6;
-      const hlsDownloader = createHlsDownloader({
-        load: this.deps.load,
-        saveProgress: this.deps.saveProgress,
-        fetchImpl: this.deps.fetchImpl,
-        createSinkImpl: this.deps.createSinkImpl,
-        now: this.deps.now,
-        parallelSegments,
-      });
-      await hlsDownloader.run(task, signal);
+      await this.runHls(task, signal);
       return;
     }
 
     // Phase 1：优先使用 Native 下载器（Android only）
     const useNative = await this.tryNativeDownload(task, signal);
     if (useNative) return;
+
+    // R-DEV04-01：上游把 HLS 标成普通文件（format!=='hls'）时，回退到 JS 直下会把
+    // 清单文本当视频字节写进磁盘。native 不可用时按地址后缀兜底改走 HlsDownloader。
+    if (isM3u8Url(task.url)) {
+      logger.warn('任务格式非 hls 但地址为 m3u8，改走 HLS 下载', { taskId: task.id, url: task.url });
+      await this.runHls(task, signal);
+      return;
+    }
 
     // 回退到 JS 下载
     const fetchImpl = this.deps.fetchImpl ?? fetch.bind(globalThis);
@@ -277,6 +275,24 @@ export class DownloadEngine {
       }
       throw appError;
     }
+  }
+
+  /**
+   * 委托 HlsDownloader 下载（`format==='hls'`，或地址后缀是 .m3u8 的兜底路径）。
+   */
+  private async runHls(task: DownloadTask, signal: AbortSignal): Promise<void> {
+    // P0-6: 从设置读取 segmentConcurrency
+    const settings = await settingsService.get();
+    const parallelSegments = settings.download.segmentConcurrency ?? 6;
+    const hlsDownloader = createHlsDownloader({
+      load: this.deps.load,
+      saveProgress: this.deps.saveProgress,
+      fetchImpl: this.deps.fetchImpl,
+      createSinkImpl: this.deps.createSinkImpl,
+      now: this.deps.now,
+      parallelSegments,
+    });
+    await hlsDownloader.run(task, signal);
   }
 
   /**

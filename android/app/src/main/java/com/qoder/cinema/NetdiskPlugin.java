@@ -8,10 +8,13 @@ import android.os.Environment;
 import android.provider.Settings;
 import android.util.Log;
 
+import androidx.activity.result.ActivityResult;
+
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.File;
@@ -171,6 +174,11 @@ public class NetdiskPlugin extends Plugin {
     /**
      * 启动登录页（P1）
      *
+     * DEV-04 / AND-06 / AND-07：改为等待登录页返回结果，
+     * 返回 { success, verified, nickname, memberType, note }。
+     * - success=false：用户取消或登录校验失败（未写 cookie 文件）
+     * - verified=false：cookie 已保存但账号信息未验证（夸克以外平台）
+     *
      * @param platform 平台名（quark/uc/123/tianyi/ali）
      * @param loginUrl 登录 URL
      */
@@ -186,9 +194,37 @@ public class NetdiskPlugin extends Plugin {
         Intent intent = new Intent(getContext(), NetdiskLoginActivity.class);
         intent.putExtra("platform", platform);
         intent.putExtra("loginUrl", loginUrl);
-        getActivity().startActivityForResult(intent, 1001);
+        startActivityForResult(call, intent, "handleLoginResult");
+    }
 
-        call.resolve();
+    /**
+     * 登录页结果回调（AND-06/07）。
+     *
+     * 登录页内部已完成 cookie 抓取、响应体校验与落盘；这里只做结果透传，
+     * 不写文件、不判定成功。RESULT_CANCELED 时不会存在新的 cookie 文件。
+     */
+    @ActivityCallback
+    private void handleLoginResult(PluginCall call, ActivityResult result) {
+        if (call == null) {
+            Log.w(TAG, "Login result callback without pending call");
+            return;
+        }
+
+        JSObject ret = new JSObject();
+        ret.put("success", result.getResultCode() == android.app.Activity.RESULT_OK);
+
+        Intent data = result.getData();
+        if (data != null) {
+            ret.put("platform", data.getStringExtra("platform"));
+            ret.put("verified", data.getBooleanExtra("verified", false));
+            ret.put("nickname", data.getStringExtra("nickname"));
+            ret.put("memberType", data.getStringExtra("memberType"));
+            ret.put("note", data.getStringExtra("note"));
+        } else {
+            ret.put("verified", false);
+        }
+
+        call.resolve(ret);
     }
 
     /**

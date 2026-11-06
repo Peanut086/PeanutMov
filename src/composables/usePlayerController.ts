@@ -16,7 +16,7 @@ import type { GestureIntent } from '@/player/GestureRecognizer';
 import { ProgressReporter } from '@/player/ProgressReporter';
 import { AUTO_NEXT_COUNTDOWN_SEC, CONTROLS_HIDE_DELAY_MS } from '@/player/constants';
 import { brightnessToDimOpacity, clampBrightness } from '@/player/brightness';
-import { toErrorShape } from '@/shared/errors';
+import { isCanceled, toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { usePlayerStore } from '@/stores/playerStore';
 import { useUiStore } from '@/stores/uiStore';
@@ -305,7 +305,12 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     try {
       await c.load(opts);
       await c.play();
+      // 成功路径显式清空错误：旧一轮（已被取代）的失败不得残留在画面上
+      if (player.error) player.patch({ error: null });
     } catch (e) {
+      // REV-28：切集/切线路会作废旧加载，旧加载抛 E_ABORTED 属正常竞态，
+      // 不能把取消当失败写到 player.error 上（会盖住正在播放的新画面）。
+      if (isCanceled(e)) return;
       player.patch({ error: toErrorShape(e), loading: false, playing: false });
     }
   }

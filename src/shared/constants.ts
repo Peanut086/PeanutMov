@@ -63,7 +63,13 @@ export const TIMEOUT_TEST_CONNECTION_MS = 3000;
  */
 export const TIMEOUT_PROBE_SPIDER_MS = 35000;
 export const TIMEOUT_PROBE_SPIDER_WARM_MS = 15000;
-/** 健康检查并发上限（AC-16；CHG-05 由 3 提升为 6） */
+/**
+ * 健康检查并发上限（AC-16；CHG-05 由 3 提升为 6）
+ *
+ * OPT-03 耗时口径：最坏耗时 ≈ 启用源数 × 单源探测超时 ÷ 本并发数
+ * （183 个冷启 spider ≈ 183 × 35s ÷ 6 ≈ 17.8 分钟），不存在“全量 2 分钟”的保证；
+ * 因此 UI 必须展示 `检测中 n/total`、支持取消与“仅检测失败源”，不得给出固定时长承诺。
+ */
 export const HEALTH_CHECK_CONCURRENCY = 6;
 /** 订阅拉取 */
 export const TIMEOUT_SUBSCRIPTION_FETCH_MS = 10000;

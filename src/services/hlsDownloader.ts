@@ -13,6 +13,7 @@ import { AppError, toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
 import { LocalProxy } from '@/native/localProxy';
+import { findProtectedKeyEvidence } from '@/player/sourceGuard';
 import { createSink, type DownloadSink } from '@/services/downloadSink';
 import type { DownloadTask } from '@/types';
 
@@ -222,13 +223,16 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
 
 /**
  * 解析 HLS 属性字符串
+ *
+ * 属性名统一转大写存储，消费侧（METHOD/URI/IV/CODECS…）只按大写取值，
+ * 与 REV-30 的「属性名大小写不敏感」保持一致。
  */
 function parseAttributes(str: string): Record<string, string> {
   const attrs: Record<string, string> = {};
-  const regex = /([A-Z0-9-]+)=(?:"([^"]*)"|([^,]*))/g;
+  const regex = /([A-Za-z0-9-]+)\s*=\s*(?:"([^"]*)"|([^,]*))/g;
   let match;
   while ((match = regex.exec(str)) !== null) {
-    attrs[match[1]] = match[2] ?? match[3];
+    attrs[(match[1] ?? '').toUpperCase()] = (match[2] ?? match[3] ?? '').trim();
   }
   return attrs;
 }
@@ -261,6 +265,67 @@ function isLocalhostUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * 还原本机代理改写过的资源地址。
+ *
+ * LocalProxy 转发 m3u8 时会把清单内的 URL 改写成 `/p/{token}/{urlencoded}`，
+ * 而分片请求用的 token 只登记了清单地址，改写后的 token 不可复用。因此解析清单后
+ * 先把这些回环地址还原成上游原始地址，再统一经 `resourceUrl()` 用当前任务的代理
+ * 基址重新编码，避免「分片请求落到未登记的 token」而 404。
+ */
+function unwrapProxiedUrl(url: string, proxyBase: string | null): string {
+  if (!proxyBase || !isLocalhostUrl(url)) return url;
+  try {
+    const target = new URL(url);
+    const base = new URL(proxyBase);
+    if (target.host !== base.host) return url;
+    if (!target.pathname.startsWith('/p/')) return url;
+    const rest = target.pathname.substring(3);
+    const slash = rest.indexOf('/');
+    if (slash <= 0) return url;
+    // LocalProxy 用 java.net.URLEncoder：空格编码为 '+'，其余与 encodeURIComponent 一致
+    const decoded = decodeURIComponent(rest.substring(slash + 1).replace(/\+/g, ' '));
+    return /^https?:\/\//i.test(decoded) ? decoded : url;
+  } catch {
+    return url;
+  }
+}
+
+/** 把代理改写过的清单 URL 还原成上游地址（变体/分片/初始化分片/密钥） */
+function unwrapPlaylistUrls(playlist: HlsPlaylist, proxyBase: string | null): void {
+  if (!proxyBase) return;
+  for (const variant of playlist.variants ?? []) {
+    variant.url = unwrapProxiedUrl(variant.url, proxyBase);
+  }
+  if (playlist.initSegment) {
+    playlist.initSegment.url = unwrapProxiedUrl(playlist.initSegment.url, proxyBase);
+  }
+  for (const segment of playlist.segments) {
+    segment.url = unwrapProxiedUrl(segment.url, proxyBase);
+    if (segment.key) segment.key.uri = unwrapProxiedUrl(segment.key.uri, proxyBase);
+  }
+}
+
+/**
+ * 清单解析后、动手下载任何字节之前，先拒绝不支持的加密方式（AC-40 / FIX-03）。
+ *
+ * 目前只实现 AES-128 解密；SAMPLE-AES / SAMPLE-AES-CTR 等属于受保护内容，
+ * 原样拼接会产出「任务完成但文件不可播」的坏产物，因此在解析阶段直接失败，
+ * 不下载密钥、不创建 sink、不写入任何分片。
+ *
+ * REV-30 / REV-31：判定口径与播放侧共用 `findProtectedKeyEvidence`——
+ * 标签名/属性名大小写不敏感（`#ext-x-key:`、`method = "SAMPLE-AES"` 同样命中），
+ * 并同时扫描 `#EXT-X-SESSION-KEY`，避免两处实现漂移。
+ */
+function assertSupportedKeyMethods(manifest: string): void {
+  const evidence = findProtectedKeyEvidence(manifest);
+  if (!evidence) return;
+  throw new AppError('E_DRM_PROTECTED', undefined, {
+    detail: `不支持的 HLS 加密方式：${evidence}`,
+    retryable: false,
+  });
 }
 
 /**
@@ -324,10 +389,10 @@ export class HlsDownloader {
     logger.debug('开始 HLS 下载', { taskId: task.id, url: task.url });
 
     /**
-     * 分片/密钥/初始化分片在 Android 上经本机回环代理转发：
-     * 部分 CDN 的分片地址返回 302，CapacitorHttp 拦截层不接受 3xx
-     * （`statusCode can't be in the [300, 399] range`），而代理侧的原生
-     * `HttpURLConnection` 会自动跟随跳转。清单本身通常不跳转，仍直连解析。
+     * 清单 / 分片 / 密钥 / 初始化分片在 Android 上统一经本机回环代理转发：
+     * 部分 CDN 的分片与清单地址返回 302，CapacitorHttp 拦截层不接受 3xx
+     * （`statusCode can't be in the [300, 399] range`），而代理侧会手动跟随跳转。
+     * 代理不可用或单次清单请求失败时回退直连，保证非原生环境与老旧链路可用。
      */
     const proxyBase = await this.resolveProxyBase(task);
     const resourceUrl = (url: string): string =>
@@ -340,17 +405,10 @@ export class HlsDownloader {
     // 1. 获取并解析播放列表
     let playlist: HlsPlaylist;
     try {
-      const response = await fetchImpl(task.url, {
-        method: 'GET',
-        headers: task.headers,
-        signal,
-        cache: 'no-store',
-      });
-      if (!response.ok) {
-        throw this.mapHttpError(response.status, '获取 m3u8 清单失败');
-      }
-      const manifest = await response.text();
+      const manifest = await this.fetchManifestText(task.url, task.headers, proxyBase, fetchImpl, signal, '获取 m3u8 清单失败');
+      assertSupportedKeyMethods(manifest);
       playlist = parseM3u8(manifest, task.url);
+      unwrapPlaylistUrls(playlist, proxyBase);
     } catch (e) {
       if (e instanceof AppError) throw e;
       throw toAppError(e, 'E_NETWORK');
@@ -369,17 +427,11 @@ export class HlsDownloader {
       });
 
       try {
-        const response = await fetchImpl(resourceUrl(selected.url), {
-          method: 'GET',
-          headers: resourceHeaders(),
-          signal,
-          cache: 'no-store',
-        });
-        if (!response.ok) {
-          throw this.mapHttpError(response.status, '获取 media playlist 失败');
-        }
-        const manifest = await response.text();
+        const manifest = await this.fetchManifestText(selected.url, task.headers, proxyBase, fetchImpl, signal, '获取 media playlist 失败');
+        assertSupportedKeyMethods(manifest);
+        // 相对地址必须以变体流的原始地址为基准解析（代理返回的清单可能被改写成回环地址）
         playlist = parseM3u8(manifest, selected.url);
+        unwrapPlaylistUrls(playlist, proxyBase);
       } catch (e) {
         if (e instanceof AppError) throw e;
         throw toAppError(e, 'E_NETWORK');
@@ -600,6 +652,46 @@ export class HlsDownloader {
       }
       throw appError;
     }
+  }
+
+  /**
+   * 拉取清单文本（FIX-04）。
+   *
+   * 优先经本机回环代理：代理侧手动跟随 302，规避 CapacitorHttp 对 3xx 的硬拒绝；
+   * 代理不可用、返回非 2xx 或抛错时回退直连（非原生环境本来就只有直连）。
+   * 取消信号在两条路径上都生效，避免暂停/取消后仍挂住。
+   */
+  private async fetchManifestText(
+    url: string,
+    headers: Record<string, string> | undefined,
+    proxyBase: string | null,
+    fetchImpl: typeof fetch,
+    signal: AbortSignal,
+    label: string,
+  ): Promise<string> {
+    if (signal.aborted) throw new AppError('E_ABORTED');
+    if (proxyBase && !isLocalhostUrl(url)) {
+      try {
+        const response = await fetchImpl(`${proxyBase}/${encodeURIComponent(url)}`, {
+          method: 'GET',
+          signal,
+          cache: 'no-store',
+        });
+        if (response.ok) return await response.text();
+        logger.warn('清单代理请求返回非 2xx，回退直连', { url, status: response.status });
+      } catch (e) {
+        if (signal.aborted) throw new AppError('E_ABORTED');
+        logger.warn('清单代理请求失败，回退直连', { url, error: (e as Error)?.message ?? String(e) });
+      }
+    }
+    const response = await fetchImpl(url, {
+      method: 'GET',
+      headers: headers && Object.keys(headers).length > 0 ? headers : undefined,
+      signal,
+      cache: 'no-store',
+    });
+    if (!response.ok) throw this.mapHttpError(response.status, label);
+    return await response.text();
   }
 
   /**

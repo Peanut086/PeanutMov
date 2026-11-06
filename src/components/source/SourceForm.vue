@@ -43,7 +43,7 @@ const emit = defineEmits<{
 }>();
 
 interface FormState {
-  type: SourceType;
+  type: FormType;
   name: string;
   baseUrl: string;
   pathPrefix: string;
@@ -55,12 +55,23 @@ interface FormState {
   headersText: string;
 }
 
-const TYPE_CARDS: Array<{ value: SourceType; label: string; hint: string }> = [
+/** 表单可选项：`cms` 是 UI 伪类型，提交时映射为 `site` + `ext.cmsDirect`（FIX-01 / FR-50） */
+type FormType = SourceType | 'cms';
+
+const TYPE_CARDS: Array<{ value: FormType; label: string; hint: string }> = [
   { value: 'alist', label: 'AList', hint: '局域网/网盘目录' },
   { value: 'webdav', label: 'WebDAV', hint: 'NAS 文件目录' },
   { value: 'jellyfin', label: 'Jellyfin', hint: '自建媒体服务' },
   { value: 'site', label: '站点', hint: 'TVBox 兼容接口' },
+  { value: 'cms', label: '采集接口', hint: 'macCMS JSON' },
 ];
+
+/** 编辑态识别采集接口（ext.cmsDirect）并回显为 `cms` 卡 */
+function formTypeOf(source: Source | null): FormType {
+  if (!source) return 'alist';
+  if (source.ext?.cmsDirect === true) return 'cms';
+  return source.type === 'demo' ? 'alist' : source.type;
+}
 
 function fromSource(source: Source | null): FormState {
   if (!source) {
@@ -78,7 +89,7 @@ function fromSource(source: Source | null): FormState {
     };
   }
   return {
-    type: source.type === 'demo' ? 'alist' : source.type,
+    type: formTypeOf(source),
     name: source.name,
     baseUrl: source.baseUrl,
     pathPrefix: source.pathPrefix ?? '',
@@ -160,6 +171,17 @@ function setAuthMode(value: string): void {
   if (value === 'none' || value === 'basic' || value === 'token') form.authMode = value;
 }
 
+/** URL 失焦：做必填校验；采集接口未填名称时用主机名兜底（沿用旧快捷入口口径） */
+function onUrlBlur(): void {
+  touched.baseUrl = true;
+  if (form.type !== 'cms' || form.name.trim().length > 0 || !isValidHttpUrl(form.baseUrl)) return;
+  try {
+    form.name = new URL(form.baseUrl.trim()).hostname.slice(0, SOURCE_NAME_MAX_LENGTH);
+  } catch {
+    // 地址非法已由 baseUrlError 提示，无需重复报错
+  }
+}
+
 /* ---------- 提交 ---------- */
 function buildInput(): SourceInput {
   const headers: Record<string, string> = {};
@@ -167,11 +189,24 @@ function buildInput(): SourceInput {
     const idx = line.indexOf(':');
     if (idx > 0) headers[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
   }
+  // 采集接口是 UI 伪类型：落库为 site + ext.cmsDirect（FR-50 / AC-115）
+  const type = form.type;
+  const isCms = type === 'cms';
+  const sourceType: SourceType = isCms ? 'site' : type;
+  const ext = isCms
+    ? { ...(props.source?.ext ?? {}), cmsDirect: true, searchable: true }
+    : type === 'jellyfin' && form.userId.trim().length > 0
+      ? { userId: form.userId.trim() }
+      : null;
   return {
     name: form.name.trim(),
-    type: form.type,
+    type: sourceType,
     baseUrl: normalizeBaseUrl(form.baseUrl),
-    pathPrefix: form.pathPrefix.trim().length > 0 ? form.pathPrefix.trim() : null,
+    pathPrefix: isCms
+      ? null
+      : form.pathPrefix.trim().length > 0
+        ? form.pathPrefix.trim()
+        : null,
     auth: {
       mode: form.authMode,
       username: form.authMode === 'basic' ? form.username.trim() : null,
@@ -179,7 +214,7 @@ function buildInput(): SourceInput {
       token: form.authMode === 'token' || form.type === 'jellyfin' ? form.token.trim() : null,
     },
     headers,
-    ext: form.type === 'jellyfin' && form.userId.trim().length > 0 ? { userId: form.userId.trim() } : null,
+    ext,
   };
 }
 
@@ -247,16 +282,25 @@ function onTest(): void {
           type="url"
           inputmode="url"
           autocomplete="off"
-          :placeholder="form.type === 'site' ? 'https://example.com/api.php/provide/vod' : 'https://alist.example.com'"
-          @blur="touched.baseUrl = true"
+          :placeholder="
+            form.type === 'cms'
+              ? 'https://example.com/api.php/provide/vod/at/json'
+              : form.type === 'site'
+                ? 'https://example.com/api.php/provide/vod'
+                : 'https://alist.example.com'
+          "
+          @blur="onUrlBlur"
         />
         <p v-if="showUrlError" class="field__error">{{ baseUrlError }}</p>
+        <p v-else-if="form.type === 'cms'" class="field__hint">
+          粘贴 macCMS 采集端点（provide/vod JSON）。建议先「测试连接」探测，再保存；保存后可直接搜索与播放。
+        </p>
         <p v-else class="field__hint">
           支持局域网 http 地址；保存时会自动归一化末尾斜杠（AC-05）。
         </p>
       </div>
 
-      <div class="field">
+      <div v-if="form.type !== 'cms'" class="field">
         <label class="field__label" for="source-path">子路径（可选）</label>
         <input
           id="source-path"

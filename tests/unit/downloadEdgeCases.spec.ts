@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetAll } from './helpers';
-import { closeDb } from '@/db/index';
 import { createDownloadEngine } from '@/services/downloadEngine';
-import { IdbBlobSink, NativeFsSink } from '@/services/downloadSink';
-import { blobRepo } from '@/db/repositories/blobRepo';
+import { IdbBlobSink } from '@/services/downloadSink';
 import { AppError } from '@/shared/errors';
 import { settingsService } from '@/services/settingsService';
 import type { DownloadTask } from '@/types';
@@ -183,7 +181,7 @@ describe('边界场景测试（Phase 3）', () => {
   describe('416 Range Not Satisfiable', () => {
     it('续传位置越界 → 从头重下', async () => {
       let callCount = 0;
-      const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => {
         callCount++;
         if (callCount === 1) {
           // 第一次：416 错误

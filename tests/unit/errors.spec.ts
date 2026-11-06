@@ -33,6 +33,7 @@ const ALL_ERROR_CODES = [
   'E_SOURCE_DISABLED',
   'E_SOURCE_UNAVAILABLE',
   'E_NO_PLAY_URL',
+  'E_NETDISK_LOGIN_REQUIRED',
   'E_UNSUPPORTED_FORMAT',
   'E_DRM_PROTECTED',
   'E_DECODE',
@@ -46,7 +47,7 @@ const ALL_ERROR_CODES = [
 
 describe('AC-60 错误码 → 用户文案映射', () => {
   it('遍历 ErrorCode 全枚举：每项都有映射且非空', () => {
-    expect(ALL_ERROR_CODES).toHaveLength(27);
+    expect(ALL_ERROR_CODES).toHaveLength(28);
     for (const code of ALL_ERROR_CODES) {
       const text = ERROR_MESSAGES[code];
       expect(text, `${code} 缺少映射`).toBeTypeOf('string');
@@ -86,6 +87,7 @@ describe('AC-60 错误码 → 用户文案映射', () => {
       E_SOURCE_DISABLED: '该源已禁用，请先在源管理中启用',
       E_SOURCE_UNAVAILABLE: '该源暂不可用，可切换其他源',
       E_NO_PLAY_URL: '该集暂无可播放地址',
+      E_NETDISK_LOGIN_REQUIRED: '网盘未登录，请先登录',
       E_UNSUPPORTED_FORMAT: '暂不支持该格式',
       E_DRM_PROTECTED: '不支持受保护内容',
       E_DECODE: '视频解码失败，请尝试切换线路',

@@ -109,7 +109,10 @@ describe('NativeEngine（v1.8/CHG-25）', () => {
     await expect(loadPromise).resolves.toBeUndefined();
     expect(events.onLoadedMetadata).toHaveBeenCalledWith(90);
 
-    await vi.advanceTimersByTimeAsync(600);
+    // 轮询间隔为 NativeEngine 内 `PROGRESS_POLL_MS`：引入时 500ms，98d19f7（P0-P4 性能优化）
+    // 调成 1000ms 后本用例的 600ms 推进不再跨过 tick。这里按当前实现推进 1100ms，
+    // 断言（位置/时长/缓冲参数、丢帧数）保持原样。判定依据见 QA-01 交付文档。
+    await vi.advanceTimersByTimeAsync(1100);
     expect(events.onTimeUpdate).toHaveBeenCalledWith(1, 90, 1);
     expect(engine.getDroppedFrames()).toBe(2);
     expect(engine.getDuration()).toBe(90);

@@ -5,7 +5,6 @@ import android.util.Log;
 
 import com.qoder.cinema.DownloadPlugin;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +24,17 @@ import java.util.concurrent.Executors;
  * 并发策略：
  * - 默认 2 个并发（与 JS 侧 DOWNLOAD_DEFAULT_CONCURRENCY 一致）
  * - 超过并发限制的任务进入等待队列
+ *
+ * DEV-04 / D-01 / AND-14：原生 HLS 分支已移除。
+ * 原 `HlsDownloader` 不处理 EXT-X-KEY（TODO: AES-128），会把加密流写成
+ * 无法播放的文件后仍回调 completed，属于"看起来可用但产出坏文件"的路径。
+ * 现在所有 m3u8 在 `start()` 入口直接拒绝（抛 UnsupportedOperationException，
+ * 由 DownloadPlugin 转成 reject），由 JS 侧 HlsDownloader 全量接手；
+ * 原生层不再产生任何 HLS 输出文件。
+ *
+ * DEV-04 / AND-16：所有下载任务（含排队/暂停）统一登记在 pendingTasks /
+ * activeDownloads / pausedTasks 三张表里，统一受 MAX_CONCURRENT 闸门约束，
+ * 暂停、恢复、取消对排队任务与执行中任务语义一致。
  */
 public class NativeDownloadManager {
 
@@ -36,6 +46,10 @@ public class NativeDownloadManager {
     private final ExecutorService executor;
     private final Map<String, RangeDownloader> activeDownloads;
     private final Map<String, DownloadTask> pendingTasks;
+    /** DEV-04 / AND-16：排队中被暂停的任务（既不在 active 也不再参与调度） */
+    private final Map<String, DownloadTask> pausedTasks;
+    /** DEV-04 / AND-16：已登记任务（用于暂停时取回原始 url/headers，终态时清理） */
+    private final Map<String, DownloadTask> taskRegistry;
     private final List<DownloadStatus> completedStatuses;
     private DownloadPlugin plugin;
 
@@ -44,6 +58,8 @@ public class NativeDownloadManager {
         this.executor = Executors.newFixedThreadPool(MAX_CONCURRENT);
         this.activeDownloads = new ConcurrentHashMap<>();
         this.pendingTasks = new ConcurrentHashMap<>();
+        this.pausedTasks = new ConcurrentHashMap<>();
+        this.taskRegistry = new ConcurrentHashMap<>();
         this.completedStatuses = new ArrayList<>();
     }
 
@@ -62,15 +78,48 @@ public class NativeDownloadManager {
 
     /**
      * 启动下载任务
+     *
+     * @throws UnsupportedOperationException URL 为 m3u8（HLS）时抛出：
+     *         原生 HLS 分支已按 D-01 / AND-14 移除，必须由 JS 下载器接手。
      */
     public void start(String taskId, String url, String filePath, Map<String, String> headers,
                       long startBytes, long totalBytes) {
-        if (activeDownloads.containsKey(taskId) || pendingTasks.containsKey(taskId)) {
+        // D-01 / AND-14：入口硬封禁 HLS。旧 HlsDownloader 不处理 EXT-X-KEY，
+        // 会把加密流写成坏文件后仍回调 completed；这里直接拒绝，原生层零输出。
+        if (isHlsUrl(url)) {
+            com.qoder.cinema.AppLog.w(TAG, "Reject HLS task in native downloader: " + taskId);
+            throw new UnsupportedOperationException(
+                    "HLS_MUST_USE_JS_DOWNLOADER: native HLS download is disabled");
+        }
+
+        RangeDownloader running = activeDownloads.get(taskId);
+        if (running != null) {
+            DownloadTask paused = pausedTasks.remove(taskId);
+            if (paused == null) {
+                com.qoder.cinema.AppLog.w(TAG, "Task already exists: " + taskId);
+                return;
+            }
+            // 暂停中的任务收到 start（JS 侧续传）：登记一份新任务，旧线程退出后由调度接手
+            DownloadTask restarted = new DownloadTask(taskId, url, filePath, headers, startBytes, totalBytes);
+            taskRegistry.put(taskId, restarted);
+            pendingTasks.put(taskId, restarted);
+            Log.d(TAG, "Resuming paused task via start: " + taskId);
+            if (activeDownloads.get(taskId) != running && activeDownloads.size() < MAX_CONCURRENT) {
+                // 旧实例已在检查与登记之间退出，直接调度
+                executeTask(restarted);
+            }
+            DownloadService.start(context);
+            return;
+        }
+
+        if (pendingTasks.containsKey(taskId)) {
             com.qoder.cinema.AppLog.w(TAG, "Task already exists: " + taskId);
             return;
         }
 
         DownloadTask task = new DownloadTask(taskId, url, filePath, headers, startBytes, totalBytes);
+        taskRegistry.put(taskId, task);
+        pausedTasks.remove(taskId);
         pendingTasks.put(taskId, task);
 
         // 检查是否可以立即执行
@@ -88,29 +137,42 @@ public class NativeDownloadManager {
      * 暂停下载任务
      */
     public void pause(String taskId) {
+        DownloadTask task = taskRegistry.get(taskId);
         RangeDownloader downloader = activeDownloads.get(taskId);
         if (downloader != null) {
             downloader.pause();
+            if (task != null) {
+                pausedTasks.put(taskId, task);
+            }
+        } else if (pendingTasks.containsKey(taskId) && task != null) {
+            // 排队任务暂停：任务记录保留，调度时跳过（resume 后重新参与调度）
+            pausedTasks.put(taskId, task);
         }
-        pendingTasks.remove(taskId);
+        stopServiceIfIdle();
     }
 
     /**
      * 恢复下载任务
      */
     public void resume(String taskId) {
-        DownloadTask task = pendingTasks.get(taskId);
-        if (task != null && !activeDownloads.containsKey(taskId)) {
-            if (activeDownloads.size() < MAX_CONCURRENT) {
-                executeTask(task);
+        DownloadTask pausedTask = pausedTasks.remove(taskId);
+        RangeDownloader downloader = activeDownloads.get(taskId);
+
+        if (downloader != null) {
+            // 执行中任务：清除暂停标记，并登记续传任务；
+            // 旧线程退出后由 scheduleNextTask 统一重新调度，避免两个实例同时写 .part。
+            downloader.resume();
+            if (pausedTask != null) {
+                pendingTasks.put(taskId, pausedTask);
             }
-        } else {
-            // 任务不在队列中，重新创建
-            RangeDownloader downloader = activeDownloads.get(taskId);
-            if (downloader != null) {
-                downloader.resume();
+        } else if (pausedTask != null) {
+            // 排队中暂停 / 已退出执行的任务：重新参与调度
+            pendingTasks.put(taskId, pausedTask);
+            if (activeDownloads.size() < MAX_CONCURRENT) {
+                executeTask(pausedTask);
             }
         }
+
         DownloadService.start(context);
     }
 
@@ -123,11 +185,11 @@ public class NativeDownloadManager {
             downloader.cancel();
         }
         pendingTasks.remove(taskId);
+        pausedTasks.remove(taskId);
+        taskRegistry.remove(taskId);
 
         // 检查是否还有活跃任务
-        if (activeDownloads.isEmpty() && pendingTasks.isEmpty()) {
-            DownloadService.stop(context);
-        }
+        stopServiceIfIdle();
     }
 
     /**
@@ -146,7 +208,7 @@ public class NativeDownloadManager {
             if (!activeDownloads.containsKey(task.taskId)) {
                 DownloadStatus status = new DownloadStatus();
                 status.taskId = task.taskId;
-                status.state = "queued";
+                status.state = pausedTasks.containsKey(task.taskId) ? "paused" : "queued";
                 status.downloadedBytes = task.startBytes;
                 status.totalBytes = task.totalBytes;
                 status.speedBps = 0;
@@ -166,12 +228,6 @@ public class NativeDownloadManager {
     private void executeTask(DownloadTask task) {
         pendingTasks.remove(task.taskId);
 
-        // 检测 HLS URL
-        if (isHlsUrl(task.url)) {
-            executeHlsTask(task);
-            return;
-        }
-
         RangeDownloader downloader = new RangeDownloader(
                 context, task, this::onProgress, this::onCompleted, this::onError
         );
@@ -184,7 +240,8 @@ public class NativeDownloadManager {
                 com.qoder.cinema.AppLog.e(TAG, "Task execution failed: " + task.taskId, e);
                 onError(task.taskId, "E_UNKNOWN", e.getMessage());
             } finally {
-                activeDownloads.remove(task.taskId);
+                // 两参 remove：只清理自己，避免覆盖暂停恢复后登记的新实例
+                activeDownloads.remove(task.taskId, downloader);
                 // 尝试执行下一个等待中的任务
                 scheduleNextTask();
             }
@@ -192,7 +249,7 @@ public class NativeDownloadManager {
     }
 
     /**
-     * 检测是否为 HLS URL
+     * 检测是否为 HLS URL（原生不支持，仅用于入口拒绝）
      */
     private boolean isHlsUrl(String url) {
         if (url == null) return false;
@@ -200,50 +257,30 @@ public class NativeDownloadManager {
         return lower.contains(".m3u8") || lower.contains(".m3u");
     }
 
-    /**
-     * 执行 HLS 下载任务
-     */
-    private void executeHlsTask(DownloadTask task) {
-        HlsDownloader hlsDownloader = new HlsDownloader(context);
-
-        executor.submit(() -> {
-            try {
-                hlsDownloader.download(
-                        task.taskId,
-                        task.url,
-                        buildFilePath(task.filePath),
-                        task.headers,
-                        (taskId, downloadedBytes, totalBytes, speedBps) ->
-                                onProgress(taskId, downloadedBytes, totalBytes, speedBps),
-                        (taskId, filePath, totalBytes) ->
-                                onCompleted(taskId, filePath, totalBytes),
-                        (taskId, errorCode, errorMessage) ->
-                                onError(taskId, errorCode, errorMessage)
-                );
-            } catch (Exception e) {
-                com.qoder.cinema.AppLog.e(TAG, "HLS task execution failed: " + task.taskId, e);
-                onError(task.taskId, "E_UNKNOWN", e.getMessage());
-            } finally {
-                scheduleNextTask();
-            }
-        });
-    }
-
-    /**
-     * 构建文件路径
-     */
-    private String buildFilePath(String relativePath) {
-        File filesDir = context.getFilesDir();
-        return new File(filesDir, relativePath).getAbsolutePath();
-    }
-
     private void scheduleNextTask() {
-        if (activeDownloads.size() < MAX_CONCURRENT && !pendingTasks.isEmpty()) {
-            // 取第一个等待中的任务
-            DownloadTask next = pendingTasks.values().iterator().next();
-            executeTask(next);
-        } else if (activeDownloads.isEmpty() && pendingTasks.isEmpty()) {
-            // 所有任务完成，停止前台服务
+        if (activeDownloads.size() < MAX_CONCURRENT) {
+            for (DownloadTask next : pendingTasks.values()) {
+                if (pausedTasks.containsKey(next.taskId)) continue;
+                if (activeDownloads.containsKey(next.taskId)) continue;
+                executeTask(next);
+                return;
+            }
+        }
+        stopServiceIfIdle();
+    }
+
+    /**
+     * 无活跃任务且无待执行任务时停止前台服务
+     */
+    private void stopServiceIfIdle() {
+        boolean hasRunnablePending = false;
+        for (DownloadTask task : pendingTasks.values()) {
+            if (!pausedTasks.containsKey(task.taskId)) {
+                hasRunnablePending = true;
+                break;
+            }
+        }
+        if (activeDownloads.isEmpty() && !hasRunnablePending) {
             DownloadService.stop(context);
         }
     }
@@ -255,6 +292,10 @@ public class NativeDownloadManager {
     }
 
     private void onCompleted(String taskId, String filePath, long totalBytes) {
+        taskRegistry.remove(taskId);
+        pausedTasks.remove(taskId);
+        pendingTasks.remove(taskId);
+
         if (plugin != null) {
             plugin.emitCompleted(taskId, filePath, totalBytes);
         }
@@ -276,6 +317,10 @@ public class NativeDownloadManager {
     }
 
     private void onError(String taskId, String errorCode, String errorMessage) {
+        taskRegistry.remove(taskId);
+        pausedTasks.remove(taskId);
+        pendingTasks.remove(taskId);
+
         if (plugin != null) {
             plugin.emitError(taskId, errorCode, errorMessage);
         }

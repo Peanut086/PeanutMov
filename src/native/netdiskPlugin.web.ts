@@ -3,7 +3,7 @@
  *
  * Web 端不支持网盘登录功能，所有方法抛出错误。
  */
-import type { NetdiskPluginInterface, WriteCookieFileResult, ReadCookieFileResult, BackupCookieFileResult } from './netdiskPlugin';
+import type { NetdiskPluginInterface, WriteCookieFileResult, ReadCookieFileResult, BackupCookieFileResult, LoginWebViewResult } from './netdiskPlugin';
 
 export class NetdiskWeb implements NetdiskPluginInterface {
   async hasAllFilesAccess() {
@@ -22,7 +22,7 @@ export class NetdiskWeb implements NetdiskPluginInterface {
     return { success: false, exists: false };
   }
 
-  async loginWebView(_options: { platform: string; loginUrl: string }) {
+  async loginWebView(_options: { platform: string; loginUrl: string }): Promise<LoginWebViewResult> {
     throw new Error('Web 端不支持登录 WebView');
   }
 

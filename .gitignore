@@ -57,6 +57,23 @@ pnpm-debug.log*
 scripts/fixtures/
 .tmp/
 
+# 凭据 / 登录态文件（REV-29：cookie 等同账号凭据，严禁入库）
+scripts/quark_cookie.json
+scripts/quark_cookie.txt
+scripts/read_quark_cookie.py
+scripts/*cookie*
+# 设备调试日志可能含 cookie / token
+scripts/logcat_*.txt
+
+# 本地临时调试产物（REV-29：截图/UI dump/临时数据库，不入库）
+temp_screenshot*
+temp_*.png
+temp_ui.xml
+tmp_*
+tmp2/
+scripts/screen*.png
+scripts/ui.xml
+
 # drpy 源扫描产物（含第三方订阅地址，同上不入库）
 .drpy-scan/
 

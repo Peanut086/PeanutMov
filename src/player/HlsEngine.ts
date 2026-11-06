@@ -94,9 +94,9 @@ export class HlsEngine implements PlayableEngine {
   }
 
   async load(source: PlaybackSource): Promise<void> {
-    // AC-40：DASH / 明显加密地址直接拒绝，不创建 hls 实例、不发请求。
-    // 清单文本级预检（#EXT-X-KEY:METHOD=SAMPLE-AES）在 PlayerController 统一完成，
-    // 这里只做不触网的 URL 级兜底（防止其他调用方绕过控制器）。
+    // AC-40：DASH / 地址内嵌加密标记直接拒绝，不创建 hls 实例、不发请求。
+    // 清单文本级的 SAMPLE-AES 判定由 PlayerController 在创建本引擎之前完成
+    // （preflightManifest）；这里保留 URL 级兜底，防止其它调用方绕过控制器。
     assertSourceSupported(source.url);
 
     this.pendingSource = source;

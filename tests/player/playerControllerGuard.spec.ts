@@ -92,6 +92,24 @@ describe('PlayerController 源守卫（AC-40）', () => {
     vi.unstubAllGlobals();
   });
 
+  it('SAMPLE-AES-CTR 变体同样在创建引擎前拒绝（守卫不依赖精确 METHOD 全等）', async () => {
+    const manifest = [
+      '#EXTM3U',
+      '#EXT-X-KEY:METHOD=SAMPLE-AES-CTR,URI="https://license.example.com/"',
+      '#EXTINF:10,',
+      'a.ts',
+    ].join('\n');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(manifest)));
+    const ctl = new PlayerController({ onProgress: () => {} });
+    mount(ctl);
+
+    await expect(
+      ctl.load(makeOptions(makeSource('https://a.com/index.m3u8', 'hls'))),
+    ).rejects.toThrow(/不支持受保护内容/);
+    expect(document.querySelector('video')).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
   it('预检失败（网络抖动）不回判 DRM：继续正常加载路径', async () => {
     vi.stubGlobal(
       'fetch',

@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetAll } from './helpers';
-import { closeDb } from '@/db/index';
 import { isNativeDownloadAvailable } from '@/native/downloadPlugin';
+import type {
+  NativeDownloadStatus,
+  NativeDownloadTask,
+  NativeProgressEvent,
+} from '@/native/downloadPlugin';
 
 // Mock isNative to return false (web environment)
 vi.mock('@/shared/platform', () => ({
@@ -58,9 +62,8 @@ describe('Native 下载插件（Phase 1）', () => {
   });
 
   describe('类型定义', () => {
-    it('NativeDownloadTask 接口正确', async () => {
-      const module = await import('@/native/downloadPlugin');
-      const task: module.NativeDownloadTask = {
+    it('NativeDownloadTask 接口正确', () => {
+      const task: NativeDownloadTask = {
         taskId: 'test-1',
         url: 'https://example.com/video.mp4',
         filePath: 'downloads/video.mp4',
@@ -71,9 +74,8 @@ describe('Native 下载插件（Phase 1）', () => {
       expect(task.taskId).toBe('test-1');
     });
 
-    it('NativeDownloadStatus 接口正确', async () => {
-      const module = await import('@/native/downloadPlugin');
-      const status: module.NativeDownloadStatus = {
+    it('NativeDownloadStatus 接口正确', () => {
+      const status: NativeDownloadStatus = {
         taskId: 'test-1',
         state: 'downloading',
         downloadedBytes: 500000,
@@ -85,9 +87,8 @@ describe('Native 下载插件（Phase 1）', () => {
       expect(status.state).toBe('downloading');
     });
 
-    it('NativeProgressEvent 接口正确', async () => {
-      const module = await import('@/native/downloadPlugin');
-      const event: module.NativeProgressEvent = {
+    it('NativeProgressEvent 接口正确', () => {
+      const event: NativeProgressEvent = {
         taskId: 'test-1',
         downloadedBytes: 500000,
         totalBytes: 1000000,

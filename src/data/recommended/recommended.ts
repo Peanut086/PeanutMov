@@ -22,7 +22,13 @@ export interface RecommendedManifest {
   items: RecommendedSubscription[];
 }
 
-/** 敏感词（与 subscriptionParser 同源口径 + 成人标记）；命中即剔除 */
+/**
+ * 敏感词（与 subscriptionParser 同源口径 + 成人标记）；命中即剔除。
+ *
+ * 只匹配「名称 + 备注」这类人工文案，不对 URL 做敏感词判定：
+ * 域名可能天然带 `vip` 等词（如 `*.kstore.vip`），按 URL 匹配会误杀真实可用源
+ * （Q-01 / FIX-02）。URL 的合法性由下方 `http(s)` 协议校验负责。
+ */
 const FORBIDDEN = /破解|盗版|18\+|成人|r18|nsfw|vip|付费|会员/i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -37,7 +43,8 @@ function validateItem(value: unknown): RecommendedSubscription | null {
   const tags = Array.isArray(value['tags']) ? value['tags'].filter((t): t is string => typeof t === 'string') : [];
   if (name.length === 0 || url.length === 0) return null;
   if (!/^https?:\/\//i.test(url)) return null;
-  if (FORBIDDEN.test(`${name} ${note} ${url}`)) return null;
+  // Q-01：只对人工文案做敏感词判定，URL 不参与（避免域名含 vip 等词被误杀）
+  if (FORBIDDEN.test(`${name} ${note}`)) return null;
   return { name, url, note, tags };
 }
 

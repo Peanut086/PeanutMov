@@ -117,16 +117,23 @@ async function emitChange(reason: 'create' | 'update' | 'remove' | 'enable' | 'r
   appEvents.emit('sources:changed', { reason });
 }
 
-/** 并发受限的批量执行（AC-16：并发上限 3，单源失败不影响其它） */
+/**
+ * 并发受限的批量执行（AC-16：并发上限 3，单源失败不影响其它）
+ *
+ * OPT-03：传入 `signal` 后，取消会让仍在排队的项立刻停止；
+ * 已在飞行中的探测无法中断网络层，但返回后会因 signal 已取消而丢弃结果。
+ */
 async function runWithConcurrency<T, R>(
   items: T[],
   limit: number,
   worker: (item: T) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let cursor = 0;
   const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
     for (;;) {
+      if (signal?.aborted) throw new AppError('E_ABORTED');
       const index = cursor;
       cursor += 1;
       if (index >= items.length) return;
@@ -135,7 +142,31 @@ async function runWithConcurrency<T, R>(
       results[index] = await worker(item);
     }
   });
-  await Promise.all(runners);
+  const all = Promise.all(runners);
+  if (!signal) {
+    await all;
+    return results;
+  }
+  /**
+   * 所有 worker 都在飞行中时，仅靠 runner 循环里的检查要等某个探测返回才会抛错，
+   * 取消会「看起来没反应」。这里用 abort 事件与 Promise.race，保证取消立即返回；
+   * 未完成的 runner 返回后会在下一次循环检查 signal 并丢弃结果（不写库）。
+   * `all` 的后续拒绝已被 race 的处理器接管，不会产生 unhandled rejection。
+   */
+  let onAbort: (() => void) | null = null;
+  const aborted = new Promise<never>((_, reject) => {
+    if (signal.aborted) {
+      reject(new AppError('E_ABORTED'));
+      return;
+    }
+    onAbort = () => reject(new AppError('E_ABORTED'));
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    await Promise.race([all, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
   return results;
 }
 
@@ -430,13 +461,23 @@ export const sourceService = {
    * - `total === 0` 只发一次 `{0,0}`；整体抛错时不发终点事件。
    * - 排序：当前源与默认源优先检测（用户最关心「我正在用的能不能用」），
    *   其余按线路质量档位从好到差；结果每个源完成即写库，源列表实时刷新。
+   * - OPT-03：传 `signal` 可取消。取消后立刻抛 `E_ABORTED`，不再为剩余源发起探测；
+   *   在飞行中的探测返回后也丢弃结果，不写健康状态、不计进度。
    */
-  async checkHealth(ids?: string[]): Promise<Record<string, HealthCheckResult>> {
+  async checkHealth(
+    ids?: string[],
+    signal?: AbortSignal,
+  ): Promise<Record<string, HealthCheckResult>> {
+    if (signal?.aborted) throw new AppError('E_ABORTED');
     const sources = await sourceRepo.list();
+    if (signal?.aborted) throw new AppError('E_ABORTED');
     const targets = sources.filter(
       (source) => source.enabled && (ids === undefined || ids.includes(source.id)),
     );
-    // 当前源/默认源排最前：183 条线路全量检测要 2 分钟，用户最想先知道手头这个能不能用
+    // 当前源/默认源排最前：最坏耗时按源数动态估算
+    // （启用源数 × TIMEOUT_PROBE_SPIDER_MS ÷ HEALTH_CHECK_CONCURRENCY，
+    //   183 个冷启 spider ≈ 17.8 分钟），所以 UI 必须给进度并允许取消，
+    //   不能再沿用旧的「183 条全量检测要 2 分钟」口径。
     const priorityIds = await this.prioritySourceIds();
     const ordered = [...targets].sort((a, b) => {
       const pa = priorityIds.has(a.id) ? 0 : 1;
@@ -448,6 +489,7 @@ export const sourceService = {
     let lastEmitted = -1;
     /** 进度去重：最后一个源完成时已经发过 {total,total}，终点不再重复发（AC-107 不重不漏） */
     const emitProgress = (value: number): void => {
+      if (signal?.aborted) return;
       if (value === lastEmitted) return;
       lastEmitted = value;
       appEvents.emit('sources:healthProgress', { done: value, total });
@@ -455,40 +497,49 @@ export const sourceService = {
     emitProgress(0);
     if (total === 0) return {};
 
-    const results = await runWithConcurrency(ordered, HEALTH_CHECK_CONCURRENCY, async (source) => {
-      const adapter = sourceRegistry.has(source.type) ? sourceRegistry.get(source.type) : null;
-      const checkedAt = Date.now();
-      let result: HealthCheckResult;
-      if (!adapter) {
-        result = {
-          sourceId: source.id,
-          health: 'bad_config',
-          checkedAt,
-          latencyMs: 0,
-          error: {
-            code: 'E_UNSUPPORTED_FORMAT',
-            message: '暂不支持该源类型',
-            detail: null,
-            retryable: false,
-            httpStatus: null,
-          },
-        };
-        await sourceService.markHealth(source.id, result.health, result.error);
-      } else {
-        const connection = await probeWithinTimeout(source, () => adapter.testConnection(source));
-        result = {
-          sourceId: source.id,
-          health: connection.health,
-          checkedAt,
-          latencyMs: connection.latencyMs,
-          error: connection.error,
-        };
-        await sourceService.markHealth(source.id, result.health, result.error);
-      }
-      done += 1;
-      emitProgress(done);
-      return result;
-    });
+    const results = await runWithConcurrency(
+      ordered,
+      HEALTH_CHECK_CONCURRENCY,
+      async (source) => {
+        const adapter = sourceRegistry.has(source.type) ? sourceRegistry.get(source.type) : null;
+        const checkedAt = Date.now();
+        let result: HealthCheckResult;
+        if (!adapter) {
+          result = {
+            sourceId: source.id,
+            health: 'bad_config',
+            checkedAt,
+            latencyMs: 0,
+            error: {
+              code: 'E_UNSUPPORTED_FORMAT',
+              message: '暂不支持该源类型',
+              detail: null,
+              retryable: false,
+              httpStatus: null,
+            },
+          };
+          if (signal?.aborted) throw new AppError('E_ABORTED');
+          await sourceService.markHealth(source.id, result.health, result.error);
+        } else {
+          const connection = await probeWithinTimeout(source, () => adapter.testConnection(source));
+          // OPT-03：取消发生在探测期间 → 丢弃这次结果，不落库
+          if (signal?.aborted) throw new AppError('E_ABORTED');
+          result = {
+            sourceId: source.id,
+            health: connection.health,
+            checkedAt,
+            latencyMs: connection.latencyMs,
+            error: connection.error,
+          };
+          await sourceService.markHealth(source.id, result.health, result.error);
+        }
+        if (signal?.aborted) throw new AppError('E_ABORTED');
+        done += 1;
+        emitProgress(done);
+        return result;
+      },
+      signal,
+    );
 
     emitProgress(total);
 

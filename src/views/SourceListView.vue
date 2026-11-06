@@ -60,7 +60,8 @@ function toggleBatchMode(): void {
   }
 }
 
-function toggleSelect(id: string): void {
+function toggleSelect(source: Source): void {
+  const id = source.id;
   if (selectedIds.value.has(id)) {
     selectedIds.value.delete(id);
   } else {
@@ -411,7 +412,7 @@ async function batchEnable(): Promise<void> {
     let enabled = 0;
     for (const source of targets) {
       try {
-        await sources.toggle(source.id);
+        await sources.setEnabled(source.id, true);
         enabled += 1;
       } catch {
         // 单个失败不阻断其余
@@ -439,7 +440,7 @@ async function batchDisable(): Promise<void> {
     let disabled = 0;
     for (const source of targets) {
       try {
-        await sources.toggle(source.id);
+        await sources.setEnabled(source.id, false);
         disabled += 1;
         // 默认源被禁用时，切到第一个可用源
         if (defaultSourceId.value === source.id) {

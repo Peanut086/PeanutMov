@@ -44,7 +44,7 @@ import { GestureRecognizer, type GestureIntent } from '@/player/GestureRecognize
 import { ProgressReporter, type ProgressSnapshot } from '@/player/ProgressReporter';
 import { FullscreenController } from '@/player/FullscreenController';
 import { OrientationController } from '@/player/OrientationController';
-import { assertSourceSupported } from '@/player/sourceGuard';
+import { assertSourceSupported, scanManifestForDrm } from '@/player/sourceGuard';
 
 /** 帧统计（`getFrameStats` 的返回；原生 surface 引擎为 null） */
 export interface FrameStats {
@@ -109,6 +109,9 @@ export class PlayerController {
   private networkRetries = 0;
 
   /** m3u8 DRM 预检的取消句柄（AC-40）：切集/重试/销毁时中止上一轮预检 */
+  private preflightAbort: AbortController | null = null;
+  /** 预检代次：新一次加载/卸载时递增，旧预检返回后据此放弃，避免旧结果污染新播放 */
+  private preflightEpoch = 0;
 
   private readonly subtitles: SubtitleManager;
   private readonly progress: ProgressReporter;
@@ -220,6 +223,8 @@ export class PlayerController {
       // P1-6: 起播后即预载下一集（给足时间预热连接/DNS），临近片尾的二次调用由幂等保护跳过
       this.preloadNext();
     } catch (e) {
+      // 预检被更新的加载/销毁取消：不覆盖新状态、不误报错误
+      if (e instanceof AppError && e.code === 'E_ABORTED') throw e;
       const error = toErrorShape(
         e instanceof AppError ? e : new AppError('E_DECODE', '视频加载失败，请尝试切换线路', { cause: e }),
       );
@@ -241,10 +246,15 @@ export class PlayerController {
     // v1.8 优化：原生引擎支持 DASH/DRM，只在 WebView 引擎路径上做前置检查
     const useNativeEngine = this.options?.preferNativeEngine === true && await isExoPlayerAvailable();
 
+    // AC-40：WebView 路径在创建任何引擎前完成两级前置检查，命中即拒绝——
+    // 1) URL 级：DASH(.mpd) / 地址内嵌的 SAMPLE-AES 标记，不发请求；
+    // 2) 清单级：拉取 m3u8 文本识别 `#EXT-X-KEY:METHOD=SAMPLE-AES`（预检失败一律放行，
+    //    绝不把网络抖动误判成 DRM）。
+    // 每次进入 attachEngine 先让上一轮预检作废，避免切集/重试时旧结果覆盖新播放。
+    const preflightEpoch = this.supersedePreflight();
     if (!useNativeEngine) {
-      // P0-4: 仅做 URL 级 DRM/DASH 检测，不再预拉清单（省掉一次网络往返）。
-      // hls.js 加载时若遇到 SAMPLE-AES 会自然报错，由错误处理路径兜底。
       assertSourceSupported(playback.url);
+      await this.runManifestPreflight(playback, preflightEpoch);
     }
 
     /*
@@ -390,6 +400,39 @@ export class PlayerController {
 
     // 原生引擎不可用或已尝试过，抛出 WebView 错误
     throw webviewError;
+  }
+
+  /** 作废上一轮清单预检（切集/重试/销毁）：取消在飞请求并递增代次 */
+  private supersedePreflight(): number {
+    this.preflightEpoch += 1;
+    this.preflightAbort?.abort();
+    this.preflightAbort = null;
+    return this.preflightEpoch;
+  }
+
+  /**
+   * 清单级 DRM 预检（AC-40 / REV-27）。
+   *
+   * 只有 m3u8 会真正发请求；`.mp4`/`.webm` 在 `scanManifestForDrm` 内直接返回空结果。
+   * master playlist 会继续拉取变体清单做同口径断言（加密标记通常写在变体里），
+   * 命中即抛 `E_DRM_PROTECTED`，调用方在创建 hls/video 实例之前中止。
+   * 子清单拉取失败不判 DRM；期间被更新的加载取代时抛 `E_ABORTED`（由 `load()` 静默处理）。
+   */
+  private async runManifestPreflight(playback: PlaybackSource, epoch: number): Promise<void> {
+    const controller = new AbortController();
+    this.preflightAbort = controller;
+    try {
+      const scan = await scanManifestForDrm(playback.url, {
+        headers: playback.headers,
+        signal: controller.signal,
+      });
+      if (epoch !== this.preflightEpoch) throw new AppError('E_ABORTED', '播放已切换，本次预检作废');
+      // DASH / URL 级标记；顶层清单命中也在 detectUnsupportedSource 内覆盖
+      assertSourceSupported(playback.url, scan.manifestText);
+      if (scan.drm) throw new AppError('E_DRM_PROTECTED', undefined, { retryable: false });
+    } finally {
+      if (this.preflightAbort === controller) this.preflightAbort = null;
+    }
   }
 
   private withMetadataTimeout(promise: Promise<void>): Promise<void> {
@@ -841,6 +884,7 @@ export class PlayerController {
   async destroy(): Promise<void> {
     logger.info('destroy: 开始', { hasEngine: this.engine != null });
     this.destroyed = true;
+    this.supersedePreflight();
     if (this.hideTimer !== null) clearTimeout(this.hideTimer);
     this.hideTimer = null;
     this.clearRetryTimer();

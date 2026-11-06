@@ -30,12 +30,27 @@ export interface BackupCookieFileResult {
   path?: string;
 }
 
+/**
+ * 登录页返回结果（R-DEV04-05 / AND-06 / AND-07）
+ *
+ * - `success=false`：用户取消或夸克账号校验失败，此时不会写入 cookie 文件；
+ * - `success=true && verified=false`：cookie 已保存，但该平台不支持账号校验
+ *   （夸克以外平台），调用方必须展示「已保存，账号未验证」而不是「登录成功」。
+ */
+export interface LoginWebViewResult {
+  success: boolean;
+  verified: boolean;
+  nickname: string | null;
+  memberType: string | null;
+  note: string | null;
+}
+
 export interface NetdiskPluginInterface {
   hasAllFilesAccess(): Promise<HasAllFilesAccessResult>;
   requestAllFilesAccess(): Promise<void>;
   writeCookieFile(options: { platform: string; content: string }): Promise<WriteCookieFileResult>;
   readCookieFile(options: { platform: string }): Promise<ReadCookieFileResult>;
-  loginWebView(options: { platform: string; loginUrl: string }): Promise<void>;
+  loginWebView(options: { platform: string; loginUrl: string }): Promise<LoginWebViewResult>;
   backupCookieFile(options: { platform: string }): Promise<BackupCookieFileResult>;
   restoreCookieFile(options: { platform: string }): Promise<BackupCookieFileResult>;
 }
@@ -102,11 +117,22 @@ export async function readCookieFile(platform: string): Promise<{ exists: boolea
 }
 
 /**
- * 启动登录页
+ * 启动登录页并等待结果（R-DEV04-05）
+ *
+ * 原生侧 `loginWebView` 会阻塞到登录页关闭，返回
+ * `{ success, verified, nickname, memberType, note }`；
+ * 这里补齐缺省字段，调用方据此区分「登录成功」「已保存但未验证」「未登录」。
  */
-export async function loginWebView(platform: string, loginUrl: string): Promise<void> {
+export async function loginWebView(platform: string, loginUrl: string): Promise<LoginWebViewResult> {
   try {
-    await Netdisk.loginWebView({ platform, loginUrl });
+    const result = await Netdisk.loginWebView({ platform, loginUrl });
+    return {
+      success: result?.success === true,
+      verified: result?.verified === true,
+      nickname: result?.nickname ?? null,
+      memberType: result?.memberType ?? null,
+      note: result?.note ?? null,
+    };
   } catch (e) {
     logger.error('Failed to launch login WebView', e);
     throw e;

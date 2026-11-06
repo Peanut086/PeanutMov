@@ -15,7 +15,9 @@ import java.net.Socket;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -53,12 +55,21 @@ public class LocalProxyPlugin extends Plugin {
         }
     }
 
-    private final Map<String, Target> targets = new java.util.LinkedHashMap<String, Target>(64, 0.75f, true) {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<String, Target> eldest) {
-            return size() > 100; // P0-8: LRU，最多保留 100 个 token
-        }
-    };
+    private static final int MAX_TARGETS = 100;
+
+    /**
+     * AND-18：token → 目标表。原实现用裸 LinkedHashMap（accessOrder LRU），
+     * proxy() 写入与代理 IO 线程读取并发时可能破坏链表结构（get 会改链表顺序）。
+     * 改为 synchronizedMap 包一层，保留 100 条 LRU 上限；所有读写都在锁内，
+     * 且不再有跨线程迭代（原 getTokenFromUrl 已删除）。
+     */
+    private final Map<String, Target> targets = Collections.synchronizedMap(
+            new LinkedHashMap<String, Target>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Target> eldest) {
+                    return size() > MAX_TARGETS; // P0-8: LRU，最多保留 100 个 token
+                }
+            });
     // P0-8: 302 跳转目标缓存（原始 URL → 最终 URL）
     private final Map<String, String> redirectCache = new ConcurrentHashMap<>();
     private final ExecutorService io = Executors.newCachedThreadPool();
@@ -163,12 +174,13 @@ public class LocalProxyPlugin extends Plugin {
             }
             Target target = token.isEmpty() ? null : targets.get(token);
             if (target == null) {
-                writeSimple(c, 404, "not found");
+                // AND-18：token 未命中/已过期时明确失败，绝不伪造 token 继续转发
+                writeSimple(c, 404, "proxy token not found or expired");
                 return;
             }
             // 如果是分片请求，用分片 URL；否则用原 URL
             Target actualTarget = segmentUrl != null ? new Target(segmentUrl, target.headers) : target;
-            forward(c, actualTarget, range);
+            forward(c, actualTarget, range, token);
         } catch (Exception e) {
             com.qoder.cinema.AppLog.w(TAG, "proxy connection failed", e);
         }
@@ -200,7 +212,7 @@ public class LocalProxyPlugin extends Plugin {
         return conn;
     }
 
-    private void forward(Socket client, Target target, String range) throws Exception {
+    private void forward(Socket client, Target target, String range, String token) throws Exception {
         // 手动跟跳转：分片常 302 到 https 图片 CDN，而 HttpURLConnection 的
         // setInstanceFollowRedirects 不会跨协议（http→https）跟随，3xx 会原样
         // 冒到 CapacitorHttp 触发 "statusCode can't be in the [300, 399] range"。
@@ -234,7 +246,8 @@ public class LocalProxyPlugin extends Plugin {
                 .append(conn.getResponseMessage() == null ? "" : conn.getResponseMessage())
                 .append("\r\n");
         boolean hasLength = false;
-        boolean isM3u8 = target.url.toLowerCase().contains(".m3u8");
+        // 原始地址或 302 最终地址任一为 .m3u8 都按清单处理（避免跳转后丢扩展名导致不重写）
+        boolean isM3u8 = url.toLowerCase().contains(".m3u8") || target.url.toLowerCase().contains(".m3u8");
         StringBuilder body = null;
         for (Map.Entry<String, java.util.List<String>> entry : conn.getHeaderFields().entrySet()) {
             String name = entry.getKey();
@@ -267,7 +280,9 @@ public class LocalProxyPlugin extends Plugin {
                     while ((read = in.read(buffer)) != -1) {
                         body.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
                     }
-                    String rewritten = rewriteM3u8(body.toString(), target.url, getTokenFromUrl(target.url));
+                    // 相对 URL 必须以 302 后的最终地址为基准解析；
+                    // token 直接来自请求路径（AND-18：不再反查/伪造 token）
+                    String rewritten = rewriteM3u8(body.toString(), url, token);
                     out.write(rewritten.getBytes(StandardCharsets.UTF_8));
                 } else {
                     byte[] buffer = new byte[32 * 1024];
@@ -333,8 +348,9 @@ public class LocalProxyPlugin extends Plugin {
                 String trimmed = line.trim();
                 // 跳过注释和空行
                 if (trimmed.isEmpty() || trimmed.startsWith("#")) {
-                    // 处理 #EXT-X-MAP 等带 URI= 的标签
-                    if (trimmed.startsWith("#EXT-X-MAP:URI=\"")) {
+                    // 处理 #EXT-X-MAP / #EXT-X-KEY / #EXT-X-MEDIA 等带 URI= 的标签：
+                    // 漏掉 KEY 会让 AES-128 的相对密钥被解析到 127.0.0.1 导致解密失败
+                    if (trimmed.startsWith("#EXT-X-") && trimmed.contains("URI=\"")) {
                         int start = trimmed.indexOf("URI=\"") + 5;
                         int end = trimmed.indexOf("\"", start);
                         if (end > start) {
@@ -383,16 +399,6 @@ public class LocalProxyPlugin extends Plugin {
         } else {
             return baseDir + relative;
         }
-    }
-
-    private String getTokenFromUrl(String url) {
-        // 从 targets 中找到对应的 token
-        for (Map.Entry<String, Target> entry : targets.entrySet()) {
-            if (entry.getValue().url.equals(url)) {
-                return entry.getKey();
-            }
-        }
-        return UUID.randomUUID().toString().replace("-", "");
     }
 
     @Override

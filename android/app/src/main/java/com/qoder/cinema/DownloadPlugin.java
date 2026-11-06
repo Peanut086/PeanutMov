@@ -104,6 +104,11 @@ public class DownloadPlugin extends Plugin {
         try {
             downloadManager.start(taskId, url, filePath, headers, startBytes, totalBytes);
             call.resolve();
+        } catch (UnsupportedOperationException e) {
+            // D-01 / AND-14：原生 HLS 分支已移除，m3u8 一律回落 JS 下载器。
+            // 这里不产生任何输出文件，避免"看似成功、实际坏文件"。
+            Log.w(TAG, "Reject HLS download in native layer: " + taskId);
+            call.reject("E_UNSUPPORTED_FORMAT: " + e.getMessage());
         } catch (Exception e) {
             Log.e(TAG, "Failed to start download: " + taskId, e);
             call.reject("Failed to start download: " + e.getMessage());

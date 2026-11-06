@@ -119,7 +119,6 @@ segment0.ts
   describe('URL 解析', () => {
     it('绝对 URL 保持不变', () => {
       const url = 'https://cdn.example.com/segment.ts';
-      const base = 'https://example.com/playlist.m3u8';
       // 绝对 URL 直接返回
       expect(url.startsWith('http://') || url.startsWith('https://')).toBe(true);
     });

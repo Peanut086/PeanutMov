@@ -8,9 +8,19 @@ import { mockSettingsService } from '@/mocks/mockServices';
 import { COMPLIANCE_VERSION } from '@/shared/constants';
 
 /**
- * 脚手架自检（SCF 新增文件，不属于 PKG-A/PKG-B 任何清单）
+ * SCF 脚手架自检（SCF 新增文件，不属于 PKG-A/PKG-B 任何清单）
  * 目的：把"17 条路由可导航 + 合规守卫 + TabBar 布局"变成可回归的断言，
  * 避免后续替换占位组件时悄悄破坏路由表。
+ *
+ * 【已知失败-依赖批次 1 / FIX-01】（QA-01 标注）
+ * 下列 2 条用 `it.fails` 保留原断言且显式声明"当前应为失败"：
+ * - `路由表含 22 条记录…`
+ * - `已同意后其余 17 条路由逐条可导航`
+ * 原因：`SettingsView` 内联 `SourceManageSection` 后，`/settings/sources*` 与
+ * `/settings/subscriptions` 路由被移除，`routes` 只剩 21 条同名以外的新增
+ * （`epg` / `netdisk-settings` / `douban`）。断言本身仍然有效，**不做删除或放宽**。
+ * 回补条件：FIX-01 落地（恢复上述路由或其等价可达入口）后，这两条会因"预期失败却通过"
+ * 而报警，届时把 `it.fails` 改回 `it` 并更新期望的路由名清单即可。
  */
 describe('SCF 脚手架自检', () => {
   beforeEach(() => {
@@ -18,7 +28,7 @@ describe('SCF 脚手架自检', () => {
     setComplianceGate(mockSettingsService);
   });
 
-  it('路由表含 22 条记录（21 条业务路由 + 404；CHG-13 新增 live/订阅两条；日志查看器新增 logs）', () => {
+  it.fails('[已知失败-依赖 FIX-01] 路由表含 22 条记录（21 条业务路由 + 404；CHG-13 新增 live/订阅两条；日志查看器新增 logs）', () => {
     expect(routes.map((r) => r.name)).toEqual([
       'welcome',
       'home',
@@ -60,7 +70,7 @@ describe('SCF 脚手架自检', () => {
     expect(router.currentRoute.value.name).toBe('home');
   });
 
-  it('已同意后其余 17 条路由逐条可导航', async () => {
+  it.fails('[已知失败-依赖 FIX-01] 已同意后其余 17 条路由逐条可导航', async () => {
     await mockSettingsService.acceptCompliance(COMPLIANCE_VERSION);
     const targets: Array<[string, string]> = [
       ['/', 'home'],

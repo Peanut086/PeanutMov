@@ -418,21 +418,30 @@ public class ExoPlayerPlugin extends Plugin {
         });
     }
 
-    /** v1.8 优化：获取播放质量指标 */
+    /**
+     * v1.8 优化：获取播放质量指标。
+     *
+     * AND-20：ExoPlayer 只能在创建它的主线程访问，从 CapacitorPlugins 线程直接
+     * 读 getCurrentPosition()/getDuration()/getPlaybackParameters() 与已知闪退
+     * 同因（见 progress() 的真机实证）。这里统一投递到主线程读取，保证统计值
+     * 是同一时刻的一致快照，也避免跨线程访问播放器。
+     */
     @PluginMethod
     public void getPlaybackStats(PluginCall call) {
-        JSObject result = new JSObject();
-        result.put("bufferEvents", bufferEvents);
-        result.put("bufferDurationMs", bufferDurationMs);
-        result.put("currentBitrate", currentBitrate);
-        result.put("decoderName", decoderName);
-        result.put("droppedFrames", droppedFrames);
-        if (player != null) {
-            result.put("currentPosition", player.getCurrentPosition());
-            result.put("duration", player.getDuration());
-            result.put("playbackSpeed", player.getPlaybackParameters().speed);
-        }
-        call.resolve(result);
+        getBridge().executeOnMainThread(() -> {
+            JSObject result = new JSObject();
+            result.put("bufferEvents", bufferEvents);
+            result.put("bufferDurationMs", bufferDurationMs);
+            result.put("currentBitrate", currentBitrate);
+            result.put("decoderName", decoderName);
+            result.put("droppedFrames", droppedFrames);
+            if (player != null) {
+                result.put("currentPosition", player.getCurrentPosition());
+                result.put("duration", player.getDuration());
+                result.put("playbackSpeed", player.getPlaybackParameters().speed);
+            }
+            call.resolve(result);
+        });
     }
 
     /** v1.8 优化：进入画中画模式 */

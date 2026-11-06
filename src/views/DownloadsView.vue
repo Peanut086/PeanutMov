@@ -100,7 +100,6 @@ const hasFailed = computed(() => downloads.tasks.some((t) => t.status === 'faile
 
 /** 功能扩展-10：批量选择相关 */
 const selectedCount = computed(() => selectedIds.value.size);
-const selectedTasks = computed(() => downloads.tasks.filter((t) => selectedIds.value.has(t.id)));
 const canBatchDelete = computed(() => selectedCount.value > 0);
 
 /** 功能扩展-10：格式化存储大小 */

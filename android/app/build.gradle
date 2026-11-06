@@ -1,5 +1,48 @@
 apply plugin: 'com.android.application'
 
+// OPT-06 / REF-05：版本号优先取仓库根 package.json（与 Vite define 的
+// __APP_VERSION__ 同源，避免 Gradle 与前端展示漂移）。
+//
+// REV-33：package.json 不可读（文件缺失、JSON 损坏、构建环境缺少 Groovy JSON
+// 支持等）时回退到下面的字面版本，保证离线/裁剪环境仍可构建。Gradle 解析
+// package.json 使用的是内置 groovy.json.JsonSlurper，不依赖 node；回退分支
+// 通过临时移走 package.json 验证（见 docs/09-后端自测/DEV-05 文档）。
+def FALLBACK_VERSION_NAME = '0.1.0'
+def FALLBACK_VERSION_CODE = 100 // 0.1.0 → 100，与 semver 编码规则一致
+
+def resolveVersion = {
+    def versionName = FALLBACK_VERSION_NAME
+    def versionCode = FALLBACK_VERSION_CODE
+    try {
+        def pkgFile = rootProject.file('../package.json')
+        if (pkgFile.exists()) {
+            def pkgJson = new groovy.json.JsonSlurper().parseText(pkgFile.text)
+            def semverCore = (pkgJson.version ?: '0.0.0').toString().tokenize('-')[0]
+            def parts = semverCore.tokenize('.').collect { part -> part.isInteger() ? part.toInteger() : 0 }
+            while (parts.size() < 3) { parts << 0 }
+            if (parts[0] > 0 || parts[1] > 0 || parts[2] > 0) {
+                versionName = "${parts[0]}.${parts[1]}.${parts[2]}"
+                // 保证 versionCode 随 semver 单调递增（上架/覆盖安装要求）
+                versionCode = parts[0] * 10000 + parts[1] * 100 + parts[2]
+            } else {
+                logger.lifecycle("WARN: package.json version is empty/zero, fallback to "
+                        + "${FALLBACK_VERSION_NAME} (${FALLBACK_VERSION_CODE})")
+            }
+        } else {
+            logger.lifecycle("WARN: package.json not found, fallback to "
+                    + "${FALLBACK_VERSION_NAME} (${FALLBACK_VERSION_CODE})")
+        }
+    } catch (Throwable ignored) {
+        logger.lifecycle("WARN: package.json unreadable (" + ignored.getClass().getSimpleName()
+                + "), fallback to ${FALLBACK_VERSION_NAME} (${FALLBACK_VERSION_CODE})")
+    }
+    return [versionName, versionCode]
+}
+
+def resolvedVersion = resolveVersion()
+def appVersionName = resolvedVersion[0]
+def appVersionCode = resolvedVersion[1]
+
 android {
     namespace "com.qoder.cinema"
     compileSdk rootProject.ext.compileSdkVersion
@@ -7,8 +50,8 @@ android {
         applicationId "com.qoder.cinema"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode appVersionCode
+        versionName appVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

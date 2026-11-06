@@ -1,10 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetAll } from './helpers';
-import { closeDb } from '@/db/index';
 import { createDownloadEngine } from '@/services/downloadEngine';
 import { IdbBlobSink, type DownloadSink, type SinkInit, type BeginResult } from '@/services/downloadSink';
-import { blobRepo } from '@/db/repositories/blobRepo';
 import { settingsService } from '@/services/settingsService';
 import type { DownloadTask } from '@/types';
 
@@ -63,7 +61,6 @@ function streamResponse(bytes: Uint8Array, init?: { status?: number; headers?: R
 class MockNativeSink implements DownloadSink {
   readonly kind = 'filesystem' as const;
   private partSize = 0;
-  private finalized = false;
   beginCalls = 0;
   suspendCalls = 0;
   abortCalls = 0;
@@ -89,7 +86,6 @@ class MockNativeSink implements DownloadSink {
 
   async finish(): Promise<{ filePath: string | null; blobKey: string | null; size: number }> {
     this.finishCalls++;
-    this.finalized = true;
     return { filePath: '/downloads/test.mp4', blobKey: null, size: this.partSize };
   }
 

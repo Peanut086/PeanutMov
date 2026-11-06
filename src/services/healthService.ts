@@ -6,6 +6,7 @@
  */
 import { sourceService } from '@/services/sourceService';
 import { DIM_MAX_PERCENT } from '@/shared/constants';
+import { AppError } from '@/shared/errors';
 import { healthTierOf, type HealthTier } from '@/shared/healthTier';
 import type { HealthCheckResult, SourceHealth } from '@/types';
 
@@ -16,6 +17,14 @@ export interface HealthSnapshot {
   failedCount: number;
 }
 
+/** `checkAll` 的可选参数（OPT-03）：显式检测时绕过 10 分钟缓存，并支持取消 */
+export interface CheckAllOptions {
+  /** true：忽略缓存，强制重新探测（用户主动点「健康检查」） */
+  force?: boolean;
+  /** 取消信号：中止后 sourceService 停止调度剩余源并抛 `E_ABORTED` */
+  signal?: AbortSignal;
+}
+
 let cachedSnapshot: HealthSnapshot | null = null;
 let running: Promise<HealthSnapshot> | null = null;
 
@@ -23,30 +32,44 @@ let running: Promise<HealthSnapshot> | null = null;
 const HEALTH_CACHE_TTL_MS = 10 * 60 * 1000;
 const unreachableCooldowns = new Map<string, number>();
 
+/** 执行一次探测并写缓存；取消时 sourceService 抛 E_ABORTED，不会写入半截快照 */
+async function executeCheck(ids: string[] | undefined, signal?: AbortSignal): Promise<HealthSnapshot> {
+  const results =
+    ids === undefined
+      ? await sourceService.checkHealth(undefined, signal)
+      : await sourceService.checkHealth(ids, signal);
+  const snapshot: HealthSnapshot = {
+    checkedAt: Date.now(),
+    results,
+    failedCount: Object.values(results).filter((result) => result.health !== 'ok').length,
+  };
+  // P1-4: 记录 unreachable 源冷却
+  for (const [sourceId, result] of Object.entries(results)) {
+    if (result.health === 'unreachable') {
+      unreachableCooldowns.set(sourceId, Date.now());
+    }
+  }
+  cachedSnapshot = snapshot;
+  return snapshot;
+}
+
 export const healthService = {
-  /** 检查全部启用源（并发上限 6，单源 3s 超时） */
-  async checkAll(): Promise<HealthSnapshot> {
-    // P1-4: 缓存 TTL 检查
-    if (cachedSnapshot && Date.now() - cachedSnapshot.checkedAt < HEALTH_CACHE_TTL_MS) {
+  /**
+   * 检查全部启用源（并发上限 6）。
+   *
+   * 默认命中 10 分钟缓存；`force: true` 强制重测（用户主动触发）。
+   * 传 `signal` 时支持取消：取消后立即抛 `E_ABORTED`，不写缓存。
+   */
+  async checkAll(options: CheckAllOptions = {}): Promise<HealthSnapshot> {
+    const { force = false, signal } = options;
+    if (signal?.aborted) throw new AppError('E_ABORTED');
+    // 有取消信号时不走缓存、不并入共享 running，避免一次取消影响其它调用方
+    if (signal) return executeCheck(undefined, signal);
+    if (!force && cachedSnapshot && Date.now() - cachedSnapshot.checkedAt < HEALTH_CACHE_TTL_MS) {
       return cachedSnapshot;
     }
     if (running) return running;
-    running = (async () => {
-      const results = await sourceService.checkHealth();
-      const snapshot: HealthSnapshot = {
-        checkedAt: Date.now(),
-        results,
-        failedCount: Object.values(results).filter((result) => result.health !== 'ok').length,
-      };
-      // P1-4: 记录 unreachable 源冷却
-      for (const [sourceId, result] of Object.entries(results)) {
-        if (result.health === 'unreachable') {
-          unreachableCooldowns.set(sourceId, Date.now());
-        }
-      }
-      cachedSnapshot = snapshot;
-      return snapshot;
-    })();
+    running = executeCheck(undefined);
     try {
       return await running;
     } finally {
@@ -54,16 +77,9 @@ export const healthService = {
     }
   },
 
-  /** 检查指定源 */
-  async check(ids: string[]): Promise<HealthSnapshot> {
-    const results = await sourceService.checkHealth(ids);
-    const snapshot: HealthSnapshot = {
-      checkedAt: Date.now(),
-      results,
-      failedCount: Object.values(results).filter((result) => result.health !== 'ok').length,
-    };
-    cachedSnapshot = snapshot;
-    return snapshot;
+  /** 检查指定源（OPT-03：支持取消；用于「仅检测失败源」） */
+  async check(ids: string[], signal?: AbortSignal): Promise<HealthSnapshot> {
+    return executeCheck(ids, signal);
   },
 
   /** 最近一次结果（无则 null） */

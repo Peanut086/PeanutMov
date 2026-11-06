@@ -1,5 +1,6 @@
-import { mount } from '@vue/test-utils';
-import { describe, expect, it } from 'vitest';
+import { createPinia } from 'pinia';
+import { config, mount } from '@vue/test-utils';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { MediaItem } from '@/types';
 import PosterGrid from '@/components/media/PosterGrid.vue';
@@ -47,6 +48,14 @@ function makeItems(count: number): MediaItem[] {
 }
 
 describe('PosterGrid 虚拟化降级（REV-11）', () => {
+  // PosterGrid 渲染 PosterCard → useHaptic → settingsStore：补 activePinia 测试基建
+  beforeEach(() => {
+    config.global.plugins = [createPinia()];
+  });
+  afterEach(() => {
+    config.global.plugins = [];
+  });
+
   it('条目少时全量渲染，不进入虚拟化分支', () => {
     // 2 列 × VIRTUALIZE_MIN_ROWS 行 = 阈值条数
     const wrapper = mount(PosterGrid, { props: { items: makeItems(VIRTUALIZE_MIN_ROWS * 2) } });

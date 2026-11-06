@@ -1,5 +1,6 @@
-import { mount } from '@vue/test-utils';
-import { describe, expect, it } from 'vitest';
+import { createPinia } from 'pinia';
+import { config, mount } from '@vue/test-utils';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { MediaItem } from '@/types';
 import PosterCard from '@/components/media/PosterCard.vue';
@@ -40,6 +41,15 @@ function makeItem(overrides: Partial<MediaItem> = {}): MediaItem {
 }
 
 describe('PosterCard', () => {
+  // PosterCard → useHaptic → settingsStore，组件挂载时必须有 activePinia。
+  // 测试基建补位（每个用例独立实例，避免状态串味）。
+  beforeEach(() => {
+    config.global.plugins = [createPinia()];
+  });
+  afterEach(() => {
+    config.global.plugins = [];
+  });
+
   it('渲染 2:3 海报、懒加载属性与无障碍标签', () => {
     const wrapper = mount(PosterCard, { props: { item: makeItem() } });
     const img = wrapper.find('img');

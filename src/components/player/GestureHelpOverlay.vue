@@ -7,9 +7,7 @@
  * - GestureGuide：首次进入自动显示，5 秒后自动消失
  * - GestureHelpOverlay：用户主动触发（长按），手动关闭
  */
-import { ref } from 'vue';
-
-const props = withDefaults(
+withDefaults(
   defineProps<{
     visible: boolean;
   }>(),

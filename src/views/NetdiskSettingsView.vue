@@ -31,8 +31,8 @@
             <div class="platform-icon">{{ platform.icon }}</div>
             <div class="platform-info">
               <div class="platform-name">{{ platform.name }}</div>
-              <div class="platform-status" :class="{ logged: platform.loggedIn }">
-                {{ platform.loggedIn ? '已登录' : '未登录' }}
+              <div class="platform-status" :class="{ logged: platform.verified, saved: platform.saved && !platform.verified }">
+                {{ statusText(platform) }}
               </div>
             </div>
             <div class="platform-action">
@@ -41,7 +41,7 @@
               </svg>
             </div>
           </div>
-          <div v-if="platform.loggedIn" class="platform-actions">
+          <div v-if="platform.saved" class="platform-actions">
             <button class="action-btn" @click.stop="backup(platform)">备份</button>
             <button class="action-btn" @click.stop="restore(platform)">恢复</button>
           </div>
@@ -119,7 +119,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { useRouter } from 'vue-router';
-import { Netdisk, backupCookieFile, restoreCookieFile } from '@/native/netdiskPlugin';
+import { Netdisk, backupCookieFile, loginWebView, restoreCookieFile } from '@/native/netdiskPlugin';
 import { useToast } from '@/composables/useToast';
 import { getAllPlatforms, type NetdiskPlatform } from '@/services/netdiskPlatforms';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -163,16 +163,44 @@ async function updateThreadCount(count: number) {
   await writeNetdiskConfig();
 }
 
+/** 平台状态：`saved` 仅代表 cookie 文件已存在，`verified` 才代表账号信息已校验 */
 interface PlatformStatus extends NetdiskPlatform {
-  loggedIn: boolean;
+  saved: boolean;
+  verified: boolean;
+  nickname: string | null;
+  memberType: string | null;
 }
 
 const platforms = ref<PlatformStatus[]>([]);
 
+function applyStatus(
+  platform: PlatformStatus,
+  next: Pick<PlatformStatus, 'saved' | 'verified' | 'nickname' | 'memberType'>,
+): void {
+  platform.saved = next.saved;
+  platform.verified = next.verified;
+  platform.nickname = next.nickname;
+  platform.memberType = next.memberType;
+}
+
+/** 列表状态文案（R-DEV04-02：绝不把「cookie 文件存在」显示成「已登录」） */
+function statusText(platform: PlatformStatus): string {
+  if (platform.verified) {
+    return platform.nickname ? `已登录（${platform.nickname}）` : '已登录';
+  }
+  return platform.saved ? '已保存，账号未验证' : '未登录';
+}
+
 onMounted(async () => {
   // 初始化平台列表
   const allPlatforms = getAllPlatforms();
-  platforms.value = allPlatforms.map(p => ({ ...p, loggedIn: false }));
+  platforms.value = allPlatforms.map(p => ({
+    ...p,
+    saved: false,
+    verified: false,
+    nickname: null,
+    memberType: null,
+  }));
 
   await checkPermissions();
   await checkLoginStatus();
@@ -206,15 +234,45 @@ async function requestAllFilesAccess() {
   }
 }
 
+/** 解析 cookie 文件内容：`a`=昵称（仅账号校验通过时非空）、`b`=会员类型、`c`=cookie */
+function parseCookieAccount(content: string | undefined): {
+  nickname: string | null;
+  memberType: string | null;
+} {
+  if (!content) return { nickname: null, memberType: null };
+  try {
+    const parsed = JSON.parse(content) as { a?: unknown; b?: unknown };
+    const nickname =
+      typeof parsed.a === 'string' && parsed.a.trim().length > 0 ? parsed.a.trim() : null;
+    const memberType =
+      typeof parsed.b === 'string' && parsed.b.trim().length > 0 && parsed.b.trim() !== '0'
+        ? parsed.b.trim()
+        : null;
+    return { nickname, memberType };
+  } catch {
+    // 旧格式 / 纯 cookie 文本：无法判断账号信息，按未验证处理
+    return { nickname: null, memberType: null };
+  }
+}
+
 async function checkLoginStatus() {
-  // 检查每个平台的 cookie 文件是否存在
+  // 读取文件内容而非仅看存在性：存在只代表「已保存」，`a`（昵称）非空才代表账号已校验
   for (const platform of platforms.value) {
     try {
       const result = await Netdisk.readCookieFile({ platform: platform.key });
-      platform.loggedIn = result.success && result.exists;
+      const saved = result.success && result.exists;
+      const account = saved
+        ? parseCookieAccount(result.content)
+        : { nickname: null, memberType: null };
+      applyStatus(platform, {
+        saved,
+        verified: account.nickname !== null,
+        nickname: account.nickname,
+        memberType: account.memberType,
+      });
     } catch (e) {
       console.error(`Failed to check ${platform.key} login status`, e);
-      platform.loggedIn = false;
+      applyStatus(platform, { saved: false, verified: false, nickname: null, memberType: null });
     }
   }
 }
@@ -226,15 +284,22 @@ async function login(platform: PlatformStatus) {
   }
 
   try {
-    await Netdisk.loginWebView({ platform: platform.key, loginUrl: platform.loginUrl });
-    // 登录完成后刷新状态
-    setTimeout(async () => {
+    // AND-06：登录页关闭后才返回结果，无需再靠延时 + 轮询文件猜测
+    const result = await loginWebView(platform.key, platform.loginUrl);
+    if (!result.success) {
       await checkLoginStatus();
-      const updated = platforms.value.find(p => p.key === platform.key);
-      if (updated?.loggedIn) {
-        toast.success(`${platform.name}登录成功`);
-      }
-    }, 3000);
+      toast.info(result.note ?? `${platform.name}未登录，已取消`);
+      return;
+    }
+    await checkLoginStatus();
+    if (result.verified) {
+      toast.success(
+        result.nickname ? `${platform.name}登录成功（${result.nickname}）` : `${platform.name}登录成功`,
+      );
+    } else {
+      // R-DEV04-02：夸克以外平台没有账号校验接口，只能确认 cookie 已保存
+      toast.info(`${platform.name}已保存，账号未验证`);
+    }
   } catch (e) {
     console.error('Login failed', e);
     toast.error('登录失败');
@@ -436,6 +501,10 @@ function goBack() {
 
 .platform-status.logged {
   color: var(--success-color, #34c759);
+}
+
+.platform-status.saved {
+  color: var(--warning-color, #ff9f0a);
 }
 
 .platform-action {

@@ -322,6 +322,8 @@ public class RangeDownloader {
         long rangeSize = remainingBytes / MULTI_RANGE_CONNECTIONS;
         ExecutorService executor = Executors.newFixedThreadPool(MULTI_RANGE_CONNECTIONS);
         Future<?>[] futures = new Future<?>[MULTI_RANGE_CONNECTIONS];
+        // 任一 Range 失败都不得把 .part 合并成完成态（禁止静默半提交）
+        final java.util.concurrent.atomic.AtomicBoolean rangeFailed = new java.util.concurrent.atomic.AtomicBoolean(false);
 
         // P0-2: 不再预分配文件大小，由各 Range 线程按需写入
         final long finalTotalBytes = totalSize;
@@ -343,6 +345,7 @@ public class RangeDownloader {
                     }
                 } catch (Exception e) {
                     com.qoder.cinema.AppLog.e(TAG, "Range " + rangeIndex + " failed: " + e.getMessage());
+                    rangeFailed.set(true);
                     if (!canceled.get() && !paused.get()) {
                         errorCallback.onError(task.taskId, "E_NETWORK", "Range " + rangeIndex + " failed: " + e.getMessage());
                     }
@@ -369,6 +372,12 @@ public class RangeDownloader {
 
         if (paused.get()) {
             // P0-2: 暂停时保存各 Range 进度到 sidecar 文件
+            saveSidecarFile(rangeProgress);
+            return;
+        }
+
+        if (rangeFailed.get()) {
+            // 有 Range 失败：保留 .part/.sidecar 供下次续传，但绝不 rename 为完成态
             saveSidecarFile(rangeProgress);
             return;
         }
@@ -404,8 +413,10 @@ public class RangeDownloader {
 
         Response response = client.newCall(requestBuilder.build()).execute();
         try {
-            if (!response.isSuccessful() && response.code() != 206) {
-                throw new IOException("Range " + rangeIndex + " HTTP " + response.code());
+            // 多 Range 必须返回 206：服务端忽略 Range 而返回 200 时，
+            // 整文件会被写到各 Range 偏移处 → 体积膨胀且内容错位的坏文件
+            if (response.code() != 206) {
+                throw new IOException("Range " + rangeIndex + " expected 206 but got HTTP " + response.code());
             }
 
             InputStream inputStream = response.body().byteStream();
@@ -520,6 +531,8 @@ public class RangeDownloader {
     public void cancel() {
         canceled.set(true);
         deletePartFile();
+        // sidecar 必须与 .part 同生共死：残留的进度会在下次续传时跳过前缀 → 坏文件
+        deleteSidecarFile();
     }
 
     /**
