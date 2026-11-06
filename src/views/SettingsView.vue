@@ -65,6 +65,12 @@ const clearing = ref(false);
 const cacheCleared = ref(false);
 const sourceSectionOpen = ref(false);
 
+// EXT-04：下载设置
+const speedLimitOpen = ref(false);
+const attachSubtitlesOpen = ref(false);
+const hlsQualityOpen = ref(false);
+const maxQueueOpen = ref(false);
+
 // v1.8: 调试日志管理
 const debugLogEnabled = ref(false);
 const debugLogStatus = ref<DebugLogStatus>({
@@ -149,6 +155,45 @@ const longPressRateLabel = computed(() => String(settings.settings?.player.longP
 const rememberVolumeBrightness = computed(() => settings.settings?.player.rememberVolumeBrightness ?? true);
 const hapticEnabled = computed(() => settings.settings?.hapticEnabled ?? true);
 const pipAutoEnter = computed(() => settings.settings?.pipAutoEnter ?? false);
+
+// EXT-04：下载设置标签
+const speedLimitLabel = computed(() => {
+  const limit = settings.settings?.download.speedLimit ?? 'unlimited';
+  switch (limit) {
+    case 'low':
+      return '慢速（512 KB/s）';
+    case 'medium':
+      return '中速（2 MB/s）';
+    case 'high':
+      return '快速（5 MB/s）';
+    default:
+      return '不限速';
+  }
+});
+
+const attachSubtitlesLabel = computed(() => {
+  const policy = settings.settings?.download.attachSubtitles ?? 'preferred';
+  switch (policy) {
+    case 'all':
+      return '全部字幕';
+    case 'none':
+      return '不下载';
+    default:
+      return '仅首选语言';
+  }
+});
+
+const hlsQualityLabel = computed(() => {
+  const quality = settings.settings?.download.hlsQuality ?? 'max';
+  switch (quality) {
+    case '1080p':
+      return '1080p';
+    case '720p':
+      return '720p';
+    default:
+      return '最高可用';
+  }
+});
 
 onMounted(async () => {
   try {
@@ -240,6 +285,34 @@ async function setHapticEnabled(value: boolean): Promise<void> {
 // OPT-06：自动进入画中画
 async function setPipAutoEnter(value: boolean): Promise<void> {
   await update({ pipAutoEnter: value }, value ? '已开启自动画中画' : '已关闭自动画中画');
+}
+
+/* ---------- EXT-04：下载设置 ---------- */
+async function setSpeedLimit(limit: 'low' | 'medium' | 'high' | 'unlimited'): Promise<void> {
+  speedLimitOpen.value = false;
+  await update({ download: { speedLimit: limit } }, `已设置限速：${speedLimitLabel.value}`);
+  // 通知 downloadService 更新限速
+  const { downloadService } = await import('@/services/downloadService');
+  downloadService.setSpeedLimit(limit);
+}
+
+async function setAttachSubtitles(policy: 'preferred' | 'all' | 'none'): Promise<void> {
+  attachSubtitlesOpen.value = false;
+  await update({ download: { attachSubtitles: policy } }, `字幕下载策略：${attachSubtitlesLabel.value}`);
+}
+
+async function setHlsQuality(quality: 'max' | '1080p' | '720p'): Promise<void> {
+  hlsQualityOpen.value = false;
+  await update({ download: { hlsQuality: quality } }, `默认清晰度：${hlsQualityLabel.value}`);
+}
+
+async function setMaxQueueTasks(max: 50 | 100 | 200 | 500): Promise<void> {
+  maxQueueOpen.value = false;
+  await update({ download: { maxQueueTasks: max } }, `队列上限：${max} 个任务`);
+}
+
+async function setRemuxToMp4(value: boolean): Promise<void> {
+  await update({ download: { remuxToMp4: value } }, value ? '已开启转封装为 MP4' : '已关闭转封装');
 }
 
 /* ---------- OPT-04：搜索超时预算（档位缩放单源超时） ---------- */
@@ -543,6 +616,20 @@ async function exportLogs(): Promise<void> {
           <SettingsRow label="弹幕设置" description="字号/透明度/速度/显示区域（播放页内开关）" chevron @click="danmakuOpen = true" />
         </SettingsGroup>
 
+        <!-- EXT-04：下载设置 -->
+        <SettingsGroup title="下载">
+          <SettingsRow label="下载限速" :value="speedLimitLabel" chevron @click="speedLimitOpen = true" />
+          <SettingsRow label="字幕随片下载" :value="attachSubtitlesLabel" chevron @click="attachSubtitlesOpen = true" />
+          <SettingsRow label="默认清晰度" :value="hlsQualityLabel" chevron @click="hlsQualityOpen = true" />
+          <SettingsRow label="队列上限" :value="`${settings.settings?.download.maxQueueTasks ?? 200} 个任务`" chevron @click="maxQueueOpen = true" />
+          <SettingsRow
+            label="转封装为 MP4"
+            description="下载完成后自动转换格式（仅 Android）"
+            :switch-value="settings.settings?.download.remuxToMp4 ?? true"
+            @update:switch-value="setRemuxToMp4"
+          />
+        </SettingsGroup>
+
         <SettingsGroup title="外观">
           <SettingsRow label="主题" :value="themeLabel" chevron @click="themeOpen = true" />
           <SettingsRow
@@ -806,6 +893,91 @@ async function exportLogs(): Promise<void> {
         </li>
       </ul>
       <p class="sheet-hint">达到上限后将自动停止新的预加载任务。</p>
+    </BottomSheet>
+
+    <!-- EXT-04：下载设置 BottomSheet -->
+    <BottomSheet v-model="speedLimitOpen" title="下载限速">
+      <ul class="sheet-list">
+        <li v-for="opt in [
+          { v: 'unlimited' as const, l: '不限速', d: '全速下载' },
+          { v: 'high' as const, l: '快速（5 MB/s）', d: '适合 WiFi 环境' },
+          { v: 'medium' as const, l: '中速（2 MB/s）', d: '平衡速度与带宽' },
+          { v: 'low' as const, l: '慢速（512 KB/s）', d: '节省带宽，适合后台下载' },
+        ]" :key="opt.v">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.download.speedLimit ?? 'unlimited') === opt.v }"
+            type="button"
+            @click="setSpeedLimit(opt.v)"
+          >
+            {{ opt.l }}
+            <span class="sheet-list__desc">{{ opt.d }}</span>
+            <span v-if="(settings.settings?.download.speedLimit ?? 'unlimited') === opt.v" class="sheet-list__check">当前</span>
+          </button>
+        </li>
+      </ul>
+      <p class="sheet-hint">限速对所有下载任务生效，切换后 3 秒内生效。</p>
+    </BottomSheet>
+
+    <BottomSheet v-model="attachSubtitlesOpen" title="字幕随片下载">
+      <ul class="sheet-list">
+        <li v-for="opt in [
+          { v: 'preferred' as const, l: '仅首选语言', d: '只下载设置中首选语言的字幕' },
+          { v: 'all' as const, l: '全部字幕', d: '下载所有可用字幕' },
+          { v: 'none' as const, l: '不下载', d: '不下载字幕文件' },
+        ]" :key="opt.v">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.download.attachSubtitles ?? 'preferred') === opt.v }"
+            type="button"
+            @click="setAttachSubtitles(opt.v)"
+          >
+            {{ opt.l }}
+            <span class="sheet-list__desc">{{ opt.d }}</span>
+            <span v-if="(settings.settings?.download.attachSubtitles ?? 'preferred') === opt.v" class="sheet-list__check">当前</span>
+          </button>
+        </li>
+      </ul>
+      <p class="sheet-hint">字幕文件与视频保存在同一目录，离线播放时可切换。</p>
+    </BottomSheet>
+
+    <BottomSheet v-model="hlsQualityOpen" title="默认清晰度">
+      <ul class="sheet-list">
+        <li v-for="opt in [
+          { v: 'max' as const, l: '最高可用', d: '选择最高清晰度的变体' },
+          { v: '1080p' as const, l: '1080p', d: '全高清，适合大屏' },
+          { v: '720p' as const, l: '720p', d: '高清，节省空间' },
+        ]" :key="opt.v">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.download.hlsQuality ?? 'max') === opt.v }"
+            type="button"
+            @click="setHlsQuality(opt.v)"
+          >
+            {{ opt.l }}
+            <span class="sheet-list__desc">{{ opt.d }}</span>
+            <span v-if="(settings.settings?.download.hlsQuality ?? 'max') === opt.v" class="sheet-list__check">当前</span>
+          </button>
+        </li>
+      </ul>
+      <p class="sheet-hint">仅对 HLS 源生效，直链源使用线路自带的清晰度。</p>
+    </BottomSheet>
+
+    <BottomSheet v-model="maxQueueOpen" title="队列上限">
+      <ul class="sheet-list">
+        <li v-for="opt in [50, 100, 200, 500] as const" :key="opt">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.download.maxQueueTasks ?? 200) === opt }"
+            type="button"
+            @click="setMaxQueueTasks(opt)"
+          >
+            {{ opt }} 个任务
+            <span v-if="(settings.settings?.download.maxQueueTasks ?? 200) === opt" class="sheet-list__check">当前</span>
+          </button>
+        </li>
+      </ul>
+      <p class="sheet-hint">超过上限的新任务将被拒绝，不影响已入队任务。</p>
     </BottomSheet>
   </SafeArea>
 </template>
