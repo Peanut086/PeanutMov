@@ -5,9 +5,15 @@
  * 豆瓣只有元数据，播放地址通过 `resolvePlayFrom` 回调向 CMS 源借用——
  * 回调由 `doubanRuntime.ts` 装配，避免适配器反向依赖 libraryService 形成环。
  *
+ * FIX-05：借地址前必须先把「豆瓣的集数」映射成「目标源的线路/剧集」。
+ * 旧实现把豆瓣自己的 `episodeId` 透传给目标适配器，目标找不到该 id 时会
+ * 静默回退第一集（选第 5 集播第 1 集）。现在走 `EpisodeMappingService`：
+ * 命中不了集数就报错，**不降级**。
+ *
  * 参考实现：TVBox drpy 规则 `douban.js`（聚玩盒子4K 的 ext）。
  */
 import { AppError } from '@/shared/errors';
+import { logger } from '@/shared/logger';
 import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { BaseAdapter, type ProbeResult } from '@/sources/base/BaseAdapter';
 import { categoryIdFor, inferMediaType, normalizeRating } from '@/sources/base/normalize';
@@ -24,6 +30,13 @@ import {
   type DoubanItem,
 } from '@/sources/douban/doubanClient';
 import type { PlayCandidate } from '@/sources/douban/playMatch';
+import {
+  EpisodeMappingService,
+  buildDoubanEpisodeId,
+  episodeMissText,
+  parseDoubanEpisodeId,
+  type EpisodeMappingMiss,
+} from '@/sources/mapping/EpisodeMappingService';
 import type {
   BrowseParams,
   Category,
@@ -50,6 +63,8 @@ export type DoubanPlayResolver = (params: {
 /** 取候选源适配器（装配方注入，便于测试替身） */
 export type DoubanAdapterGetter = (source: Source) => {
   resolvePlayUrl(params: ResolvePlayParams): Promise<PlaybackSource>;
+  /** 详情查询：集数映射需要目标源的线路/剧集清单（FIX-05） */
+  getDetail?(params: GetDetailParams): Promise<MediaDetail>;
 };
 
 /**
@@ -64,6 +79,22 @@ export const doubanRuntime: {
   resolvePlayFrom: null,
   adapterGetter: null,
 };
+
+/**
+ * 跨源集数映射（FIX-05）：模块级单例，缓存目标源的线路/剧集清单与映射结论。
+ * 取详情时才去 `doubanRuntime` 上拿适配器——装配是滞后的，不能在建实例时捕获。
+ */
+export const doubanEpisodeMapping = new EpisodeMappingService({
+  getDetail: async (params) => {
+    const getter = doubanRuntime.adapterGetter;
+    if (getter === null) throw new AppError('E_NOT_IMPLEMENTED', '未配置可播放的来源');
+    const adapter = getter(params.source);
+    if (typeof adapter.getDetail !== 'function') {
+      throw new AppError('E_NOT_IMPLEMENTED', `「${params.source.name}」不支持剧集查询`);
+    }
+    return adapter.getDetail(params);
+  },
+});
 
 /** 分类 id → 豆瓣分类定义 */
 export function doubanCategoryOf(sourceId: string, categoryId: string | null): DoubanCategory | null {
@@ -106,6 +137,18 @@ function toMediaItem(item: DoubanItem, makeItem: (input: {
     durationSec: null,
     episodeCount: null,
   });
+}
+
+/** 未命中原因汇总成一句话，作为错误 detail（不暴露给用户主文案，供排查用） */
+function describeMisses(misses: readonly EpisodeMappingMiss[]): string {
+  if (misses.length === 0) return '';
+  return misses
+    .map((miss) => {
+      const reason = episodeMissText(miss.reason);
+      const extra = miss.detail !== null && miss.detail.length > 0 ? `（${miss.detail}）` : '';
+      return `${miss.sourceName}：${reason}${extra}`;
+    })
+    .join('；');
 }
 
 export class DoubanAdapter extends BaseAdapter {
@@ -175,11 +218,19 @@ export class DoubanAdapter extends BaseAdapter {
     if (resolvePlayFrom === null || adapterGetter === null) {
       throw new AppError('E_NO_PLAY_URL', '该源仅提供片单，未配置可播放的来源');
     }
+
+    // 豆瓣的 episodeId 里带着「要第几集」，先解析出来；解析不了就报错，绝不猜集数。
+    const ref = parseDoubanEpisodeId(params.episodeId);
+    if (ref === null) {
+      throw new AppError('E_INVALID_INPUT', `无法识别的剧集标识：${String(params.episodeId)}`);
+    }
+    const episodeIndex = ref.episodeIndex;
+
     // 从库里读条目拿片名与年份（不用适配器内的可变状态，避免并发串数据）。
-    // 库里没有则用源配置能拿到的最小信息（sourceItemId/默认标题），
-    // 免得 resolvePlayUrl 因缓存未命中而误报「不存在」。
+    // 库里没有则退到调用方给的 sourceItemId / movieId，免得因缓存未命中误报「不存在」。
     const item = await mediaRepo.get(params.mediaId);
-    const title = item?.title ?? (params.sourceItemId.length > 0 ? params.sourceItemId : '');
+    const fallbackTitle = params.sourceItemId.length > 0 ? params.sourceItemId : ref.movieId;
+    const title = item?.title ?? fallbackTitle;
     if (title.length === 0) {
       throw new AppError('E_NO_PLAY_URL', '缺少影片信息，无法匹配播放来源');
     }
@@ -189,24 +240,55 @@ export class DoubanAdapter extends BaseAdapter {
       throw new AppError('E_NO_PLAY_URL', '已启用的源里没有找到这部影片的可播放地址');
     }
 
+    // 把「豆瓣第 N 集」映射成「目标源的线路 id + 剧集 id」；映射不中不降级（FIX-05）。
+    const mapping = await doubanEpisodeMapping.resolve({
+      title,
+      year: item?.year ?? null,
+      episodeIndex,
+      candidates,
+      signal: params.signal,
+    });
+
+    // 只有「第 1 集」才允许沿用旧的透传方式：单集电影/历史 id 场景下目标源可能
+    // 连线路清单都拿不到，透传 episodeId 让目标源按自己的兜底逻辑取首集——
+    // 首集就是用户点的集，不存在降级问题。
+    const attempts =
+      mapping.targets.length > 0
+        ? mapping.targets
+        : episodeIndex === 1
+          ? candidates.map((candidate) => ({
+              source: candidate.source,
+              item: candidate.item,
+              lineId: params.lineId,
+              episodeId: params.episodeId,
+            }))
+          : [];
+
+    if (attempts.length === 0) {
+      throw new AppError('E_NO_PLAY_URL', `已启用的源里没有第 ${episodeIndex} 集`, {
+        detail: describeMisses(mapping.misses),
+      });
+    }
+
     // 借来的地址按候选源自己的口径解析（它的 baseUrl 决定相对地址如何补全）；
     // 高质量候选失败（线路需要解析接口、源站瞬时故障等）时顺延下一个（CHG-12）
     const failures: string[] = [];
-    for (const candidate of candidates) {
+    for (const attempt of attempts) {
       try {
-        return await adapterGetter(candidate.source).resolvePlayUrl({
-          source: candidate.source,
+        return await adapterGetter(attempt.source).resolvePlayUrl({
+          source: attempt.source,
           mediaId: params.mediaId,
-          sourceItemId: candidate.item.sourceItemId,
-          episodeId: params.episodeId,
-          lineId: params.lineId,
+          sourceItemId: attempt.item.sourceItemId,
+          episodeId: attempt.episodeId,
+          lineId: attempt.lineId,
         });
       } catch (e) {
         if (params.signal?.aborted) throw e;
-        failures.push(`${candidate.source.name}：${e instanceof AppError ? e.message : String(e)}`);
+        failures.push(`${attempt.source.name}：${e instanceof AppError ? e.message : String(e)}`);
       }
     }
-    throw new AppError('E_NO_PLAY_URL', `${candidates.length} 个候选源均无法解析播放地址`, {
+    logger.warn('douban play resolve failed', { title, episodeIndex, failures });
+    throw new AppError('E_NO_PLAY_URL', `${attempts.length} 个候选源均无法解析播放地址`, {
       detail: failures.join('；'),
     });
   }
@@ -229,7 +311,9 @@ export class DoubanAdapter extends BaseAdapter {
     ];
     const episodes = [
       {
-        id: `douban-${item.id}-1`,
+        // FIX-05：集数标识统一为 `douban_{movieId}_{episodeIndex}`，
+        // resolvePlayUrl 从标识里解析集号，不再依赖「正片=第 1 集」的隐含约定。
+        id: buildDoubanEpisodeId(item.sourceItemId, 1),
         mediaId: item.id,
         sourceId: source.id,
         lineId,

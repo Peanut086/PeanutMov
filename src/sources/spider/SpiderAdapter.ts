@@ -40,17 +40,22 @@ import {
   toItemFromVod,
   toNumberOrNull,
   vodIdOf,
+  type RawEpisode,
 } from '@/sources/site/tvboxNormalize';
+import { selectEpisodeInDetail } from '@/sources/mapping/EpisodeMappingService';
+import { titleMatches, titleMatchScore } from '@/sources/mapping/TitleNormalizer';
 import { isPlayPageUrl, resolvePlayPage } from '@/sources/site/playPageResolver';
 import { getNetdiskConfig, formatConfigForSpider } from '@/services/netdiskConfig';
 import type {
   BrowseParams,
   Category,
+  Episode,
   GetDetailParams,
   MediaDetail,
   MediaItem,
   PageResult,
   PlaybackSource,
+  PlayLine,
   ResolvePlayParams,
   SearchParams,
   Source,
@@ -67,6 +72,20 @@ export interface SpiderSourceExt {
   /** 传给 `Spider.init(context, ext)` 的原始 ext */
   initExt: string;
   searchable?: boolean;
+}
+
+/** 按「片名 + 集数序号」查到的剧集（FIX-05 跨源集数映射用） */
+export interface SpiderEpisodeMatch {
+  source: Source;
+  /** 命中的片子（目标源自己的条目，不是豆瓣的） */
+  item: MediaItem;
+  line: PlayLine;
+  episode: Episode;
+  lineId: string;
+  episodeId: string;
+  /** 集号（1 起） */
+  episodeNumber: number;
+  episodeTitle: string;
 }
 
 function extOf(source: Source): SpiderSourceExt {
@@ -734,6 +753,106 @@ export class SpiderAdapter extends BaseAdapter {
     return { item, lines, episodes };
   }
 
+  /**
+   * 按「片名 + 集数序号」找剧集（FIX-05）。
+   *
+   * 豆瓣等发现源只知道片名与「第几集」，不知道目标源的条目 id / 剧集 id：
+   * 这里先用 `search` 找片、按片名相似度排序（季号/续集号冲突直接排除），
+   * 再逐个取详情，用 `selectEpisodeInDetail` 按集号定位。
+   *
+   * 找不到返回 null——**不返回第一集兜底**。
+   */
+  async findEpisodeByTitle(
+    title: string,
+    episodeIndex: number,
+    ctx: { source: Source; year?: number | null; signal?: AbortSignal; limit?: number },
+  ): Promise<SpiderEpisodeMatch | null> {
+    const { source, year = null, signal, limit = 8 } = ctx;
+    this.assertEnabled(source);
+    const keyword = title.trim();
+    const index = Math.trunc(episodeIndex);
+    if (keyword.length === 0 || !Number.isFinite(index) || index < 1) return null;
+
+    const found = await this.search({ source, keyword, page: 1, pageSize: limit, signal });
+    const ranked = found
+      .filter((item) => titleMatches(keyword, item.title))
+      .filter((item) => year === null || item.year === null || item.year === year)
+      .map((item) => ({ item, score: titleMatchScore(keyword, item.title) }))
+      .sort((a, b) => b.score - a.score);
+    if (ranked.length === 0) return null;
+
+    let lastError: unknown = null;
+    let failures = 0;
+    for (const { item } of ranked) {
+      signal?.throwIfAborted();
+      try {
+        const detail = await this.getDetail({ source, sourceItemId: item.sourceItemId, signal });
+        const selection = selectEpisodeInDetail(detail, index);
+        if (selection === null) continue;
+        return {
+          source,
+          item: detail.item,
+          line: selection.line,
+          episode: selection.episode,
+          lineId: selection.line.id,
+          episodeId: selection.episode.id,
+          episodeNumber: selection.episode.number,
+          episodeTitle: selection.episode.title,
+        };
+      } catch (e) {
+        lastError = e;
+        failures += 1;
+      }
+    }
+    // 全部候选的详情都取不到：把真实故障抛出去（区别于「没有这一集」）
+    if (failures > 0 && failures === ranked.length) throw lastError;
+    return null;
+  }
+
+  /**
+   * 在详情里定位要播的那一集。
+   *
+   * FIX-05：旧实现「线路找不到取第 0 条、剧集找不到取第 0 集」，
+   * 跨源透传过来的 id 对不上时会静默播出第一集（选第 5 集播第 1 集）。现在：
+   * - 指定了线路且该线路里有这一集 → 用它；
+   * - 线路 id 失效（库缓存过期）但别的线路有这一集 → 换线路，**不换集**；
+   * - `episodeId` 为空（单集电影 / 未指定集）→ 取首条线路的第 1 集，这是语义正确的默认；
+   * - `episodeId` 非空但哪条线路都没有 → 返回 null，由调用方报错。
+   */
+  private locateEpisode(
+    lines: PlayLine[],
+    rawEpisodes: RawEpisode[][],
+    lineId: string | null | undefined,
+    episodeId: string | null | undefined,
+  ): { line: PlayLine; picked: RawEpisode } | null {
+    const wantedLine = lines.find((entry) => entry.id === lineId) ?? null;
+    const wantedEpisode = String(episodeId ?? '').trim();
+
+    const pickIn = (line: PlayLine): RawEpisode | null => {
+      const list = rawEpisodes[line.index] ?? [];
+      return list.find((entry) => entry.id === wantedEpisode) ?? null;
+    };
+
+    if (wantedLine !== null) {
+      const picked = pickIn(wantedLine);
+      if (picked !== null) return { line: wantedLine, picked };
+    }
+
+    if (wantedEpisode.length > 0) {
+      for (const line of lines) {
+        if (line === wantedLine) continue;
+        const picked = pickIn(line);
+        if (picked !== null) return { line, picked };
+      }
+      return null;
+    }
+
+    const line = wantedLine ?? lines[0];
+    if (line === undefined) return null;
+    const first = (rawEpisodes[line.index] ?? []).find((entry) => entry.url.length > 0);
+    return first !== undefined ? { line, picked: first } : null;
+  }
+
   async resolvePlayUrl(params: ResolvePlayParams): Promise<PlaybackSource> {
     const { source, sourceItemId, lineId, episodeId } = params;
     this.assertEnabled(source);
@@ -749,13 +868,16 @@ export class SpiderAdapter extends BaseAdapter {
     const vod = response.list?.find((entry) => vodIdOf(entry) === sourceItemId) ?? response.list?.[0];
     if (!vod) throw new AppError('E_NOT_FOUND');
     const { lines, rawEpisodes } = buildLinesWithRaw(source, vod, mediaIdOf(source.id, vodIdOf(vod)));
-    const lineIndex = lines.findIndex((line) => line.id === lineId);
-    const line = lines[lineIndex >= 0 ? lineIndex : 0];
-    if (!line) throw new AppError('E_NO_PLAY_URL');
-    const list = rawEpisodes[line.index] ?? [];
-    const episodeIndex = list.findIndex((entry) => entry.id === episodeId);
-    const picked = list[episodeIndex >= 0 ? episodeIndex : 0];
-    if (!picked || picked.url.length === 0) throw new AppError('E_NO_PLAY_URL');
+    const located = this.locateEpisode(lines, rawEpisodes, lineId, episodeId);
+    if (located === null) {
+      // FIX-05：找不到用户点的那一集就报错，不能悄悄播第一集
+      throw new AppError('E_NO_PLAY_URL', '该源没有这一集', {
+        detail: `lineId=${lineId} episodeId=${episodeId}`,
+        retryable: false,
+      });
+    }
+    const { line, picked } = located;
+    if (picked.url.length === 0) throw new AppError('E_NO_PLAY_URL');
 
     // 2. playerContent(flag, id, vipFlags) 取真实播放地址；
     //    flag 用线路名，id 用剧集地址（TVBox 约定），vipFlags 传空数组
