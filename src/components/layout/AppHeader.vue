@@ -6,7 +6,7 @@
  * - 二级页：左侧返回，中间标题，右侧 0–1 个操作
  * - 吸顶：背景 bg-base，向下 8px 渐隐
  */
-import { computed } from 'vue';
+import { computed, getCurrentInstance } from 'vue';
 import { useRouter } from 'vue-router';
 
 import IconBack from '@/components/icons/IconBack.vue';
@@ -36,11 +36,14 @@ const emit = defineEmits<{
 }>();
 
 const router = useRouter();
+const instance = getCurrentInstance();
 
 const showActions = computed(() => props.search || props.settings);
 
 function goBack(): void {
   emit('back');
+  // 页面自己处理了 @back（可能带二次确认）时不再兜底回退，否则会连退两级
+  if (typeof instance?.vnode.props?.['onBack'] === 'function') return;
   const h = globalThis.history;
   if (typeof h?.length === 'number' && h.length > 1) router.back();
   else void router.replace('/');

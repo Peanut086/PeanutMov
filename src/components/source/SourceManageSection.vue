@@ -7,6 +7,7 @@
  * 不包含独立路由——所有操作通过 BottomSheet 完成。
  */
 import { computed, ref } from 'vue';
+import { useRouter } from 'vue-router';
 
 import type { Source, SourceInput } from '@/types';
 
@@ -23,10 +24,15 @@ import { useUiStore } from '@/stores/uiStore';
 import { useToast } from '@/composables/useToast';
 import { toErrorShape } from '@/shared/errors';
 
+const router = useRouter();
 const sources = useSourceStore();
 const settings = useSettingsStore();
 const ui = useUiStore();
 const toast = useToast();
+
+function openImport(): void {
+  void router.push({ name: 'source-import' });
+}
 
 /* ---------- 列表展示 ---------- */
 const orderedSources = computed(() => {
@@ -192,10 +198,13 @@ async function checkHealth(): Promise<void> {
     <!-- 合规提示 -->
     <ComplianceNotice />
 
-    <!-- 操作栏：新增 + 健康检查 -->
+    <!-- 操作栏：新增 + 导入 + 健康检查 -->
     <div class="source-manage__actions">
       <button class="btn btn--primary btn--sm" type="button" @click="openAdd">
         新增源
+      </button>
+      <button class="btn btn--secondary btn--sm" type="button" @click="openImport">
+        导入订阅
       </button>
       <button
         class="btn btn--secondary btn--sm"

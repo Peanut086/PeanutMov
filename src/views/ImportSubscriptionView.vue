@@ -350,7 +350,7 @@ function goBack(): void {
 function leave(): void {
   importer.reset();
   if (globalThis.history.length > 1) router.back();
-  else void router.replace('/settings/sources');
+  else void router.replace('/settings');
 }
 </script>
 

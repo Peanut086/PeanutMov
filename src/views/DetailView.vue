@@ -328,7 +328,7 @@ function isSourceFault(): boolean {
 }
 
 function openSourceManage(): void {
-  void router.push({ name: 'sources' });
+  void router.push({ name: 'settings', query: { sources: '1' } });
 }
 
 /** B2：跨源换源——在其它启用源里找同名同年的可播条目 */

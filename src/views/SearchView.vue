@@ -318,7 +318,7 @@ function ratingText(item: MediaItem | undefined): string | null {
 }
 
 function openSourceManage(): void {
-  void router.push({ name: 'sources' });
+  void router.push({ name: 'settings', query: { sources: '1' } });
 }
 </script>
 

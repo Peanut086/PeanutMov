@@ -121,6 +121,18 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresLayout: true, tab: 'settings', depth: 0, title: '我的' },
   },
   {
+    path: '/settings/sources/import',
+    name: 'source-import',
+    component: () => import('@/views/ImportSubscriptionView.vue'),
+    meta: { requiresLayout: false, depth: 1, title: '导入订阅' },
+  },
+  {
+    path: '/settings/subscriptions/eval',
+    name: 'subscription-eval',
+    component: () => import('@/views/EvalSubscriptionView.vue'),
+    meta: { requiresLayout: false, depth: 1, title: '批量订阅评测' },
+  },
+  {
     path: '/settings/netdisk',
     name: 'netdisk-settings',
     component: () => import('@/views/NetdiskSettingsView.vue'),

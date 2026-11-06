@@ -5,8 +5,8 @@
  * 数据概览 → 内容入口 → 播放偏好 → 外观 → 数据 → 关于。
  * 所有改动立即写设置并持久化；失败回滚 UI + Toast。
  */
-import { computed, onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
 import type { GestureSettings, PlayerSettings, PlaybackRate, ResizeMode, Sensitivity, ThemeMode } from '@/types';
 import { APP_VERSION, PLAYBACK_RATES } from '@/shared/constants';
@@ -35,6 +35,7 @@ import { logApi, type DebugLogStatus } from '@/native/logs';
 import { Share } from '@capacitor/share';
 
 const router = useRouter();
+const route = useRoute();
 const settings = useSettingsStore();
 const sources = useSourceStore();
 const favorites = useFavoriteStore();
@@ -154,6 +155,18 @@ onMounted(async () => {
   // v1.8: 获取日志状态
   await refreshLogStatus();
 });
+
+/** 外部入口（详情/搜索的「去源管理」）带 ?sources=1 进来时直接展开并滚动到源管理区 */
+watch(
+  () => route.query.sources,
+  async (value) => {
+    if (value !== '1') return;
+    sourceSectionOpen.value = true;
+    await nextTick();
+    document.getElementById('settings-sources-section')?.scrollIntoView({ block: 'start' });
+  },
+  { immediate: true },
+);
 
 async function update(patch: Parameters<typeof settings.update>[0], successText?: string): Promise<void> {
   try {
@@ -443,7 +456,7 @@ async function exportLogs(): Promise<void> {
             @click="sourceSectionOpen = !sourceSectionOpen"
           />
           <!-- OPT-09: 内联源管理区（不再跳转独立路由） -->
-          <div v-if="sourceSectionOpen" class="settings-inline-section">
+          <div v-if="sourceSectionOpen" id="settings-sources-section" class="settings-inline-section">
             <SourceManageSection />
           </div>
           <SettingsRow label="观看历史" :value="`${history.items.length} 条`" chevron @click="go('/history')" />
@@ -908,5 +921,6 @@ async function exportLogs(): Promise<void> {
 .settings-inline-section {
   padding: var(--space-2) 0 var(--space-3);
   border-bottom: 1px solid var(--color-divider);
+  scroll-margin-top: var(--space-4);
 }
 </style>
