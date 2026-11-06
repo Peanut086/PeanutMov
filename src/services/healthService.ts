@@ -38,17 +38,28 @@ async function executeCheck(ids: string[] | undefined, signal?: AbortSignal): Pr
     ids === undefined
       ? await sourceService.checkHealth(undefined, signal)
       : await sourceService.checkHealth(ids, signal);
-  const snapshot: HealthSnapshot = {
-    checkedAt: Date.now(),
-    results,
-    failedCount: Object.values(results).filter((result) => result.health !== 'ok').length,
-  };
   // P1-4: 记录 unreachable 源冷却
   for (const [sourceId, result] of Object.entries(results)) {
     if (result.health === 'unreachable') {
       unreachableCooldowns.set(sourceId, Date.now());
     }
   }
+  // REV-41 修复：子集检测（ids !== undefined）时合并而非替换 cachedSnapshot，
+  // 避免未检测的源丢失 latency 数据导致 healthTier 误判为 bad。
+  if (ids !== undefined && cachedSnapshot) {
+    const merged = { ...cachedSnapshot.results, ...results };
+    cachedSnapshot = {
+      checkedAt: Date.now(),
+      results: merged,
+      failedCount: Object.values(merged).filter((r) => r.health !== 'ok').length,
+    };
+    return cachedSnapshot;
+  }
+  const snapshot: HealthSnapshot = {
+    checkedAt: Date.now(),
+    results,
+    failedCount: Object.values(results).filter((result) => result.health !== 'ok').length,
+  };
   cachedSnapshot = snapshot;
   return snapshot;
 }

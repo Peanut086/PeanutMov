@@ -112,7 +112,9 @@ public class NativeDownloadManager {
             return;
         }
 
-        if (pendingTasks.containsKey(taskId)) {
+        // REV-42 修复：排队中被暂停的任务（同时在 pendingTasks 和 pausedTasks），
+        // 收到 start() 时不应直接 return，而应走下方正常路径清除 pausedTasks 并重新调度。
+        if (pendingTasks.containsKey(taskId) && !pausedTasks.containsKey(taskId)) {
             com.qoder.cinema.AppLog.w(TAG, "Task already exists: " + taskId);
             return;
         }
