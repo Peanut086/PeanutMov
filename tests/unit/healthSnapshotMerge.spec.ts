@@ -156,7 +156,7 @@ describe('REV-41 回归：子集检测快照合并', () => {
     // 再次 checkAll 应替换（非合并）
     sourceRegistry.register({
       type: 'alist',
-      async testConnection(source: Source) {
+      async testConnection(_source: Source) {
         return {
           ok: true,
           latencyMs: 999,
