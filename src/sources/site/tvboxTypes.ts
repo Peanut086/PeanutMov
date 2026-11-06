@@ -50,6 +50,18 @@ export interface TvboxVod {
   vod_play_from?: string | null;
   /** 剧集，`名称$地址` 以 `#` 分隔，线路间 `$$$` 分隔 */
   vod_play_url?: string | null;
+  /** 非标准播放列表（网盘/盘搜类源），`vod_play_url` 为空时的回退 */
+  vod_play_list?: TvboxPlayListEntry[] | null;
+}
+
+/** 非标准 `vod_play_list` 的一条线路 */
+export interface TvboxPlayListEntry {
+  flag?: string | null;
+  title?: string | null;
+  name?: string | null;
+  /** 解析接口前缀，通常以 `url=` 结尾，拼在 `urls[].url` 前使用 */
+  parse_urls?: Array<string | null> | null;
+  urls?: Array<{ name?: string | null; url?: string | null } | null> | null;
 }
 
 /** 站点源 ext（源配置） */
@@ -107,6 +119,38 @@ export function parsePlayFromField(raw: string | null | undefined): string[] {
     .split('$$$')
     .map((name) => name.trim())
     .filter((name) => name.length > 0);
+}
+
+/**
+ * 解析非标准 `vod_play_list`（网盘/盘搜类源）。
+ * - 线路名取 `title`/`name`；
+ * - 剧集取 `urls[]`，`parse_urls` 非空时把首个前缀拼到原始地址前
+ *   （前缀通常已止于 `url=`，token 原样拼接，不做 URL 编码）；
+ * - 无剧集的线路丢弃。
+ */
+export function parsePlayListField(raw: TvboxPlayListEntry[] | null | undefined): TvboxPlayLine[] {
+  if (!Array.isArray(raw) || raw.length === 0) return [];
+  const lines: TvboxPlayLine[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const prefix =
+      (Array.isArray(entry.parse_urls) ? entry.parse_urls : []).find(
+        (url): url is string => typeof url === 'string' && url.trim().length > 0,
+      ) ?? '';
+    const episodes: Array<{ name: string; url: string }> = [];
+    for (const episode of Array.isArray(entry.urls) ? entry.urls : []) {
+      const url = typeof episode?.url === 'string' ? episode.url.trim() : '';
+      if (url.length === 0) continue;
+      const name = typeof episode?.name === 'string' ? episode.name.trim() : '';
+      episodes.push({ name, url: /^https?:\/\//i.test(url) ? url : `${prefix}${url}` });
+    }
+    if (episodes.length === 0) continue;
+    const title = [entry.title, entry.name].find(
+      (value): value is string => typeof value === 'string' && value.trim().length > 0,
+    );
+    lines.push({ name: title?.trim() ?? '', episodes });
+  }
+  return lines;
 }
 
 /** 剧集名兜底：`第 N 集` */

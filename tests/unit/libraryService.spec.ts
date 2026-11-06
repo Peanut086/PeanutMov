@@ -372,3 +372,113 @@ describe('渐进搜索即时落库与详情兜底（CHG-28）', () => {
     expect(await mediaRepo.get(mediaId)).not.toBeNull();
   });
 });
+
+describe('findAlternateByTitle：候选必须真有剧集（空壳源跳过）', () => {
+  beforeEach(async () => {
+    await resetAll();
+    await seedDemoData();
+  });
+
+  function makeItem(sourceId: string, itemId: string, title: string): MediaItem {
+    const now = Date.now();
+    return {
+      id: mediaIdOf(sourceId, itemId),
+      sourceId,
+      sourceItemId: itemId,
+      title,
+      originalTitle: null,
+      type: 'movie',
+      year: 2026,
+      area: null,
+      genres: [],
+      tags: [],
+      rating: null,
+      posterUrl: null,
+      backdropUrl: null,
+      description: null,
+      durationSec: null,
+      episodeCount: null,
+      titleLower: title.toLowerCase(),
+      isDemo: false,
+      cachedAt: now,
+      updatedAt: now,
+    };
+  }
+
+  it('详情可加载但 0 集 → 跳过，换到有剧集的同名源', async () => {
+    const emptySource = await sourceService.create({
+      name: '空壳源',
+      type: 'site',
+      baseUrl: 'https://empty.example.com',
+    });
+    const playableSource = await sourceService.create({
+      name: '可播源',
+      type: 'site',
+      baseUrl: 'https://playable.example.com',
+    });
+    const title = '同名片测试';
+    const emptyItem = makeItem(emptySource.id, 'e-1', title);
+    const playableItem = makeItem(playableSource.id, 'p-1', title);
+
+    vi.spyOn(sourceRegistry.get('site'), 'search').mockImplementation(async (params) => {
+      if (params.source.id === emptySource.id) return [emptyItem];
+      if (params.source.id === playableSource.id) return [playableItem];
+      return [];
+    });
+
+    const line: PlayLine = {
+      id: `${playableItem.id}~l0`,
+      mediaId: playableItem.id,
+      sourceId: playableSource.id,
+      name: '主线',
+      quality: null,
+      format: 'mp4',
+      index: 0,
+    };
+    const episode: Episode = {
+      id: `${playableItem.id}~e1`,
+      mediaId: playableItem.id,
+      sourceId: playableSource.id,
+      lineId: line.id,
+      number: 1,
+      title: '第 1 集',
+      durationSec: null,
+      subtitles: [],
+      updatedAt: Date.now(),
+    };
+    const detailSpy = vi
+      .spyOn(sourceRegistry.get('site'), 'getDetail')
+      .mockImplementation(async (params) => {
+        if (params.source.id === emptySource.id) {
+          return { item: emptyItem, lines: [], episodes: [] };
+        }
+        return { item: playableItem, lines: [line], episodes: [episode] };
+      });
+
+    const alternate = await libraryService.findAlternateByTitle(title, 2026, DEMO_SOURCE_ID);
+
+    expect(alternate).toEqual({ mediaId: playableItem.id, sourceName: '可播源' });
+    expect(detailSpy).toHaveBeenCalled();
+  });
+
+  it('所有候选都没有剧集 → 返回 null（不再换到空壳源）', async () => {
+    const emptySource = await sourceService.create({
+      name: '空壳源',
+      type: 'site',
+      baseUrl: 'https://empty-only.example.com',
+    });
+    const title = '空壳片测试';
+    const emptyItem = makeItem(emptySource.id, 'e-2', title);
+
+    vi.spyOn(sourceRegistry.get('site'), 'search').mockImplementation(async (params) =>
+      params.source.id === emptySource.id ? [emptyItem] : [],
+    );
+    vi.spyOn(sourceRegistry.get('site'), 'getDetail').mockResolvedValue({
+      item: emptyItem,
+      lines: [],
+      episodes: [],
+    });
+
+    await expect(libraryService.findAlternateByTitle(title, 2026, DEMO_SOURCE_ID)).resolves.toBeNull();
+  });
+});

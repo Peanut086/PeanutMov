@@ -85,6 +85,8 @@ const episodes = computed<Episode[]>(() => {
   return filtered.sort((a, b) => a.number - b.number);
 });
 const isSeries = computed(() => episodes.value.length > 1 || (item.value?.type !== 'movie' && episodes.value.length > 0));
+/** 当前线路是否有可播剧集：无剧集时展示空态并禁用播放/下载/投屏（源本身没返回播放数据） */
+const hasEpisodes = computed(() => episodes.value.length > 0);
 /**
  * 是否需要「选集下载」抽屉。
  *
@@ -126,6 +128,7 @@ const offlineEpisodeNumber = computed<number | null>(() => {
 });
 
 const primaryLabel = computed(() => {
+  if (!hasEpisodes.value) return '暂无可播放';
   const rec = progressRecord.value;
   if (!rec || isFinished.value) {
     return rec && isFinished.value ? '重新播放' : '播放';
@@ -711,11 +714,11 @@ function openCompliance(): void {
           </button>
         </section>
 
-        <section v-if="episodes.length > 0" class="detail-section">
+        <section class="detail-section">
           <div class="detail-section__head">
             <h2 class="section-title">
               选集
-              <span class="detail-section__count">共 {{ episodes.length }} 集</span>
+              <span v-if="hasEpisodes" class="detail-section__count">共 {{ episodes.length }} 集</span>
             </h2>
             <LineSelector
               v-if="lines.length > 1"
@@ -725,22 +728,43 @@ function openCompliance(): void {
             />
           </div>
 
-          <p v-if="currentLine?.quality" class="detail-section__quality">
-            线路：{{ currentLine.name }} · {{ currentLine.quality }}
-          </p>
+          <template v-if="hasEpisodes">
+            <p v-if="currentLine?.quality" class="detail-section__quality">
+              线路：{{ currentLine.name }} · {{ currentLine.quality }}
+            </p>
 
-          <EpisodeList
-            :episodes="episodes"
-            :current-id="progressRecord?.episodeId ?? null"
-            :watched-numbers="watchedNumbers"
-            :downloaded-ids="downloadedIds"
-            :unavailable-ids="unavailableIds"
-            :playing-navigate="prechecking || playingNavigate"
-            :resolving-id="resolvingEpisodeId"
-            @select="onEpisodeSelect"
-            @unavailable="toast.error('该集暂无可播放地址')"
-            @playing="onPlayingBlocked"
-          />
+            <EpisodeList
+              :episodes="episodes"
+              :current-id="progressRecord?.episodeId ?? null"
+              :watched-numbers="watchedNumbers"
+              :downloaded-ids="downloadedIds"
+              :unavailable-ids="unavailableIds"
+              :playing-navigate="prechecking || playingNavigate"
+              :resolving-id="resolvingEpisodeId"
+              @select="onEpisodeSelect"
+              @unavailable="toast.error('该集暂无可播放地址')"
+              @playing="onPlayingBlocked"
+            />
+          </template>
+
+          <!-- 源侧没有返回可播放线路（网盘/盘搜源常见）：给出换源出口，而不是留一个空壳 -->
+          <div v-else class="detail-empty" role="status">
+            <p class="detail-empty__title">当前来源暂无可播放线路</p>
+            <p class="detail-empty__desc">换一个来源通常会找到可播的剧集。</p>
+            <div class="detail-empty__actions">
+              <button
+                class="btn btn--primary btn--md"
+                type="button"
+                :disabled="switchingSource"
+                @click="switchToAlternateSource"
+              >
+                {{ switchingSource ? '查找中…' : '换源' }}
+              </button>
+              <button class="btn btn--ghost btn--md" type="button" @click="openSourceManage">
+                去源管理
+              </button>
+            </div>
+          </div>
         </section>
 
         <section class="detail-section">
@@ -784,6 +808,7 @@ function openCompliance(): void {
         <button
           class="btn btn--primary btn--lg detail-actions__main"
           type="button"
+          :disabled="!hasEpisodes"
           :aria-busy="prechecking || playingNavigate ? 'true' : undefined"
           @click="onPrimary"
         >
@@ -804,18 +829,18 @@ function openCompliance(): void {
           class="detail-actions__icon"
           type="button"
           :aria-label="needsEpisodePicker ? '选择集数下载' : '下载'"
-          :disabled="downloading"
+          :disabled="downloading || !hasEpisodes"
           @click="onDownload"
         >
           <IconDownload :size="20" />
         </button>
         <button
           class="detail-actions__icon"
-          :class="{ 'detail-actions__icon--disabled': castSupported === false }"
+          :class="{ 'detail-actions__icon--disabled': castSupported === false || !hasEpisodes }"
           type="button"
           :aria-label="castSupported === false ? '投屏（当前平台不支持投屏）' : '投屏'"
-          :aria-disabled="castSupported === false ? 'true' : undefined"
-          :disabled="castSupported === false"
+          :aria-disabled="castSupported === false || !hasEpisodes ? 'true' : undefined"
+          :disabled="castSupported === false || !hasEpisodes"
           :title="castSupported === false ? '当前平台不支持投屏' : undefined"
           @click="castPlay"
         >
@@ -1056,6 +1081,34 @@ function openCompliance(): void {
   margin-bottom: var(--space-2);
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+.detail-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5) var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px dashed var(--color-border-strong);
+  background-color: var(--color-bg-elevated);
+  text-align: center;
+}
+
+.detail-empty__title {
+  font: var(--text-body-strong);
+  color: var(--color-text-primary);
+}
+
+.detail-empty__desc {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.detail-empty__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 .detail-desc {

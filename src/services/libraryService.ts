@@ -817,8 +817,9 @@ export const libraryService: LibraryService = {
       ).filter((candidate) => candidate.source.id !== excludeSourceId);
       for (const candidate of candidates) {
         try {
-          // 验证候选源详情可加载
-          await libraryService.getDetail(candidate.item.id);
+          // 候选必须真的有剧集——只校验「详情能加载」会从空壳换到另一个空壳（网盘/盘搜源）
+          const detail = await libraryService.getDetail(candidate.item.id);
+          if (detail.episodes.length === 0) continue;
           return { mediaId: candidate.item.id, sourceName: candidate.source.name };
         } catch {
           continue; // 候选源也失败 → 顺延下一个

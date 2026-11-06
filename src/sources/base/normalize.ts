@@ -73,6 +73,41 @@ export function normalizeEpisodeCount(value: unknown): number | null {
   return count > 0 ? count : null;
 }
 
+/**
+ * 备注（`vod_remarks`）里的集数：只认显式集数，避免把年份、清晰度当集数。
+ *
+ * 备注是自由文本，`"1998"`（年份）、`"1080P"`、`"4K"`、`"60帧"` 都可能出现，
+ * 因此不接受裸数字，必须带 `集/话/期/回` 单位或 `更新至` 之类的前缀。
+ */
+export function episodeCountFromRemarks(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const count = Math.trunc(value);
+    if (count <= 0 || (count >= 1900 && count <= 2100)) return null;
+    return count;
+  }
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (text.length === 0) return null;
+
+  // `全30集` / `共36集` 优先于进度类备注
+  const full = /(?:全|共)\s*(\d{1,4})\s*[集话期回]/.exec(text);
+  if (full?.[1]) return positiveOrNull(Number(full[1]));
+
+  // `30集` / `全30集` / `第12集` / `1-30集` / `48话` / `12期`
+  const unit = /(\d{1,4})\s*[集话期回]/.exec(text);
+  if (unit?.[1]) return positiveOrNull(Number(unit[1]));
+
+  // `更新至24`（无单位）
+  const progress = /(?:更新至|更新到|已更新至|完结至)\s*(\d{1,4})\s*$/.exec(text);
+  if (progress?.[1]) return positiveOrNull(Number(progress[1]));
+
+  return null;
+}
+
+function positiveOrNull(value: number): number | null {
+  return value > 0 ? value : null;
+}
+
 /** 评分：0-10；非法或越界返回 null */
 export function normalizeRating(value: unknown): number | null {
   const num = typeof value === 'number' ? value : typeof value === 'string' ? Number.parseFloat(value) : NaN;

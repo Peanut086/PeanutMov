@@ -9,10 +9,10 @@ import { episodeIdOf, lineIdOf, mediaIdOf } from '@/shared/id';
 import { toAbsoluteUrl } from '@/shared/url';
 import {
   categoryIdFor,
+  episodeCountFromRemarks,
   fallbackPoster,
   inferMediaType,
   normalizeDurationSec,
-  normalizeEpisodeCount,
   normalizeFormat,
   normalizeRating,
   normalizeStringList,
@@ -23,6 +23,7 @@ import {
 import {
   episodeTitleOf,
   parsePlayFromField,
+  parsePlayListField,
   parsePlayUrlField,
   type TvboxClass,
   type TvboxListResponse,
@@ -132,7 +133,7 @@ export function toItemFromVod(source: Source, vod: TvboxVod, makeItem: ItemFacto
     posterUrl: toAbsoluteUrl(source.baseUrl, vod.vod_pic) ?? fallbackPoster(title),
     description: stripHtml(vod.vod_content),
     durationSec: normalizeDurationSec(vod.vod_remarks),
-    episodeCount: normalizeEpisodeCount(vod.vod_remarks),
+    episodeCount: episodeCountFromRemarks(vod.vod_remarks),
     now: Date.now(),
   });
 }
@@ -159,7 +160,17 @@ export function buildLinesWithRaw(
   now = Date.now(),
 ): LinesWithRaw {
   const fromNames = parsePlayFromField(vod.vod_play_from);
-  const parsed = parsePlayUrlField(vod.vod_play_url, fromNames.length);
+  let lineNames = fromNames;
+  let parsed = parsePlayUrlField(vod.vod_play_url, fromNames.length);
+
+  // 网盘/盘搜类源不返回标准 `vod_play_url`，改由 `vod_play_list` 提供线路
+  if (!parsed.some((segment) => segment.episodes.length > 0)) {
+    const listed = parsePlayListField(vod.vod_play_list);
+    if (listed.length > 0) {
+      parsed = listed;
+      lineNames = listed.map((line, index) => line.name || fromNames[index] || '');
+    }
+  }
 
   const lines: PlayLine[] = [];
   const episodes: Episode[] = [];
@@ -168,7 +179,7 @@ export function buildLinesWithRaw(
   parsed.forEach((segment, index) => {
     if (segment.episodes.length === 0) return;
     const lineId = lineIdOf(mediaId, index);
-    const lineName = fromNames[index] ?? `线路 ${index + 1}`;
+    const lineName = lineNames[index] || `线路 ${index + 1}`;
     const firstUrl = segment.episodes[0]?.url ?? '';
     lines.push({
       id: lineId,
