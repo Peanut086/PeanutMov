@@ -157,6 +157,13 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresLayout: false, depth: 1, title: '运行日志' },
   },
   {
+    // EXT-01：源健康治理中心（设置页进入，二级页）
+    path: '/health-center',
+    name: 'health-center',
+    component: () => import('@/views/HealthCenterView.vue'),
+    meta: { requiresLayout: false, depth: 1, title: '源健康中心' },
+  },
+  {
     path: '/settings/about',
     name: 'about',
     component: () => import('@/views/AboutView.vue'),

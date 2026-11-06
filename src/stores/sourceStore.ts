@@ -9,6 +9,18 @@ import { computed, ref } from 'vue';
 import { sourceService } from '@/services/sourceService';
 import { healthService } from '@/services/healthService';
 import { subscriptionLifecycleService } from '@/services/subscriptionLifecycleService';
+import {
+  buildTrendSeries,
+  failureDistributionOf,
+  isFailureHealth,
+  loadHealthTrend,
+  recordHealthTrend,
+  summarizeSources,
+  type FailureBucket,
+  type HealthCenterSummary,
+  type HealthTrendPoint,
+  type HealthTrendSnapshot,
+} from '@/services/healthCenterService';
 import { liveService } from '@/services/liveService';
 import { appEvents } from '@/services/events';
 import { sourceRegistry } from '@/sources/registry';
@@ -63,6 +75,15 @@ export interface HealthProgress {
   total: number;
 }
 
+/** 健康治理中心批量动作（EXT-01）；同一时刻只允许一个 */
+export type HealthCenterAction = 'recheck' | 'cleanup' | 'restore';
+
+/** 批量动作结果：成功数与失败数（单项失败不中断） */
+export interface HealthCenterBatchResult {
+  done: number;
+  failed: number;
+}
+
 export const useSourceStore = defineStore('source', () => {
   const sources = ref<Source[]>([]);
   const currentSourceId = ref<string | null>(null);
@@ -75,6 +96,20 @@ export const useSourceStore = defineStore('source', () => {
   /** v1.7/CHG-19：订阅自动刷新进行中 */
   const refreshingSubscriptions = ref(false);
   const error = ref<AppErrorShape | null>(null);
+
+  /* ---------- EXT-01：健康治理中心 ---------- */
+  /** 健康中心加载中（首屏 / 手动刷新） */
+  const healthCenterLoading = ref(false);
+  /** 健康中心加载失败（源表读不到）；批量失败经 toast 呈现，不写入此状态 */
+  const healthCenterError = ref<AppErrorShape | null>(null);
+  /** 进行中的批量动作；非 null 时其余批量入口禁用 */
+  const healthCenterBusy = ref<HealthCenterAction | null>(null);
+  /** 批量动作进度（清理 / 恢复）；复检复用 `healthProgress` */
+  const healthCenterProgress = ref<HealthProgress | null>(null);
+  /** 最近 30 天的健康快照（kv 持久化，按日期升序） */
+  const healthTrendSnapshots = ref<HealthTrendSnapshot[]>([]);
+  /** 最近一次成功加载时间（UI 展示"更新于"） */
+  const healthCenterLoadedAt = ref<number | null>(null);
 
   /** OPT-03：健康检查取消句柄（同一时刻只允许一轮） */
   let healthAbort: AbortController | null = null;
@@ -91,6 +126,23 @@ export const useSourceStore = defineStore('source', () => {
     return enabledSources.value.find((source) => !source.builtin) ?? enabledSources.value[0] ?? null;
   });
   const defaultSource = computed(() => enabledSources.value.find((source) => !source.builtin) ?? enabledSources.value[0] ?? null);
+
+  /** EXT-01：汇总（总数 / 健康 / 失败 / 未检测 / 已禁用） */
+  const healthCenterSummary = computed<HealthCenterSummary>(() =>
+    summarizeSources(sources.value),
+  );
+  /** 全部失败源（含已禁用；已禁用的失败源无法复检，只能恢复） */
+  const failedSources = computed(() => sources.value.filter((source) => isFailureHealth(source.health)));
+  /** 可复检的失败源（启用中；`sourceService.checkHealth` 只探测启用源） */
+  const failedEnabledSources = computed(() => failedSources.value.filter((source) => source.enabled));
+  /** 已禁用源（批量恢复的目标） */
+  const disabledSources = computed(() => sources.value.filter((source) => !source.enabled));
+  /** 失败原因分布（按数量降序，只含计数 > 0 的原因） */
+  const failureBuckets = computed<FailureBucket[]>(() => failureDistributionOf(sources.value));
+  /** 最近 7 天趋势点（含今天；缺失日补 0 并标记未采集） */
+  const healthTrend = computed<HealthTrendPoint[]>(() =>
+    buildTrendSeries(healthTrendSnapshots.value, Date.now()),
+  );
 
   /** 取消订阅句柄（store 生命周期内只订阅一次） */
   let unsubscribe: (() => void) | null = null;
@@ -470,6 +522,160 @@ export const useSourceStore = defineStore('source', () => {
     return restored;
   }
 
+  /* ---------- EXT-01：健康治理中心 ---------- */
+
+  /**
+   * 记录当日趋势快照并刷新内存序列。
+   * 写库失败已在服务层降级（保留内存中的旧序列），此处不再抛错。
+   */
+  async function syncHealthCenterTrend(): Promise<void> {
+    try {
+      healthTrendSnapshots.value = await recordHealthTrend(summarizeSources(sources.value));
+      healthCenterLoadedAt.value = Date.now();
+    } catch (e) {
+      logger.warn('健康趋势快照同步失败', e);
+    }
+  }
+
+  /** 进入健康中心：重载源表 → 读取历史趋势 → 落一次当日快照 */
+  async function loadHealthCenter(): Promise<void> {
+    if (healthCenterLoading.value) return;
+    healthCenterLoading.value = true;
+    healthCenterError.value = null;
+    try {
+      sources.value = await sourceService.list();
+      ensureSubscriptions();
+      if (currentSourceId.value !== null && !sources.value.some((s) => s.id === currentSourceId.value)) {
+        currentSourceId.value = null;
+      }
+      healthTrendSnapshots.value = await loadHealthTrend();
+      await syncHealthCenterTrend();
+    } catch (e) {
+      healthCenterError.value = toErrorShape(e, 'E_DB');
+      logger.warn('健康中心加载失败', e);
+    } finally {
+      healthCenterLoading.value = false;
+    }
+    warmupSpiderSources();
+  }
+
+  /**
+   * 批量复检全部失败源。
+   *
+   * 只覆盖**启用中**的失败源：`sourceService.checkHealth` 会过滤掉 `enabled=false`，
+   * 已禁用的失败源需要先「批量恢复」才会重新参与探测。
+   * 复用 `refreshHealth({ failedOnly: true })`：带 10 分钟缓存旁路、进度事件与取消能力。
+   *
+   * @returns 本次复检的目标数量（0 表示没有可复检的源或已有任务在跑）
+   */
+  async function recheckFailedSources(): Promise<number> {
+    if (healthCenterBusy.value !== null || healthChecking.value) return 0;
+    const total = failedEnabledSources.value.length;
+    if (total === 0) return 0;
+    healthCenterBusy.value = 'recheck';
+    healthCenterError.value = null;
+    try {
+      await refreshHealth({ failedOnly: true });
+      await syncHealthCenterTrend();
+      return total;
+    } finally {
+      healthCenterBusy.value = null;
+    }
+  }
+
+  /**
+   * 批量清理全部失败源：把启用中的失败源标记为 `enabled=false`（不删除数据）。
+   * 含 `timeout`（本页由用户显式确认后执行，确认文案已说明）。
+   */
+  async function cleanupFailedSources(
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<HealthCenterBatchResult> {
+    if (healthCenterBusy.value !== null) return { done: 0, failed: 0 };
+    const latest = await sourceService.list();
+    const targets = latest.filter((source) => source.enabled && isFailureHealth(source.health));
+    if (targets.length === 0) return { done: 0, failed: 0 };
+
+    healthCenterBusy.value = 'cleanup';
+    healthCenterError.value = null;
+    healthCenterProgress.value = { done: 0, total: targets.length };
+    let done = 0;
+    let failed = 0;
+    batchDepth += 1;
+    try {
+      failed = await forEachLimited(
+        targets,
+        BATCH_CONCURRENCY,
+        async (source) => {
+          await sourceService.setEnabled(source.id, false);
+          done += 1;
+        },
+        (progressDone, progressTotal) => {
+          healthCenterProgress.value = { done: progressDone, total: progressTotal };
+          onProgress?.(progressDone, progressTotal);
+        },
+      );
+    } finally {
+      batchDepth -= 1;
+      healthCenterBusy.value = null;
+      healthCenterProgress.value = null;
+    }
+
+    if (done > 0) {
+      if (currentSourceId.value !== null && targets.some((s) => s.id === currentSourceId.value)) {
+        currentSourceId.value = null;
+      }
+      await reload();
+      void loadSummaries();
+      await syncHealthCenterTrend();
+    }
+    return { done, failed };
+  }
+
+  /**
+   * 批量恢复全部被禁用的源：清自动禁用标记、重新启用、健康复位为未检测。
+   * 复用 `subscriptionLifecycleService.restore`，与源管理页单条恢复口径一致。
+   */
+  async function restoreDisabledSources(
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<HealthCenterBatchResult> {
+    if (healthCenterBusy.value !== null) return { done: 0, failed: 0 };
+    const latest = await sourceService.list();
+    const targets = latest.filter((source) => !source.enabled);
+    if (targets.length === 0) return { done: 0, failed: 0 };
+
+    healthCenterBusy.value = 'restore';
+    healthCenterError.value = null;
+    healthCenterProgress.value = { done: 0, total: targets.length };
+    let done = 0;
+    let failed = 0;
+    batchDepth += 1;
+    try {
+      failed = await forEachLimited(
+        targets,
+        BATCH_CONCURRENCY,
+        async (source) => {
+          await subscriptionLifecycleService.restore(source.id);
+          done += 1;
+        },
+        (progressDone, progressTotal) => {
+          healthCenterProgress.value = { done: progressDone, total: progressTotal };
+          onProgress?.(progressDone, progressTotal);
+        },
+      );
+    } finally {
+      batchDepth -= 1;
+      healthCenterBusy.value = null;
+      healthCenterProgress.value = null;
+    }
+
+    if (done > 0) {
+      await reload();
+      void loadSummaries();
+      await syncHealthCenterTrend();
+    }
+    return { done, failed };
+  }
+
   /** 测试/登出时重置（非契约方法，仅供内部使用） */
   function $dispose(): void {
     unsubscribe?.();
@@ -568,6 +774,22 @@ export const useSourceStore = defineStore('source', () => {
     refreshAllSubscriptions,
     restoreAutoDisabled,
     restoreAllAutoDisabled,
+    healthCenterLoading,
+    healthCenterError,
+    healthCenterBusy,
+    healthCenterProgress,
+    healthCenterLoadedAt,
+    healthCenterSummary,
+    failedSources,
+    failedEnabledSources,
+    disabledSources,
+    failureBuckets,
+    healthTrend,
+    healthTrendSnapshots,
+    loadHealthCenter,
+    recheckFailedSources,
+    cleanupFailedSources,
+    restoreDisabledSources,
     $dispose,
   };
 });
