@@ -243,6 +243,7 @@ async function ensurePlayable(ep: Episode): Promise<boolean> {
 
 async function load(refresh = false): Promise<void> {
   if (!mediaId.value) return;
+  unavailableIds.value = [];
   await library.loadDetail(mediaId.value, refresh);
   if (!lineId.value && lines.value[0]) lineId.value = lines.value[0].id;
 }
@@ -257,7 +258,13 @@ watch(mediaId, () => {
   lineId.value = null;
   descExpanded.value = false;
   preloadHintDismissed.value = false;
+  unavailableIds.value = [];
   void load(false);
+});
+
+// P1: 切换线路时重置不可用集列表，避免旧线路的失败状态污染新线路
+watch(lineId, () => {
+  unavailableIds.value = [];
 });
 
 /** OPT-15: WiFi 环境 + 未预加载 + 未关闭提示 → 显示预加载提示条 */

@@ -291,9 +291,15 @@ public final class SpiderProxyServer {
                 int statusCode = (Integer) result[0];
                 String ct = result[1] instanceof String ? (String) result[1] : "text/plain; charset=utf-8";
                 byte[] body = result[2] instanceof byte[] ? (byte[]) result[2] : new byte[0];
-                Log.i(TAG, "res " + statusCode + " ct=" + ct + " len=" + body.length + " (CatVod contract)");
-                respond(s, statusCode, ct, body, null);
-                return;
+                // P0-2b：do=m3u8 且 body 为空时，不返回空 200，交给 passThrough 直取上游清单
+                if ("m3u8".equals(doParam) && body.length == 0) {
+                    Log.i(TAG, "CatVod contract returned empty body for do=m3u8, defer to passthrough");
+                    result = null; // 清空 result，让后续壳级兜底走 passThrough
+                } else {
+                    Log.i(TAG, "res " + statusCode + " ct=" + ct + " len=" + body.length + " (CatVod contract)");
+                    respond(s, statusCode, ct, body, null);
+                    return;
+                }
             }
 
             // 壳级兜底：爬虫返回 do=m3u8&url=... 而没有任何爬虫 proxy 认领时，直取转发

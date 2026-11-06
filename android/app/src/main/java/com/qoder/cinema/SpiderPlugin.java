@@ -509,6 +509,7 @@ public class SpiderPlugin extends Plugin {
      * 9978 本地代理路由：优先 owner，其次遍历已加载爬虫调 proxy(params)。
      * 代理请求不带 handle，TVBox 原版也是全量遍历（多数爬虫对不认识的 do 立即返回 null）。
      * 方向3：先尝试 currentOwner，避免被其它爬虫（如移动•4K）劫持。
+     * P0-2：do=m3u8 只尝试 owner，未认领则交还宿主 passThrough（避免被无关爬虫劫持）。
      */
     private Object[] routeProxy(Map<String, String> params) {
         String doParam = params.get("do");
@@ -523,6 +524,12 @@ public class SpiderPlugin extends Plugin {
                 if (result != null) return result;
                 proxyCapable++;
             }
+        }
+        
+        // P0-2：do=m3u8 只尝试 owner，未认领则交还宿主 passThrough 直取上游清单
+        if ("m3u8".equals(doParam)) {
+            Log.i(TAG, "proxy do=m3u8 not claimed by owner, defer to host passthrough");
+            return null;
         }
         
         // 回退：遍历其他已加载爬虫

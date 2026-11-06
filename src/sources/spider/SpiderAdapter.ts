@@ -33,7 +33,7 @@ import { sniffPlayUrl } from '@/native/snifferPlugin';
 import { BaseAdapter, type ProbeResult } from '@/sources/base/BaseAdapter';
 import { deriveHasMore } from '@/sources/base/pagination';
 import { inferMediaType, normalizeFormat, parseCategoryValue } from '@/sources/base/normalize';
-import { looksLikeResolverUrl, type TvboxListResponse, type TvboxVod } from '@/sources/site/tvboxTypes';
+import { looksLikeResolverUrl, unwrapTvboxLocalProxy, type TvboxListResponse, type TvboxVod } from '@/sources/site/tvboxTypes';
 import {
   buildLinesWithRaw,
   categoriesOf,
@@ -772,9 +772,18 @@ export class SpiderAdapter extends BaseAdapter {
 
     const absolute = toAbsoluteUrl(source.baseUrl, raw) ?? raw;
 
-    let direct = absolute;
+    // P0-1: 优先解包 TVBox 本地代理地址（127.0.0.1:9978/proxy?do=m3u8&url=...）
+    // 取内层真实播放地址，跳过 parse/proxy 分支直接走后续流程
+    const innerPlaylist = unwrapTvboxLocalProxy(absolute);
+    let direct = innerPlaylist ?? absolute;
     let proxyHeaders: Record<string, string> | null = null;
-    if (parseFlagIsEnabled(played.parse) || parseFlagIsEnabled(played.jx)) {
+
+    if (innerPlaylist) {
+      logger.debug('播放地址为 TVBox 本地代理，已取内层地址', {
+        source: source.name,
+        inner: innerPlaylist,
+      });
+    } else if (parseFlagIsEnabled(played.parse) || parseFlagIsEnabled(played.jx)) {
       // parse=1：地址需经解析接口/页面执行换回直链（P1-7 WebView 嗅探）
       direct = await this.resolveViaParse(source, absolute, params.signal);
     } else if (parseFlagIsEnabled(played.proxy) || /^proxy:\/\//i.test(absolute)) {
@@ -789,23 +798,6 @@ export class SpiderAdapter extends BaseAdapter {
     if (looksLikeResolverUrl(direct)) {
       // 解析页地址（jx 页面）：嗅探其加载过程中的媒体请求
       direct = await this.resolveViaParse(source, direct, params.signal);
-    }
-
-    // 方向4：本地代理 URL（127.0.0.1:9978/proxy?do=m3u8&url=...）
-    // 如果 inner URL 是绝对地址，直接使用它（passThrough 会处理）
-    const localProxyMatch = direct.match(/^https?:\/\/127\.0\.0\.1:\d+\/proxy\?/i);
-    if (localProxyMatch) {
-      try {
-        const urlObj = new URL(direct);
-        const doParam = urlObj.searchParams.get('do');
-        const innerUrl = urlObj.searchParams.get('url');
-        if (doParam === 'm3u8' && innerUrl && /^https?:\/\//i.test(innerUrl)) {
-          logger.debug('检测到本地代理 URL，提取内部地址', { direct, innerUrl });
-          direct = innerUrl;
-        }
-      } catch (e) {
-        logger.warn('解析本地代理 URL 失败', { direct, error: e });
-      }
     }
 
     if (isMagnetUrl(direct)) {

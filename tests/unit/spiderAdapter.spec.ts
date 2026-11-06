@@ -430,6 +430,56 @@ describe('SpiderAdapter', () => {
     ).rejects.toMatchObject({ code: 'E_SOURCE_UNAVAILABLE' });
   });
 
+  it('resolvePlayUrl：TVBox 本地代理地址（127.0.0.1:9978/proxy?do=m3u8&url=...）→ 取内层直链', async () => {
+    const innerUrl = 'https://cdn.example.com/real.m3u8';
+    const proxyUrl = `http://127.0.0.1:9978/proxy?do=m3u8&url=${encodeURIComponent(innerUrl)}`;
+    mockPlugin({
+      ...ALL,
+      playerContent: JSON.stringify({ url: proxyUrl, parse: 0 }),
+    });
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource();
+
+    const detail = await adapter.getDetail({ source, sourceItemId: '102' });
+    const play = await adapter.resolvePlayUrl({
+      source,
+      mediaId: detail.item.id,
+      sourceItemId: '102',
+      lineId: detail.lines[0]!.id,
+      episodeId: detail.episodes[0]!.id,
+    });
+
+    expect(play.url).toBe(innerUrl);
+    expect(play.format).toBe('hls');
+  });
+
+  it('resolvePlayUrl：proxy://do=m3u8&url=... → 取内层直链，不走爬虫代理', async () => {
+    const { proxy } = mockPlugin({
+      ...ALL,
+      playerContent: JSON.stringify({
+        url: 'proxy://do=m3u8&url=https%3A%2F%2Fcdn.example.com%2Finner.m3u8',
+        parse: 0,
+      }),
+    });
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource();
+
+    const detail = await adapter.getDetail({ source, sourceItemId: '102' });
+    const play = await adapter.resolvePlayUrl({
+      source,
+      mediaId: detail.item.id,
+      sourceItemId: '102',
+      lineId: detail.lines[0]!.id,
+      episodeId: detail.episodes[0]!.id,
+    });
+
+    expect(play.url).toBe('https://cdn.example.com/inner.m3u8');
+    // proxy://do=m3u8 被解包，不应调用爬虫代理
+    expect(proxy).not.toHaveBeenCalled();
+  });
+
   it('爬虫返回非法 JSON → E_PARSE', async () => {
     mockPlugin({ ...ALL, categoryContent: 'not-json' });
     const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');

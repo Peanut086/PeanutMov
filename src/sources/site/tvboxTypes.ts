@@ -116,7 +116,42 @@ export function episodeTitleOf(name: string, index: number): string {
   return `第 ${index + 1} 集`;
 }
 
-/** 判断地址是否需要解析接口（`?url=` 包装：首版不支持递归解析，技术方案 7.6） */
+/** 判断是否为 TVBox 本地代理地址（127.0.0.1:9978/proxy 或 localhost:9978/proxy） */
+export function isLocalProxyUrl(url: string): boolean {
+  return /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/proxy\?/i.test(url);
+}
+
+/** 判断地址是否需要解析接口（`?url=` 包装，排除本地代理地址） */
 export function looksLikeResolverUrl(url: string): boolean {
+  if (isLocalProxyUrl(url)) return false;
   return /[?&]url=/i.test(url);
+}
+
+/**
+ * 解包 TVBox 本地代理地址，提取内层真实播放地址。
+ * 支持两种格式：
+ * 1. `proxy://do=m3u8&url=<绝对地址>`
+ * 2. `http://127.0.0.1:9978/proxy?do=m3u8&url=<绝对地址>`
+ *
+ * 返回 null 表示不是本地代理地址或内层地址无效。
+ */
+export function unwrapTvboxLocalProxy(url: string): string | null {
+  const text = url.trim();
+  let query: string;
+
+  if (/^proxy:\/\//i.test(text)) {
+    query = text.slice('proxy://'.length).replace(/^\/+/, '');
+  } else if (isLocalProxyUrl(text)) {
+    const idx = text.indexOf('?');
+    if (idx < 0) return null;
+    query = text.slice(idx + 1);
+  } else {
+    return null;
+  }
+
+  const params = new URLSearchParams(query);
+  if (params.get('do') !== 'm3u8') return null;
+
+  const inner = params.get('url') ?? '';
+  return /^https?:\/\//i.test(inner) ? inner : null;
 }
