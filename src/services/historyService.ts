@@ -60,6 +60,8 @@ export const historyService: HistoryService = {
         totalEpisodes: input.totalEpisodes,
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        // REV-24：媒体快照
+        mediaSnapshot: input.mediaSnapshot,
       };
     }
 
@@ -89,6 +91,8 @@ export const historyService: HistoryService = {
       totalEpisodes: input.totalEpisodes,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
+      // REV-24：媒体快照
+      mediaSnapshot: input.mediaSnapshot,
     };
 
     await historyRepo.save(record);

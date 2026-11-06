@@ -592,11 +592,27 @@ export const useLibraryStore = defineStore('library', () => {
       detail.value = result;
       detailState.value = 'success';
     } catch (e) {
+      const code = toErrorShape(e).code;
+      // REV-24：E_NOT_FOUND 时尝试自愈（从历史快照重建或按标题搜索）
+      if (code === 'E_NOT_FOUND' && !refresh) {
+        try {
+          const recovered = await libraryService.recoverItem(mediaId);
+          if (recovered) {
+            // 自愈成功，重新加载详情
+            const result = await libraryService.getDetail(mediaId, { refresh: false, item: recovered });
+            detail.value = result;
+            detailState.value = 'success';
+            return;
+          }
+        } catch {
+          // 自愈失败，继续走原错误路径
+        }
+      }
+
       detail.value = null;
       detailState.value = 'error';
       error.value = toErrorShape(e);
       // B3：详情失败也落健康态（与 browse 一致），让源管理可见异常源
-      const code = error.value.code;
       if (
         code === 'E_PARSE' ||
         code === 'E_SOURCE_UNAVAILABLE' ||

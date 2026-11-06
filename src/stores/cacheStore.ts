@@ -20,9 +20,11 @@ import { ref } from 'vue';
 import { withTx } from '@/db/index';
 import { STORE_NAMES } from '@/db/schema';
 import { categoryRepo } from '@/db/repositories/categoryRepo';
+import { downloadRepo } from '@/db/repositories/downloadRepo';
 import { episodeRepo } from '@/db/repositories/episodeRepo';
+import { favoriteRepo } from '@/db/repositories/favoriteRepo';
+import { historyRepo } from '@/db/repositories/historyRepo';
 import { lineRepo } from '@/db/repositories/lineRepo';
-import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { toAppError, toErrorShape } from '@/shared/errors';
 import type { AppErrorShape } from '@/types';
 
@@ -35,6 +37,8 @@ export interface CacheClearResult {
   total: number;
   /** 清理前后 `navigator.storage.estimate()` 差值；不可度量时为 null */
   freedBytes: number | null;
+  /** 因被历史/收藏/下载引用而保留的 media 条数 */
+  retained: number;
 }
 
 export interface MediaCacheClearResult {
@@ -66,34 +70,94 @@ export const useCacheStore = defineStore('cache', () => {
   const clearing = ref(false);
   const error = ref<AppErrorShape | null>(null);
 
-  /** 清理元数据缓存（媒体/线路/剧集/分类），保留历史、收藏、下载与媒体文件 */
+  /**
+   * 清理元数据缓存（媒体/线路/剧集/分类），保留历史、收藏、下载与媒体文件。
+   *
+   * REV-24：被 history/favorites/downloads 引用的 media 行**不删除**，
+   * 否则清缓存后历史记录会全部变成 404（PlayerView 依赖 mediaRepo.get）。
+   * lines/episodes 只删「引用 media 之外的」，引用内的保留（下次详情刷新会覆盖）。
+   */
   async function clearMetadataCache(): Promise<CacheClearResult> {
     clearing.value = true;
     error.value = null;
     const before = await estimateUsage();
     try {
+      // 在事务外构建引用集合（各自开只读事务，避免嵌套事务）
+      const [historyRows, favorites, downloads] = await Promise.all([
+        historyRepo.listAllRaw(),
+        favoriteRepo.listAll(),
+        downloadRepo.listAll(),
+      ]);
+      const pinnedMediaIds = new Set<string>();
+      for (const r of historyRows) pinnedMediaIds.add(r.mediaId);
+      for (const f of favorites) pinnedMediaIds.add(f.mediaId);
+      for (const t of downloads) pinnedMediaIds.add(t.mediaId);
+
       const counts = await withTx(
         ['media', 'lines', 'episodes', 'categories'],
         'readwrite',
         async (tx) => {
-          const [media, lines, episodes, categories] = await Promise.all([
-            tx.objectStore(STORE_NAMES.media).count(),
-            tx.objectStore(STORE_NAMES.lines).count(),
-            tx.objectStore(STORE_NAMES.episodes).count(),
-            tx.objectStore(STORE_NAMES.categories).count(),
-          ]);
-          await mediaRepo.clear(tx);
-          await lineRepo.clear(tx);
-          await episodeRepo.clear(tx);
+          const categoryCount = await tx.objectStore(STORE_NAMES.categories).count();
           await categoryRepo.clear(tx);
-          return { media, lines, episodes, categories };
+
+          // media：游标遍历，只删未引用的
+          const mediaStore = tx.objectStore(STORE_NAMES.media);
+          const unpinnedMediaIds: string[] = [];
+          let mediaTotal = 0;
+          let mediaDeleted = 0;
+          let cursor = await mediaStore.openCursor();
+          while (cursor) {
+            mediaTotal += 1;
+            const id = cursor.key as string;
+            if (pinnedMediaIds.has(id)) {
+              cursor = await cursor.continue();
+              continue;
+            }
+            unpinnedMediaIds.push(id);
+            await cursor.delete();
+            mediaDeleted += 1;
+            cursor = await cursor.continue();
+          }
+
+          // lines/episodes：只删未引用 media 的；引用内的保留
+          const lineStore = tx.objectStore(STORE_NAMES.lines);
+          const episodeStore = tx.objectStore(STORE_NAMES.episodes);
+          let linesDeleted = 0;
+          let episodesDeleted = 0;
+
+          // 对未引用的 mediaId 批量删除其 lines/episodes
+          for (const mediaId of unpinnedMediaIds) {
+            const lineKeys = await lineStore.index('by-media').getAllKeys(IDBKeyRange.only(mediaId));
+            for (const k of lineKeys) {
+              await lineStore.delete(k);
+              linesDeleted += 1;
+            }
+            const epKeys = await episodeStore.index('by-media').getAllKeys(IDBKeyRange.only(mediaId));
+            for (const k of epKeys) {
+              await episodeStore.delete(k);
+              episodesDeleted += 1;
+            }
+          }
+
+          // 引用的 media 的 lines/episodes 保留
+          return {
+            media: mediaDeleted,
+            lines: linesDeleted,
+            episodes: episodesDeleted,
+            categories: categoryCount,
+            retained: mediaTotal - mediaDeleted,
+          };
         },
       );
       const freedBytes = freedBetween(before, await estimateUsage());
       return {
-        ...counts,
+        media: counts.media,
+        lines: counts.lines,
+        episodes: counts.episodes,
+        categories: counts.categories,
         total: counts.media + counts.lines + counts.episodes + counts.categories,
         freedBytes,
+        retained: counts.retained,
       };
     } catch (e) {
       error.value = toErrorShape(e, 'E_DB');
@@ -103,11 +167,20 @@ export const useCacheStore = defineStore('cache', () => {
     }
   }
 
-  /** 删除单个媒体的缓存条目（`media` 行 + 其全部 `lines`/`episodes`） */
+  /**
+   * 删除单个媒体的缓存条目（`media` 行 + 其全部 `lines`/`episodes`）。
+   *
+   * REV-24：若该媒体仍有下载任务（含进行中的），保留 media 行，只清 lines/episodes。
+   * 否则清缓存后下载页的已完成任务无法播放（resolvePlay 先要 mediaRepo.get）。
+   */
   async function removeMediaCache(mediaId: string): Promise<MediaCacheClearResult> {
     error.value = null;
     const before = await estimateUsage();
     try {
+      // 检查是否有下载任务引用该媒体
+      const downloads = await downloadRepo.listAll();
+      const hasDownloadRef = downloads.some((t) => t.mediaId === mediaId);
+
       const counts = await withTx(['media', 'lines', 'episodes'], 'readwrite', async (tx) => {
         const lineCount = await tx
           .objectStore(STORE_NAMES.lines)
@@ -120,8 +193,11 @@ export const useCacheStore = defineStore('cache', () => {
         const mediaCount = await tx.objectStore(STORE_NAMES.media).count(mediaId);
         await lineRepo.removeByMedia(mediaId, tx);
         await episodeRepo.removeByMedia(mediaId, tx);
-        if (mediaCount > 0) await tx.objectStore(STORE_NAMES.media).delete(mediaId);
-        return { media: mediaCount, lines: lineCount, episodes: episodeCount };
+        // 有下载引用时保留 media 行，否则删除
+        if (mediaCount > 0 && !hasDownloadRef) {
+          await tx.objectStore(STORE_NAMES.media).delete(mediaId);
+        }
+        return { media: hasDownloadRef ? 0 : mediaCount, lines: lineCount, episodes: episodeCount };
       });
       const freedBytes = freedBetween(before, await estimateUsage());
       return {

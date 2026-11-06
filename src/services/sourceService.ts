@@ -283,9 +283,10 @@ export const sourceService = {
 
     await sourceRepo.save(next);
     if (connectionChanged) {
-      // 地址变化 → 清空该源缓存，下次进入媒体库重新拉取（FR-02）
-      await withTx(['media', 'lines', 'episodes', 'categories'], 'readwrite', async (tx) => {
-        await mediaRepo.removeBySource(id, tx);
+      // REV-24：地址变化 → 只清 lines/episodes/categories，**保留 media**。
+      // 删 media 会让 history/favorites/downloads 全部断链（PlayerView 依赖 mediaRepo.get），
+      // 而 media 行本身很小（元数据），保留不影响空间；下次打开详情时 adapter 会用新 baseUrl 重新抓取并覆盖。
+      await withTx(['lines', 'episodes', 'categories'], 'readwrite', async (tx) => {
         await lineRepo.removeBySource(id, tx);
         await episodeRepo.removeBySource(id, tx);
         await categoryRepo.removeBySource(id, tx);

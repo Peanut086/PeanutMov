@@ -74,6 +74,7 @@ import { pipService } from '@/native/pipService';
 import { onAppStateChange } from '@/native/appLifecycle';
 import { libraryService } from '@/services/libraryService';
 import { sourceService } from '@/services/sourceService';
+import { downloadService } from '@/services/downloadService';
 import { pickPlayCandidates } from '@/sources/douban/playMatch';
 import { healthService } from '@/services/healthService';
 

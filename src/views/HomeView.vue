@@ -78,7 +78,8 @@ const sourceLooksBroken = computed(() => {
 async function load(): Promise<void> {
   localError.value = null;
   try {
-    await Promise.all([history.load(), downloads.load(), favorites.load()]);
+    // REV-24：sources 用于 continuePlay 判断源是否存在
+    await Promise.all([history.load(), downloads.load(), favorites.load(), sources.load()]);
     await library.loadHome();
   } catch (e) {
     localError.value = toErrorShape(e).message;
@@ -94,7 +95,17 @@ function openDetail(item: MediaItem): void {
   void router.push({ name: 'detail', params: { mediaId: item.id }, query: { sourceId: item.sourceId } });
 }
 
+/** REV-24：判断该历史记录的源是否已被移除 */
+function isSourceRemoved(rec: HistoryRecord): boolean {
+  return !sources.sources.some((s) => s.id === rec.sourceId);
+}
+
 function continuePlay(rec: HistoryRecord): void {
+  // REV-24：源已移除时拦截，避免跳到播放页才发现 404
+  if (isSourceRemoved(rec)) {
+    toast.error('无法播放，源已移除');
+    return;
+  }
   const query: Record<string, string> = {};
   if (rec.episodeId) query.episodeId = rec.episodeId;
   void router.push({ name: 'player', params: { mediaId: rec.mediaId, episodeId: rec.episodeId ?? undefined }, query });

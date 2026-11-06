@@ -186,6 +186,17 @@ async function requeuePending(): Promise<void> {
   const resumableStatuses: DownloadStatus[] = ['queued'];
   if (settings.download.autoResume) resumableStatuses.push('paused');
 
+  // REV-24：僵尸任务检测——app 重启后 "downloading" 状态的任务必然是僵尸（进程已死），
+  // 标记为 failed 让用户可以重试，避免永远卡在 downloading 状态
+  const downloadingTasks = await downloadRepo.listByStatus(['downloading']);
+  for (const task of downloadingTasks) {
+    const next = transition(task, 'fail');
+    next.errorMessage = '应用重启，下载中断';
+    await persist(next);
+    emitDownload({ type: 'status', task: next, previous: 'downloading' });
+    logger.info(`僵尸任务已标记失败: ${task.id}`);
+  }
+
   const tasks = await downloadRepo.listByStatus(resumableStatuses);
   for (const task of tasks) {
     if (task.status === 'paused') {

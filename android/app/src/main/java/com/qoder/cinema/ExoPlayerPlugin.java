@@ -140,7 +140,28 @@ public class ExoPlayerPlugin extends Plugin {
             call.reject("url is required");
             return;
         }
+        // REV-24 P2：安全模式下拒绝 ExoPlayer 初始化（高频崩溃路径）
+        if (MainApplication.isSafeMode(getContext())) {
+            call.reject("safe mode active: native player disabled");
+            return;
+        }
         getBridge().executeOnMainThread(() -> {
+            // REV-24：哨兵包裹 ExoPlayer 初始化——native crash 时下次启动可检测到
+            String sourceId = call.getString("sourceId", "");
+            String host = "";
+            try {
+                java.net.URI uri = new java.net.URI(url);
+                host = uri.getHost() != null ? uri.getHost() : "";
+            } catch (Exception ignored) {}
+            try {
+                org.json.JSONObject sentinelDetails = new org.json.JSONObject();
+                sentinelDetails.put("sourceId", sourceId);
+                sentinelDetails.put("host", host);
+                sentinelDetails.put("url", url);
+                CrashSentinel.begin("exoplayer", sentinelDetails);
+            } catch (Exception e) {
+                Log.w("ExoPlayerPlugin", "failed to write exoplayer sentinel", e);
+            }
             try {
                 ensureOverlay();
                 // v1.8/CHG-25：切集会再次 prepare——先释放旧实例，避免播放器泄漏
@@ -323,8 +344,10 @@ public class ExoPlayerPlugin extends Plugin {
                 startWatchdog();
                 // v1.8 修复：WebView 背景透明，让下层 surface 透出
                 getBridge().getWebView().setBackgroundColor(Color.TRANSPARENT);
+                CrashSentinel.end();
                 call.resolve();
             } catch (Exception e) {
+                CrashSentinel.end();
                 call.reject("prepare failed: " + e.getMessage());
             }
         });

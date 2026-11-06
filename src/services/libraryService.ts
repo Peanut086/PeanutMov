@@ -10,6 +10,7 @@
  */
 import { categoryRepo } from '@/db/repositories/categoryRepo';
 import { episodeRepo } from '@/db/repositories/episodeRepo';
+import { historyRepo } from '@/db/repositories/historyRepo';
 import { lineRepo } from '@/db/repositories/lineRepo';
 import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
@@ -26,6 +27,7 @@ import {
 } from '@/shared/constants';
 import { AppError, isCanceled, toAppError, toErrorShape } from '@/shared/errors';
 import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
+import { mediaIdOf } from '@/shared/id';
 import { resolveSearchTimeoutMs } from '@/shared/searchBudget';
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { sanitizeSourceMessage } from '@/shared/sourceFailure';
@@ -93,6 +95,8 @@ export interface LibraryService {
    */
   getDetail(mediaId: string, opts?: { refresh?: boolean; item?: MediaItem }): Promise<MediaDetail>;
   getItem(mediaId: string): Promise<MediaItem | null>;
+  /** REV-24：媒体缓存缺失时尝试自愈（从历史快照重建或按标题搜索） */
+  recoverItem(mediaId: string): Promise<MediaItem | null>;
   listCached(sourceId?: string | null, limit?: number): Promise<MediaItem[]>;
   listRecent(limit?: number): Promise<MediaItem[]>;
   /** 该源缓存中出现过的地区（筛选面板地区选项推导用） */
@@ -677,6 +681,92 @@ export const libraryService: LibraryService = {
     return mediaRepo.get(mediaId);
   },
 
+  /**
+   * REV-24：媒体缓存缺失时尝试自愈。
+   *
+   * 优先级：
+   * 1. mediaRepo.get 命中 → 直接返回；
+   * 2. 历史记录有快照 + 源存在 → 用快照重建临时 MediaItem，调用 getDetail 回源刷新；
+   * 3. 无快照 → 在该源内按 title 搜索，取标题完全相等或年份匹配的条目；
+   * 4. 源不存在 → 抛 E_SOURCE_UNAVAILABLE；
+   * 5. 都失败 → 抛带上下文的 E_NOT_FOUND。
+   */
+  async recoverItem(mediaId: string): Promise<MediaItem | null> {
+    // 1. 缓存命中
+    const cached = await mediaRepo.get(mediaId);
+    if (cached) return cached;
+
+    // 2. 从历史记录查找
+    const allHistory = await historyRepo.listAllRaw();
+    const record = allHistory.find((r) => r.mediaId === mediaId);
+    if (!record) return null;
+
+    // 3. 检查源是否存在
+    const source = await sourceRepo.get(record.sourceId);
+    if (!source) {
+      throw new AppError('E_SOURCE_UNAVAILABLE', '该源已被移除');
+    }
+
+    // 4. 有快照 → 重建临时 MediaItem
+    if (record.mediaSnapshot?.sourceItemId) {
+      const tempItem: MediaItem = {
+        id: mediaId,
+        sourceId: record.sourceId,
+        sourceItemId: record.mediaSnapshot.sourceItemId,
+        title: record.title,
+        originalTitle: record.mediaSnapshot.originalTitle,
+        type: record.mediaSnapshot.type,
+        year: record.mediaSnapshot.year,
+        area: null,
+        genres: [],
+        tags: [],
+        rating: null,
+        posterUrl: record.posterUrl,
+        backdropUrl: null,
+        description: null,
+        durationSec: null,
+        episodeCount: record.mediaSnapshot.episodeCount,
+        titleLower: record.title.toLowerCase(),
+        isDemo: false,
+        cachedAt: 0,
+        updatedAt: 0,
+      };
+      // 调用 getDetail 让 adapter 回源刷新并落库
+      try {
+        const detail = await this.getDetail(mediaId, { item: tempItem });
+        return detail.item;
+      } catch {
+        // 回源失败，继续尝试标题搜索
+      }
+    }
+
+    // 5. 无快照或回源失败 → 按标题搜索
+    try {
+      const adapter = await adapterFor(source);
+      const results = await adapter.search({ source, keyword: record.title, page: 1, pageSize: 20 });
+      // 取标题完全相等或年份匹配的条目
+      const match =
+        results.find((r) => r.title === record.title && r.year === record.mediaSnapshot?.year) ??
+        results.find((r) => r.title === record.title) ??
+        results[0];
+      if (match) {
+        // 重建 MediaItem 并落库
+        const newItem: MediaItem = {
+          ...match,
+          id: mediaIdOf(source.id, match.sourceItemId),
+          cachedAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        await mediaRepo.save(newItem);
+        return newItem;
+      }
+    } catch {
+      // 搜索失败
+    }
+
+    return null;
+  },
+
   async listCached(sourceId, limit = SEARCH_LOCAL_LIMIT): Promise<MediaItem[]> {
     const hideDemo = await hideDemoEnabled();
     const rows = sourceId
@@ -701,12 +791,12 @@ export const libraryService: LibraryService = {
   },
 
   async resolvePlay(params): Promise<PlaybackSource> {
-    const item = await mediaRepo.get(params.mediaId);
-    if (!item) throw new AppError('E_NOT_FOUND');
-
-    // 优先本地已下载（FR-34 / AC-77）
+    // REV-24：本地优先，避免清缓存后已下载内容无法播放
     const local = await downloadService.findLocalPlay(params.mediaId, params.episodeId);
     if (local) return local;
+
+    const item = await mediaRepo.get(params.mediaId);
+    if (!item) throw new AppError('E_NOT_FOUND');
 
     // 任务已完成但本地文件/Blob 丢失 → 回退网络源时**明确告知**（AC-78 / REV-23）。
     // `PlaybackSource` 无"本地不可用"字段且类型冻结，故用事件把 taskId 透出：

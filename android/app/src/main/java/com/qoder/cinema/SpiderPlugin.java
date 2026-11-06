@@ -38,6 +38,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import com.google.gson.Gson;
+import org.json.JSONObject;
 
 /**
  * Spider —— TVBox jar 爬虫运行时
@@ -245,11 +246,13 @@ public class SpiderPlugin extends Plugin {
         final Spider spider;
         final String api;
         final File dexDir;
+        final String jarMd5;
 
-        LoadedSpider(Spider spider, String api, File dexDir) {
+        LoadedSpider(Spider spider, String api, File dexDir, String jarMd5) {
             this.spider = spider;
             this.api = api;
             this.dexDir = dexDir;
+            this.jarMd5 = jarMd5;
         }
     }
 
@@ -594,11 +597,27 @@ public class SpiderPlugin extends Plugin {
         // 参数转换较轻量，先在桥接线程做完，重活（爬虫执行）进线程池
         Object[] javaArgs = toJavaArgs(args, arrayArgs);
         runSpider(call, "调用", INVOKE_TIMEOUT_MS, () -> {
-            String json = invokeSpider(target, method, javaArgs);
-            JSObject ret = new JSObject();
-            ret.put("json", json);
-            ret.put("logs", new JSArray(Arrays.asList(targetLogs())));
-            call.resolve(ret);
+            // REV-24：哨兵包裹爬虫调用——native crash 时下次启动可检测到
+            try {
+                JSONObject sentinelDetails = new JSONObject();
+                sentinelDetails.put("jarMd5", target.jarMd5 != null ? target.jarMd5 : "");
+                sentinelDetails.put("api", target.api);
+                sentinelDetails.put("method", method);
+                CrashSentinel.begin("spider.invoke", sentinelDetails);
+            } catch (Exception e) {
+                Log.w(TAG, "failed to write invoke sentinel", e);
+            }
+            try {
+                String json = invokeSpider(target, method, javaArgs);
+                CrashSentinel.end();
+                JSObject ret = new JSObject();
+                ret.put("json", json);
+                ret.put("logs", new JSArray(Arrays.asList(targetLogs())));
+                call.resolve(ret);
+            } catch (Exception e) {
+                CrashSentinel.end();
+                throw e;
+            }
         });
     }
 
@@ -642,6 +661,51 @@ public class SpiderPlugin extends Plugin {
         }
         JSObject ret = new JSObject();
         ret.put("released", target != null);
+        call.resolve(ret);
+    }
+
+    /** REV-24：查询当前隔离名单（供前端健康管理页展示） */
+    @PluginMethod
+    public void getQuarantined(PluginCall call) {
+        List<String> list = CrashSentinel.getQuarantined(getContext());
+        JSObject ret = new JSObject();
+        JSArray arr = new JSArray();
+        for (String sig : list) {
+            arr.put(sig);
+        }
+        ret.put("items", arr);
+        call.resolve(ret);
+    }
+
+    /** REV-24：手动解除某个签名的隔离（供前端健康管理页操作） */
+    @PluginMethod
+    public void unquarantine(PluginCall call) {
+        String signature = call.getString("signature");
+        if (signature == null || signature.isEmpty()) {
+            call.reject("signature is required");
+            return;
+        }
+        CrashSentinel.unquarantine(getContext(), signature);
+        JSObject ret = new JSObject();
+        ret.put("ok", true);
+        call.resolve(ret);
+    }
+
+    /** REV-24 P2：查询安全模式状态 */
+    @PluginMethod
+    public void getSafeMode(PluginCall call) {
+        boolean active = MainApplication.isSafeMode(getContext());
+        JSObject ret = new JSObject();
+        ret.put("active", active);
+        call.resolve(ret);
+    }
+
+    /** REV-24 P2：手动退出安全模式 */
+    @PluginMethod
+    public void exitSafeMode(PluginCall call) {
+        MainApplication.exitSafeMode(getContext());
+        JSObject ret = new JSObject();
+        ret.put("ok", true);
         call.resolve(ret);
     }
 
@@ -881,6 +945,10 @@ public class SpiderPlugin extends Plugin {
      */
     private LoadedSpider loadSpider(
             Context context, String jarUrl, String api, String initExt, String userAgent) throws Exception {
+        // REV-24 P2：安全模式下拒绝加载 jar（高频崩溃源）
+        if (MainApplication.isSafeMode(context)) {
+            throw new IllegalStateException("safe mode active: spider loading disabled");
+        }
         String cleanUrl = jarUrl;
         String expectedMd5 = null;
         int sep = jarUrl.indexOf(";md5;");
@@ -895,6 +963,15 @@ public class SpiderPlugin extends Plugin {
             jarFile = ensureJarFile(context, cleanUrl, expectedMd5);
             jarCache.put(cleanUrl, jarFile);
         }
+
+        // REV-24：计算 jar MD5 用于哨兵隔离签名
+        String jarMd5 = "";
+        try {
+            jarMd5 = md5OfFile(jarFile);
+        } catch (Exception e) {
+            Log.w(TAG, "failed to compute jar md5", e);
+        }
+
         File dexDir = dexCache.get(jarFile.getName());
         if (dexDir == null) {
             dexDir = new File(context.getFilesDir(), "spider-dex/" + jarFile.getName());
@@ -902,6 +979,23 @@ public class SpiderPlugin extends Plugin {
                 throw new IllegalStateException("cannot create dex dir");
             }
             dexCache.put(jarFile.getName(), dexDir);
+        }
+
+        // REV-24：隔离检查——同 jar+api 签名若已崩溃 2 次被隔离，直接拒绝加载
+        String quarantineSig = "spider:" + jarMd5 + ":" + api;
+        if (CrashSentinel.isQuarantined(context, quarantineSig)) {
+            throw new IllegalStateException("spider quarantined (crash x2): " + quarantineSig);
+        }
+
+        // REV-24：写哨兵——若后续 DexClassLoader/init 触发 native crash，下次启动可检测到
+        try {
+            JSONObject sentinelDetails = new JSONObject();
+            sentinelDetails.put("jarMd5", jarMd5);
+            sentinelDetails.put("api", api);
+            sentinelDetails.put("jarUrl", cleanUrl);
+            CrashSentinel.begin("spider.load", sentinelDetails);
+        } catch (Exception e) {
+            Log.w(TAG, "failed to write sentinel", e);
         }
 
         // 加载前做 ABI 预检：带 native 库的 jar（ftyguard 系列）如果只有 ARM 版本，
@@ -960,7 +1054,8 @@ public class SpiderPlugin extends Plugin {
             applyUserAgent(spider, userAgent);
         }
         Log.i(TAG, "loaded spider: " + api + (loaderReused ? " (reused loader)" : ""));
-        return new LoadedSpider(spider, api, dexDir);
+        CrashSentinel.end();
+        return new LoadedSpider(spider, api, dexDir, jarMd5);
     }
 
     /**

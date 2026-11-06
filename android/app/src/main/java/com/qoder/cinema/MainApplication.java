@@ -1,9 +1,16 @@
 package com.qoder.cinema;
 
 import android.app.Application;
+import android.app.ApplicationExitInfo;
+import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
+
+import org.json.JSONObject;
+
+import java.util.List;
 
 /**
  * 全局 startActivity 守卫：吞掉 `android.settings.*` 系统设置页跳转。
@@ -29,6 +36,161 @@ public class MainApplication extends Application {
         SpiderLogStore.init(this);
         // P3：安装全局崩溃处理器，写 FATAL 日志后交还默认处理
         installCrashHandler();
+        // REV-24：初始化崩溃哨兵并检查上次异常退出
+        CrashSentinel.init(this);
+        checkLastExit();
+    }
+
+    /**
+     * REV-24：检查上次退出原因，若发现未清除的哨兵则记录并隔离
+     */
+    private void checkLastExit() {
+        // 1. 检查未清除的哨兵
+        JSONObject sentinel = CrashSentinel.readUncleared();
+        if (sentinel != null) {
+            Log.w(TAG, "found uncleared sentinel: " + sentinel.toString());
+            CrashSentinel.recordCrash(this, sentinel);
+
+            // 根据哨兵内容生成隔离签名
+            String signature = buildQuarantineSignature(sentinel);
+            if (signature != null) {
+                // 检查是否已经在 24 小时内崩溃过 2 次
+                if (shouldQuarantine(signature)) {
+                    CrashSentinel.quarantine(this, signature);
+                    Log.w(TAG, "quarantined: " + signature);
+                }
+            }
+            // 清除哨兵（已记录）
+            CrashSentinel.end();
+            // P2：检查是否应进入安全模式
+            checkSafeMode();
+        }
+
+        // 2. 读取 ApplicationExitInfo（API 30+）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                List<ApplicationExitInfo> exitInfos = getApplicationContext()
+                        .getSystemService(android.app.ActivityManager.class)
+                        .getHistoricalProcessExitReasons(null, 0, 5);
+                for (ApplicationExitInfo info : exitInfos) {
+                    if (info.getReason() == ApplicationExitInfo.REASON_SIGNALED
+                            || info.getReason() == ApplicationExitInfo.REASON_CRASH
+                            || info.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE) {
+                        Log.w(TAG, "last exit: reason=" + info.getReason()
+                                + " status=" + info.getStatus()
+                                + " description=" + info.getDescription());
+                    }
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "failed to read ApplicationExitInfo", e);
+            }
+        }
+    }
+
+    /**
+     * 根据哨兵内容构建隔离签名
+     */
+    private String buildQuarantineSignature(JSONObject sentinel) {
+        try {
+            String action = sentinel.optString("action", "");
+            if (action.startsWith("spider.")) {
+                String jarMd5 = sentinel.optString("jarMd5", "");
+                String api = sentinel.optString("api", "");
+                if (!jarMd5.isEmpty() && !api.isEmpty()) {
+                    return "spider:" + jarMd5 + ":" + api;
+                }
+            } else if (action.equals("exoplayer")) {
+                String sourceId = sentinel.optString("sourceId", "");
+                String host = sentinel.optString("host", "");
+                if (!sourceId.isEmpty() && !host.isEmpty()) {
+                    return "exoplayer:" + sourceId + ":" + host;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "failed to build quarantine signature", e);
+        }
+        return null;
+    }
+
+    /**
+     * 判断是否应该隔离（24 小时内同签名崩溃 2 次）
+     */
+    private boolean shouldQuarantine(String signature) {
+        org.json.JSONArray history = CrashSentinel.getCrashHistory(this);
+        long now = System.currentTimeMillis();
+        long windowMs = 24 * 60 * 60 * 1000L;
+        int count = 0;
+        try {
+            for (int i = 0; i < history.length(); i++) {
+                JSONObject entry = history.getJSONObject(i);
+                long recordedAt = entry.getLong("recordedAt");
+                if (now - recordedAt > windowMs) continue;
+                JSONObject s = entry.getJSONObject("sentinel");
+                String sig = buildQuarantineSignature(s);
+                if (signature.equals(sig)) {
+                    count++;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "failed to check quarantine threshold", e);
+        }
+        return count >= 2;
+    }
+
+    // ========== REV-24 P2：安全模式 ==========
+
+    private static final String KEY_SAFE_MODE = "safe_mode";
+    private static final long SAFE_MODE_WINDOW_MS = 60 * 1000L; // 60 秒
+    private static final int SAFE_MODE_THRESHOLD = 2; // 60 秒内 2 次崩溃进入安全模式
+
+    /**
+     * 检查是否应进入安全模式（60 秒内崩溃 2 次）
+     */
+    private void checkSafeMode() {
+        org.json.JSONArray history = CrashSentinel.getCrashHistory(this);
+        long now = System.currentTimeMillis();
+        int recentCrashes = 0;
+        try {
+            for (int i = history.length() - 1; i >= 0; i--) {
+                JSONObject entry = history.getJSONObject(i);
+                long recordedAt = entry.getLong("recordedAt");
+                if (now - recordedAt > SAFE_MODE_WINDOW_MS) break;
+                recentCrashes++;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "failed to check safe mode", e);
+        }
+        if (recentCrashes >= SAFE_MODE_THRESHOLD) {
+            Log.w(TAG, "entering safe mode: " + recentCrashes + " crashes in 60s");
+            android.content.SharedPreferences prefs = getSharedPreferences("crash-sentinel-prefs", MODE_PRIVATE);
+            prefs.edit().putBoolean(KEY_SAFE_MODE, true).apply();
+        }
+    }
+
+    /**
+     * 查询当前是否处于安全模式（供 SpiderPlugin / ExoPlayerPlugin 调用）
+     */
+    public static boolean isSafeMode(Context context) {
+        try {
+            android.content.SharedPreferences prefs = context.getSharedPreferences("crash-sentinel-prefs", MODE_PRIVATE);
+            return prefs.getBoolean(KEY_SAFE_MODE, false);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 手动退出安全模式（供前端设置页调用）
+     */
+    public static void exitSafeMode(Context context) {
+        try {
+            android.content.SharedPreferences prefs = context.getSharedPreferences("crash-sentinel-prefs", MODE_PRIVATE);
+            prefs.edit().putBoolean(KEY_SAFE_MODE, false).apply();
+            CrashSentinel.clearCrashHistory(context);
+            Log.i(TAG, "safe mode exited");
+        } catch (Exception e) {
+            Log.w(TAG, "failed to exit safe mode", e);
+        }
     }
 
     private void installCrashHandler() {
