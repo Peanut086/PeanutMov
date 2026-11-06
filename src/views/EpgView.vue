@@ -1,32 +1,64 @@
 <script setup lang="ts">
 /**
- * EPG 节目单页（功能扩展-5）
+ * EPG 节目单页（功能扩展-5 / EXT-06）
  *
- * 展示某频道当日完整节目时间表。
+ * 展示某频道当日节目时间表（多 EPG 源合并，`epgService.programmesFor`）。
  * - 日期切换：昨天 / 今天 / 明天
  * - 时间轴：按时间顺序列出所有节目，当前正在播的高亮并自动滚动到视口
- * - 数据来源：epgService（diyp / XMLTV，24h 缓存）
+ * - EXT-06/FR-66：右上角「EPG 源管理」→ `EpgSourceSheet`
+ * - EXT-06/FR-71：未开播节目可「设置提醒」→ `ReminderSheet`
+ * - 数据来源：epgService（多源合并，24h 缓存；源失败静默降级）
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type { EpgProgramme } from '@/services/epgService';
+import type { ChannelEpgResult, EpgChannelRef, Reminder } from '@/types';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import SafeArea from '@/components/layout/SafeArea.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import EpgSourceSheet from '@/components/live/EpgSourceSheet.vue';
+import ReminderSheet from '@/components/live/ReminderSheet.vue';
 import { epgService } from '@/services/epgService';
+import { epgSourceService } from '@/services/epgSourceService';
+import { liveService } from '@/services/liveService';
+import { reminderService } from '@/services/reminderService';
+import { channelKeyOf } from '@/shared/channelKey';
 import { toErrorShape } from '@/shared/errors';
+import { useToast } from '@/composables/useToast';
 
 defineOptions({ name: 'EpgView' });
 
 const route = useRoute();
 const router = useRouter();
+const toast = useToast();
 
 const channelName = computed(() => String(route.query.ch ?? ''));
+const tvgId = computed(() => {
+  const raw = route.query.tvgId;
+  return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null;
+});
+/** 提醒 / 分组的频道身份键（与直播页同口径） */
+const channelKey = computed(() => channelKeyOf({ name: channelName.value, tvgId: tvgId.value }));
+const channelRef = computed<EpgChannelRef>(() => ({
+  name: channelName.value,
+  tvgId: tvgId.value,
+  tvgName: null,
+}));
+
+/** 归属直播源：查询参数优先，其次从直播频道缓存反查（只读内存，不发请求） */
+const liveSourceId = computed<string | null>(() => {
+  const raw = route.query.source;
+  if (typeof raw === 'string' && raw.length > 0) return raw;
+  return liveService.findSourceIdByChannelName(channelName.value);
+});
+
 const loading = ref(true);
 const errorMessage = ref<string | null>(null);
-const programmes = ref<EpgProgramme[]>([]);
+const result = ref<ChannelEpgResult | null>(null);
+const programmes = computed<EpgProgramme[]>(() => result.value?.programmes ?? []);
+const enabledSourceCount = ref(0);
 const currentDate = ref(new Date());
 
 /** 日期偏移：-1 昨天 / 0 今天 / +1 明天 */
@@ -36,7 +68,7 @@ const isToday = computed(() => dateOffset.value === 0);
 
 const dateLabel = computed(() => {
   const d = currentDate.value;
-  const weekdays = ['周日', '周一一', '周二', '周三', '周四', '周五五', '周六'];
+  const weekdays = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const month = d.getMonth() + 1;
   const day = d.getDate();
   const weekday = weekdays[d.getDay()];
@@ -46,12 +78,163 @@ const dateLabel = computed(() => {
   return `${prefix}${month}月${day}日 ${weekday}`;
 });
 
+/* ---------- 时钟（每 30s 刷新，驱动「正在播 / 已过期 / 可提醒」判定） ---------- */
+
+const nowTick = ref(Date.now());
+let clockTimer: ReturnType<typeof setInterval> | null = null;
+
+const nowSecOfDay = computed(() => {
+  const d = new Date(nowTick.value);
+  return d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
+});
+
 const nowPlayingIndex = computed(() => {
   if (!isToday.value) return -1;
-  const now = epgService.nowPlaying(programmes.value);
+  const now = epgService.nowPlaying(programmes.value, new Date(nowTick.value));
   if (!now) return -1;
   return programmes.value.findIndex((p) => p.startSec === now.startSec && p.title === now.title);
 });
+
+const dayStartMs = computed(() => {
+  const d = currentDate.value;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+});
+
+/** 节目绝对开始时刻：多源结果带 `startAt`；缺省按当天 0 点 + 秒偏移回推 */
+function startAtOf(prog: EpgProgramme): number {
+  if (typeof prog.startAt === 'number' && prog.startAt > 0) return prog.startAt;
+  return dayStartMs.value + prog.startSec * 1000;
+}
+
+function endAtOf(prog: EpgProgramme): number {
+  if (typeof prog.endAt === 'number' && prog.endAt > 0) return prog.endAt;
+  const startAt = startAtOf(prog);
+  return startAt + Math.max(60, prog.endSec - prog.startSec) * 1000;
+}
+
+/** 未开播才允许设置提醒 */
+function canRemind(prog: EpgProgramme): boolean {
+  return startAtOf(prog) > nowTick.value;
+}
+
+/* ---------- 提醒（FR-71） ---------- */
+
+const reminderMap = ref<Map<string, Reminder>>(new Map());
+const reminderOpen = ref(false);
+const reminderSaving = ref(false);
+const reminderNotice = ref<string | null>(null);
+const reminderTarget = ref<{ title: string; startAt: number; endAt: number; key: string } | null>(null);
+
+const reminderStartAt = computed(() => reminderTarget.value?.startAt ?? 0);
+const activeReminder = computed<Reminder | null>(() => {
+  const target = reminderTarget.value;
+  if (!target) return null;
+  return reminderMap.value.get(String(target.startAt)) ?? null;
+});
+
+async function loadReminders(): Promise<void> {
+  if (!channelKey.value) return;
+  try {
+    const { reminders } = await reminderService.list({ state: 'scheduled' });
+    const next = new Map<string, Reminder>();
+    for (const item of reminders) {
+      if (item.channelKey !== channelKey.value) continue;
+      next.set(String(item.startAt), item);
+    }
+    reminderMap.value = next;
+  } catch {
+    // 提醒读取失败不影响节目单展示
+    reminderMap.value = new Map();
+  }
+}
+
+function reminderOf(prog: EpgProgramme): Reminder | null {
+  return reminderMap.value.get(String(startAtOf(prog))) ?? null;
+}
+
+function openReminder(prog: EpgProgramme): void {
+  if (!canRemind(prog)) return;
+  reminderNotice.value = null;
+  reminderTarget.value = {
+    title: prog.title,
+    startAt: startAtOf(prog),
+    endAt: endAtOf(prog),
+    key: prog.key ?? `${startAtOf(prog)}:${prog.title}`,
+  };
+  reminderOpen.value = true;
+}
+
+async function confirmReminder(leadMinutes: 5 | 10 | 15 | 30): Promise<void> {
+  const target = reminderTarget.value;
+  if (!target || reminderSaving.value) return;
+  const source = liveSourceId.value;
+  if (!source) {
+    reminderNotice.value = '未能定位该频道所属直播源，请从直播页进入节目单后再设置提醒';
+    return;
+  }
+  reminderSaving.value = true;
+  try {
+    const saved = await reminderService.upsert({
+      liveSourceId: source,
+      epgSourceId: result.value?.matchedSource?.id ?? null,
+      channelKey: channelKey.value,
+      channelName: channelName.value,
+      programmeKey: target.key,
+      programmeTitle: target.title,
+      startAt: target.startAt,
+      endAt: target.endAt,
+      leadMinutes,
+    });
+    await loadReminders();
+    if (saved.native.permission === 'granted' && saved.native.scheduled) {
+      reminderOpen.value = false;
+      toast.success(`已设置提醒：开播前 ${leadMinutes} 分钟通知你`);
+    } else {
+      // AC-168 降级：无通知权限 / 排期失败时明确告知「仅 App 内提醒」
+      reminderNotice.value = saved.lastError ?? '通知权限未授予，将只在 App 内提醒';
+    }
+  } catch (e) {
+    reminderNotice.value = toErrorShape(e).message;
+  } finally {
+    reminderSaving.value = false;
+  }
+}
+
+async function cancelReminder(): Promise<void> {
+  const current = activeReminder.value;
+  if (!current || reminderSaving.value) return;
+  reminderSaving.value = true;
+  try {
+    await reminderService.cancel(current.id);
+    await loadReminders();
+    reminderOpen.value = false;
+    toast.info('已取消提醒');
+  } catch (e) {
+    reminderNotice.value = toErrorShape(e).message;
+  } finally {
+    reminderSaving.value = false;
+  }
+}
+
+/* ---------- EPG 源管理（FR-66） ---------- */
+
+const sourceOpen = ref(false);
+
+async function onSourcesChanged(): Promise<void> {
+  await loadEnabledCount();
+  await loadProgrammes();
+}
+
+async function loadEnabledCount(): Promise<void> {
+  try {
+    const sources = await epgSourceService.list();
+    enabledSourceCount.value = sources.filter((source) => source.enabled).length;
+  } catch {
+    enabledSourceCount.value = 0;
+  }
+}
+
+/* ---------- 数据加载 ---------- */
 
 function shiftDate(delta: number): void {
   const next = dateOffset.value + delta;
@@ -71,9 +254,10 @@ async function loadProgrammes(): Promise<void> {
   loading.value = true;
   errorMessage.value = null;
   try {
-    programmes.value = await epgService.programmes(channelName.value, currentDate.value);
+    result.value = await epgService.programmesFor(channelRef.value, currentDate.value);
   } catch (e) {
     errorMessage.value = toErrorShape(e).message;
+    result.value = null;
   } finally {
     loading.value = false;
   }
@@ -89,16 +273,26 @@ async function scrollToNow(): Promise<void> {
   }
 }
 
-watch([channelName, () => currentDate.value], () => {
+watch([channelKey, () => currentDate.value], () => {
   void loadProgrammes().then(() => {
     if (isToday.value) void scrollToNow();
   });
+  void loadReminders();
 });
 
-onMounted(() => {
-  void loadProgrammes().then(() => {
-    if (isToday.value) void scrollToNow();
-  });
+onMounted(async () => {
+  clockTimer = setInterval(() => {
+    nowTick.value = Date.now();
+  }, 30_000);
+  await Promise.all([loadEnabledCount(), loadProgrammes(), loadReminders()]);
+  if (isToday.value) void scrollToNow();
+});
+
+onBeforeUnmount(() => {
+  if (clockTimer !== null) {
+    clearInterval(clockTimer);
+    clockTimer = null;
+  }
 });
 
 function goBack(): void {
@@ -121,7 +315,11 @@ function formatDuration(startSec: number, endSec: number): string {
 
 <template>
   <SafeArea data-route="epg">
-    <AppHeader :title="channelName || '节目单'" :back="true" @back="goBack" />
+    <AppHeader :title="channelName || '节目单'" :back="true" @back="goBack">
+      <template #actions>
+        <button class="epg-source-btn" type="button" @click="sourceOpen = true">EPG 源管理</button>
+      </template>
+    </AppHeader>
 
     <div class="epg-body">
       <!-- 日期选择 -->
@@ -164,38 +362,90 @@ function formatDuration(startSec: number, endSec: number): string {
       <!-- 空态 -->
       <div v-else-if="programmes.length === 0" class="epg-empty">
         <p>暂无节目单数据</p>
-        <p class="epg-empty__hint">该频道可能不支持 EPG，或当前日期无节目安排</p>
+        <p v-if="enabledSourceCount === 0" class="epg-empty__hint">
+          尚未启用任何 EPG 源，可在右上角「EPG 源管理」中添加
+        </p>
+        <p v-else class="epg-empty__hint">该频道可能不支持 EPG，或当前日期无节目安排</p>
+        <button class="btn btn--secondary btn--sm" type="button" @click="sourceOpen = true">
+          EPG 源管理
+        </button>
       </div>
 
       <!-- 节目列表 -->
-      <ul v-else class="epg-list">
-        <li
-          v-for="(prog, idx) in programmes"
-          :id="`epg-item-${idx}`"
-          :key="`${prog.start}-${prog.title}`"
-          class="epg-item"
-          :class="{
-            'epg-item--now': idx === nowPlayingIndex,
-            'epg-item--past': isToday && prog.endSec <= (new Date().getHours() * 3600 + new Date().getMinutes() * 60),
-          }"
-        >
-          <span class="epg-item__time">
-            <span class="epg-item__start">{{ prog.start }}</span>
-            <span v-if="prog.end" class="epg-item__end">– {{ prog.end }}</span>
+      <template v-else>
+        <!-- 命中来源 / 缓存降级提示 -->
+        <p class="epg-source-line">
+          <span v-if="result?.matchedSource" class="epg-source-line__name">
+            来源：{{ result.matchedSource.name }}
           </span>
-          <span class="epg-item__body">
-            <span class="epg-item__title">{{ prog.title }}</span>
-            <span v-if="prog.desc" class="epg-item__desc">{{ prog.desc }}</span>
-            <span class="epg-item__duration">{{ formatDuration(prog.startSec, prog.endSec) }}</span>
+          <span v-if="result?.stale" class="epg-source-line__stale">缓存数据</span>
+          <span v-if="result && result.errors.length > 0" class="epg-source-line__failed">
+            {{ result.errors.length }} 个源拉取失败
           </span>
-          <span v-if="idx === nowPlayingIndex" class="epg-item__badge">正在播</span>
-        </li>
-      </ul>
+        </p>
+
+        <ul class="epg-list">
+          <li
+            v-for="(prog, idx) in programmes"
+            :id="`epg-item-${idx}`"
+            :key="prog.key ?? `${prog.start}-${prog.title}`"
+            class="epg-item"
+            :class="{
+              'epg-item--now': idx === nowPlayingIndex,
+              'epg-item--past': isToday && prog.endSec <= nowSecOfDay,
+            }"
+          >
+            <span class="epg-item__time">
+              <span class="epg-item__start">{{ prog.start }}</span>
+              <span v-if="prog.end" class="epg-item__end">– {{ prog.end }}</span>
+            </span>
+            <span class="epg-item__body">
+              <span class="epg-item__title">{{ prog.title }}</span>
+              <span v-if="prog.desc" class="epg-item__desc">{{ prog.desc }}</span>
+              <span class="epg-item__duration">{{ formatDuration(prog.startSec, prog.endSec) }}</span>
+            </span>
+            <span v-if="idx === nowPlayingIndex" class="epg-item__badge">正在播</span>
+            <button
+              v-if="canRemind(prog)"
+              class="epg-item__remind"
+              :class="{ 'epg-item__remind--on': reminderOf(prog) !== null }"
+              type="button"
+              :aria-label="
+                reminderOf(prog) !== null ? `修改 ${prog.title} 的提醒` : `设置 ${prog.title} 的提醒`
+              "
+              @click.stop="openReminder(prog)"
+            >
+              {{ reminderOf(prog) !== null ? '已提醒' : '提醒' }}
+            </button>
+          </li>
+        </ul>
+      </template>
     </div>
+
+    <EpgSourceSheet v-model="sourceOpen" @changed="onSourcesChanged" />
+
+    <ReminderSheet
+      v-model="reminderOpen"
+      :title="reminderTarget?.title ?? ''"
+      :start-at="reminderStartAt"
+      :reminder="activeReminder"
+      :saving="reminderSaving"
+      :notice="reminderNotice"
+      @confirm="confirmReminder"
+      @cancel-reminder="cancelReminder"
+    />
   </SafeArea>
 </template>
 
 <style scoped>
+.epg-source-btn {
+  min-width: 44px;
+  height: 44px;
+  padding: 0 var(--space-2);
+  font: var(--text-label);
+  color: var(--color-brand-text);
+}
+
 .epg-body {
   display: flex;
   flex-direction: column;
@@ -293,6 +543,37 @@ function formatDuration(startSec: number, endSec: number): string {
   opacity: 0.7;
 }
 
+/* ---------- 命中来源 ---------- */
+.epg-source-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.epg-source-line__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.epg-source-line__stale {
+  flex: 0 0 auto;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-full);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+  color: var(--color-warning);
+}
+
+.epg-source-line__failed {
+  flex: 0 0 auto;
+  color: var(--color-danger);
+}
+
 /* ---------- 节目列表 ---------- */
 .epg-list {
   list-style: none;
@@ -384,5 +665,31 @@ function formatDuration(startSec: number, endSec: number): string {
   font: var(--font-weight-semibold) 10px / 1.4 var(--font-family-base);
   white-space: nowrap;
   align-self: center;
+}
+
+/* EXT-06/FR-71：单条节目提醒入口 */
+.epg-item__remind {
+  flex: 0 0 auto;
+  align-self: center;
+  min-width: 44px;
+  height: 28px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+  color: var(--color-brand-text);
+  font: var(--text-caption);
+  cursor: pointer;
+  transition: background-color var(--duration-fast);
+}
+
+.epg-item__remind:active {
+  background-color: var(--color-bg-pressed);
+}
+
+.epg-item__remind--on {
+  background-color: var(--color-brand-soft);
+  border-color: transparent;
+  color: var(--color-brand-strong);
 }
 </style>

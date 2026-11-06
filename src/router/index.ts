@@ -85,6 +85,13 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresLayout: false, depth: 1, title: '节目单' },
   },
   {
+    // EXT-06/FR-68：回看播放（channelId = 直播源 id，programId = 节目键 `${startAt}:${title}`）
+    path: '/replay/:channelId/:programId',
+    name: 'replay',
+    component: () => import('@/views/ReplayPlayerView.vue'),
+    meta: { requiresLayout: false, depth: 1, title: '回看' },
+  },
+  {
     path: '/detail/:mediaId',
     name: 'detail',
     component: () => import('@/views/DetailView.vue'),

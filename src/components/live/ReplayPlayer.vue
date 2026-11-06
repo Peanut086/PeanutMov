@@ -1,0 +1,439 @@
+<script setup lang="ts">
+/**
+ * EXT-06/FR-71：回看播放器
+ *
+ * - 复用 HlsEngine / VideoEngine（按 URL 头识别格式）与 Fullscreen / Orientation 控制器
+ * - 直播播放器（LivePlayer）不支持进度；回看是"点播"语义，故独立组件，
+ *   不接 PlayerController（无剧集/历史/字幕/弹幕）
+ * - 状态：idle / loading / playing / paused / ended / error
+ * - 事件：`retry`（重新加载）/ `back`（返回节目单）
+ */
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
+
+import { FullscreenController } from '@/player/FullscreenController';
+import { HlsEngine } from '@/player/HlsEngine';
+import { OrientationController } from '@/player/OrientationController';
+import { VideoEngine, type VideoEngineEvents } from '@/player/VideoEngine';
+import { normalizeFormat } from '@/sources/base/normalize';
+import SeekBar from '@/components/player/SeekBar.vue';
+import { deviceService } from '@/services/deviceService';
+import { setPlayerImmersive } from '@/native/playerUi';
+import type { PlaybackSource } from '@/types';
+import { formatClock } from '@/shared/time';
+import { logger } from '@/shared/logger';
+
+const props = defineProps<{
+  /** 已渲染好的回看地址（含时间占位符），为空则展示 idle */
+  url: string | null;
+  channelName: string;
+  programmeTitle: string;
+  /** 节目时间文案，如 `11月06日 20:00 – 21:00` */
+  timeLabel: string;
+  /** 节目起点时刻（ms），用于把页面进度换算成绝对时间显示 */
+  startAt: number;
+}>();
+
+const emit = defineEmits<{
+  (e: 'retry'): void;
+  (e: 'back'): void;
+}>();
+
+const containerRef = ref<HTMLElement | null>(null);
+const state = ref<'idle' | 'loading' | 'playing' | 'paused' | 'ended' | 'error'>('idle');
+const errorMessage = ref<string | null>(null);
+const currentTime = ref(0);
+const duration = ref(0);
+const buffered = ref(0);
+const fullscreen = ref(false);
+const durationUnknown = ref(false);
+
+let engine: HlsEngine | VideoEngine | null = null;
+
+const fullscreenController = new FullscreenController({
+  onChange: (fs) => {
+    fullscreen.value = fs;
+  },
+  onEnter: () => {
+    void deviceService.setStatusBarVisible(false);
+    void setPlayerImmersive(true);
+    void orientationController.lock('landscape');
+  },
+  onExit: () => {
+    void setPlayerImmersive(false);
+    void deviceService.setStatusBarVisible(true);
+    void orientationController.lock('portrait');
+  },
+});
+const orientationController = new OrientationController();
+
+/** 绝对时间（节目起点 + 已播秒数），拖动时给用户"这是几点"的参照 */
+const absoluteTime = computed(() => {
+  if (!Number.isFinite(props.startAt) || props.startAt <= 0) return '';
+  const date = new Date(props.startAt + currentTime.value * 1000);
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+});
+
+const canControl = computed(() => state.value === 'playing' || state.value === 'paused' || state.value === 'ended');
+
+function engineEvents(): VideoEngineEvents {
+  return {
+    onLoadedMetadata: (len) => {
+      duration.value = Number.isFinite(len) && len > 0 ? len : 0;
+      durationUnknown.value = duration.value === 0;
+      if (state.value !== 'error') state.value = 'playing';
+    },
+    onTimeUpdate: (time, total, buf) => {
+      currentTime.value = Number.isFinite(time) ? time : 0;
+      if (Number.isFinite(total) && total > 0) duration.value = total;
+      buffered.value = Number.isFinite(buf) ? buf : 0;
+    },
+    onPlay: () => {
+      if (state.value !== 'error') state.value = 'playing';
+    },
+    onPause: () => {
+      if (state.value !== 'error' && state.value !== 'ended') state.value = 'paused';
+    },
+    onWaiting: () => {
+      if (state.value !== 'error' && state.value !== 'ended') state.value = 'loading';
+    },
+    onPlaying: () => {
+      if (state.value !== 'error') state.value = 'playing';
+    },
+    onEnded: () => {
+      state.value = 'ended';
+    },
+    onError: (error) => {
+      state.value = 'error';
+      errorMessage.value = error.message;
+    },
+  };
+}
+
+function destroyEngine(): void {
+  engine?.destroy();
+  engine = null;
+}
+
+async function load(url: string): Promise<void> {
+  destroyEngine();
+  errorMessage.value = null;
+  currentTime.value = 0;
+  duration.value = 0;
+  buffered.value = 0;
+  durationUnknown.value = false;
+  const container = containerRef.value;
+  if (!container) return;
+  state.value = 'loading';
+  fullscreenController.setElement(container);
+
+  const format = normalizeFormat(url, 'mp4');
+  const source: PlaybackSource = {
+    url,
+    format,
+    headers: {},
+    subtitles: [],
+    lineId: 'replay',
+    quality: null,
+    expiresAt: null,
+    isLocal: false,
+    isLive: false,
+  };
+  const next =
+    format === 'hls'
+      ? new HlsEngine({ ...engineEvents(), onQualityChange: () => undefined })
+      : new VideoEngine(engineEvents());
+  engine = next;
+  next.attach(container);
+  try {
+    await next.load(source);
+    await next.play();
+  } catch (e) {
+    if (engine !== next) return;
+    logger.warn('回看加载失败', url, e);
+    state.value = 'error';
+    errorMessage.value = e instanceof Error ? e.message : '回看加载失败';
+  }
+}
+
+watch(
+  () => props.url,
+  (url) => {
+    if (!url) {
+      destroyEngine();
+      state.value = 'idle';
+      return;
+    }
+    void load(url);
+  },
+);
+
+function togglePlay(): void {
+  if (!engine) return;
+  if (state.value === 'playing') engine.pause();
+  else void engine.play();
+}
+
+function onSeek(sec: number): void {
+  if (!engine) return;
+  engine.seek(sec);
+  currentTime.value = sec;
+  if (state.value === 'ended') void engine.play();
+}
+
+async function toggleFullscreen(): Promise<void> {
+  await fullscreenController.toggle();
+}
+
+onBeforeUnmount(() => {
+  destroyEngine();
+  fullscreenController.destroy();
+  void orientationController.lock('portrait');
+});
+</script>
+
+<template>
+  <section class="replay-player" :class="{ 'replay-player--fullscreen': fullscreen }">
+    <div ref="containerRef" class="replay-player__stage" />
+
+    <div v-if="state === 'idle'" class="replay-player__overlay">
+      <p>回看地址尚未就绪</p>
+    </div>
+    <div v-else-if="state === 'loading'" class="replay-player__overlay" role="status">
+      <span class="replay-player__spinner" aria-hidden="true" />
+      <p>正在连接回看流…</p>
+    </div>
+    <div v-else-if="state === 'error'" class="replay-player__overlay">
+      <p class="replay-player__overlay-title">回看播放失败</p>
+      <p class="replay-player__overlay-detail">{{ errorMessage ?? '该源可能不支持回看' }}</p>
+      <div class="replay-player__overlay-actions">
+        <button class="btn btn--secondary btn--sm" type="button" @click="emit('retry')">重试</button>
+        <button class="btn btn--ghost btn--sm" type="button" @click="emit('back')">返回节目单</button>
+      </div>
+    </div>
+    <div v-else-if="state === 'ended'" class="replay-player__overlay replay-player__overlay--soft">
+      <p>节目已播放完毕</p>
+    </div>
+
+    <button
+      v-if="canControl"
+      class="replay-player__tap"
+      type="button"
+      :aria-label="state === 'playing' ? '暂停' : '播放'"
+      @click="togglePlay"
+    />
+
+    <div class="replay-player__controls">
+      <div class="replay-player__meta">
+        <span class="replay-player__channel truncate-1">{{ channelName }}</span>
+        <span v-if="programmeTitle" class="replay-player__title truncate-1">{{ programmeTitle }}</span>
+        <span v-if="timeLabel" class="replay-player__time">{{ timeLabel }}</span>
+      </div>
+
+      <SeekBar
+        v-if="canControl"
+        :current-time="currentTime"
+        :duration="duration"
+        :buffered="buffered"
+        :disabled="duration <= 0"
+        @seek="onSeek"
+      />
+
+      <div class="replay-player__row">
+        <button
+          class="replay-player__btn"
+          type="button"
+          :disabled="!canControl"
+          :aria-label="state === 'playing' ? '暂停' : '播放'"
+          @click="togglePlay"
+        >
+          {{ state === 'playing' ? '暂停' : '播放' }}
+        </button>
+        <span class="replay-player__clock">
+          {{ formatClock(currentTime) }}<template v-if="absoluteTime"> · {{ absoluteTime }}</template>
+          <template v-if="durationUnknown"> · 时长未知</template>
+        </span>
+        <button class="replay-player__btn" type="button" aria-label="全屏" @click="toggleFullscreen">
+          {{ fullscreen ? '退出全屏' : '全屏' }}
+        </button>
+      </div>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.replay-player {
+  position: relative;
+  width: 100%;
+  background-color: #000;
+  overflow: hidden;
+}
+
+.replay-player--fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  aspect-ratio: auto;
+}
+
+.replay-player__stage {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+}
+
+.replay-player--fullscreen .replay-player__stage {
+  height: 100%;
+  aspect-ratio: auto;
+}
+
+.replay-player__stage :deep(video) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.replay-player__overlay {
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  color: rgba(255, 255, 255, 0.8);
+  font: var(--text-caption);
+  text-align: center;
+  background-color: rgba(0, 0, 0, 0.45);
+}
+
+.replay-player__overlay--soft {
+  background-color: rgba(0, 0, 0, 0.6);
+}
+
+.replay-player__overlay-title {
+  font: var(--text-label-strong);
+}
+
+.replay-player__overlay-detail {
+  color: rgba(255, 255, 255, 0.56);
+}
+
+.replay-player__overlay-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.replay-player__spinner {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.24);
+  border-top-color: var(--color-brand);
+  animation: replay-spin 800ms linear infinite;
+}
+
+@keyframes replay-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.replay-player__tap {
+  position: absolute;
+  inset: 0;
+  background: transparent;
+}
+
+.replay-player__controls {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  background-color: var(--color-bg-base);
+}
+
+.replay-player--fullscreen .replay-player__controls {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.86), transparent);
+}
+
+.replay-player__meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.replay-player__channel {
+  flex: 0 0 auto;
+  max-width: 40%;
+  font: var(--text-label-strong);
+  color: var(--color-text-primary);
+}
+
+.replay-player--fullscreen .replay-player__channel,
+.replay-player--fullscreen .replay-player__title,
+.replay-player--fullscreen .replay-player__time,
+.replay-player--fullscreen .replay-player__clock {
+  color: #fff;
+}
+
+.replay-player__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+}
+
+.replay-player__time {
+  flex: 0 0 auto;
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  font-family: var(--font-family-number);
+}
+
+.replay-player__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.replay-player__btn {
+  flex: 0 0 auto;
+  min-height: 36px;
+  min-width: 64px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+  color: var(--color-text-primary);
+  font: var(--text-caption);
+}
+
+.replay-player--fullscreen .replay-player__btn {
+  background-color: rgba(255, 255, 255, 0.14);
+  border-color: transparent;
+  color: #fff;
+}
+
+.replay-player__btn:disabled {
+  color: var(--color-text-disabled);
+}
+
+.replay-player__clock {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  font-family: var(--font-family-number);
+}
+</style>
