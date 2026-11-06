@@ -9,7 +9,14 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type { GestureSettings, PlayerSettings, PlaybackRate, ResizeMode, Sensitivity, ThemeMode } from '@/types';
-import { APP_VERSION, PLAYBACK_RATES } from '@/shared/constants';
+import { APP_VERSION, PLAYBACK_RATES, TIMEOUT_SEARCH_SITE_MS, TIMEOUT_SEARCH_SPIDER_MS } from '@/shared/constants';
+import {
+  SEARCH_BUDGET_DEFAULT,
+  SEARCH_BUDGET_LABELS,
+  SEARCH_BUDGET_PRESETS,
+  resolveSearchTimeoutMs,
+} from '@/shared/searchBudget';
+import type { SearchBudgetPreset } from '@/shared/searchBudget';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import SafeArea from '@/components/layout/SafeArea.vue';
@@ -233,6 +240,37 @@ async function setHapticEnabled(value: boolean): Promise<void> {
 // OPT-06：自动进入画中画
 async function setPipAutoEnter(value: boolean): Promise<void> {
   await update({ pipAutoEnter: value }, value ? '已开启自动画中画' : '已关闭自动画中画');
+}
+
+/* ---------- OPT-04：搜索超时预算（档位缩放单源超时） ---------- */
+const searchBudgetOpen = ref(false);
+
+const searchBudget = computed<SearchBudgetPreset>(() => settings.settings?.searchBudget ?? SEARCH_BUDGET_DEFAULT);
+
+/** 档位 → 实际单源上限（秒），让用户所见即所得，不用猜「耐心」到底等多久 */
+function budgetHint(preset: SearchBudgetPreset): string {
+  const site = resolveSearchTimeoutMs(TIMEOUT_SEARCH_SITE_MS, preset) / 1000;
+  const spider = resolveSearchTimeoutMs(TIMEOUT_SEARCH_SPIDER_MS, preset) / 1000;
+  return `站点 ${site}s · 爬虫 ${spider}s`;
+}
+
+const searchBudgetLabel = computed(() => SEARCH_BUDGET_LABELS[searchBudget.value]);
+
+const searchBudgetDesc = computed(
+  () => `单源上限 ${budgetHint(searchBudget.value)}，超时源可在搜索结果页单独重试`,
+);
+
+const searchBudgetOptions = computed(() =>
+  SEARCH_BUDGET_PRESETS.map((preset) => ({
+    v: preset,
+    label: SEARCH_BUDGET_LABELS[preset],
+    hint: budgetHint(preset),
+  })),
+);
+
+async function setSearchBudget(preset: SearchBudgetPreset): Promise<void> {
+  searchBudgetOpen.value = false;
+  await update({ searchBudget: preset }, `搜索超时预算已设为${SEARCH_BUDGET_LABELS[preset]}`);
 }
 
 // OPT-15：智能预加载
@@ -461,7 +499,14 @@ async function exportLogs(): Promise<void> {
           </div>
           <SettingsRow label="观看历史" :value="`${history.items.length} 条`" chevron @click="go('/history')" />
           <SettingsRow label="我的收藏" :value="`${favorites.items.length} 个`" chevron @click="go('/favorites')" />
-          <SettingsRow label="网盘账号" description="夸克/UC/天翼/123/阿里" chevron @click="go('/settings/netdisk')" />
+          <SettingsRow label="网盘账号" description="夸克支持账号校验，其余平台 Cookie 直填" chevron @click="go('/settings/netdisk')" />
+          <SettingsRow
+            label="搜索超时预算"
+            :value="searchBudgetLabel"
+            :description="searchBudgetDesc"
+            chevron
+            @click="searchBudgetOpen = true"
+          />
         </SettingsGroup>
 
         <SettingsGroup title="播放">
@@ -646,6 +691,25 @@ async function exportLogs(): Promise<void> {
           </button>
         </li>
       </ul>
+    </BottomSheet>
+
+    <!-- OPT-04：搜索超时预算 -->
+    <BottomSheet v-model="searchBudgetOpen" title="搜索超时预算">
+      <ul class="sheet-list">
+        <li v-for="opt in searchBudgetOptions" :key="opt.v">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': searchBudget === opt.v }"
+            type="button"
+            @click="setSearchBudget(opt.v)"
+          >
+            {{ opt.label }}
+            <span class="sheet-list__hint">{{ opt.hint }}</span>
+            <span v-if="searchBudget === opt.v" class="sheet-list__check">当前</span>
+          </button>
+        </li>
+      </ul>
+      <p class="sheet-hint">单源超过预算即中止并计入失败源，可在搜索结果页「重试失败源」，只重跑失败的源。</p>
     </BottomSheet>
 
     <!-- 手势灵敏度 -->

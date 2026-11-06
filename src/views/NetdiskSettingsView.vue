@@ -31,9 +31,18 @@
             <div class="platform-icon">{{ platform.icon }}</div>
             <div class="platform-info">
               <div class="platform-name">{{ platform.name }}</div>
-              <div class="platform-status" :class="{ logged: platform.verified, saved: platform.saved && !platform.verified }">
+              <div class="platform-status" :class="statusClass(platform)">
                 {{ statusText(platform) }}
               </div>
+              <!-- OPT-05 / EXT-02：cookie-only 平台只声明「Cookie 直填、账号能力未验证」 -->
+              <div v-if="isCookieOnly(platform)" class="platform-note platform-note--limited">
+                <span class="platform-note__line">{{ capabilityNote(platform) }}</span>
+                <span class="platform-note__line platform-note__sub">不提供会员/容量信息</span>
+              </div>
+              <!-- full-api 平台才展示账号只读信息 -->
+              <p v-else-if="platform.memberType" class="platform-note">
+                <span class="platform-note__line">会员：{{ platform.memberType }}</span>
+              </p>
             </div>
             <div class="platform-action">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
@@ -109,6 +118,8 @@
           <li>点击平台卡片进入登录页</li>
           <li>使用扫码或账密登录</li>
           <li>登录成功后自动保存配置</li>
+          <li>夸克支持账号校验，可显示昵称与会员信息</li>
+          <li>UC / 123 / 天翼 / 阿里：Cookie 直填、账号能力未验证，不提供会员/容量信息</li>
           <li>所有 TVBox 系爬虫源共享登录态</li>
         </ul>
       </div>
@@ -121,7 +132,7 @@ import { ref, onMounted, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { Netdisk, backupCookieFile, loginWebView, restoreCookieFile } from '@/native/netdiskPlugin';
 import { useToast } from '@/composables/useToast';
-import { getAllPlatforms, type NetdiskPlatform } from '@/services/netdiskPlatforms';
+import { getAllPlatforms, COOKIE_ONLY_CAPABILITY_NOTE, type NetdiskPlatform } from '@/services/netdiskPlatforms';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { writeNetdiskConfig } from '@/services/netdiskConfig';
 
@@ -183,12 +194,32 @@ function applyStatus(
   platform.memberType = next.memberType;
 }
 
+/** 是否为只做 Cookie 直填、无账号校验能力的平台（OPT-05 / EXT-02） */
+function isCookieOnly(platform: NetdiskPlatform): boolean {
+  return platform.capabilityLevel === 'cookie-only';
+}
+
+/** 能力说明兜底：漏配 `capabilityNote` 时仍必须给出能力声明，不能渲染空提示 */
+function capabilityNote(platform: NetdiskPlatform): string {
+  return platform.capabilityNote ?? COOKIE_ONLY_CAPABILITY_NOTE;
+}
+
 /** 列表状态文案（R-DEV04-02：绝不把「cookie 文件存在」显示成「已登录」） */
 function statusText(platform: PlatformStatus): string {
+  if (isCookieOnly(platform)) {
+    // cookie-only 平台没有账号校验接口，只能确认 cookie 文件是否已保存
+    return platform.saved ? 'Cookie 已保存' : '未登录';
+  }
   if (platform.verified) {
     return platform.nickname ? `已登录（${platform.nickname}）` : '已登录';
   }
   return platform.saved ? '已保存，账号未验证' : '未登录';
+}
+
+/** 状态配色：仅 full-api 平台的账号校验结果可以用「已登录」绿色 */
+function statusClass(platform: PlatformStatus): Record<string, boolean> {
+  const verified = !isCookieOnly(platform) && platform.verified;
+  return { logged: verified, saved: platform.saved && !verified };
 }
 
 onMounted(async () => {
@@ -297,7 +328,7 @@ async function login(platform: PlatformStatus) {
         result.nickname ? `${platform.name}登录成功（${result.nickname}）` : `${platform.name}登录成功`,
       );
     } else {
-      // R-DEV04-02：夸克以外平台没有账号校验接口，只能确认 cookie 已保存
+      // R-DEV04-02：cookie-only 平台没有账号校验接口，只能确认 cookie 已保存
       toast.info(`${platform.name}已保存，账号未验证`);
     }
   } catch (e) {
@@ -497,14 +528,39 @@ function goBack() {
 .platform-status {
   font-size: 14px;
   color: var(--text-secondary, #aaa);
+  overflow-wrap: anywhere;
 }
 
 .platform-status.logged {
-  color: var(--success-color, #34c759);
+  color: var(--color-success, #34d399);
 }
 
 .platform-status.saved {
-  color: var(--warning-color, #ff9f0a);
+  color: var(--color-warning, #fbbf24);
+}
+
+/* 能力声明（OPT-05 / EXT-02）：cookie-only 平台的能力边界说明 */
+.platform-note {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+  margin: var(--space-2, 8px) 0 0;
+  font-size: var(--font-size-12, 12px);
+  line-height: var(--line-height-12, 16px);
+  color: var(--color-text-tertiary, #6b7480);
+  overflow-wrap: anywhere;
+}
+
+.platform-note--limited {
+  color: var(--color-warning, #fbbf24);
+}
+
+.platform-note__line {
+  display: block;
+}
+
+.platform-note__sub {
+  color: var(--color-text-tertiary, #6b7480);
 }
 
 .platform-action {
