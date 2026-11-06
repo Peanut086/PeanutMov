@@ -14,6 +14,7 @@
 import { blobRepo } from '@/db/repositories/blobRepo';
 import { AppError } from '@/shared/errors';
 import { DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/shared/constants';
+import { downloadRateLimiter } from '@/services/downloadRateLimiter';
 import { extensionOf } from '@/shared/id';
 import { logger } from '@/shared/logger';
 import {
@@ -84,6 +85,8 @@ export class NativeFsSink implements DownloadSink {
   private partPath = '';
   private written = 0;
   private started = false;
+  // EXT-04/FR-63：限速统计需要 taskId（额度是全局池，这里只用于速率归属）
+  private taskId = '';
   // P1-1: 滑动窗口写盘缓冲
   private writeBuffer: Uint8Array[] = [];
   private writeBufferSize = 0;
@@ -91,6 +94,7 @@ export class NativeFsSink implements DownloadSink {
   async begin(init: SinkInit): Promise<BeginResult> {
     this.filePath = nativeFilePathOf(init.task);
     this.partPath = nativePartPathOf(init.task);
+    this.taskId = init.task.id;
     const dir = this.filePath.slice(0, this.filePath.lastIndexOf('/'));
     await ensureDir(dir);
 
@@ -125,6 +129,10 @@ export class NativeFsSink implements DownloadSink {
   async write(chunk: Uint8Array): Promise<void> {
     if (!this.started) throw new AppError('E_INVALID_STATE', 'sink 未初始化');
     if (chunk.byteLength === 0) return;
+
+    // EXT-04/FR-63（D-03）：写盘前消费全局令牌桶额度——直链与 HLS 分片都经此处，
+    // 一处生效即可覆盖两条 JS 路径；`unlimited` 档位直接返回，零开销。
+    await downloadRateLimiter.consume(chunk.byteLength, this.taskId);
 
     // P1-1: 先拷贝进缓冲区，减少 base64 转换和桥接调用次数
     const copy = new Uint8Array(chunk.byteLength);
@@ -221,11 +229,13 @@ export class IdbBlobSink implements DownloadSink {
   private blobKey = '';
   private mime = 'video/mp4';
   private started = false;
+  private taskId = '';
 
   async begin(init: SinkInit): Promise<BeginResult> {
     this.chunks = [];
     this.size = 0;
     this.blobKey = init.task.id;
+    this.taskId = init.task.id;
     this.mime = mimeOfTask(init.task);
     this.started = true;
     // Web 端不保留半截 Blob，始终从 0 开始（忽略 startBytes）
@@ -235,6 +245,8 @@ export class IdbBlobSink implements DownloadSink {
   async write(chunk: Uint8Array): Promise<void> {
     if (!this.started) throw new AppError('E_INVALID_STATE', 'sink 未初始化');
     if (chunk.byteLength === 0) return;
+    // EXT-04/FR-63：与原生 sink 共用同一个全局桶（Web 端只有这一条路径）
+    await downloadRateLimiter.consume(chunk.byteLength, this.taskId);
     this.size += chunk.byteLength;
     if (this.size > WEB_MAX_BYTES) {
       throw new AppError('E_STORAGE_QUOTA', '文件超出浏览器环境建议上限，请改用 App 下载');

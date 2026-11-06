@@ -10,12 +10,14 @@
  */
 import { AppError, toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
-import { DOWNLOAD_PROGRESS_PERSIST_MS, DOWNLOAD_WEB_SIZE_WARN_BYTES, DOWNLOAD_SPEED_LIMITS } from '@/shared/constants';
+import { DOWNLOAD_PROGRESS_PERSIST_MS, DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/shared/constants';
 import { isM3u8Url } from '@/player/sourceGuard';
 import { createSink, nativeFilePathOf, type DownloadSink } from '@/services/downloadSink';
 import { createHlsDownloader } from '@/services/hlsDownloader';
 import { appEvents } from '@/services/events';
 import { settingsService } from '@/services/settingsService';
+import { downloadRateLimiter } from '@/services/downloadRateLimiter';
+import { applyNativeSpeedLimit } from '@/native/mediaToolPlugin';
 import {
   isNativeDownloadAvailable,
   nativeDownloadStart,
@@ -170,15 +172,8 @@ export class DownloadEngine {
     let lastSampleAt = now();
     let lastSampleBytes = downloaded;
 
-    // 获取限速设置
-    let speedLimitBytesPerSec = Infinity;
-    try {
-      const settings = await settingsService.get();
-      speedLimitBytesPerSec = DOWNLOAD_SPEED_LIMITS[settings.download.speedLimit];
-    } catch (e) {
-      logger.debug('获取限速设置失败，使用不限速', e);
-    }
-
+    // EXT-04/FR-63（D-03）：限速已下沉到 `DownloadSink.write()` 的全局令牌桶，
+    // 直链与 HLS 分片共用同一份额度；此处原先的"按块 sleep"已移除，避免双份限制。
     await this.deps.saveProgress(task.id, {
       status: 'downloading',
       downloadedBytes: downloaded,
@@ -197,8 +192,6 @@ export class DownloadEngine {
         downloaded += buffer.byteLength;
       } else {
         const reader = body.getReader();
-        let throttleStart = now();
-        let throttleBytes = 0;
         for (;;) {
           if (signal.aborted) throw new AppError('E_ABORTED');
           const { done, value } = await reader.read();
@@ -211,22 +204,6 @@ export class DownloadEngine {
             await sink.write(slice);
             downloaded += slice.byteLength;
             offset = end;
-
-            // 限速控制：如果超过限速，等待一段时间
-            if (speedLimitBytesPerSec < Infinity) {
-              throttleBytes += slice.byteLength;
-              const elapsed = now() - throttleStart;
-              const expectedMs = (throttleBytes / speedLimitBytesPerSec) * 1000;
-              if (expectedMs > elapsed) {
-                const sleepMs = Math.min(expectedMs - elapsed, 1000); // 最多等 1 秒
-                await new Promise((resolve) => setTimeout(resolve, sleepMs));
-                if (elapsed > 1000) {
-                  // 超过 1 秒重置计数
-                  throttleStart = now();
-                  throttleBytes = 0;
-                }
-              }
-            }
           }
           const currentTime = now();
           if (currentTime - lastPersist >= persistInterval) {
@@ -284,6 +261,9 @@ export class DownloadEngine {
     // P0-6: 从设置读取 segmentConcurrency
     const settings = await settingsService.get();
     const parallelSegments = settings.download.segmentConcurrency ?? 6;
+    // EXT-04/FR-62（AC-146/AC-147）：任务级档位优先（创建时快照），缺省取设置；
+    // 暂停续传沿用同一 task.hlsQuality，因此仍在同一变体上续传。
+    const quality = task.hlsQuality ?? settings.download.hlsQuality ?? 'max';
     const hlsDownloader = createHlsDownloader({
       load: this.deps.load,
       saveProgress: this.deps.saveProgress,
@@ -291,6 +271,7 @@ export class DownloadEngine {
       createSinkImpl: this.deps.createSinkImpl,
       now: this.deps.now,
       parallelSegments,
+      quality,
     });
     await hlsDownloader.run(task, signal);
   }
@@ -308,6 +289,10 @@ export class DownloadEngine {
 
     const now = this.deps.now ?? Date.now;
     const filePath = nativeFilePathOf(task);
+
+    // EXT-04/FR-63：原生路径以进程内令牌桶为准（`sink==='filesystem'` 且原生可用时
+    // JS 侧不再重复扣减）。每次启动原生下载前下发一次当前档位，保证切档后新任务即生效。
+    await applyNativeSpeedLimit(downloadRateLimiter.getBytesPerSec());
 
     logger.debug('Using native downloader', { taskId: task.id, filePath });
 

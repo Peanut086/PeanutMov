@@ -8,15 +8,19 @@ import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
 import { downloadService } from '@/services/downloadService';
+import { downloadRateLimiter, type RateStats } from '@/services/downloadRateLimiter';
 import { toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import type {
   AppErrorShape,
   CreateDownloadInput,
+  DownloadSpeedLimit,
   DownloadSummary,
   DownloadTask,
+  HlsQuality,
   LoadState,
 } from '@/types';
+import type { PreflightOptions, PreflightResult } from '@/services/downloadPreflight';
 
 function emptySummary(): DownloadSummary {
   return {
@@ -36,6 +40,15 @@ export const useDownloadStore = defineStore('download', () => {
   const summary = ref<DownloadSummary>(emptySummary());
   const state = ref<LoadState>('idle');
   const error = ref<AppErrorShape | null>(null);
+  /** EXT-04/FR-60/FR-64：后处理阶段（taskId → 阶段状态），供列表项展示"转封装中/字幕已下载" */
+  const postprocess = ref<Record<string, {
+    stage: 'remux' | 'subtitles';
+    state: 'start' | 'progress' | 'done' | 'skipped' | 'failed';
+    progress?: number;
+    reason?: string;
+  }>>({});
+  /** EXT-04/FR-63：当前合计速率（3s 滑窗），由 UI 定时 `refreshSpeed()` 拉取 */
+  const speed = ref<RateStats>({ windowMs: 3000, totalBps: 0, tasks: [] });
 
   let unsubscribe: (() => void) | null = null;
 
@@ -55,6 +68,17 @@ export const useDownloadStore = defineStore('download', () => {
         unsubscribe = downloadService.on('download', (event) => {
           if (event.type === 'queue') {
             summary.value = event.summary;
+            return;
+          }
+          if (event.type === 'postprocess') {
+            const next = { ...postprocess.value };
+            next[event.task.id] = {
+              stage: event.stage,
+              state: event.state,
+              progress: event.state === 'done' || event.state === 'skipped' ? 1 : event.progress,
+              reason: event.reason,
+            };
+            postprocess.value = next;
             return;
           }
           const index = tasks.value.findIndex((task) => task.id === event.task.id);
@@ -177,9 +201,100 @@ export const useDownloadStore = defineStore('download', () => {
     return downloadService.calculateStorageUsage();
   }
 
+  /* ---------------- EXT-04：预检 / 批量 / 限速 ---------------- */
+
+  /** FR-65：下载前预检（1~50 条） */
+  async function preflight(inputs: CreateDownloadInput[], options: PreflightOptions = {}): Promise<PreflightResult> {
+    error.value = null;
+    try {
+      return await downloadService.preflight(inputs, options);
+    } catch (e) {
+      const shape = toErrorShape(e);
+      if (shape.code !== 'E_ABORTED') error.value = shape;
+      throw e;
+    }
+  }
+
+  /** FR-65：批量预检（同 master 复用清单缓存） */
+  async function preflightBatch(inputs: CreateDownloadInput[], options: PreflightOptions = {}): Promise<PreflightResult> {
+    error.value = null;
+    try {
+      return await downloadService.preflightBatch(inputs, options);
+    } catch (e) {
+      const shape = toErrorShape(e);
+      if (shape.code !== 'E_ABORTED') error.value = shape;
+      throw e;
+    }
+  }
+
+  /** FR-61：批量创建（容量裁决 + batchId） */
+  async function createBatch(
+    inputs: CreateDownloadInput[],
+    options: {
+      hlsQuality?: HlsQuality;
+      batchId?: string;
+      allowOverCapacity?: boolean;
+      preflight?: PreflightResult;
+    } = {},
+  ): Promise<Awaited<ReturnType<typeof downloadService.createBatch>>> {
+    error.value = null;
+    try {
+      const result = await downloadService.createBatch(inputs, options);
+      await refresh();
+      return result;
+    } catch (e) {
+      error.value = toErrorShape(e);
+      throw e;
+    }
+  }
+
+  /** FR-61：重试本批失败项 */
+  async function retryBatch(batchId: string): Promise<{ retried: number; skipped: number; failedIds: string[] }> {
+    error.value = null;
+    try {
+      const result = await downloadService.retryBatch(batchId);
+      await refresh();
+      return result;
+    } catch (e) {
+      error.value = toErrorShape(e);
+      throw e;
+    }
+  }
+
+  /** FR-61：删除本批已完成项 */
+  async function deleteBatch(batchId: string): Promise<{ deleted: number }> {
+    error.value = null;
+    try {
+      const result = await downloadService.deleteBatch(batchId);
+      await refresh();
+      return result;
+    } catch (e) {
+      error.value = toErrorShape(e);
+      throw e;
+    }
+  }
+
+  /** FR-63：切换限速档位 */
+  async function setSpeedLimit(limit: DownloadSpeedLimit): Promise<void> {
+    error.value = null;
+    try {
+      await downloadService.setSpeedLimit(limit);
+    } catch (e) {
+      error.value = toErrorShape(e);
+      throw e;
+    }
+  }
+
+  /** FR-63：刷新当前合计速率（UI 定时调用，3s 滑窗） */
+  function refreshSpeed(): RateStats {
+    speed.value = downloadRateLimiter.stats();
+    return speed.value;
+  }
+
   function $dispose(): void {
     unsubscribe?.();
     unsubscribe = null;
+    postprocess.value = {};
   }
 
   return {
@@ -202,6 +317,15 @@ export const useDownloadStore = defineStore('download', () => {
     clearCompleted,
     clearFailed,
     calculateStorageUsage,
+    preflight,
+    preflightBatch,
+    createBatch,
+    retryBatch,
+    deleteBatch,
+    setSpeedLimit,
+    refreshSpeed,
+    postprocess,
+    speed,
     $dispose,
   };
 });

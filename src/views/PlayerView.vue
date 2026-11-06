@@ -289,6 +289,7 @@ const playerCtl = usePlayerController({
 });
 
 const {
+  controller,
   player,
   noVideo,
   hud,
@@ -483,15 +484,19 @@ async function loadLocalPlay(
     if (stageRef.value && !controller.value) {
       createController(stageRef.value);
     }
+    // REV-24：构造最小化的 PlayerLoadOptions 用于本地播放
+    // 由于详情加载失败，我们只有 playback 和基本信息，需要构造占位符
     await controller.value?.load({
-      url: prepared.url,
-      headers: prepared.headers,
-      subtitles: prepared.subtitles,
-      format: prepared.format,
-      startSec: start,
+      mediaId: mediaId.value ?? 'local',
+      episodeId,
+      lineId: 'local',
       title,
       posterUrl,
-      episodeLabel: `第 ? 集`, // 本地播放时不知道集号，用占位
+      playback: prepared,
+      startPositionSec: start,
+      totalEpisodes: null,
+      episodes: [],
+      preferLocal: true,
     });
   } catch (e) {
     if (isCanceled(e)) return;

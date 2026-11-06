@@ -22,6 +22,7 @@ import { nativeFilePathOf, readBlob } from '@/services/downloadSink';
 import { deleteFile, stat, toPlayableUrl } from '@/native/fs';
 import { currentNetworkType, isOnline } from '@/native/network';
 import { onAppStateChange, type AppLifecycleState } from '@/native/appLifecycle';
+import { applyNativeSpeedLimit } from '@/native/mediaToolPlugin';
 import {
   DOWNLOAD_CELLULAR_WARN_BYTES,
   DOWNLOAD_DEFAULT_CONCURRENCY,
@@ -31,18 +32,56 @@ import {
 import { AppError, toAppError } from '@/shared/errors';
 import { isNative } from '@/shared/platform';
 import { logger } from '@/shared/logger';
+import {
+  downloadRateLimiter,
+  isValidSpeedLimit,
+  type RateStats,
+  type SpeedLimitApplied,
+} from '@/services/downloadRateLimiter';
+import {
+  assertBatchSize,
+  countOccupied,
+  createBatchId,
+  existingKeyOf,
+  resolveQueueCapacity,
+  selectCompleted,
+  selectRetryable,
+  tasksOfBatch,
+} from '@/services/downloadBatch';
+import { downloadPreflight, type PreflightOptions, type PreflightResult } from '@/services/downloadPreflight';
 import type {
   CreateDownloadInput,
+  DownloadSpeedLimit,
   DownloadStatus,
+  DownloadSubtitlePolicy,
   DownloadSummary,
   DownloadTask,
+  HlsQuality,
+  MediaFormat,
   PlaybackSource,
+  SubtitleTrack,
 } from '@/types';
 
-export type DownloadEvent =
-  | { type: 'progress'; task: DownloadTask }
-  | { type: 'status'; task: DownloadTask; previous: DownloadStatus }
-  | { type: 'queue'; summary: DownloadSummary };
+export type DownloadEvent = {
+  type: 'progress';
+  task: DownloadTask;
+} | {
+  type: 'status';
+  task: DownloadTask;
+  previous: DownloadStatus;
+} | {
+  type: 'queue';
+  summary: DownloadSummary;
+} | {
+  /** EXT-04/FR-60/FR-64：后处理阶段（转封装 / 字幕）——UI 只读展示，不改变任务状态 */
+  type: 'postprocess';
+  task: DownloadTask;
+  stage: 'remux' | 'subtitles';
+  state: 'start' | 'progress' | 'done' | 'skipped' | 'failed';
+  /** 0~1，节流 ≤2 次/秒 */
+  progress?: number;
+  reason?: string;
+};
 
 export interface LocalPlayResult {
   url: string;
@@ -202,8 +241,135 @@ async function requeuePending(): Promise<void> {
   await emitQueueSummary();
 }
 
+/* ---------------- EXT-04：设置快照与质量归一化 ---------------- */
+
+interface DownloadPolicySnapshot {
+  hlsQuality: HlsQuality;
+  attachSubtitles: DownloadSubtitlePolicy;
+}
+
+/** 读取下载策略（设置读失败时用默认值，不阻断下载） */
+async function policySnapshot(): Promise<DownloadPolicySnapshot> {
+  try {
+    const settings = await settingsService.get();
+    return {
+      hlsQuality: normalizeQuality(settings.download.hlsQuality),
+      attachSubtitles: normalizeSubtitlePolicy(settings.download.attachSubtitles),
+    };
+  } catch (e) {
+    logger.debug('读取下载策略失败，使用默认值', toAppError(e).message);
+    return { hlsQuality: 'max', attachSubtitles: 'preferred' };
+  }
+}
+
+export function normalizeQuality(value: unknown): HlsQuality {
+  return value === '1080p' || value === '720p' ? value : 'max';
+}
+
+export function normalizeSubtitlePolicy(value: unknown): DownloadSubtitlePolicy {
+  return value === 'all' || value === 'none' ? value : 'preferred';
+}
+
+/** 限速档位归一化（非法/缺失回落不限速） */
+export function normalizeSpeedLimit(value: unknown): DownloadSpeedLimit {
+  return isValidSpeedLimit(value) ? value : 'unlimited';
+}
+
+/** HLS 判定：格式为 hls，或地址后缀是 .m3u8（与引擎兜底口径一致） */
+export function isHlsDownload(input: { format: MediaFormat; url: string }): boolean {
+  return input.format === 'hls' || /\.m3u8(\?|$)/i.test(input.url);
+}
+
+/* ---------------- EXT-04 / FR-64：已下载字幕挂载 ---------------- */
+
+/** Web 端字幕 ObjectURL 缓存（taskId → urls），避免每次进播放页都新建并泄漏 */
+const subtitleUrlCache = new Map<string, string[]>();
+
+const LANG_LABELS: Record<string, string> = {
+  zh: '中文',
+  'zh-cn': '中文',
+  'zh-hans': '简体中文',
+  'zh-hant': '繁体中文',
+  en: '英文',
+  ja: '日文',
+  ko: '韩文',
+};
+
+function subtitleLabelOf(lang: string): string {
+  const label = LANG_LABELS[lang.toLowerCase()] ?? lang.toUpperCase();
+  return `${label}（已下载）`;
+}
+
+/** 回收某任务（或全部）已生成的字幕 ObjectURL（Web） */
+export function revokeLocalSubtitleUrls(taskId?: string): void {
+  const keys = taskId ? [taskId] : [...subtitleUrlCache.keys()];
+  for (const key of keys) {
+    const urls = subtitleUrlCache.get(key);
+    if (!urls) continue;
+    for (const url of urls) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {
+        // 忽略
+      }
+    }
+    subtitleUrlCache.delete(key);
+  }
+}
+
+/** 把 `task.subtitlePaths` 映射为 `SubtitleTrack[]`（source='downloaded'，FR-64） */
+async function localSubtitlesOf(task: DownloadTask): Promise<SubtitleTrack[]> {
+  const entries = task.subtitlePaths ?? [];
+  if (entries.length === 0) return [];
+
+  revokeLocalSubtitleUrls(task.id);
+  const objectUrls: string[] = [];
+  const tracks: SubtitleTrack[] = [];
+
+  for (const entry of entries) {
+    try {
+      let url: string;
+      if (task.sink === 'filesystem') {
+        url = await toPlayableUrl(entry.path);
+      } else {
+        const blob = await readBlob(entry.path);
+        if (!blob || blob.size === 0) continue;
+        url = URL.createObjectURL(blob);
+        objectUrls.push(url);
+      }
+      tracks.push({
+        id: `downloaded:${entry.lang}`,
+        label: subtitleLabelOf(entry.lang),
+        lang: entry.lang,
+        url,
+        format: entry.format,
+        source: 'downloaded',
+      });
+    } catch (e) {
+      // 单条字幕挂载失败不影响视频播放（AC-151 失败隔离）
+      logger.warn('已下载字幕挂载失败（忽略）', { taskId: task.id, lang: entry.lang, error: toAppError(e).message });
+    }
+  }
+
+  if (objectUrls.length > 0) subtitleUrlCache.set(task.id, objectUrls);
+  return tracks;
+}
+
+/** 任务最终产物路径（优先实际 filePath，转封装后 basename 才是 .mp4） */
+function finalFilePathOf(task: DownloadTask): string {
+  return task.filePath ?? nativeFilePathOf(task);
+}
+
 export const downloadService = {
-  async create(input: CreateDownloadInput): Promise<{ task: DownloadTask; existed: boolean }> {
+  /**
+   * 创建单个下载任务（AC-70：重复创建返回 `existed: true`）。
+   *
+   * EXT-04 增量（全部为可选字段，老调用方行为不变）：
+   * - `input.hlsQuality` 单次覆盖设置，仅 HLS 任务落库（直链 `hlsQuality=null`，AC-147）；
+   * - `input.batchId` 由 `createBatch` 注入；
+   * - `extra` 为服务内部使用的附加字段（预检摘要等），不对外承诺。
+   */
+  async create(input: CreateDownloadInput, extra?: Partial<DownloadTask>): Promise<{ task: DownloadTask; existed: boolean }> {
     validateInput(input);
     const existing = await this.findActiveByEpisode(input.mediaId, input.episodeId);
     if (existing) {
@@ -213,6 +379,8 @@ export const downloadService = {
     // 默认假设支持续传，让下载引擎在实际下载时验证（见 downloadEngine.ts 124-130 行）
     // 如果服务器不支持 Range，引擎会自动降级并更新 task.resumable
     const resumable = true;
+    const policy = await policySnapshot();
+    const hlsQuality = isHlsDownload(input) ? normalizeQuality(input.hlsQuality ?? policy.hlsQuality) : null;
 
     const now = Date.now();
     const task: DownloadTask = {
@@ -243,11 +411,20 @@ export const downloadService = {
       coverPath: null,
       pendingSubtitleUrls: input.subtitleUrls,
       pendingCoverUrl: input.coverUrl,
+      batchId: input.batchId ?? null,
+      hlsQuality,
+      selectedHeight: null,
+      container: null,
+      remux: null,
+      estimatedBytes: null,
+      preflight: null,
+      subtitleSelection: policy.attachSubtitles,
       errorCode: null,
       errorMessage: null,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
+      ...(extra ?? {}),
     };
     await persist(task);
     const q = await ensureQueue();
@@ -279,6 +456,209 @@ export const downloadService = {
     }
 
     return { created, skipped };
+  },
+
+  /**
+   * EXT-04 / FR-61：批量创建（带 `batchId` 与队列容量裁决）。
+   *
+   * 语义（AC-144）：
+   * - 单次 ≤50 集，超出 `E_INVALID_INPUT`；
+   * - 已存在任务计入 `skipped`（不计入本次容量消耗）；
+   * - 超出容量的集进入 `rejected`（`E_INVALID_STATE` + "队列已满(n)"），**整批不失败**；
+   * - `allowOverCapacity=true` 时即使一条都没创建成功也返回结构化结果，不抛错；
+   * - 每 10 条让出事件循环，保证主线程单帧 ≤50ms。
+   */
+  async createBatch(
+    inputs: CreateDownloadInput[],
+    options: { hlsQuality?: HlsQuality; batchId?: string; allowOverCapacity?: boolean; preflight?: PreflightResult } = {},
+  ): Promise<{
+    batchId: string;
+    created: DownloadTask[];
+    skipped: DownloadTask[];
+    rejected: Array<{ episodeId: string; code: string; message: string }>;
+    queue: { before: number; after: number; capacity: number; full: boolean };
+  }> {
+    assertBatchSize(inputs.length);
+
+    let capacity = resolveQueueCapacity(null);
+    try {
+      const settings = await settingsService.get();
+      capacity = resolveQueueCapacity(settings.download);
+    } catch (e) {
+      logger.debug('读取队列上限失败，使用默认值', toAppError(e).message);
+    }
+
+    const all = await downloadRepo.listAll();
+    const activeByKey = new Map<string, DownloadTask>();
+    for (const task of all) {
+      if (task.status === 'canceled') continue;
+      activeByKey.set(existingKeyOf(task.mediaId, task.episodeId), task);
+    }
+
+    const before = await countOccupied(all);
+    const batchId = options.batchId ?? createBatchId();
+    const qualityOverride = options.hlsQuality ? normalizeQuality(options.hlsQuality) : undefined;
+    const digests = new Map<string, Partial<DownloadTask>>();
+    for (const item of options.preflight?.items ?? []) {
+      digests.set(item.episodeId, downloadPreflight.digestOf(item));
+    }
+
+    const created: DownloadTask[] = [];
+    const skipped: DownloadTask[] = [];
+    const rejected: Array<{ episodeId: string; code: string; message: string }> = [];
+    let occupied = before;
+
+    for (const [index, input] of inputs.entries()) {
+      const key = existingKeyOf(input.mediaId, input.episodeId);
+      const existing = activeByKey.get(key);
+      if (existing) {
+        skipped.push(existing);
+        continue;
+      }
+      if (occupied >= capacity) {
+        rejected.push({
+          episodeId: input.episodeId,
+          code: 'E_INVALID_STATE',
+          message: `队列已满(${capacity})，请先清理`,
+        });
+        continue;
+      }
+      const result = await this.create(
+        {
+          ...input,
+          batchId,
+          ...(qualityOverride ? { hlsQuality: qualityOverride } : {}),
+        },
+        digests.get(input.episodeId),
+      );
+      if (result.existed) {
+        skipped.push(result.task);
+      } else {
+        created.push(result.task);
+        activeByKey.set(key, result.task);
+        occupied += 1;
+      }
+      if (index > 0 && index % 10 === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+
+    const queue = { before, after: occupied, capacity, full: occupied >= capacity };
+
+    if (!options.allowOverCapacity && created.length === 0 && rejected.length > 0) {
+      throw new AppError('E_INVALID_STATE', `队列已满(${capacity})，请先清理`);
+    }
+
+    if (created.length > 0 || skipped.length > 0 || rejected.length > 0) {
+      const parts: string[] = [];
+      if (created.length > 0) parts.push(`已加入 ${created.length} 集`);
+      if (skipped.length > 0) parts.push(`${skipped.length} 集已存在`);
+      if (rejected.length > 0) parts.push(`${rejected.length} 集因队列已满未加入`);
+      appEvents.emit('toast', { text: parts.join('，'), type: rejected.length > 0 ? 'info' : 'success' });
+    }
+
+    logger.info('批量创建完成', {
+      batchId,
+      created: created.length,
+      skipped: skipped.length,
+      rejected: rejected.length,
+      capacity,
+    });
+
+    return { batchId, created, skipped, rejected, queue };
+  },
+
+  /** EXT-04 / FR-61：重试批内失败项（按集号升序，canceled 不参与） */
+  async retryBatch(batchId: string): Promise<{ batchId: string; retried: number; skipped: number; failedIds: string[] }> {
+    const tasks = await tasksOfBatch(batchId);
+    if (tasks.length === 0) throw new AppError('E_NOT_FOUND', '未找到该批次任务');
+    const retryable = selectRetryable(tasks);
+    if (retryable.length === 0) throw new AppError('E_INVALID_STATE', '本批没有失败项');
+
+    const failedIds: string[] = [];
+    for (const task of retryable) {
+      try {
+        await this.retry(task.id);
+        failedIds.push(task.id);
+      } catch (e) {
+        logger.warn('批内重试失败（继续其余项）', {
+          taskId: task.id,
+          error: toAppError(e).message,
+        });
+      }
+    }
+    await emitQueueSummary();
+    return {
+      batchId,
+      retried: failedIds.length,
+      skipped: tasks.length - failedIds.length,
+      failedIds,
+    };
+  },
+
+  /** EXT-04 / FR-61：删除批内已完成项（含本地文件） */
+  async deleteBatch(batchId: string): Promise<{ batchId: string; deleted: number }> {
+    const tasks = await tasksOfBatch(batchId);
+    if (tasks.length === 0) throw new AppError('E_NOT_FOUND', '未找到该批次任务');
+    const completed = selectCompleted(tasks);
+    let deleted = 0;
+    for (const task of completed) {
+      try {
+        await this.remove(task.id, { deleteFile: true });
+        deleted += 1;
+      } catch (e) {
+        logger.warn('删除批内已完成项失败（继续其余项）', {
+          taskId: task.id,
+          error: toAppError(e).message,
+        });
+      }
+    }
+    return { batchId, deleted };
+  },
+
+  /** EXT-04 / FR-65：下载前预检（1~50 条，不创建任务、不写库） */
+  async preflight(inputs: CreateDownloadInput[], options: PreflightOptions = {}): Promise<PreflightResult> {
+    assertBatchSize(inputs.length);
+    return downloadPreflight.preflight(inputs, options);
+  },
+
+  /** EXT-04 / FR-65：批量预检（同 master 复用 60s 清单缓存，见 `downloadPreflight`） */
+  async preflightBatch(inputs: CreateDownloadInput[], options: PreflightOptions = {}): Promise<PreflightResult> {
+    assertBatchSize(inputs.length);
+    return downloadPreflight.preflight(inputs, options);
+  },
+
+  /** EXT-04 / FR-63：切换全局限速档位（≤3s 生效，Android 同步下发原生桶） */
+  async setSpeedLimit(limit: DownloadSpeedLimit | { limit: DownloadSpeedLimit }): Promise<SpeedLimitApplied> {
+    const value = typeof limit === 'string' ? limit : limit?.limit;
+    if (!isValidSpeedLimit(value)) throw new AppError('E_INVALID_INPUT', '不支持的限速档位');
+    const applied = downloadRateLimiter.setLimit(value);
+    try {
+      await settingsService.update({ download: { speedLimit: value } });
+    } catch (e) {
+      logger.warn('限速档位持久化失败', toAppError(e).message);
+    }
+    await applyNativeSpeedLimit(applied.bytesPerSec);
+    logger.info('下载限速已切换', { limit: value, bytesPerSec: applied.bytesPerSec });
+    return applied;
+  },
+
+  /** 当前限速档位 */
+  getSpeedLimit(): { limit: DownloadSpeedLimit; bytesPerSec: number } {
+    return {
+      limit: downloadRateLimiter.getLimit(),
+      bytesPerSec: downloadRateLimiter.getBytesPerSec(),
+    };
+  },
+
+  /** 3s 滑窗速率统计（AC-148/AC-149；UI「当前合计速率」） */
+  rateStats(): RateStats {
+    return downloadRateLimiter.stats();
+  },
+
+  /** 兼容命名：当前合计速率 */
+  getCurrentSpeed(): RateStats {
+    return downloadRateLimiter.stats();
   },
 
   async list(filter?: { statuses?: DownloadStatus[] }): Promise<DownloadTask[]> {
@@ -400,6 +780,11 @@ export const downloadService = {
       headers: alternativeHeaders ?? task.headers,
       format: task.format,
       quality: task.quality,
+      // EXT-04：换源重下保持批次归属、清晰度档位与附件（字幕/封面）不变
+      ...(task.batchId ? { batchId: task.batchId } : {}),
+      ...(task.hlsQuality ? { hlsQuality: task.hlsQuality } : {}),
+      ...(task.pendingSubtitleUrls ? { subtitleUrls: task.pendingSubtitleUrls } : {}),
+      ...(task.pendingCoverUrl ? { coverUrl: task.pendingCoverUrl } : {}),
     });
 
     logger.debug('备选 URL 任务已创建', {
@@ -597,13 +982,15 @@ export const downloadService = {
     if (!task || task.status !== 'completed') return null;
     try {
       const local = await this.getLocalPlayUrl(task.id);
+      const subtitles = await localSubtitlesOf(task);
       return {
         url: local.url,
         // HLS 下载已把分片合并为单一 MPEG-TS 文件，按渐进式 ts 播放即可；
         // 若仍报 'hls' 会被播放器当成清单去做 m3u8 预检而失败。
+        // 转封装成功后由后端把 task.format 回写为 'mp4'，此处自然呈现 mp4。
         format: task.format === 'hls' ? 'ts' : task.format,
         headers: {},
-        subtitles: [],
+        subtitles,
         lineId: `local:${task.id}`,
         quality: task.quality,
         expiresAt: null,
@@ -652,9 +1039,22 @@ export const downloadService = {
   /** 启动/回前台恢复队列；同时接线应用生命周期（AC-72 / REV-22） */
   async bootstrap(): Promise<void> {
     downloadService.bindLifecycle();
+    // EXT-04/FR-63（AC-149）：开机把持久化档位下发给限速器（JS 桶 + 原生桶）
+    try {
+      const settings = await settingsService.get();
+      const applied = downloadRateLimiter.setLimit(normalizeSpeedLimit(settings.download.speedLimit));
+      await applyNativeSpeedLimit(applied.bytesPerSec);
+    } catch (e) {
+      logger.debug('启动下发限速档位失败（忽略）', toAppError(e).message);
+    }
     if (!isOnline()) return;
     bootstrapped = true;
     await requeuePending();
+  },
+
+  /** EXT-04/FR-64：释放已下载字幕的 ObjectURL（Web；离开播放页/卸载时调用） */
+  releaseLocalSubtitles(taskId?: string): void {
+    revokeLocalSubtitleUrls(taskId);
   },
 
   /**
@@ -760,9 +1160,9 @@ export const downloadService = {
     const data = new Uint8Array(await response.arrayBuffer());
 
     if (isNative()) {
-      // Android：写入文件系统
+      // Android：写入文件系统（与最终视频文件同目录同 basename，FR-64）
       const { arrayBufferToBase64, writeBase64, ensureDir } = await import('@/native/fs');
-      const subtitlePath = `${nativeFilePathOf(task).replace(/\.[^.]+$/, '')}.${lang}.${format}`;
+      const subtitlePath = `${finalFilePathOf(task).replace(/\.[^.]+$/, '')}.${lang}.${format}`;
       const dir = subtitlePath.slice(0, subtitlePath.lastIndexOf('/'));
       await ensureDir(dir);
       const base64 = arrayBufferToBase64(data.buffer);
@@ -794,7 +1194,7 @@ export const downloadService = {
     if (isNative()) {
       // Android：写入文件系统
       const { arrayBufferToBase64, writeBase64, ensureDir } = await import('@/native/fs');
-      const coverPath = `${nativeFilePathOf(task).replace(/\.[^.]+$/, '')}.cover.jpg`;
+      const coverPath = `${finalFilePathOf(task).replace(/\.[^.]+$/, '')}.cover.jpg`;
       const dir = coverPath.slice(0, coverPath.lastIndexOf('/'));
       await ensureDir(dir);
       const base64 = arrayBufferToBase64(data.buffer);
@@ -820,6 +1220,10 @@ export const downloadService = {
    */
   async downloadAttachments(task: DownloadTask, input: CreateDownloadInput): Promise<void> {
     const subtitlePaths: Array<{ path: string; lang: string; format: 'vtt' | 'srt' }> = [];
+    const expectedSubtitles = input.subtitleUrls?.length ?? 0;
+    if (expectedSubtitles > 0) {
+      emitDownload({ type: 'postprocess', task, stage: 'subtitles', state: 'start' });
+    }
 
     // 下载字幕
     if (input.subtitleUrls && input.subtitleUrls.length > 0) {
@@ -868,6 +1272,19 @@ export const downloadService = {
           updatedAt: Date.now(),
         });
       }
+    }
+
+    // FR-64：字幕阶段结果上报（失败隔离——视频任务保持 completed，只标注字幕状态）
+    if (expectedSubtitles > 0) {
+      const failedCount = expectedSubtitles - subtitlePaths.length;
+      emitDownload({
+        type: 'postprocess',
+        task,
+        stage: 'subtitles',
+        state: subtitlePaths.length === 0 ? 'failed' : failedCount > 0 ? 'progress' : 'done',
+        progress: subtitlePaths.length / expectedSubtitles,
+        reason: failedCount > 0 ? `missing-${failedCount}` : undefined,
+      });
     }
   },
 

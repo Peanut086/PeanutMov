@@ -30,28 +30,53 @@ export interface HlsDownloaderDeps {
 }
 
 /** HLS 变体流（master playlist 中的选项） */
-interface HlsVariant {
+export interface HlsVariant {
   url: string;
   bandwidth: number;
   resolution?: { width: number; height: number };
   codecs?: string;
 }
 
+/**
+ * 按清晰度档位选择变体（AC-146 / AC-147）。
+ *
+ * 规则（与 P1-6 原实现一致，供 `HlsDownloader` 与 `downloadPreflight` 共用）：
+ * - `max`/`auto` → 码率最高的变体（入参已按 BANDWIDTH 降序）；
+ * - `1080p`/`720p` → 第一个 `RESOLUTION.height <= 档位高度` 的变体；
+ * - 无 `RESOLUTION` 或全都不满足 → 取码率最低的变体（调用方负责写 note）。
+ */
+export function selectHlsVariantForQuality(
+  variants: HlsVariant[],
+  quality: 'max' | '1080p' | '720p' | 'auto',
+): HlsVariant {
+  if (variants.length === 0) throw new AppError('E_PARSE', '清单中没有可用变体');
+  if (quality === 'max' || quality === 'auto') {
+    return variants[0]!;
+  }
+  const maxHeight = quality === '1080p' ? 1080 : 720;
+  for (const variant of variants) {
+    if (variant.resolution && variant.resolution.height <= maxHeight) {
+      return variant;
+    }
+  }
+  return variants[variants.length - 1]!;
+}
+
 /** AES-128 密钥信息 */
-interface HlsKey {
+export interface HlsKey {
   method: string;
   uri: string;
   iv?: string;
 }
 
 /** fMP4 初始化分片 */
-interface HlsInitSegment {
+export interface HlsInitSegment {
   url: string;
   data?: Uint8Array;
 }
 
 /** 媒体分片 */
-interface HlsSegment {
+export interface HlsSegment {
   url: string;
   duration: number;
   key?: HlsKey;
@@ -59,7 +84,7 @@ interface HlsSegment {
 }
 
 /** 解析后的播放列表 */
-interface HlsPlaylist {
+export interface HlsPlaylist {
   isMaster: boolean;
   variants?: HlsVariant[];
   targetDuration?: number;
@@ -92,7 +117,7 @@ const RETRY_BACKOFF_MS = [500, 1500];
  * 验证：有效的 m3u8 必须以 `#EXTM3U` 开头（HLS 规范）。
  * 如果返回 HTML 或纯文本，抛 E_PARSE 避免把错误页面当分片列表。
  */
-function parseM3u8(manifest: string, baseUrl: string): HlsPlaylist {
+export function parseM3u8(manifest: string, baseUrl: string): HlsPlaylist {
   const trimmed = manifest.trim();
   if (!trimmed.startsWith('#EXTM3U')) {
     const preview = trimmed.substring(0, 100);
@@ -291,7 +316,7 @@ function isLocalhostUrl(url: string): boolean {
  * 语义，不能当基线；代理路径的落地方向已由原生侧以落地地址为基线改写清单体现
  * （见 `unwrapPlaylistUrls`），因此回落到请求地址。
  */
-function manifestBaseUrl(reportedUrl: string | undefined, requestedUrl: string): string {
+export function manifestBaseUrl(reportedUrl: string | undefined, requestedUrl: string): string {
   if (!reportedUrl) return requestedUrl;
   if (isLocalhostUrl(reportedUrl)) return requestedUrl;
   return /^https?:\/\//i.test(reportedUrl) ? reportedUrl : requestedUrl;
@@ -349,7 +374,7 @@ function unwrapPlaylistUrls(playlist: HlsPlaylist, proxyBase: string | null): vo
  * 标签名/属性名大小写不敏感（`#ext-x-key:`、`method = "SAMPLE-AES"` 同样命中），
  * 并同时扫描 `#EXT-X-SESSION-KEY`，避免两处实现漂移。
  */
-function assertSupportedKeyMethods(manifest: string): void {
+export function assertSupportedKeyMethods(manifest: string): void {
   const evidence = findProtectedKeyEvidence(manifest);
   if (!evidence) return;
   throw new AppError('E_DRM_PROTECTED', undefined, {
@@ -749,21 +774,12 @@ export class HlsDownloader {
 
   /**
    * P1-6: 按质量选择变体流
+   *
+   * EXT-04/D-04：实现下沉为模块级导出函数，供预检模块复用同一口径（避免两套选流规则漂移）；
+   * 行为与此前完全一致。
    */
   private selectVariant(variants: HlsVariant[], quality: 'max' | '1080p' | '720p' | 'auto'): HlsVariant {
-    // variants 已按码率降序排序
-    if (quality === 'max' || quality === 'auto') {
-      return variants[0]!;
-    }
-    const maxHeight = quality === '1080p' ? 1080 : 720;
-    // 找第一个高度 <= maxHeight 的变体
-    for (const v of variants) {
-      if (v.resolution && v.resolution.height <= maxHeight) {
-        return v;
-      }
-    }
-    // 都没找到，返回最低的
-    return variants[variants.length - 1]!;
+    return selectHlsVariantForQuality(variants, quality);
   }
 
   /**
