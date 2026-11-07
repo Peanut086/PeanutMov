@@ -143,7 +143,6 @@ async function loadChannel(url: string): Promise<void> {
       clearTimeout(channelTimer);
       channelTimer = null;
     }
-    emit('timeout', url);
   }
 }
 

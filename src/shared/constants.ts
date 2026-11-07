@@ -220,7 +220,7 @@ export const HLS_MAX_BUFFER_DEFAULT_S = 30;
 /** 直播低延迟：落后直播点多少个分片内追平 */
 export const LIVE_SYNC_COUNT = 3;
 /** 直播频道起播超时（超时自动切同组下一路） */
-export const TIMEOUT_LIVE_CHANNEL_MS = 5000;
+export const TIMEOUT_LIVE_CHANNEL_MS = 8000;
 /** 直播失效判定：同频道连续起播失败次数 */
 export const LIVE_DEAD_STREAK = 2;
 
