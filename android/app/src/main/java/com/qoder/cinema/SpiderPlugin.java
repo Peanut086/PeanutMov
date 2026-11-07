@@ -4,10 +4,16 @@ import android.app.Application;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.View;
+import android.view.WindowManager;
+import android.widget.ProgressBar;
+import android.widget.TextView;
 
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -1225,6 +1231,7 @@ public class SpiderPlugin extends Plugin {
                 initMethod.invoke(null, app);
                 verifyGuardLoader(initClass, api);
                 guardInitDone.put(lockKey, Boolean.TRUE);
+                suppressGuardJarFloatingUi(context);
                 Log.i(TAG, "guard jar initialized: " + api);
                 d("guard jar initialized successfully: %s", api);
                 return;
@@ -1249,6 +1256,7 @@ public class SpiderPlugin extends Plugin {
                 initMethod.invoke(null, app);
                 verifyGuardLoader(initClass, api);
                 guardInitDone.put(lockKey, Boolean.TRUE);
+                suppressGuardJarFloatingUi(context);
                 Log.i(TAG, "guard jar initialized (retry): " + api);
                 return;
             } catch (Throwable e) {
@@ -1258,6 +1266,94 @@ public class SpiderPlugin extends Plugin {
                         "guard 类型爬虫初始化失败（" + api + "）：" + describeFailure(cause), cause);
             }
         }
+    }
+
+    /**
+     * 清理 guard jar 在 Init.init() 后残留的悬浮窗 UI（进度条/悬浮球/本地代理入口）。
+     *
+     * guard jar（AiWex/MyCrypto 系）初始化时会通过 WindowManager 添加自己的悬浮窗，
+     * 包括 MyCrypto .so 下载进度条和后续常驻的悬浮球。这些 UI 不属于宿主 App，
+     * 且样式固定（绿色进度条）不跟随主题。这里在 init 成功后遍历 WindowManager
+     * 的视图树，移除疑似 guard jar 添加的悬浮窗。
+     */
+    private static void suppressGuardJarFloatingUi(Context context) {
+        try {
+            Log.d(TAG, "suppressGuardJarFloatingUi called");
+            WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+            if (wm == null) {
+                Log.w(TAG, "suppressGuardJarFloatingUi: WindowManager is null");
+                return;
+            }
+            // 通过反射获取 WindowManagerImpl 的 mViews 列表（不同 Android 版本字段名可能不同）
+            Object globalWM = wm;
+            // WindowManager 实际实现是 WindowManagerImpl，其父类 WindowManagerGlobal 持有 mViews
+            Class<?> wmGlobalClass = Class.forName("android.view.WindowManagerGlobal");
+            Method getInstanceMethod = wmGlobalClass.getMethod("getInstance");
+            Object wmGlobal = getInstanceMethod.invoke(null);
+            if (wmGlobal == null) {
+                Log.w(TAG, "suppressGuardJarFloatingUi: WindowManagerGlobal instance is null");
+                return;
+            }
+            Field mViewsField = wmGlobalClass.getDeclaredField("mViews");
+            mViewsField.setAccessible(true);
+            @SuppressWarnings("unchecked")
+            java.util.ArrayList<View> views = (java.util.ArrayList<View>) mViewsField.get(wmGlobal);
+            if (views == null) {
+                Log.w(TAG, "suppressGuardJarFloatingUi: mViews is null");
+                return;
+            }
+            Log.d(TAG, "suppressGuardJarFloatingUi: found " + views.size() + " views in WindowManager");
+            // 倒序遍历避免删除时索引错位
+            for (int i = views.size() - 1; i >= 0; i--) {
+                View v = views.get(i);
+                if (v == null) continue;
+                // 判定条件：非 Activity 装饰视图、且包含 ProgressBar 或类名含 guard/AiWex/MyCrypto
+                String viewClassName = v.getClass().getName();
+                boolean isGuardView = viewClassName.contains("AiWex")
+                        || viewClassName.contains("MyCrypto")
+                        || viewClassName.contains("guard")
+                        || viewClassName.contains("Catvod")
+                        || viewClassName.contains("Floating");
+                boolean hasProgressBar = findChildOfType(v, ProgressBar.class) != null;
+                Log.d(TAG, "suppressGuardJarFloatingUi: checking view " + viewClassName
+                        + " isGuard=" + isGuardView + " hasProgressBar=" + hasProgressBar
+                        + " isHost=" + isHostView(v));
+                // 移除：guard jar 特征类名，或含 ProgressBar 且非宿主自身添加的视图
+                if (isGuardView || (hasProgressBar && !isHostView(v))) {
+                    try {
+                        wm.removeView(v);
+                        Log.i(TAG, "suppressed guard jar floating view: " + viewClassName);
+                    } catch (Exception e) {
+                        Log.w(TAG, "failed to remove guard jar view: " + viewClassName + " -> " + e.getMessage());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "suppressGuardJarFloatingUi failed: " + e.getMessage(), e);
+        }
+    }
+
+    /** 递归查找子视图中的指定类型 */
+    private static <T extends View> T findChildOfType(View parent, Class<T> type) {
+        if (type.isInstance(parent)) return type.cast(parent);
+        if (parent instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) parent;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                T found = findChildOfType(group.getChildAt(i), type);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    /** 判断视图是否属于宿主 App 自身（非 guard jar 添加） */
+    private static boolean isHostView(View v) {
+        // 宿主自身添加的视图通常有 tag 或特定的类名前缀
+        String className = v.getClass().getName();
+        return className.startsWith("com.qoder.cinema.")
+                || className.startsWith("android.widget.")
+                || className.startsWith("androidx.")
+                || v.getTag() != null;
     }
 
     /** 解包 InvocationTargetException / ExceptionInInitializerError 的 cause */
