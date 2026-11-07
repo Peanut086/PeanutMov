@@ -293,6 +293,31 @@ export const replayService = {
     }
   },
 
+  /**
+   * 失效某个直播源下全部频道的探测结果（P1-01：源级回看设置变更后调用）。
+   * 模板/天数变了，旧探测结论不再可信，必须让节目单重新探测。
+   */
+  async invalidateSourceCapabilities(liveSourceId: string): Promise<void> {
+    if (!liveSourceId) return;
+    const prefix = `${liveSourceId}:`;
+    try {
+      const cache = await readProbeCache();
+      const next: ProbeCache = {};
+      let changed = false;
+      for (const [key, value] of Object.entries(cache)) {
+        if (key.startsWith(prefix)) {
+          changed = true;
+          continue;
+        }
+        next[key] = value;
+      }
+      if (!changed) return;
+      await kvRepo.set(KV_KEY_CATCHUP_PROBES, next);
+    } catch (error) {
+      logger.debug('失效回看探测缓存失败', error);
+    }
+  },
+
   /** 探测失败原因文案（AC-162：403 额外提示鉴权） */
   describeFailure(capability: CatchupCapability): string {
     if (capability.state === 'auth_required') {

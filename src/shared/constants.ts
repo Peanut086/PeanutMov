@@ -277,6 +277,8 @@ export const CATCHUP_PROBE_TTL_MS = 6 * 60 * 60 * 1000;
 export const CATCHUP_PROBE_TIMEOUT_MS = 3000;
 /** kv 中存放回看探测结果的 key */
 export const KV_KEY_CATCHUP_PROBES = 'live-catchup-probes';
+/** 回看起播超时（FR-68：沿用直播 5s 口径，超时给出错误 + 重试/返回节目单） */
+export const TIMEOUT_REPLAY_START_MS = 5000;
 
 /** 单直播源自定义分组数上限 */
 export const LIVE_GROUP_MAX = 20;

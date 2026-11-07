@@ -529,3 +529,90 @@ describe('EpgView 请求竞态（REV-26）', () => {
     expect(wrapper.text()).toContain('新节目');
   });
 });
+
+describe('EpgView 日期栏回看窗口（P1-05 / FR-68）', () => {
+  function dateKeyOf(date: Date): string {
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${date.getFullYear()}-${month}-${day}`;
+  }
+
+  function daysAgoKey(days: number): string {
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    return dateKeyOf(d);
+  }
+
+  function lastRequestedKey(): string | null {
+    const calls = vi.mocked(epgService.programmesFor).mock.calls;
+    const last = calls[calls.length - 1];
+    if (!last) return null;
+    return dateKeyOf(last[1] as Date);
+  }
+
+  it('回看窗口 3 天 → 可连续翻到 3 天前，再往前置灰且不再发请求', async () => {
+    const wrapper = await mountView();
+    const prev = (): ReturnType<VueWrapper['find']> => wrapper.find('.epg-date-btn');
+
+    for (let i = 1; i <= WINDOW_DAYS; i += 1) {
+      expect(prev().attributes('disabled')).toBeUndefined();
+      await prev().trigger('click');
+      await settle();
+      expect(lastRequestedKey()).toBe(daysAgoKey(i));
+    }
+
+    expect(prev().attributes('disabled')).toBeDefined();
+    const before = vi.mocked(epgService.programmesFor).mock.calls.length;
+    await prev().trigger('click');
+    await settle();
+    expect(vi.mocked(epgService.programmesFor).mock.calls.length).toBe(before);
+    expect(wrapper.find('.epg-date-label').text()).toContain(`${WINDOW_DAYS} 天前`);
+  });
+
+  it('无回看能力（plan.supported=false）→ 下限仍为 1 天', async () => {
+    vi.mocked(replayService.plan).mockResolvedValue({
+      supported: false,
+      template: null,
+      templateSource: 'source',
+      days: 1,
+    });
+    const wrapper = await mountView();
+    const prev = (): ReturnType<VueWrapper['find']> => wrapper.find('.epg-date-btn');
+
+    await prev().trigger('click');
+    await settle();
+    expect(lastRequestedKey()).toBe(daysAgoKey(1));
+    expect(prev().attributes('disabled')).toBeDefined();
+  });
+
+  it('日期选择器可在窗口内直接跳转，越界日期被钳到最早可回看日', async () => {
+    const wrapper = await mountView();
+    const picker = wrapper.find('.epg-date-picker');
+    expect(picker.attributes('type')).toBe('date');
+    expect(picker.attributes('min')).toBe(daysAgoKey(WINDOW_DAYS));
+    expect(picker.attributes('max')).toBe(daysAgoKey(-1));
+
+    (picker.element as HTMLInputElement).value = daysAgoKey(2);
+    await picker.trigger('change');
+    await settle();
+    expect(lastRequestedKey()).toBe(daysAgoKey(2));
+
+    // 越过窗口下限的日期（先摘掉原生 min 约束模拟异常输入）→ 被钳到最早可回看日
+    picker.element.removeAttribute('min');
+    (picker.element as HTMLInputElement).value = daysAgoKey(9);
+    await picker.trigger('change');
+    await settle();
+    expect(lastRequestedKey()).toBe(daysAgoKey(WINDOW_DAYS));
+  });
+
+  it('未来仍只允许 +1 天（明天）', async () => {
+    const wrapper = await mountView();
+    const buttons = wrapper.findAll('.epg-date-btn');
+    const next = buttons[buttons.length - 1]!;
+
+    await next.trigger('click');
+    await settle();
+    expect(next.attributes('disabled')).toBeDefined();
+    expect(wrapper.find('.epg-date-label').text()).toContain('明天');
+  });
+});

@@ -67,6 +67,62 @@ describe('REV-01：ReplayPlayer 首次挂载即加载', () => {
   });
 });
 
+describe('P1-02：回看起播 5s 看门狗（FR-68）', () => {
+  const TIMEOUT_TEXT = '起播超时，请检查网络或源是否支持回看';
+  const REPLAY_URL = 'https://cdn.example.com/replay/20261106/200000.mp4';
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('5s 内未进入 playing → 报错并给出重试/返回节目单', async () => {
+    vi.useFakeTimers();
+    const wrapper = track(mountPlayer(REPLAY_URL));
+    await flushPromises();
+    expect(wrapper.text()).toContain(LOADING_TEXT);
+
+    vi.advanceTimersByTime(4999);
+    await flushPromises();
+    expect(wrapper.text()).toContain(LOADING_TEXT);
+
+    vi.advanceTimersByTime(1);
+    await flushPromises();
+    expect(wrapper.text()).toContain('回看播放失败');
+    expect(wrapper.text()).toContain(TIMEOUT_TEXT);
+    expect(wrapper.text()).toContain('重试');
+    expect(wrapper.text()).toContain('返回节目单');
+  });
+
+  it('playing 后看门狗被撤销，不再误报超时', async () => {
+    vi.useFakeTimers();
+    const wrapper = track(mountPlayer(REPLAY_URL));
+    await flushPromises();
+    expect(wrapper.text()).toContain(LOADING_TEXT);
+
+    wrapper.find('video').element.dispatchEvent(new Event('playing'));
+    await flushPromises();
+    expect(wrapper.text()).not.toContain(LOADING_TEXT);
+
+    vi.advanceTimersByTime(10_000);
+    await flushPromises();
+    expect(wrapper.text()).not.toContain(TIMEOUT_TEXT);
+  });
+
+  it('卸载后定时器被清理（不产生超时告警）', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn');
+    const wrapper = mountPlayer(REPLAY_URL);
+    await flushPromises();
+    wrapper.unmount();
+
+    vi.advanceTimersByTime(10_000);
+    await flushPromises();
+    const timeoutLogs = warnSpy.mock.calls.filter((args) => String(args[1] ?? '').includes('回看起播超时'));
+    expect(timeoutLogs.length).toBe(0);
+    warnSpy.mockRestore();
+  });
+});
+
 describe('REV-08：加载失败日志不泄露完整回看 URL', () => {
   it('warn 只包含 host / 频道名 / 节目名，不含路径与 query', async () => {
     const loadSpy = vi

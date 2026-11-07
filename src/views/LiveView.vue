@@ -21,6 +21,7 @@ import BottomSheet from '@/components/common/BottomSheet.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
 import LivePlayer from '@/components/live/LivePlayer.vue';
 import ChannelGroupSheet from '@/components/live/ChannelGroupSheet.vue';
 import ChannelSortList from '@/components/live/ChannelSortList.vue';
@@ -33,7 +34,8 @@ import {
   extrasOfUrl,
 } from '@/services/channelIdentity';
 import { kvRepo } from '@/db/repositories/kvRepo';
-import { LIVE_DEAD_STREAK, EPG_PREFETCH_MAX } from '@/shared/constants';
+import { LIVE_DEAD_STREAK, EPG_PREFETCH_MAX, CATCHUP_MAX_DAYS } from '@/shared/constants';
+import { CATCHUP_TOKENS, validateCatchupTemplate } from '@/shared/catchupTemplate';
 import { useToast } from '@/composables/useToast';
 import { logger } from '@/shared/logger';
 import { toErrorShape } from '@/shared/errors';
@@ -619,6 +621,87 @@ async function removeRecord(record: LiveRecord): Promise<void> {
   }
   await reload();
 }
+
+/* ---------- 回看设置（P1-01 / FR-68：源级模板 + 回看天数） ---------- */
+
+/** 合法占位符清单（与 `CATCHUP_TOKENS` 同源，避免帮助文案与实现漂移） */
+const catchupTokenHint = CATCHUP_TOKENS.map((token) => `{${token}}`).join(' ');
+const catchupDaysMax = CATCHUP_MAX_DAYS;
+
+const catchupOpen = ref(false);
+const catchupTarget = ref<LiveRecord | null>(null);
+const catchupEnabled = ref(true);
+const catchupTemplate = ref('');
+const catchupDays = ref(1);
+const catchupError = ref<string | null>(null);
+const catchupSaving = ref(false);
+
+/** 输入过程中的行内校验（空模板不算错，保存时才提示） */
+const catchupTemplateError = computed(() => {
+  const text = catchupTemplate.value.trim();
+  return text ? validateCatchupTemplate(text) : null;
+});
+
+function openCatchup(record: LiveRecord): void {
+  catchupTarget.value = record;
+  const settings = record.catchup;
+  catchupEnabled.value = settings?.enabled ?? true;
+  catchupTemplate.value = settings?.template ?? '';
+  catchupDays.value = settings?.days ?? 1;
+  catchupError.value = null;
+  // 单层弹层：先关「直播源管理」再开「回看设置」，避免双层 BottomSheet 抢焦点/双 Escape
+  addOpen.value = false;
+  catchupOpen.value = true;
+}
+
+async function saveCatchup(): Promise<void> {
+  const record = catchupTarget.value;
+  if (!record || catchupSaving.value) return;
+  const invalid = validateCatchupTemplate(catchupTemplate.value.trim());
+  if (invalid) {
+    catchupError.value = invalid;
+    return;
+  }
+  catchupSaving.value = true;
+  catchupError.value = null;
+  try {
+    const updated = await liveService.updateCatchup(record.id, {
+      enabled: catchupEnabled.value,
+      template: catchupTemplate.value,
+      days: catchupDays.value,
+    });
+    records.value = records.value.map((item) => (item.id === updated.id ? updated : item));
+    catchupTarget.value = updated;
+    catchupDays.value = updated.catchup?.days ?? 1;
+    toast.success(`已保存「${updated.name}」的回看设置`);
+    catchupOpen.value = false;
+  } catch (e) {
+    // 契约/校验类错误（含未知占位符清单）直接展示在行内，便于用户修正
+    catchupError.value = toErrorShape(e).message;
+  } finally {
+    catchupSaving.value = false;
+  }
+}
+
+async function clearCatchup(): Promise<void> {
+  const record = catchupTarget.value;
+  if (!record || catchupSaving.value) return;
+  catchupSaving.value = true;
+  catchupError.value = null;
+  try {
+    const updated = await liveService.updateCatchup(record.id, null);
+    records.value = records.value.map((item) => (item.id === updated.id ? updated : item));
+    catchupTemplate.value = '';
+    catchupEnabled.value = true;
+    catchupDays.value = 1;
+    catchupTarget.value = updated;
+    toast.info(`已清除「${updated.name}」的回看设置`);
+  } catch (e) {
+    catchupError.value = toErrorShape(e).message;
+  } finally {
+    catchupSaving.value = false;
+  }
+}
 </script>
 
 <template>
@@ -816,17 +899,92 @@ async function removeRecord(record: LiveRecord): Promise<void> {
               <span class="live-manage__name truncate-1">
                 {{ record.name }}
                 <span class="live-manage__count">{{ record.channelCount ?? '?' }} 频道</span>
+                <span v-if="record.catchup?.template" class="live-manage__count">· 回看 {{ record.catchup.days }} 天</span>
               </span>
-              <button
-                class="btn btn--secondary btn--sm live-manage__remove"
-                type="button"
-                @click="removeRecord(record)"
-              >
-                删除
-              </button>
+              <span class="live-manage__actions">
+                <button
+                  class="btn btn--secondary btn--sm"
+                  type="button"
+                  @click="openCatchup(record)"
+                >
+                  回看
+                </button>
+                <button
+                  class="btn btn--secondary btn--sm live-manage__remove"
+                  type="button"
+                  @click="removeRecord(record)"
+                >
+                  删除
+                </button>
+              </span>
             </li>
           </ul>
         </template>
+      </div>
+    </BottomSheet>
+
+    <!-- EXT-06/FR-68（P1-01）源级回看模板 + 回看天数 -->
+    <BottomSheet v-model="catchupOpen" title="回看设置">
+      <div class="live-catchup">
+        <p class="live-catchup__source truncate-1">
+          {{ catchupTarget?.name ?? '' }}
+        </p>
+        <p class="field__hint">
+          按节目时间渲染回看地址；频道自带 m3u catchup-source 时优先用频道的模板。
+        </p>
+
+        <div class="live-catchup__switch">
+          <span class="field__label">启用源级回看</span>
+          <ToggleSwitch v-model="catchupEnabled" label="启用源级回看" />
+        </div>
+
+        <label class="field__label" for="catchup-template">回看模板</label>
+        <textarea
+          id="catchup-template"
+          v-model="catchupTemplate"
+          class="field__input live-catchup__template"
+          :class="{ 'field__input--error': Boolean(catchupTemplateError) }"
+          rows="3"
+          spellcheck="false"
+          placeholder="https://cdn.example.com/{channelId}/{date}/{start}-{end}.m3u8"
+        />
+        <p class="live-catchup__tokens">合法占位符：{{ catchupTokenHint }}</p>
+
+        <label class="field__label" for="catchup-days">回看天数（1~{{ catchupDaysMax }}，默认 1）</label>
+        <input
+          id="catchup-days"
+          v-model.number="catchupDays"
+          class="field__input"
+          type="number"
+          inputmode="numeric"
+          :min="1"
+          :max="catchupDaysMax"
+        />
+
+        <p v-if="catchupTemplateError" class="field__error" role="alert">
+          {{ catchupTemplateError }}
+        </p>
+        <p v-if="catchupError" class="field__error" role="alert">{{ catchupError }}</p>
+
+        <div class="live-catchup__actions">
+          <button
+            class="btn btn--primary btn--md"
+            type="button"
+            :disabled="catchupSaving"
+            @click="saveCatchup"
+          >
+            <LoadingSpinner v-if="catchupSaving" :size="16" />
+            {{ catchupSaving ? '正在保存…' : '保存' }}
+          </button>
+          <button
+            class="btn btn--ghost btn--sm"
+            type="button"
+            :disabled="catchupSaving || !catchupTarget?.catchup"
+            @click="clearCatchup"
+          >
+            清除设置
+          </button>
+        </div>
       </div>
     </BottomSheet>
 
@@ -1184,6 +1342,55 @@ async function removeRecord(record: LiveRecord): Promise<void> {
 .live-manage__remove {
   flex: 0 0 auto;
   color: var(--color-danger);
+}
+
+/* P1-01：行内操作组（回看 / 删除） */
+.live-manage__actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* P1-01：回看设置弹层 */
+.live-catchup {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+.live-catchup__source {
+  font: var(--text-label-strong);
+  color: var(--color-text-primary);
+}
+
+.live-catchup__switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.live-catchup__template {
+  padding: var(--space-3) var(--space-4);
+  font: var(--text-caption);
+  font-family: var(--font-family-number);
+  resize: vertical;
+}
+
+.live-catchup__tokens {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  word-break: break-word;
+}
+
+.live-catchup__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 /* EXT-06：排序弹层 */

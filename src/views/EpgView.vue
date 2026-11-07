@@ -3,7 +3,8 @@
  * EPG 节目单页（功能扩展-5 / EXT-06）
  *
  * 展示某频道当日节目时间表（多 EPG 源合并，`epgService.programmesFor`）。
- * - 日期切换：昨天 / 今天 / 明天
+ * - 日期切换：未来最多 +1 天（明天）；往前最多「回看窗口天数」（源级/频道级取大，封顶 7，
+ *   无回看能力时 1 天），并可用原生日期选择器在窗口内直接跳转（P1-05）
  * - 时间轴：按时间顺序列出所有节目，当前正在播的高亮并自动滚动到视口
  * - EXT-06/FR-66：右上角「EPG 源管理」→ `EpgSourceSheet`
  * - EXT-06/FR-71：未开播节目可「设置提醒」→ `ReminderSheet`
@@ -29,6 +30,7 @@ import { liveService } from '@/services/liveService';
 import { reminderService } from '@/services/reminderService';
 import { replayService } from '@/services/replayService';
 import { channelKeyFromLive } from '@/services/channelIdentity';
+import { CATCHUP_MAX_DAYS } from '@/shared/constants';
 import { toErrorShape } from '@/shared/errors';
 import { useToast } from '@/composables/useToast';
 
@@ -84,10 +86,21 @@ const programmes = computed<EpgProgramme[]>(() => result.value?.programmes ?? []
 const enabledSourceCount = ref(0);
 const currentDate = ref(new Date());
 
-/** 日期偏移：-1 昨天 / 0 今天 / +1 明天 */
+/** 日期偏移：0 今天 / 负数过去 N 天 / +1 明天（下限见 `minDateOffset`） */
 const dateOffset = ref(0);
 
 const isToday = computed(() => dateOffset.value === 0);
+
+const maxDateOffset = 1;
+
+/** `YYYY-MM-DD`（设备本地日期，用于原生日期选择器） */
+function dateKeyOfOffset(offset: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${month}-${day}`;
+}
 
 const dateLabel = computed(() => {
   const d = currentDate.value;
@@ -98,6 +111,7 @@ const dateLabel = computed(() => {
   let prefix = '';
   if (dateOffset.value === -1) prefix = '昨天 ';
   else if (dateOffset.value === 1) prefix = '明天 ';
+  else if (dateOffset.value < -1) prefix = `${-dateOffset.value} 天前 `;
   return `${prefix}${month}月${day}日 ${weekday}`;
 });
 
@@ -157,12 +171,78 @@ const replayCapability = ref<CatchupCapability | null>(null);
 const replayPendingKey = ref<string | null>(null);
 
 /**
+ * P1-05 / FR-68：往前可翻的天数 = 回看窗口天数（源级/频道级取大、封顶 7）。
+ * 独立于 `replayPlan` 保存：日期切换会重跑 `loadReplayContext`，plan 的瞬时清空
+ * 不能把窗口收窄（否则翻到 2 天前会被立刻拉回 1 天前）。
+ */
+const recentDays = ref(1);
+
+const minDateOffset = computed(() => -recentDays.value);
+const canGoPrev = computed(() => dateOffset.value > minDateOffset.value);
+const canGoNext = computed(() => dateOffset.value < maxDateOffset);
+const minDateKey = computed(() => dateKeyOfOffset(minDateOffset.value));
+const maxDateKey = computed(() => dateKeyOfOffset(maxDateOffset));
+const currentDateKey = computed(() => dateKeyOfOffset(dateOffset.value));
+
+/** 切换日期（带窗口钳制）：回看窗口收窄后越界的偏移会被拉回边界 */
+function applyDateOffset(offset: number): void {
+  const clamped = Math.min(maxDateOffset, Math.max(minDateOffset.value, offset));
+  const d = new Date();
+  d.setDate(d.getDate() + clamped);
+  dateOffset.value = clamped;
+  currentDate.value = d;
+}
+
+/** 窗口缩短（换频道 / 改回看设置）后，当前偏移可能越界 → 拉回旧边界 */
+watch(minDateOffset, (min) => {
+  if (dateOffset.value < min) applyDateOffset(min);
+});
+
+const datePickerRef = ref<HTMLInputElement | null>(null);
+
+/** 打开原生日期选择器（受 min/max 限制在窗口内） */
+function openDatePicker(): void {
+  const input = datePickerRef.value;
+  if (!input) return;
+  const picker = input as HTMLInputElement & { showPicker?: () => void };
+  if (typeof picker.showPicker === 'function') {
+    try {
+      picker.showPicker();
+      return;
+    } catch {
+      // 部分 WebView 需用户手势以外的回退路径
+    }
+  }
+  input.click();
+}
+
+function onDatePicked(event: Event): void {
+  const value = (event.target as HTMLInputElement).value;
+  const [yearText, monthText, dayText] = value.split('-');
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return;
+  const picked = new Date(year, month - 1, day);
+  if (Number.isNaN(picked.getTime())) return;
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  applyDateOffset(Math.round((picked.getTime() - todayStart.getTime()) / 86_400_000));
+}
+
+/**
  * 载入回看上下文（频道 URL + 模板/天数）。
  * 失败静默：回看入口不出现，节目单照常展示。
  *
  * REV-14：同一份 `channelsWithExtrasOf` 结果顺带反查 tvgId / tvgName，
  * 补齐查询参数缺失时（提醒跳转 / 旧链接）的频道身份，保证 L2（tvg-name）可命中。
  */
+/** 回看窗口天数（无回看能力 → 1 天，与旧版「昨天 / 今天 / 明天」一致） */
+function retentionDaysOf(plan: CatchupPlan | null): number {
+  if (!plan || !plan.supported) return 1;
+  return Math.max(1, Math.min(CATCHUP_MAX_DAYS, plan.days));
+}
+
 async function loadReplayContext(): Promise<void> {
   replayContext.value = null;
   replayPlan.value = null;
@@ -174,8 +254,7 @@ async function loadReplayContext(): Promise<void> {
     const records = await liveService.list();
     const record = records.find((item) => item.id === sourceId) ?? null;
     if (!record) return;
-    const data = await liveService.channelsWithExtrasOf(record);
-    const channel =
+    const data = await liveService.channelsWithExtrasOf(record);    const channel =
       data.channels.find((item) => item.name === channelName.value) ??
       data.channels.find(
         (item) =>
@@ -199,9 +278,11 @@ async function loadReplayContext(): Promise<void> {
       extrasTemplate: extra?.catchupTemplate ?? null,
       extrasDays: extra?.catchupDays ?? null,
     });
+    recentDays.value = retentionDaysOf(replayPlan.value);
   } catch {
     replayContext.value = null;
     replayPlan.value = null;
+    recentDays.value = 1;
   }
 }
 
@@ -448,11 +529,8 @@ let loadSeq = 0;
 
 function shiftDate(delta: number): void {
   const next = dateOffset.value + delta;
-  if (next < -1 || next > 1) return;
-  dateOffset.value = next;
-  const d = new Date();
-  d.setDate(d.getDate() + next);
-  currentDate.value = d;
+  if (next < minDateOffset.value || next > maxDateOffset) return;
+  applyDateOffset(next);
 }
 
 async function loadProgrammes(): Promise<void> {
@@ -543,20 +621,37 @@ function formatDuration(startSec: number, endSec: number): string {
       <div class="epg-date-bar">
         <button
           class="epg-date-btn"
-          :class="{ 'epg-date-btn--disabled': dateOffset <= -1 }"
-          :disabled="dateOffset <= -1"
+          :class="{ 'epg-date-btn--disabled': !canGoPrev }"
+          :disabled="!canGoPrev"
           type="button"
           @click="shiftDate(-1)"
         >
           ‹ 前一天
         </button>
-        <span class="epg-date-label" :class="{ 'epg-date-label--today': isToday }">
+        <button
+          class="epg-date-label"
+          :class="{ 'epg-date-label--today': isToday }"
+          type="button"
+          aria-label="选择日期"
+          @click="openDatePicker"
+        >
           {{ dateLabel }}
-        </span>
+        </button>
+        <input
+          ref="datePickerRef"
+          class="epg-date-picker"
+          type="date"
+          tabindex="-1"
+          aria-hidden="true"
+          :min="minDateKey"
+          :max="maxDateKey"
+          :value="currentDateKey"
+          @change="onDatePicked"
+        />
         <button
           class="epg-date-btn"
-          :class="{ 'epg-date-btn--disabled': dateOffset >= 1 }"
-          :disabled="dateOffset >= 1"
+          :class="{ 'epg-date-btn--disabled': !canGoNext }"
+          :disabled="!canGoNext"
           type="button"
           @click="shiftDate(1)"
         >
@@ -729,13 +824,35 @@ function formatDuration(startSec: number, endSec: number): string {
 
 .epg-date-label {
   flex: 1 1 auto;
+  min-height: 36px;
+  padding: 0 var(--space-2);
+  border: 0;
+  background: none;
+  border-radius: var(--radius-md);
   text-align: center;
   font: var(--text-label-strong);
   color: var(--color-text-primary);
+  cursor: pointer;
+  transition: background-color var(--duration-fast);
+}
+
+.epg-date-label:active {
+  background-color: var(--color-bg-pressed);
 }
 
 .epg-date-label--today {
   color: var(--color-brand-text);
+}
+
+/* P1-05：原生日期选择器（不占布局，仅作 openDatePicker 的触发载体） */
+.epg-date-picker {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  border: 0;
+  padding: 0;
+  pointer-events: none;
 }
 
 /* ---------- 加载 / 错误 / 空态 ---------- */

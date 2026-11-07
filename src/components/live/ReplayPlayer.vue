@@ -21,6 +21,7 @@ import { setPlayerImmersive } from '@/native/playerUi';
 import type { PlaybackSource } from '@/types';
 import { formatClock } from '@/shared/time';
 import { logger } from '@/shared/logger';
+import { TIMEOUT_REPLAY_START_MS } from '@/shared/constants';
 
 const props = defineProps<{
   /** 已渲染好的回看地址（含时间占位符），为空则展示 idle */
@@ -48,6 +49,29 @@ const fullscreen = ref(false);
 const durationUnknown = ref(false);
 
 let engine: HlsEngine | VideoEngine | null = null;
+/** FR-68：回看起播看门狗（沿用直播 5s 口径） */
+let startTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearStartTimer(): void {
+  if (startTimer !== null) {
+    clearTimeout(startTimer);
+    startTimer = null;
+  }
+}
+
+/** 起播超时：未进入 playing/paused 即报错并给出"重试/返回节目单"（模板已有两个动作） */
+function armStartTimer(next: HlsEngine | VideoEngine): void {
+  clearStartTimer();
+  startTimer = setTimeout(() => {
+    startTimer = null;
+    // 期间已重载/卸载：本次计时作废
+    if (engine !== next) return;
+    if (state.value === 'playing' || state.value === 'paused' || state.value === 'ended') return;
+    logger.warn('回看起播超时', { channel: props.channelName, template: props.programmeTitle });
+    state.value = 'error';
+    errorMessage.value = '起播超时，请检查网络或源是否支持回看';
+  }, TIMEOUT_REPLAY_START_MS);
+}
 
 const fullscreenController = new FullscreenController({
   onChange: (fs) => {
@@ -112,6 +136,7 @@ function engineEvents(): VideoEngineEvents {
 }
 
 function destroyEngine(): void {
+  clearStartTimer();
   engine?.destroy();
   engine = null;
 }
@@ -155,6 +180,7 @@ async function load(url: string): Promise<void> {
       : new VideoEngine(engineEvents());
   engine = next;
   next.attach(container);
+  armStartTimer(next);
   try {
     await next.load(source);
     await next.play();
@@ -186,6 +212,11 @@ watch(
     void load(url);
   },
 );
+
+/** 一旦离开 loading（playing/paused/ended/error）即撤掉看门狗 */
+watch(state, (value) => {
+  if (value !== 'loading') clearStartTimer();
+});
 
 onMounted(() => {
   if (props.url) void load(props.url);

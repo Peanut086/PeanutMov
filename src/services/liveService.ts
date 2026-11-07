@@ -9,7 +9,9 @@
 import { liveRepo } from '@/db/repositories/liveRepo';
 import { channelPrefsRepo } from '@/db/repositories/channelPrefsRepo';
 import { reminderService } from '@/services/reminderService';
+import { replayService } from '@/services/replayService';
 import { AppError } from '@/shared/errors';
+import { clampCatchupDays, validateCatchupTemplate } from '@/shared/catchupTemplate';
 import { normalizeChannelName } from '@/shared/channelKey';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { newId } from '@/shared/id';
@@ -22,6 +24,7 @@ import {
 } from '@/sources/live/liveParsers';
 import { parseLiveExtras } from '@/sources/live/liveExtras';
 import type {
+  LiveCatchupSettings,
   LiveChannelExtrasMap,
   LiveGroup,
   LiveListFormat,
@@ -140,7 +143,38 @@ export const liveService = {
     await Promise.all([
       channelPrefsRepo.remove(id).catch(() => undefined),
       reminderService.cancelBySource(id).catch(() => undefined),
+      replayService.invalidateSourceCapabilities(id).catch(() => undefined),
     ]);
+  },
+
+  /**
+   * EXT-06/FR-68（P1-01）：写入或清除直播源级回看设置。
+   * - 模板走 `validateCatchupTemplate`（未知占位符 → `E_INVALID_INPUT` 并附合法占位符清单）；
+   * - 天数经 `clampCatchupDays` 收敛到 1~`CATCHUP_MAX_DAYS`；
+   * - 变更后清该源的 `live-catchup-probes` 探测缓存，让节目单重新探测；
+   * - `input = null` 表示清除设置（回到"仅 m3u catchup-source"）。
+   */
+  async updateCatchup(
+    id: string,
+    input: { enabled: boolean; template: string; days: number } | null,
+  ): Promise<LiveRecord> {
+    const record = await liveRepo.get(id);
+    if (!record) throw new AppError('E_NOT_FOUND', '直播源不存在');
+    let catchup: LiveCatchupSettings | undefined;
+    if (input) {
+      const template = (input.template ?? '').trim();
+      const invalid = validateCatchupTemplate(template);
+      if (invalid) throw new AppError('E_INVALID_INPUT', invalid);
+      catchup = {
+        enabled: input.enabled !== false,
+        template,
+        days: clampCatchupDays(input.days),
+      };
+    }
+    const next: LiveRecord = { ...record, catchup, updatedAt: Date.now() };
+    await liveRepo.save(next);
+    await replayService.invalidateSourceCapabilities(id).catch(() => undefined);
+    return next;
   },
 
   /**

@@ -27,11 +27,15 @@ const { schedulerMock } = vi.hoisted(() => {
       state,
       ensurePermission: vi.fn(async () => 'granted' as const),
       schedule: vi.fn(async () => ({ scheduled: true })),
-      cancel: vi.fn(async () => ({ canceled: 0 })),
       getPendingIds: vi.fn(async () => state.pendingSchedules.map((item) => item.nativeId)),
       getPendingSchedules: vi.fn(async () => state.pendingSchedules),
-      onReceived: vi.fn(() => () => undefined),
-      onAction: vi.fn(() => () => undefined),
+      onReceived: vi.fn(
+        (_cb: (payload: { id: number; extra?: Record<string, unknown> }) => void) => () => undefined,
+      ),
+      onAction: vi.fn(
+        (_cb: (payload: { id: number; extra?: Record<string, unknown> }) => void) => () => undefined,
+      ),
+      cancel: vi.fn(async (_ids: number[]) => ({ canceled: 0 })),
     },
   };
 });
@@ -191,5 +195,70 @@ describe('REV-20：leadMinutes = 0（开播时刻提醒）', () => {
     });
     expect(created.leadMinutes).toBe(0);
     expect(created.notifyAt).toBe(startAt);
+  });
+});
+
+describe('P1-04 / AC-168：前台不重复弹系统通知', () => {
+  it('对账到点（firedReminders）→ 先撤销该 nativeId 的系统通知，再交页内提示', async () => {
+    const now = Date.now();
+    const due = reminderOf({
+      id: 'r_due_cancel',
+      startAt: now + 10 * MINUTE,
+      endAt: now + 40 * MINUTE,
+      notifyAt: now - 1_000,
+      state: 'scheduled',
+    });
+    await reminderRepo.save(due);
+
+    const fired: Reminder[] = [];
+    const off = reminderService.startAutoReconcile((reminders) => fired.push(...reminders));
+    await flush();
+
+    expect(schedulerMock.cancel).toHaveBeenCalled();
+    const canceledIds = schedulerMock.cancel.mock.calls.flatMap((call) => call[0] as number[]);
+    expect(canceledIds).toContain(due.nativeId);
+    expect(fired.map((item) => item.id)).toContain(due.id);
+    off();
+  });
+
+  it('前台收到原生通知（received）→ 立即撤销该通知，页内提示照常', async () => {
+    const record = reminderOf({ id: 'r_received', state: 'scheduled' });
+    await reminderRepo.save(record);
+
+    const events: Array<{ kind: string; id: string | null }> = [];
+    const off = reminderService.onNativeReceived((event) => {
+      events.push({ kind: event.kind, id: event.reminder?.id ?? null });
+    });
+    const receivedHandler = schedulerMock.onReceived.mock.calls[0]?.[0];
+    expect(receivedHandler).toBeTypeOf('function');
+
+    receivedHandler!({ id: record.nativeId });
+    await flush();
+
+    const canceledIds = schedulerMock.cancel.mock.calls.flatMap((call) => call[0] as number[]);
+    expect(canceledIds).toContain(record.nativeId);
+    expect(events).toEqual([{ kind: 'received', id: record.id }]);
+    expect((await reminderRepo.get(record.id))?.state).toBe('fired');
+    off();
+  });
+
+  it('点击通知（action）不额外撤销，仍返回定位路由', async () => {
+    const record = reminderOf({ id: 'r_action', state: 'scheduled' });
+    await reminderRepo.save(record);
+
+    const routes: Array<string | null> = [];
+    const off = reminderService.onNativeReceived((event) => {
+      if (event.kind === 'action') routes.push(event.route);
+    });
+    const actionHandler = schedulerMock.onAction.mock.calls[0]?.[0];
+    expect(actionHandler).toBeTypeOf('function');
+
+    schedulerMock.cancel.mockClear();
+    actionHandler!({ id: record.nativeId });
+    await flush();
+
+    expect(schedulerMock.cancel).not.toHaveBeenCalled();
+    expect(routes[0]).toContain('/live?source=live-a');
+    off();
   });
 });

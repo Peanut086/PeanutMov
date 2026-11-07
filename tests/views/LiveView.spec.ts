@@ -14,6 +14,7 @@ import { mount, type VueWrapper } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { channelPrefsService } from '@/services/channelPrefsService';
+import { AppError } from '@/shared/errors';
 import { kvRepo } from '@/db/repositories/kvRepo';
 import type { LiveChannel } from '@/sources/live/liveParsers';
 import type { LiveChannelExtrasMap, LiveRecord } from '@/types';
@@ -49,6 +50,7 @@ vi.mock('@/services/liveService', () => ({
     findSourceIdByChannelName: vi.fn(),
     add: vi.fn(),
     remove: vi.fn(),
+    updateCatchup: vi.fn(),
   },
 }));
 
@@ -416,5 +418,84 @@ describe('LiveView 空自定义分组（REV-23）', () => {
     // 加入后分组立即可见
     expect(rowNames(wrapper)).toEqual([HUNAN]);
     expect(toastMocks.success).toHaveBeenCalled();
+  });
+});
+
+describe('LiveView 源级回看设置（P1-01 / FR-68）', () => {
+  const TEMPLATE = 'https://cdn.example.com/{channelId}/{dateDash}/{start}-{end}.m3u8';
+
+  async function openCatchupSheet(wrapper: VueWrapper): Promise<void> {
+    await wrapper.find('.live-add').trigger('click');
+    await settle();
+    const entry = wrapper
+      .findAll('.live-manage__actions button')
+      .find((node) => node.text() === '回看');
+    expect(entry, '直播源行应有「回看」入口').toBeTruthy();
+    await entry!.trigger('click');
+    await settle();
+  }
+
+  it('直播源行提供「回看」入口，弹层含模板输入与合法占位符清单', async () => {
+    const wrapper = await mountView();
+    await openCatchupSheet(wrapper);
+
+    expect(wrapper.find('#catchup-template').exists()).toBe(true);
+    expect(wrapper.find('#catchup-days').exists()).toBe(true);
+    const tokens = wrapper.find('.live-catchup__tokens').text();
+    expect(tokens).toContain('{base}');
+    expect(tokens).toContain('{startSec}');
+    expect(tokens).toContain('{durationSec}');
+  });
+
+  it('未知占位符 → 行内报错并列出合法清单，且不调用保存', async () => {
+    const wrapper = await mountView();
+    await openCatchupSheet(wrapper);
+
+    await wrapper.find('#catchup-template').setValue('https://cdn.example.com/{base}/{foo}');
+    await settle();
+    expect(wrapper.find('.field__error').text()).toContain('{foo}');
+    expect(wrapper.find('.field__error').text()).toContain('{base}');
+
+    await wrapper.find('.live-catchup__actions .btn--primary').trigger('click');
+    await settle();
+    expect(vi.mocked(liveService.updateCatchup)).not.toHaveBeenCalled();
+  });
+
+  it('合法模板 + 天数 → 调用 updateCatchup 并提示成功', async () => {
+    vi.mocked(liveService.updateCatchup).mockResolvedValue({
+      ...record(),
+      catchup: { enabled: true, template: TEMPLATE, days: 5 },
+    });
+    const wrapper = await mountView();
+    await openCatchupSheet(wrapper);
+
+    await wrapper.find('#catchup-template').setValue(TEMPLATE);
+    await wrapper.find('#catchup-days').setValue('5');
+    await settle();
+    await wrapper.find('.live-catchup__actions .btn--primary').trigger('click');
+    await settle();
+
+    expect(vi.mocked(liveService.updateCatchup)).toHaveBeenCalledWith(SOURCE_ID, {
+      enabled: true,
+      template: TEMPLATE,
+      days: 5,
+    });
+    expect(toastMocks.success).toHaveBeenCalled();
+  });
+
+  it('保存失败（服务层拒绝）→ 错误展示在行内，不弹成功提示', async () => {
+    vi.mocked(liveService.updateCatchup).mockRejectedValue(
+      new AppError('E_INVALID_INPUT', '回看模板不能为空'),
+    );
+    const wrapper = await mountView();
+    await openCatchupSheet(wrapper);
+
+    await wrapper.find('#catchup-template').setValue(TEMPLATE);
+    await settle();
+    await wrapper.find('.live-catchup__actions .btn--primary').trigger('click');
+    await settle();
+
+    expect(wrapper.text()).toContain('回看模板不能为空');
+    expect(toastMocks.success).not.toHaveBeenCalled();
   });
 });

@@ -86,8 +86,7 @@ function scheduleText(reminder: Reminder): { title: string; body: string } {
   };
 }
 
-/** 原生排期（失败不抛：权限/系统限制走降级） */
-async function scheduleNative(
+/** 原生排期（失败不抛：权限/系统限制走降级） */async function scheduleNative(
   reminder: Reminder,
 ): Promise<{ permission: NotificationPermission; error: string | null }> {
   const permission = await notificationScheduler.ensurePermission();
@@ -110,6 +109,22 @@ async function scheduleNative(
   } catch (error) {
     logger.warn('本地通知排期失败', error);
     return { permission, error: '本地通知排期失败，仅 App 内提醒' };
+  }
+}
+
+/**
+ * AC-168（P1-04）：App 在前台时改走页内提示，撤销同 nativeId 的系统通知，避免"双重提醒"。
+ * 失败只记 debug（通知可能已被系统消费/权限撤销），不阻断页内提示。
+ */
+async function dismissNativeQuietly(reminders: Reminder[]): Promise<void> {
+  const ids = reminders
+    .map((reminder) => reminder.nativeId)
+    .filter((id) => Number.isFinite(id) && id > 0);
+  if (ids.length === 0) return;
+  try {
+    await notificationScheduler.cancel(ids);
+  } catch (error) {
+    logger.debug('撤销前台系统通知失败', error);
   }
 }
 
@@ -366,6 +381,9 @@ export const reminderService = {
         }
         if (kind === 'action') {
           route = `/live?source=${found.liveSourceId}&channel=${encodeURIComponent(found.channelName)}`;
+        } else {
+          // AC-168：前台收到系统通知 → 立刻撤销该通知（页内提示已是唯一提醒渠道）
+          await dismissNativeQuietly([found]);
         }
       }
       callback({ reminder: found ? { ...found } : null, route, kind });
@@ -393,8 +411,12 @@ export const reminderService = {
       if (disposed) return;
       void reminderService
         .reconcile()
-        .then((result) => {
-          if (result.firedReminders.length > 0) onFired?.(result.firedReminders);
+        .then(async (result) => {
+          if (result.firedReminders.length === 0) return;
+          // AC-168：前台由页内提示承担提醒，先撤掉到点的系统通知
+          await dismissNativeQuietly(result.firedReminders);
+          if (disposed) return;
+          onFired?.(result.firedReminders);
         })
         .catch((error) => logger.debug('提醒对账失败', error));
     };

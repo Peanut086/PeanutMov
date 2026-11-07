@@ -81,13 +81,47 @@ describe('renderCatchupUrl（12 token 渲染）', () => {
       dateDash: '2026-11-06',
       start: '20261106200000',
       end: '20261106213000',
-      startSec: String(20 * 3600),
+      startSec: '0',
       durationSec: '5400',
     });
     expect(tokens.utc).toMatch(/^\d{14}$/);
     expect(tokens.utcend).toMatch(/^\d{14}$/);
     expect(url).toContain('2026-11-06');
     expect(new URL(url).protocol).toBe('https:');
+  });
+
+  it('{startSec} 为相对节目起点的偏移秒（P1-03）', () => {
+    const template = '{base}/{channelId}?begin={startSec}';
+
+    const fromStart = renderCatchupUrl(template, {
+      channel: { ...CHANNEL, tvgId: 'cctv1' },
+      programme: { startAt: START, endAt: END },
+    });
+    expect(fromStart.tokens.startSec).toBe('0');
+    expect(fromStart.url).toBe('https://cdn.example.com/live/cctv1?begin=0');
+
+    const mid = renderCatchupUrl(template, {
+      channel: { ...CHANNEL, tvgId: 'cctv1' },
+      programme: { startAt: START, endAt: END },
+      positionAt: START + 10 * 60 * 1000,
+    });
+    expect(mid.tokens.startSec).toBe('600');
+    expect(mid.url).toBe('https://cdn.example.com/live/cctv1?begin=600');
+
+    // 位置早于节目起点 / 非法值 → 回落为 0，不出现负偏移
+    const beforeStart = renderCatchupUrl(template, {
+      channel: { ...CHANNEL, tvgId: 'cctv1' },
+      programme: { startAt: START, endAt: END },
+      positionAt: START - 60 * 1000,
+    });
+    expect(beforeStart.tokens.startSec).toBe('0');
+
+    const invalid = renderCatchupUrl(template, {
+      channel: { ...CHANNEL, tvgId: 'cctv1' },
+      programme: { startAt: START, endAt: END },
+      positionAt: Number.NaN,
+    });
+    expect(invalid.tokens.startSec).toBe('0');
   });
 
   it('AC-163 四类样本：查询参数式 / 路径式 / 秒偏移式 / catchup-source，均无残留占位符', () => {
@@ -104,7 +138,7 @@ describe('renderCatchupUrl（12 token 渲染）', () => {
     );
 
     const offset = renderCatchupUrl('{base}/stream/{channelId}?begin={startSec}&dur={durationSec}', ctx);
-    expect(offset.url).toBe('https://cdn.example.com/live/stream/cctv1?begin=72000&dur=5400');
+    expect(offset.url).toBe('https://cdn.example.com/live/stream/cctv1?begin=0&dur=5400');
 
     const catchupSource = renderCatchupUrl('{base}/catchup/{tvgId}/{utc}-{utcend}.m3u8', ctx);
     expect(catchupSource.url).toMatch(

@@ -14,13 +14,7 @@
  */
 import { AppError } from '@/shared/errors';
 import { normalizeChannelName } from '@/shared/channelKey';
-import {
-  localYmd,
-  localYmdHms,
-  localDateKey,
-  secOfLocalDay,
-  utcYmdHms,
-} from '@/shared/epgTime';
+import { localYmd, localYmdHms, localDateKey, utcYmdHms } from '@/shared/epgTime';
 import { CATCHUP_MAX_DAYS } from '@/shared/constants';
 
 export const CATCHUP_TOKENS = [
@@ -51,6 +45,11 @@ const URL_TOKENS = new Set<string>(['base', 'tvgId']);
 export interface CatchupRenderContext {
   channel: { name: string; tvgId: string | null; url: string };
   programme: { startAt: number; endAt: number };
+  /**
+   * 起播位置（epoch ms）。缺省 = 从节目起点起播。
+   * 仅用于"从节目中间起播"时计算 `{startSec}`，不影响契约默认行为（起点 → 0，见 API-23 §3.4.1 示例）。
+   */
+  positionAt?: number;
 }
 
 export interface CatchupRenderResult {
@@ -109,6 +108,12 @@ export function validateCatchupTemplate(template: string): string | null {
 function buildTokens(ctx: CatchupRenderContext): Record<string, string> {
   const { channel, programme } = ctx;
   const durationSec = Math.max(0, Math.round((programme.endAt - programme.startAt) / 1000));
+  // FR-68：{startSec} = 相对节目起点的偏移秒（起点起播为 0，见 API-23 §3.4.1 响应示例）
+  const positionAt =
+    typeof ctx.positionAt === 'number' && Number.isFinite(ctx.positionAt)
+      ? ctx.positionAt
+      : programme.startAt;
+  const startSec = Math.max(0, Math.round((positionAt - programme.startAt) / 1000));
   return {
     base: baseOfChannelUrl(channel.url),
     channel: channel.name,
@@ -120,7 +125,7 @@ function buildTokens(ctx: CatchupRenderContext): Record<string, string> {
     end: localYmdHms(programme.endAt),
     utc: utcYmdHms(programme.startAt),
     utcend: utcYmdHms(programme.endAt),
-    startSec: String(secOfLocalDay(programme.startAt)),
+    startSec: String(startSec),
     durationSec: String(durationSec),
   };
 }
