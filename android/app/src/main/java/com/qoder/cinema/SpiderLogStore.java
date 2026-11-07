@@ -11,6 +11,8 @@ import android.util.Log;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -23,6 +25,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.zip.GZIPInputStream;
+import java.util.zip.GZIPOutputStream;
 
 /**
  * 爬虫/应用日志本地落盘仓库。
@@ -45,7 +49,7 @@ public final class SpiderLogStore {
     private static final String LOG_DIR_NAME = "logs";
     private static final long MAX_FILE_BYTES = 2L * 1024 * 1024;
     private static final long MAX_DIR_BYTES = 20L * 1024 * 1024;
-    private static final int RETENTION_DAYS = 3;
+    private static final int RETENTION_DAYS = 7;
     private static final int MAX_QUEUE = 2048;
     private static final int MSG_DRAIN = 1;
     private static final long DRAIN_DELAY_MS = 80L;
@@ -203,11 +207,13 @@ public final class SpiderLogStore {
         currentWriter = null;
         String base = "spider-" + currentDay;
         int max = 0;
-        File[] files = logDir.listFiles((dir, name) -> name.startsWith(base + ".") && name.endsWith(".log"));
+        File[] files = logDir.listFiles((dir, name) -> name.startsWith(base + ".") && (name.endsWith(".log") || name.endsWith(".log.gz")));
         if (files != null) {
             for (File f : files) {
                 String n = f.getName();
-                String suffix = n.substring(base.length() + 1, n.length() - 4);
+                // Extract the number suffix: spider-YYYY-MM-DD.N.log or spider-YYYY-MM-DD.N.log.gz
+                String withoutExt = n.endsWith(".gz") ? n.substring(0, n.length() - 3) : n;
+                String suffix = withoutExt.substring(base.length() + 1, withoutExt.length() - 4);
                 try {
                     int idx = Integer.parseInt(suffix);
                     if (idx > max) max = idx;
@@ -218,9 +224,31 @@ public final class SpiderLogStore {
         if (currentFile != null && currentFile.exists()) {
             if (!currentFile.renameTo(rotated)) {
                 Log.w(TAG, "rotate rename failed: " + currentFile.getName());
+            } else {
+                // P2-5: 轮转后压缩旧日志，节省存储空间
+                compressFile(rotated);
             }
         }
         currentFile = null;
+    }
+
+    /** 将文件压缩为 .gz 格式，成功后删除原文件 */
+    private void compressFile(File source) {
+        File gzFile = new File(source.getParent(), source.getName() + ".gz");
+        try (FileInputStream fis = new FileInputStream(source);
+             GZIPOutputStream gzos = new GZIPOutputStream(new FileOutputStream(gzFile))) {
+            byte[] buffer = new byte[8192];
+            int len;
+            while ((len = fis.read(buffer)) != -1) {
+                gzos.write(buffer, 0, len);
+            }
+            gzos.finish();
+            source.delete();
+            Log.d(TAG, "compressed " + source.getName() + " -> " + gzFile.getName());
+        } catch (IOException e) {
+            Log.w(TAG, "compress failed: " + e.getMessage());
+            if (gzFile.exists()) gzFile.delete();
+        }
     }
 
     private void enforceLimits() {
@@ -278,7 +306,7 @@ public final class SpiderLogStore {
     }
 
     public File[] listFiles() {
-        File[] files = logDir.listFiles((dir, name) -> name.endsWith(".log"));
+        File[] files = logDir.listFiles((dir, name) -> name.endsWith(".log") || name.endsWith(".log.gz"));
         if (files == null) return new File[0];
         Arrays.sort(files, Comparator.comparingLong(File::lastModified));
         return files;
@@ -397,6 +425,12 @@ public final class SpiderLogStore {
         } else {
             target = files[files.length - 1];
         }
+        
+        // P2-5: 压缩文件不支持偏移读取，直接解压返回全部内容
+        if (target.getName().endsWith(".gz")) {
+            return readCompressedFile(target, maxBytes);
+        }
+        
         long size = target.length();
         boolean reset = offset > size;
         long start;
@@ -433,6 +467,24 @@ public final class SpiderLogStore {
         }
         return new TailResult(target.getName(), size, endOffset, text, reset);
     }
+    
+    /** 读取压缩日志文件：解压后返回全部内容（历史日志不支持增量读取） */
+    private TailResult readCompressedFile(File gzFile, int maxBytes) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        try (GZIPInputStream gis = new GZIPInputStream(new FileInputStream(gzFile));
+             BufferedReader reader = new BufferedReader(new java.io.InputStreamReader(gis, "UTF-8"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                sb.append(line).append('\n');
+                if (sb.length() > maxBytes) {
+                    // 超限截断，保留最后 maxBytes 字节
+                    sb.delete(0, sb.length() - maxBytes);
+                }
+            }
+        }
+        String text = sb.toString();
+        return new TailResult(gzFile.getName(), gzFile.length(), text.length(), text, false);
+    }
 
     public static final class TailResult {
         public final String file;
@@ -458,11 +510,23 @@ public final class SpiderLogStore {
         try (BufferedWriter w = new BufferedWriter(new FileWriter(exportFile))) {
             for (File f : files) {
                 w.write("===== " + f.getName() + " =====\n");
-                try (BufferedReader r = new BufferedReader(new FileReader(f))) {
-                    String line;
-                    while ((line = r.readLine()) != null) {
-                        w.write(line);
-                        w.newLine();
+                // P2-5: 支持读取压缩日志
+                if (f.getName().endsWith(".gz")) {
+                    try (GZIPInputStream gis = new GZIPInputStream(new FileInputStream(f));
+                         BufferedReader r = new BufferedReader(new java.io.InputStreamReader(gis, "UTF-8"))) {
+                        String line;
+                        while ((line = r.readLine()) != null) {
+                            w.write(line);
+                            w.newLine();
+                        }
+                    }
+                } else {
+                    try (BufferedReader r = new BufferedReader(new FileReader(f))) {
+                        String line;
+                        while ((line = r.readLine()) != null) {
+                            w.write(line);
+                            w.newLine();
+                        }
                     }
                 }
                 w.newLine();
