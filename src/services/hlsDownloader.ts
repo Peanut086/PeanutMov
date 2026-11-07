@@ -588,76 +588,82 @@ export class HlsDownloader {
     try {
       // P0-3: 为每个分片登记索引，用于跳过已完成的分片
       const segmentsWithIndex = playlist.segments.map((seg, idx) => ({ segment: seg, index: idx }));
-      const segmentBatches = this.createBatches(segmentsWithIndex, parallelSegments);
       // HLS 清单不带总大小，用「已完成分片平均体积 × 总分片数」估算总字节数，
       // 让进度条/剩余时间随下载推进收敛，下载完成后由实际大小覆盖。
       const totalSegments = playlist.segments.length;
       let completedCount = completedSegments.length;
       let segmentBytes = completedCount > 0 ? downloaded : 0;
 
-      for (const batch of segmentBatches) {
-        if (signal.aborted) throw new AppError('E_ABORTED');
+      // 7. 滑动窗口并行下载分片（完成一个立即补一个，避免批间等待）
+      const pendingSegments = segmentsWithIndex.filter(({ index }) => !completedSegments.includes(index));
+      const writeBuffer = new Map<number, Uint8Array>();
+      let nextWriteIndex = completedSegments.length;
+      let queueIdx = 0;
+      const activePromises = new Set<Promise<{ data: Uint8Array; index: number }>>();
 
-        // P0-3: 过滤掉已完成的分片
-        const pendingBatch = batch.filter(({ index }) => !completedSegments.includes(index));
-        if (pendingBatch.length === 0) continue;
+      const downloadSegment = async (seg: { segment: typeof playlist.segments[0]; index: number }) => {
+        let lastError: unknown;
+        for (let attempt = 0; attempt <= MAX_SEGMENT_RETRIES; attempt++) {
+          try {
+            const response = await fetchImpl(resourceUrl(seg.segment.url), {
+              method: 'GET',
+              headers: resourceHeaders(
+                seg.segment.byteRange
+                  ? { Range: `bytes=${seg.segment.byteRange.offset}-${seg.segment.byteRange.offset + seg.segment.byteRange.length - 1}` }
+                  : undefined,
+              ),
+              signal,
+              cache: 'no-store',
+            });
 
-        // 并行下载当前批次（带重试）
-        const results = await Promise.all(
-          pendingBatch.map(async ({ segment, index }) => {
-            let lastError: unknown;
-            for (let attempt = 0; attempt <= MAX_SEGMENT_RETRIES; attempt++) {
-              try {
-                const response = await fetchImpl(resourceUrl(segment.url), {
-                  method: 'GET',
-                  headers: resourceHeaders(
-                    segment.byteRange
-                      ? { Range: `bytes=${segment.byteRange.offset}-${segment.byteRange.offset + segment.byteRange.length - 1}` }
-                      : undefined,
-                  ),
-                  signal,
-                  cache: 'no-store',
-                });
-
-                if (!response.ok) {
-                  throw this.mapHttpError(response.status, `下载分片失败: ${segment.url}`);
-                }
-
-                let data = new Uint8Array(await response.arrayBuffer());
-
-                // 解密（如果需要）
-                if (segment.key && segment.key.method === 'AES-128') {
-                  const key = keyCache.get(segment.key.uri);
-                  if (!key) {
-                    throw new AppError('E_PARSE', `密钥未找到: ${segment.key.uri}`);
-                  }
-                  const iv = segment.key.iv ? parseIV(segment.key.iv) : this.getDefaultIV(segment, playlist);
-                  data = await decryptAes128(data, key, iv);
-                }
-
-                return { data: stripSegmentPrefix(data), index };
-              } catch (e) {
-                lastError = e;
-                if (attempt < MAX_SEGMENT_RETRIES) {
-                  const backoff = RETRY_BACKOFF_MS[attempt] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]!;
-                  logger.warn('分片下载失败，重试中', { attempt: attempt + 1, backoff, url: segment.url, error: e });
-                  await new Promise((resolve) => setTimeout(resolve, backoff));
-                }
-              }
+            if (!response.ok) {
+              throw this.mapHttpError(response.status, `下载分片失败: ${seg.segment.url}`);
             }
-            throw lastError;
-          }),
-        );
 
-        // 按顺序写入 sink
-        for (const { data, index } of results) {
+            let data = new Uint8Array(await response.arrayBuffer());
+
+            if (seg.segment.key && seg.segment.key.method === 'AES-128') {
+              const key = keyCache.get(seg.segment.key.uri);
+              if (!key) {
+                throw new AppError('E_PARSE', `密钥未找到: ${seg.segment.key.uri}`);
+              }
+              const iv = seg.segment.key.iv ? parseIV(seg.segment.key.iv) : this.getDefaultIV(seg.segment, playlist);
+              data = await decryptAes128(data, key, iv);
+            }
+
+            return { data: stripSegmentPrefix(data), index: seg.index };
+          } catch (e) {
+            lastError = e;
+            if (attempt < MAX_SEGMENT_RETRIES) {
+              const backoff = RETRY_BACKOFF_MS[attempt] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]!;
+              logger.warn('分片下载失败，重试中', { attempt: attempt + 1, backoff, url: seg.segment.url, error: e });
+              await new Promise((resolve) => setTimeout(resolve, backoff));
+            }
+          }
+        }
+        throw lastError;
+      };
+
+      const launchNext = () => {
+        if (queueIdx >= pendingSegments.length) return;
+        const seg = pendingSegments[queueIdx]!;
+        queueIdx++;
+        const p = downloadSegment(seg);
+        activePromises.add(p);
+        p.finally(() => activePromises.delete(p));
+      };
+
+      const writeCompleted = async () => {
+        while (writeBuffer.has(nextWriteIndex)) {
+          const data = writeBuffer.get(nextWriteIndex)!;
+          writeBuffer.delete(nextWriteIndex);
           await sink.write(data);
           downloaded += data.byteLength;
           segmentBytes += data.byteLength;
           completedCount += 1;
-          completedSegments.push(index);
+          completedSegments.push(nextWriteIndex);
+          nextWriteIndex += 1;
 
-          // 进度上报（含分片索引，用于暂停续传）
           const currentTime = now();
           if (currentTime - lastPersist >= 1000) {
             const elapsedSec = Math.max((currentTime - lastSampleAt) / 1000, 0.001);
@@ -678,6 +684,20 @@ export class HlsDownloader {
             });
           }
         }
+      };
+
+      // 初始填充窗口
+      for (let i = 0; i < Math.min(parallelSegments, pendingSegments.length); i++) {
+        launchNext();
+      }
+
+      // 滑动窗口主循环
+      while (activePromises.size > 0) {
+        if (signal.aborted) throw new AppError('E_ABORTED');
+        const result = await Promise.race(activePromises);
+        writeBuffer.set(result.index, result.data);
+        await writeCompleted();
+        launchNext();
       }
 
       // 8. 完成
@@ -780,17 +800,6 @@ export class HlsDownloader {
    */
   private selectVariant(variants: HlsVariant[], quality: 'max' | '1080p' | '720p' | 'auto'): HlsVariant {
     return selectHlsVariantForQuality(variants, quality);
-  }
-
-  /**
-   * 创建批次（并行下载控制）
-   */
-  private createBatches<T>(items: T[], batchSize: number): T[][] {
-    const batches: T[][] = [];
-    for (let i = 0; i < items.length; i += batchSize) {
-      batches.push(items.slice(i, i + batchSize));
-    }
-    return batches;
   }
 
   /**

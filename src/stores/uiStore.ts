@@ -38,10 +38,15 @@ export const useUiStore = defineStore('ui', () => {
     toasts.value = toasts.value.filter((t) => t.id !== id);
   }
 
-  function toast(text: string, type: ToastMessage['type'] = 'info', durationMs?: number): string {
+  function toast(
+    text: string,
+    type: ToastMessage['type'] = 'info',
+    durationMs?: number,
+    action?: ToastMessage['action'],
+  ): string {
     const id = newId();
     const duration = durationMs ?? TOAST_DURATION[type];
-    toasts.value = [...toasts.value, { id, type, text, durationMs: duration }];
+    toasts.value = [...toasts.value, { id, type, text, durationMs: duration, action }];
     // 超上限移除最旧
     while (toasts.value.length > TOAST_MAX) {
       const oldest = toasts.value[0];

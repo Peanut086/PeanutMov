@@ -31,10 +31,12 @@ import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
 import { useLibraryStore } from '@/stores/libraryStore';
+import { useSourceStore } from '@/stores/sourceStore';
 import { useCacheStore } from '@/stores/cacheStore';
 import { useUiStore } from '@/stores/uiStore';
 import { castService } from '@/services/castService';
 import { libraryService } from '@/services/libraryService';
+import { playabilityService } from '@/services/playabilityService';
 import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useSmartPreload } from '@/composables/useSmartPreload';
@@ -46,6 +48,7 @@ import { formatBytes } from '@/components/common/format';
 const route = useRoute();
 const router = useRouter();
 const library = useLibraryStore();
+const sources = useSourceStore();
 const history = useHistoryStore();
 const favorites = useFavoriteStore();
 const downloads = useDownloadStore();
@@ -249,7 +252,65 @@ async function load(refresh = false): Promise<void> {
   unavailableIds.value = [];
   await library.loadDetail(mediaId.value, refresh);
   if (!lineId.value && lines.value[0]) lineId.value = lines.value[0].id;
+
+  // 回填可播性缓存（真实加载结果）
+  if (library.detail) {
+    playabilityService.record(mediaId.value, library.detail.episodes.length, library.detail.lines.length);
+  }
+
+  // P0-2：详情加载后若 0 集且在线，自动尝试换源（只试一次，防循环）
+  if (!refresh && episodes.value.length === 0 && !isOffline.value) {
+    const currentId = mediaId.value;
+    if (autoSwitchTried.has(currentId)) return;
+    autoSwitchTried.add(currentId);
+    void autoSwitchToPlayableSource();
+  }
 }
+
+/** P0-2：自动换源到可播的其它来源（静默，不弹 Toast 除非成功） */
+async function autoSwitchToPlayableSource(): Promise<void> {
+  const it = item.value;
+  if (!it) return;
+
+  // 优先从同组候选（搜索结果里同标题的其它源）找
+  const group = library.searchGroups.find((g) => g.items.some((i) => i.id === it.id));
+  if (group) {
+    for (const candidate of group.items) {
+      if (candidate.id === it.id) continue;
+      if (candidate.sourceId === it.sourceId) continue;
+      // 检查可播性缓存
+      const status = playabilityService.statusOf(candidate.id);
+      if (status === 'playable') {
+        // 确认有剧集
+        try {
+          const detail = await libraryService.getDetail(candidate.id, { item: candidate });
+          if (detail.episodes.length > 0) {
+            const sourceName = sources.sources.find((s) => s.id === candidate.sourceId)?.name ?? '其它来源';
+            toast.success(`已自动切换到「${sourceName}」`);
+            await router.replace({ name: 'detail', params: { mediaId: candidate.id }, query: { sourceId: candidate.sourceId } });
+            return;
+          }
+        } catch {
+          continue;
+        }
+      }
+    }
+  }
+
+  // 同组没找到，走全局搜索
+  try {
+    const alternate = await libraryService.findAlternateByTitle(it.title, it.year, it.sourceId);
+    if (alternate) {
+      toast.success(`已自动切换到「${alternate.sourceName}」`);
+      await router.replace({ name: 'detail', params: { mediaId: alternate.mediaId } });
+    }
+  } catch {
+    // 静默失败，用户仍可手动换源
+  }
+}
+
+/** 本次详情页会话内已尝试过自动换源的 mediaId（防循环） */
+const autoSwitchTried = new Set<string>();
 
 onMounted(async () => {
   void detectCastSupport();
@@ -262,6 +323,7 @@ watch(mediaId, () => {
   descExpanded.value = false;
   preloadHintDismissed.value = false;
   unavailableIds.value = [];
+  autoSwitchTried.clear();
   void load(false);
 });
 
@@ -512,14 +574,22 @@ async function downloadEpisodes(episodeIds: string[]): Promise<void> {
       return;
     }
     if (created.length > 0 && skipped.length > 0) {
-      toast.success(`已加入 ${created.length} 集，${skipped.length} 集已在下载列表中`);
+      toast.action(
+        `已加入 ${created.length} 集，${skipped.length} 集已在下载列表中`,
+        { label: '查看下载', onClick: () => router.push('/downloads') },
+        'success',
+      );
       return;
     }
     if (created.length === 0) {
       toast.info('已在下载列表中');
       return;
     }
-    toast.success(`已加入下载队列（${created.length} 集）`);
+    toast.action(
+      `已加入下载队列（${created.length} 集）`,
+      { label: '查看下载', onClick: () => router.push('/downloads') },
+      'success',
+    );
   } catch (e) {
     toast.error(toErrorShape(e).message);
   } finally {

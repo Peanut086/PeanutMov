@@ -60,6 +60,8 @@ const keyword = ref('');
 const tagSheetOpen = ref(false);
 const dateSheetOpen = ref(false);
 const errorOnly = ref(false);
+const startTime = ref('');
+const endTime = ref('');
 
 // 清空确认
 const clearOpen = ref(false);
@@ -83,6 +85,19 @@ const filteredEntries = computed(() => {
   }
   if (keyword.value) {
     result = search(result, keyword.value);
+  }
+  // 时间范围筛选
+  if (startTime.value) {
+    const startTs = new Date(startTime.value).getTime();
+    if (!isNaN(startTs)) {
+      result = result.filter((e) => e.ts >= startTs);
+    }
+  }
+  if (endTime.value) {
+    const endTs = new Date(endTime.value).getTime();
+    if (!isNaN(endTs)) {
+      result = result.filter((e) => e.ts <= endTs);
+    }
   }
   // 限制最多 2000 条
   if (result.length > 2000) {
@@ -347,6 +362,21 @@ function formatTime(ts: number): string {
         >
           标签{{ tagFilter.size > 0 ? ` (${tagFilter.size})` : '' }}
         </button>
+        <div class="logs-filter__time">
+          <input
+            v-model="startTime"
+            class="logs-filter__time-input"
+            type="datetime-local"
+            placeholder="开始时间"
+          />
+          <span class="logs-filter__time-sep">至</span>
+          <input
+            v-model="endTime"
+            class="logs-filter__time-input"
+            type="datetime-local"
+            placeholder="结束时间"
+          />
+        </div>
       </div>
 
       <!-- 日志列表 -->
@@ -571,6 +601,35 @@ function formatTime(ts: number): string {
 .logs-filter__btn--active {
   color: var(--color-accent);
   border-color: var(--color-accent);
+}
+
+.logs-filter__time {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.logs-filter__time-input {
+  flex: 1 1 auto;
+  min-width: 140px;
+  padding: var(--space-1) var(--space-2);
+  font: var(--font-weight-regular) 12px / 1.4 var(--font-family-base);
+  color: var(--color-text-primary);
+  background: var(--color-bg-base);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+}
+
+.logs-filter__time-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.logs-filter__time-sep {
+  flex: 0 0 auto;
+  font: var(--font-weight-regular) 12px / 1 var(--font-family-base);
+  color: var(--color-text-tertiary);
 }
 
 .logs-empty {

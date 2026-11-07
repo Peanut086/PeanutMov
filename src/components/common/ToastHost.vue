@@ -11,10 +11,18 @@ import { watch } from 'vue';
 
 import { useUiStore } from '@/stores/uiStore';
 import { useHaptic } from '@/composables/useHaptic';
+import type { ToastMessage } from '@/types';
 
 const ui = useUiStore();
 const { toasts } = storeToRefs(ui);
 const { haptic } = useHaptic();
+
+function onAction(t: ToastMessage): void {
+  if (t.action) {
+    t.action.onClick();
+    ui.dismiss(t.id);
+  }
+}
 
 /** 监听新增 toast，基于 id 去重检测 error 类型并触发触觉反馈 */
 const seenIds = new Set<string>();
@@ -64,6 +72,11 @@ const iconPath: Record<'info' | 'success' | 'error', string> = {
           <path :d="iconPath[t.type]" />
         </svg>
         <span class="toast__text">{{ t.text }}</span>
+        <span
+          v-if="t.action"
+          class="toast__action"
+          @click.stop="onAction(t)"
+        >{{ t.action.label }}</span>
       </button>
     </TransitionGroup>
   </div>
@@ -130,9 +143,32 @@ const iconPath: Record<'info' | 'success' | 'error', string> = {
 
 .toast__text {
   display: -webkit-box;
-  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
   overflow: hidden;
+  flex: 1;
+}
+
+.toast__action {
+  flex: 0 0 auto;
+  margin-left: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  font: var(--text-label-strong);
+  color: var(--color-brand);
+  background: transparent;
+  border: 1px solid var(--color-brand);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+.toast__action:hover {
+  background-color: rgba(var(--color-brand-rgb, 59, 130, 246), 0.1);
+}
+
+.toast__action:active {
+  background-color: rgba(var(--color-brand-rgb, 59, 130, 246), 0.2);
 }
 
 .toast-enter-active {

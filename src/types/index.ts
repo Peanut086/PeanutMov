@@ -56,6 +56,7 @@ export type SourceHealth =
   | 'timeout'
   | 'unreachable'
   | 'bad_config'
+  | 'empty'
   | 'unknown';
 
 export type AuthMode = 'none' | 'basic' | 'token';
@@ -891,11 +892,17 @@ export type LoadState =
   | 'error'
   | 'offline';
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 export interface ToastMessage {
   id: string;
   type: 'info' | 'success' | 'error';
   text: string;
   durationMs: number;
+  action?: ToastAction;
 }
 
 export interface ConfirmState {
