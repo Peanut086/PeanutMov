@@ -18,7 +18,6 @@ import SearchBar from '@/components/common/SearchBar.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
-import BottomSheet from '@/components/common/BottomSheet.vue';
 import PosterImage from '@/components/common/PosterImage.vue';
 import SearchFailurePanel from '@/components/search/SearchFailurePanel.vue';
 import IconChevron from '@/components/icons/IconChevron.vue';
@@ -36,6 +35,9 @@ import { playabilityService } from '@/services/playabilityService';
 import { scoreRelevance } from '@/services/searchAggregate';
 // OPT-07：搜索建议服务
 import { getSearchSuggestions, getHotSearchTags } from '@/services/suggestService';
+// 功能扩展-7：来源切换弹层
+import SourceSwitchSheet from '@/components/media/SourceSwitchSheet.vue';
+import { buildSourceCandidates, type SourceCandidate } from '@/components/media/sourceCandidates';
 
 defineOptions({ name: 'SearchView' });
 
@@ -81,23 +83,22 @@ function openSourcePicker(group: SearchResultGroup): void {
   sourcePickerGroup.value = group;
 }
 
-function pickSource(item: MediaItem): void {
+const sourcePickerCandidates = computed<SourceCandidate[]>(() => {
+  const group = sourcePickerGroup.value;
+  if (!group) return [];
+  return buildSourceCandidates(group.items, {
+    sources: sources.sources,
+    playabilityOf: (mediaId) => playabilityService.statusOf(mediaId),
+    latencyOf: (sourceId) => sources.latencyOf(sourceId),
+  });
+});
+
+function pickSource(candidate: SourceCandidate): void {
+  const group = sourcePickerGroup.value;
+  if (!group) return;
   sourcePickerGroup.value = null;
-  openDetail(item);
-}
-
-function sourceHealthLabel(health: string): string {
-  switch (health) {
-    case 'ok': return '正常';
-    case 'timeout': return '慢';
-    case 'unreachable': return '不可达';
-    case 'auth_failed': return '需登录';
-    default: return '未知';
-  }
-}
-
-function getSourceHealth(sourceId: string): string {
-  return sources.sources.find((s) => s.id === sourceId)?.health ?? 'unknown';
+  const item = group.items.find((i) => i.id === candidate.mediaId);
+  if (item) openDetail(item);
 }
 /** CHG-15：0 个源实际参与搜索（启用源全被体检结论/类型支持性过滤）→ 结果不可信，给诊断 */
 const zeroCandidates = computed(
@@ -687,27 +688,13 @@ function openSourceManage(): void {
     </div>
 
     <!-- 功能扩展-7：组内换源弹层 -->
-    <BottomSheet v-model="sourcePickerOpen" :title="sourcePickerGroup?.title ?? '选择来源'">
-      <ul v-if="sourcePickerGroup" class="source-picker-list">
-        <li
-          v-for="(item, idx) in sourcePickerGroup.items"
-          :key="item.id"
-          class="source-picker-item"
-          :class="{ 'source-picker-item--current': idx === 0 }"
-        >
-          <button class="source-picker-item__btn" type="button" @click="pickSource(item)">
-            <span class="source-picker-item__main">
-              <span class="source-picker-item__name">{{ sourceName(item.sourceId) }}</span>
-              <span class="source-picker-item__health">
-                {{ sourceHealthLabel(getSourceHealth(item.sourceId)) }}
-              </span>
-            </span>
-            <span v-if="idx === 0" class="source-picker-item__badge">推荐</span>
-            <IconChevron :size="16" class="source-picker-item__arrow" />
-          </button>
-        </li>
-      </ul>
-    </BottomSheet>
+    <SourceSwitchSheet
+      v-model="sourcePickerOpen"
+      :title="sourcePickerGroup?.title ?? '选择来源'"
+      :candidates="sourcePickerCandidates"
+      :can-search-more="false"
+      @select="pickSource"
+    />
   </main>
 </template>
 
@@ -1241,76 +1228,6 @@ function openSourceManage(): void {
 }
 
 .source-count-btn__arrow {
-  transform: rotate(90deg);
-}
-
-.source-picker-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.source-picker-item {
-  border-bottom: 1px solid var(--color-divider);
-}
-
-.source-picker-item:last-child {
-  border-bottom: none;
-}
-
-.source-picker-item__btn {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  width: 100%;
-  min-height: 56px;
-  padding: var(--space-3) var(--space-4);
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  transition: background-color var(--duration-fast);
-}
-
-.source-picker-item__btn:active {
-  background-color: var(--color-bg-pressed);
-}
-
-.source-picker-item__main {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.source-picker-item__name {
-  font: var(--text-label-strong);
-  color: var(--color-text-primary);
-}
-
-.source-picker-item__health {
-  font: var(--text-caption);
-  color: var(--color-text-tertiary);
-}
-
-.source-picker-item__badge {
-  flex: 0 0 auto;
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  background-color: var(--color-brand-soft);
-  color: var(--color-brand-text);
-  font: var(--font-weight-semibold) 10px / 1.2 var(--font-family-base);
-}
-
-.source-picker-item--current .source-picker-item__badge {
-  background-color: var(--color-success-soft);
-  color: var(--color-success);
-}
-
-.source-picker-item__arrow {
-  flex: 0 0 auto;
-  color: var(--color-text-tertiary);
   transform: rotate(90deg);
 }
 

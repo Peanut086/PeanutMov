@@ -438,6 +438,22 @@ export const useLibraryStore = defineStore('library', () => {
       searchFailed.value = result.failed;
       searchCandidates.value = result.candidates;
       searchFilteredOut.value = result.filteredOut;
+
+      // 阶段 5：把 result.items 中未上屏的本地缓存条目并入 searchResultsAll
+      // 这样曾经成功过的源会稳定出现在「N 个来源」里，不再完全看当次网络脸色
+      const seenIds = new Set(searchResultsAll.value.map((item) => item.id));
+      const freshItems = result.items.filter((item) => {
+        if (seenIds.has(item.id)) return false;
+        // 只并入源仍存在并启用的条目
+        const source = sourceStore.sources.find((s) => s.id === item.sourceId);
+        if (!source || !source.enabled) return false;
+        seenIds.add(item.id);
+        return true;
+      });
+      if (freshItems.length > 0) {
+        searchResultsAll.value = [...searchResultsAll.value, ...freshItems];
+      }
+
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
     } catch (e) {
       if (isCanceled(e) || controller.signal.aborted) return;

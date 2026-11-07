@@ -20,6 +20,13 @@
         <button class="grant-btn" @click="requestAllFilesAccess">授权</button>
       </div>
 
+      <!-- FIX-B：权限缺失时在列表顶部加一行醒目提示（与卡片内状态互补） -->
+      <div v-if="!hasAllFilesAccess && platforms.some(p => p.saved)" class="permission-warning permission-warning--inline">
+        <div class="warning-text">
+          <p>部分平台已保存 Cookie，但当前缺少「所有文件访问」权限，爬虫源无法读取。请先到系统设置授权。</p>
+        </div>
+      </div>
+
       <!-- 平台列表 -->
       <div class="platform-list">
         <div
@@ -33,6 +40,10 @@
               <div class="platform-name">{{ platform.name }}</div>
               <div class="platform-status" :class="statusClass(platform)">
                 {{ statusText(platform) }}
+              </div>
+              <!-- FIX-B：权限缺失时，即使 cookie 文件存在也无法被爬虫源读取，显示异常态 -->
+              <div v-if="!hasAllFilesAccess && platform.saved" class="platform-note platform-note--limited">
+                <span class="platform-note__line">⚠ 存储权限缺失，cookie 文件无法被爬虫源读取</span>
               </div>
               <!-- OPT-05 / EXT-02：cookie-only 平台只声明「Cookie 直填、账号能力未验证」 -->
               <div v-if="isCookieOnly(platform)" class="platform-note platform-note--limited">
@@ -242,6 +253,10 @@ function capabilityNote(platform: NetdiskPlatform): string {
 
 /** 列表状态文案（R-DEV04-02：绝不把「cookie 文件存在」显示成「已登录」） */
 function statusText(platform: PlatformStatus): string {
+  // FIX-B：权限缺失时 cookie 文件存在也等于不可用，优先展示异常态
+  if (!hasAllFilesAccess.value && platform.saved) {
+    return '权限异常';
+  }
   if (isCookieOnly(platform)) {
     // cookie-only 平台没有账号校验接口，只能确认 cookie 文件是否已保存
     return platform.saved ? 'Cookie 已保存' : '未登录';

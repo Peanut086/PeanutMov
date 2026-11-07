@@ -94,12 +94,12 @@ describe('DetailView 无剧集空态', () => {
     routerReplace.mockClear();
   });
 
-  it('详情 0 线路 0 集：展示空态与换源入口，播放/下载/投屏禁用', async () => {
+  it('详情 0 线路 0 集：展示空态与切换来源入口，播放/下载/投屏禁用', async () => {
     const wrapper = await mountWithDetail({ item: makeItem(), lines: [], episodes: [] });
 
     expect(wrapper.find('.detail-empty').exists()).toBe(true);
     expect(wrapper.text()).toContain('当前来源暂无可播放线路');
-    expect(wrapper.text()).toContain('换源');
+    expect(wrapper.text()).toContain('切换来源');
     expect(wrapper.text()).toContain('去源管理');
 
     const main = wrapper.find('.detail-actions__main');

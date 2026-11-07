@@ -39,7 +39,20 @@ public class MainApplication extends Application {
         // 名称/重要性登记；排期、持久化、重启恢复仍由 @capacitor/local-notifications 负责。
         ReminderNotifications.bootstrap(this);
         // P2-15：xCrash 原生崩溃/ANR 捕获（须在 installCrashHandler 之前，避免链式覆盖）
-        xcrash.XCrash.init(this);
+        // A2：xCrash 初始化（带参数 + errno 检查 + dumper 自检）
+        xcrash.XCrash.InitParameters xcrashParams = new xcrash.XCrash.InitParameters()
+                .setLogDir(new java.io.File(getFilesDir(), "tombstones").getAbsolutePath())
+                .setNativeRethrow(true)
+                .setJavaRethrow(true);
+        int xcrashErr = xcrash.XCrash.init(this, xcrashParams);
+        if (xcrashErr != 0) {
+            AppLog.w(TAG, "xcrash init failed errno=" + xcrashErr);
+        }
+        // dumper 不存在则原生崩溃必无 tombstone（本次修复前就是这个原因）
+        java.io.File dumper = new java.io.File(getApplicationInfo().nativeLibraryDir, "libxcrash_dumper.so");
+        if (!dumper.exists()) {
+            AppLog.w(TAG, "xcrash dumper missing: " + dumper);
+        }
         // P3：安装全局崩溃处理器，写 FATAL 日志后交还默认处理
         installCrashHandler();
         // REV-24：初始化崩溃哨兵并检查上次异常退出
@@ -48,13 +61,21 @@ public class MainApplication extends Application {
     }
 
     /**
-     * REV-24：检查上次退出原因，若发现未清除的哨兵则记录并隔离
+     * REV-24 / B3：检查上次退出原因，若发现未清除的哨兵则记录并隔离
      */
     private void checkLastExit() {
-        // 1. 检查未清除的哨兵
-        JSONObject sentinel = CrashSentinel.readUncleared();
-        if (sentinel != null) {
-            AppLog.w(TAG, "found uncleared sentinel: " + sentinel.toString());
+        // 0. 摄入 tombstone 摘要（A3）
+        CrashNative.TombstoneInfo tombstone = CrashNative.ingest(this);
+        if (tombstone != null) {
+            AppLog.w(TAG, "found native tombstone: " + tombstone.filename + " signal=" + tombstone.signal);
+        }
+
+        // 1. 检查未清除的哨兵（B1：per-invocation token 版）
+        java.util.List<JSONObject> sentinels = CrashSentinel.readUnclearedAll();
+        if (!sentinels.isEmpty()) {
+            // 取最新的（startedAt 最大）作为归因目标
+            JSONObject sentinel = sentinels.get(0);
+            AppLog.w(TAG, "found " + sentinels.size() + " uncleared sentinels, attributing to: " + sentinel.toString());
             CrashSentinel.recordCrash(this, sentinel);
 
             // 根据哨兵内容生成隔离签名
@@ -68,8 +89,14 @@ public class MainApplication extends Application {
                     AppLog.w(TAG, "quarantined: " + signature);
                 }
             }
-            // 清除哨兵（已记录）
-            CrashSentinel.end();
+
+            // 记录其他并发哨兵作为上下文
+            for (int i = 1; i < sentinels.size(); i++) {
+                AppLog.i(TAG, "inFlight sentinel: " + sentinels.get(i).toString());
+            }
+
+            // 清除所有哨兵（已记录）
+            CrashSentinel.clearAll();
             // P2：检查是否应进入安全模式
             checkSafeMode();
         }
@@ -107,7 +134,7 @@ public class MainApplication extends Application {
         }
 
         // 3. 稳定启动（无新崩溃）时自动静默退出安全模式——用户无感，爬虫源立即恢复
-        if (sentinel == null && isSafeMode(this)) {
+        if (sentinels.isEmpty() && isSafeMode(this)) {
             exitSafeMode(this);
             Log.i(TAG, "stable launch: auto-exited safe mode");
         }

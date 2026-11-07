@@ -10,6 +10,8 @@ import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { setBackFallback } from '@/native/appLifecycle';
+import { hasAllFilesAccess, readCookieFile } from '@/native/netdiskPlugin';
+import { getAllPlatforms } from '@/services/netdiskPlatforms';
 import { reminderService } from '@/services/reminderService';
 import { logger } from '@/shared/logger';
 import type { Reminder } from '@/types';
@@ -107,6 +109,23 @@ onMounted(async () => {
     theme.setMode(settings.settings?.theme ?? 'dark');
   } catch {
     /* 设置读取失败不阻塞启动；各页会单独展示错误态 */
+  }
+
+  // FIX-C：启动时检测 cookie 文件存在但 MANAGE_EXTERNAL_STORAGE 未授予 → 一次性 Toast 提醒
+  try {
+    const granted = await hasAllFilesAccess();
+    if (!granted) {
+      const platforms = getAllPlatforms();
+      for (const p of platforms) {
+        const cookie = await readCookieFile(p.key);
+        if (cookie.exists && cookie.content) {
+          toast.error('检测到网盘 Cookie 文件，但缺少「所有文件访问」权限，播放将失败。请前往 网盘账号 页授权。');
+          break;
+        }
+      }
+    }
+  } catch {
+    // 自检失败不阻塞启动
   }
 
   /*

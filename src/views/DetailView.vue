@@ -27,6 +27,7 @@ import IconHeart from '@/components/icons/IconHeart.vue';
 import IconDownload from '@/components/icons/IconDownload.vue';
 import IconPlay from '@/components/icons/IconPlay.vue';
 import IconCast from '@/components/icons/IconCast.vue';
+import IconChevron from '@/components/icons/IconChevron.vue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
@@ -42,8 +43,12 @@ import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useSmartPreload } from '@/composables/useSmartPreload';
 import { toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
+import { hasAllFilesAccess, readCookieFile } from '@/native/netdiskPlugin';
 import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
 import { formatBytes } from '@/components/common/format';
+// 来源切换弹层
+import SourceSwitchSheet from '@/components/media/SourceSwitchSheet.vue';
+import { buildSourceCandidates } from '@/components/media/sourceCandidates';
 
 const route = useRoute();
 const router = useRouter();
@@ -98,6 +103,16 @@ const hasEpisodes = computed(() => episodes.value.length > 0);
  * 注意：多线路各 1 集的电影（如演示 Sintel）也必须走抽屉，否则用户无法选择线路。
  */
 const needsEpisodePicker = computed(() => episodes.value.length > 1 || lines.value.length > 1);
+
+/** 当前来源名称 */
+const currentSourceName = computed(() => {
+  const it = item.value;
+  if (!it) return '未知来源';
+  return sources.sources.find((s) => s.id === it.sourceId)?.name ?? '未知来源';
+});
+
+/** 已知来源数量（候选列表长度） */
+const knownSourceCount = computed(() => sourceCandidates.value.length);
 
 const progressRecord = computed(() => {
   const it = item.value;
@@ -226,10 +241,40 @@ async function ensurePlayable(ep: Episode): Promise<boolean> {
       return false;
     }
     if (err.code === 'E_NETDISK_LOGIN_REQUIRED') {
-      // P3-2: 网盘未登录，引导用户去登录
+      // P3-2 + FIX-A：先本地自检，区分「权限缺失」「cookie 文件异常」「真未登录」
+      try {
+        const hasAccess = await hasAllFilesAccess();
+        if (!hasAccess) {
+          const ok = await ui.confirm({
+            title: '存储权限缺失',
+            message: 'App 没有「所有文件访问」权限，网盘 cookie 文件无法被爬虫源读取。是否前往系统设置授权？授权后需重新打开 App。',
+            confirmText: '去授权',
+            cancelText: '取消',
+          });
+          if (ok) {
+            await router.push('/settings/netdisk');
+          }
+          return false;
+        }
+        const cookie = await readCookieFile('quark');
+        if (!cookie.exists || !cookie.content) {
+          const ok = await ui.confirm({
+            title: '网盘未登录',
+            message: '播放网盘资源需要先登录网盘账号，是否前往登录？',
+            confirmText: '去登录',
+            cancelText: '取消',
+          });
+          if (ok) {
+            await router.push('/settings/netdisk');
+          }
+          return false;
+        }
+      } catch {
+        // 自检失败时回退到通用提示
+      }
       const ok = await ui.confirm({
-        title: '网盘未登录',
-        message: '播放网盘资源需要先登录网盘账号，是否前往登录？',
+        title: '网盘登录态异常',
+        message: 'Cookie 文件存在但爬虫源无法读取，可能是登录态过期或文件损坏。是否前往重新登录？',
         confirmText: '去登录',
         cancelText: '取消',
       });
@@ -272,32 +317,7 @@ async function autoSwitchToPlayableSource(): Promise<void> {
   const it = item.value;
   if (!it) return;
 
-  // 优先从同组候选（搜索结果里同标题的其它源）找
-  const group = library.searchGroups.find((g) => g.items.some((i) => i.id === it.id));
-  if (group) {
-    for (const candidate of group.items) {
-      if (candidate.id === it.id) continue;
-      if (candidate.sourceId === it.sourceId) continue;
-      // 检查可播性缓存
-      const status = playabilityService.statusOf(candidate.id);
-      if (status === 'playable') {
-        // 确认有剧集
-        try {
-          const detail = await libraryService.getDetail(candidate.id, { item: candidate });
-          if (detail.episodes.length > 0) {
-            const sourceName = sources.sources.find((s) => s.id === candidate.sourceId)?.name ?? '其它来源';
-            toast.success(`已自动切换到「${sourceName}」`);
-            await router.replace({ name: 'detail', params: { mediaId: candidate.id }, query: { sourceId: candidate.sourceId } });
-            return;
-          }
-        } catch {
-          continue;
-        }
-      }
-    }
-  }
-
-  // 同组没找到，走全局搜索
+  // 直接走 findAlternateByTitle（内部使用 listSourceCandidates）
   try {
     const alternate = await libraryService.findAlternateByTitle(it.title, it.year, it.sourceId);
     if (alternate) {
@@ -403,37 +423,97 @@ function openSourceManage(): void {
   void router.push({ name: 'settings', query: { sources: '1' } });
 }
 
-/** B2：跨源换源——在其它启用源里找同名同年的可播条目 */
-const switchingSource = ref(false);
-async function switchToAlternateSource(): Promise<void> {
-  if (switchingSource.value) return;
-  switchingSource.value = true;
-  try {
-    // 错误态下 detail 为空，从缓存取条目信息
-    const cachedItem = await libraryService.getItem(mediaId.value);
-    if (!cachedItem) {
-      toast.error('无法获取当前条目信息');
-      return;
-    }
-    toast.info('正在查找其它来源…');
-    const alternate = await libraryService.findAlternateByTitle(
-      cachedItem.title,
-      cachedItem.year,
-      cachedItem.sourceId,
-    );
-    if (!alternate) {
-      toast.error('未找到可播放的其它来源');
-      return;
-    }
-    toast.success(`已切换到「${alternate.sourceName}」`);
-    await router.replace({ name: 'detail', params: { mediaId: alternate.mediaId } });
-    await library.loadDetail(alternate.mediaId);
-  } catch (e) {
-    toast.error('换源失败');
-    logger.warn('详情页换源失败', e);
-  } finally {
-    switchingSource.value = false;
+/** 来源切换弹层状态 */
+const sourceSheetOpen = ref(false);
+const sourceCandidates = ref<import('@/components/media/sourceCandidates').SourceCandidate[]>([]);
+const sourceSheetLoading = ref(false);
+const sourceSearching = ref(false);
+const sheetCurrentItem = ref<MediaItem | null>(null);
+
+async function openSourceSheet(autoSearch = false): Promise<void> {
+  // 解析当前条目（错误态下 detail 为空，从缓存取）
+  const currentItem = item.value ?? (await libraryService.getItem(mediaId.value));
+  if (!currentItem) {
+    toast.error('无法获取当前条目信息');
+    return;
   }
+  sheetCurrentItem.value = currentItem;
+  sourceSheetOpen.value = true;
+  sourceSheetLoading.value = true;
+
+  try {
+    // 确保源列表已加载
+    if (sources.sources.length === 0) {
+      await sources.load();
+    }
+
+    // 从缓存获取候选
+    const candidates = await libraryService.listSourceCandidates(
+      { title: currentItem.title, year: currentItem.year },
+      { scope: 'cache', excludeMediaId: currentItem.id },
+    );
+
+    // 合并当前条目（固定第一行）
+    const allItems = [currentItem, ...candidates.filter((c) => c.id !== currentItem.id)];
+    sourceCandidates.value = buildSourceCandidates(allItems, {
+      currentMediaId: currentItem.id,
+      currentItem,
+      sources: sources.sources,
+      playabilityOf: (mediaId) => playabilityService.statusOf(mediaId),
+      latencyOf: (sourceId) => sources.latencyOf(sourceId),
+    });
+
+    // 自动搜索条件：autoSearch 或候选数 ≤ 1 且在线
+    const shouldAutoSearch = autoSearch || (sourceCandidates.value.length <= 1 && !isOffline.value);
+    if (shouldAutoSearch) {
+      await searchMoreSources();
+    }
+  } catch (e) {
+    logger.warn('加载候选来源失败', e);
+  } finally {
+    sourceSheetLoading.value = false;
+  }
+}
+
+async function searchMoreSources(): Promise<void> {
+  if (sourceSearching.value || isOffline.value || !sheetCurrentItem.value) return;
+  sourceSearching.value = true;
+  try {
+    const candidates = await libraryService.listSourceCandidates(
+      { title: sheetCurrentItem.value.title, year: sheetCurrentItem.value.year },
+      { scope: 'network', excludeMediaId: sheetCurrentItem.value.id },
+    );
+
+    // 合并当前条目
+    const allItems = [sheetCurrentItem.value, ...candidates.filter((c) => c.id !== sheetCurrentItem.value!.id)];
+    sourceCandidates.value = buildSourceCandidates(allItems, {
+      currentMediaId: sheetCurrentItem.value.id,
+      currentItem: sheetCurrentItem.value,
+      sources: sources.sources,
+      playabilityOf: (mediaId) => playabilityService.statusOf(mediaId),
+      latencyOf: (sourceId) => sources.latencyOf(sourceId),
+    });
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    sourceSearching.value = false;
+  }
+}
+
+async function selectSource(candidate: import('@/components/media/sourceCandidates').SourceCandidate): Promise<void> {
+  sourceSheetOpen.value = false;
+  if (candidate.mediaId === mediaId.value) return;
+
+  // 保留当前集号（可选增强）
+  const epNumber = targetEpisode.value?.number ?? null;
+  await router.replace({
+    name: 'detail',
+    params: { mediaId: candidate.mediaId },
+    query: {
+      sourceId: candidate.sourceId,
+      ...(epNumber ? { ep: String(epNumber) } : {}),
+    },
+  });
 }
 
 async function playEpisode(ep: Episode | null, restart = false): Promise<void> {
@@ -736,10 +816,10 @@ function openCompliance(): void {
             v-if="isSourceFault() && !isOffline"
             class="btn btn--primary btn--md"
             type="button"
-            :disabled="switchingSource"
-            @click="switchToAlternateSource"
+            :disabled="sourceSearching"
+            @click="openSourceSheet(true)"
           >
-            {{ switchingSource ? '查找中…' : '换源' }}
+            {{ sourceSearching ? '查找中…' : '切换来源' }}
           </button>
           <button v-if="isSourceFault()" class="btn btn--ghost btn--md" type="button" @click="openSourceManage">
             去源管理
@@ -798,6 +878,20 @@ function openCompliance(): void {
             />
           </div>
 
+          <!-- 常驻来源切换入口 -->
+          <div class="detail-source-row">
+            <button class="detail-source-btn" type="button" @click="openSourceSheet(false)">
+              <span class="detail-source-btn__name">
+                来源：{{ currentSourceName }}
+              </span>
+              <span v-if="knownSourceCount > 1" class="detail-source-btn__count">
+                {{ knownSourceCount }} 个
+              </span>
+              <span v-else class="detail-source-btn__hint">切换</span>
+              <IconChevron :size="14" />
+            </button>
+          </div>
+
           <template v-if="hasEpisodes">
             <p v-if="currentLine?.quality" class="detail-section__quality">
               线路：{{ currentLine.name }} · {{ currentLine.quality }}
@@ -825,10 +919,10 @@ function openCompliance(): void {
               <button
                 class="btn btn--primary btn--md"
                 type="button"
-                :disabled="switchingSource"
-                @click="switchToAlternateSource"
+                :disabled="sourceSearching"
+                @click="openSourceSheet(true)"
               >
-                {{ switchingSource ? '查找中…' : '换源' }}
+                {{ sourceSearching ? '查找中…' : '切换来源' }}
               </button>
               <button class="btn btn--ghost btn--md" type="button" @click="openSourceManage">
                 去源管理
@@ -927,6 +1021,18 @@ function openCompliance(): void {
         <li><button class="sheet-list__item sheet-list__item--danger" type="button" @click="clearCache">删除本地缓存</button></li>
       </ul>
     </BottomSheet>
+
+    <!-- 来源切换弹层 -->
+    <SourceSwitchSheet
+      v-model="sourceSheetOpen"
+      :title="`切换来源 · ${sheetCurrentItem?.title ?? ''}`"
+      :candidates="sourceCandidates"
+      :loading="sourceSheetLoading"
+      :searching="sourceSearching"
+      :can-search-more="!isOffline"
+      @select="selectSource"
+      @search-more="searchMoreSources"
+    />
 
     <!-- 集数下载选择 -->
     <EpisodePickerSheet
@@ -1340,5 +1446,51 @@ function openCompliance(): void {
 .preload-hint-leave-to {
   opacity: 0;
   transform: translateY(8px);
+}
+
+/* 来源切换入口 */
+.detail-source-row {
+  margin-top: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.detail-source-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font: var(--text-label);
+  cursor: pointer;
+  transition: background-color var(--duration-fast);
+}
+
+.detail-source-btn:active {
+  background-color: var(--color-bg-pressed);
+}
+
+.detail-source-btn__name {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-source-btn__count {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-brand-soft);
+  color: var(--color-brand-text);
+  font: var(--font-weight-semibold) 10px / 1.2 var(--font-family-base);
+}
+
+.detail-source-btn__hint {
+  flex: 0 0 auto;
+  color: var(--color-text-tertiary);
+  font: var(--text-caption);
 }
 </style>

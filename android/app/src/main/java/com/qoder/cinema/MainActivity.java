@@ -78,6 +78,15 @@ public class MainActivity extends BridgeActivity {
             pendingRestoreUrl = null;
             getBridge().getWebView().post(() -> getBridge().getWebView().loadUrl(url));
         }
+
+        // B5：DEBUG 版原生崩溃测试入口（用于验证 tombstone 落盘）
+        boolean isDebuggable = (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        if (isDebuggable && getIntent() != null && getIntent().getBooleanExtra("xcrash-test", false)) {
+            android.util.Log.w("MainActivity", "xcrash-test triggered, crashing in 1s...");
+            getBridge().getWebView().postDelayed(() -> {
+                xcrash.XCrash.testNativeCrash(true);
+            }, 1000);
+        }
     }
 
     @Override

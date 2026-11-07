@@ -40,6 +40,11 @@ export function stripTitleNoise(title: string): string {
       // 年份
       .replace(/\(?(19|20)\d{2}\)?/g, '')
       .replace(/20\d{2}年?/g, '')
+      // 集数/更新后缀（嫁金钗 更新至12集、嫁金钗第12集、嫁金钗 全40集）
+      .replace(/(更新至|更新到|更新)\d+([集话期])?$/g, '')
+      .replace(/(全|共)\d+[集话期](全|完结)?$/g, '')
+      .replace(/第\d+[集话期]$/g, '')
+      .replace(/\d+[集话期](全|完结)$/g, '')
   );
 }
 
@@ -106,4 +111,50 @@ export function pickPlayCandidate(
   latencyOf?: (sourceId: string) => number | null,
 ): PlayCandidate | null {
   return pickPlayCandidates(targetTitle, targetYear, results, sourceById, latencyOf)[0] ?? null;
+}
+
+/**
+ * 从一堆源的搜索结果里挑出可切换来源的候选（每个源只保留一条）。
+ *
+ * 与 pickPlayCandidates 的区别：
+ * - 允许 alist/webdav/jellyfin 等本地媒体库源（不限于 site/spider）；
+ * - 每个 sourceId 只保留一条（优先年份精确匹配）；
+ * - 不排序，排序交给视图层（按可播性/健康/延迟）。
+ */
+export interface SourceCandidateItem {
+  source: Source;
+  item: MediaItem;
+}
+
+export function pickSourceCandidates(
+  targetTitle: string,
+  targetYear: number | null,
+  results: MediaItem[],
+  sourceById: ReadonlyMap<string, Source>,
+  opts?: { excludeSourceId?: string; excludeMediaId?: string },
+): SourceCandidateItem[] {
+  const matched = new Map<string, SourceCandidateItem>();
+  for (const item of results) {
+    const source = sourceById.get(item.sourceId);
+    if (source === undefined) continue;
+    if (!source.enabled) continue;
+    // 排除只有元数据的豆瓣源
+    if (source.type === 'douban') continue;
+    // 排除当前源
+    if (opts?.excludeSourceId && source.id === opts.excludeSourceId) continue;
+    // 排除当前条目
+    if (opts?.excludeMediaId && item.id === opts.excludeMediaId) continue;
+    if (!isTitleMatch(targetTitle, targetYear, item)) continue;
+    // 每个源只保留一条：优先年份精确匹配
+    const existing = matched.get(source.id);
+    if (!existing) {
+      matched.set(source.id, { source, item });
+      continue;
+    }
+    // 已有候选但当前条目的年份更精确
+    if (targetYear !== null && item.year === targetYear && existing.item.year !== targetYear) {
+      matched.set(source.id, { source, item });
+    }
+  }
+  return [...matched.values()];
 }

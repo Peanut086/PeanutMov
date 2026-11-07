@@ -6,7 +6,7 @@
  * 四态：loading 骨架（Tab/工具行保持真实渲染）/ empty（三种原因分别给行动）/
  * error（已有数据保留）/ offline（缓存 + hasMore=false）。
  */
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type { LibraryFilters, MediaItem } from '@/types';
@@ -45,6 +45,7 @@ const { isOffline } = useOnlineStatus();
 
 const filterOpen = ref(false);
 const sourceOpen = ref(false);
+const sourceSearchKeyword = ref('');
 const quickSheetOpen = ref(false);
 const quickItem = ref<MediaItem | null>(null);
 const refreshing = ref(false);
@@ -204,6 +205,17 @@ watch(
   },
 );
 
+// 打开源选择时自动滚动到当前选中项
+watch(sourceOpen, async (open) => {
+  if (!open) return;
+  sourceSearchKeyword.value = '';
+  const currentId = sources.currentSourceId;
+  if (!currentId) return;
+  await nextTick();
+  const el = document.querySelector(`[data-source-id="${currentId}"]`);
+  el?.scrollIntoView({ block: 'center', behavior: 'instant' });
+});
+
 async function changeCategory(id: string | null): Promise<void> {
   try {
     await library.setCategory(id);
@@ -226,8 +238,18 @@ async function resetFilters(): Promise<void> {
   filterOpen.value = false;
 }
 
+/** 选择源列表：按名称排序 + 关键字过滤 */
+const filteredSources = computed(() => {
+  const keyword = sourceSearchKeyword.value.trim().toLowerCase();
+  const list = keyword
+    ? sources.sources.filter((s) => s.name.toLowerCase().includes(keyword))
+    : [...sources.sources];
+  return list.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+});
+
 async function chooseSource(sourceId: string | null): Promise<void> {
   sourceOpen.value = false;
+  sourceSearchKeyword.value = '';
   await library.openSource(sourceId);
   if (library.state === 'error') toast.error(library.error?.message ?? '加载失败');
 }
@@ -441,34 +463,60 @@ function openSettings(): void {
 
     <!-- 源选择 -->
     <BottomSheet v-model="sourceOpen" title="选择源">
-      <ul class="sheet-list">
-        <li>
+      <div class="source-picker">
+        <div class="source-picker__search">
+          <svg class="source-picker__search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="M21 21l-4.35-4.35" />
+          </svg>
+          <input
+            v-model="sourceSearchKeyword"
+            class="source-picker__search-input"
+            type="search"
+            placeholder="搜索源名称…"
+            autocomplete="off"
+          />
           <button
-            class="sheet-list__item"
-            :class="{ 'sheet-list__item--active': sources.currentSourceId === null }"
+            v-if="sourceSearchKeyword"
+            class="source-picker__search-clear"
             type="button"
-            @click="chooseSource(null)"
+            aria-label="清除搜索"
+            @click="sourceSearchKeyword = ''"
           >
-            全部已启用源
+            <IconClose :size="14" />
           </button>
-        </li>
-        <li v-for="source in sources.sources" :key="source.id">
-          <button
-            class="sheet-list__item"
-            :class="{
-              'sheet-list__item--active': sources.currentSourceId === source.id,
-              'sheet-list__item--disabled': !source.enabled,
-            }"
-            type="button"
-            :disabled="!source.enabled"
-            @click="chooseSource(source.id)"
-          >
-            <span class="truncate-1">{{ source.name }}</span>
-            <span v-if="!source.enabled" class="sheet-list__hint">已禁用</span>
-          </button>
-        </li>
-      </ul>
-      <p v-if="sources.sources.length === 0" class="sheet-empty">还没有配置任何源</p>
+        </div>
+        <ul class="sheet-list source-picker__list">
+          <li v-if="!sourceSearchKeyword">
+            <button
+              class="sheet-list__item"
+              :class="{ 'sheet-list__item--active': sources.currentSourceId === null }"
+              type="button"
+              @click="chooseSource(null)"
+            >
+              全部已启用源
+            </button>
+          </li>
+          <li v-for="source in filteredSources" :key="source.id" :data-source-id="source.id">
+            <button
+              class="sheet-list__item"
+              :class="{
+                'sheet-list__item--active': sources.currentSourceId === source.id,
+                'sheet-list__item--disabled': !source.enabled,
+              }"
+              type="button"
+              :disabled="!source.enabled"
+              @click="chooseSource(source.id)"
+            >
+              <span class="truncate-1">{{ source.name }}</span>
+              <span v-if="!source.enabled" class="sheet-list__hint">已禁用</span>
+            </button>
+          </li>
+        </ul>
+        <p v-if="filteredSources.length === 0" class="sheet-empty">
+          {{ sourceSearchKeyword ? '没有匹配的源' : '还没有配置任何源' }}
+        </p>
+      </div>
     </BottomSheet>
 
     <!-- 筛选 -->
@@ -647,5 +695,71 @@ function openSettings(): void {
   text-align: center;
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+/* 源选择器：搜索 + 列表 */
+.source-picker {
+  display: flex;
+  flex-direction: column;
+}
+
+.source-picker__search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 0 var(--space-3) var(--space-3);
+}
+
+.source-picker__search-icon {
+  position: absolute;
+  left: var(--space-3);
+  width: 16px;
+  height: 16px;
+  color: var(--color-text-tertiary);
+  pointer-events: none;
+}
+
+.source-picker__search-input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 var(--space-6) 0 var(--space-8);
+  border-radius: var(--radius-md);
+  border: var(--border-default);
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+  outline: none;
+  transition: var(--transition-color);
+}
+
+.source-picker__search-input:focus {
+  border-color: var(--color-brand);
+}
+
+.source-picker__search-input::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.source-picker__search-clear {
+  position: absolute;
+  right: var(--space-2);
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-full);
+  color: var(--color-text-tertiary);
+  transition: var(--transition-color);
+}
+
+.source-picker__search-clear:hover {
+  background-color: var(--color-bg-pressed);
+  color: var(--color-text-secondary);
+}
+
+.source-picker__list {
+  max-height: 50vh;
+  overflow-y: auto;
 }
 </style>

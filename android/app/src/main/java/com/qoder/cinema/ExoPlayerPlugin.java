@@ -153,12 +153,13 @@ public class ExoPlayerPlugin extends Plugin {
                 java.net.URI uri = new java.net.URI(url);
                 host = uri.getHost() != null ? uri.getHost() : "";
             } catch (Exception ignored) {}
+            String token = null;
             try {
                 org.json.JSONObject sentinelDetails = new org.json.JSONObject();
                 sentinelDetails.put("sourceId", sourceId);
                 sentinelDetails.put("host", host);
                 sentinelDetails.put("url", url);
-                CrashSentinel.begin("exoplayer", sentinelDetails);
+                token = CrashSentinel.begin("exoplayer", sentinelDetails);
             } catch (Exception e) {
                 Log.w("ExoPlayerPlugin", "failed to write exoplayer sentinel", e);
             }
@@ -344,10 +345,10 @@ public class ExoPlayerPlugin extends Plugin {
                 startWatchdog();
                 // v1.8 修复：WebView 背景透明，让下层 surface 透出
                 getBridge().getWebView().setBackgroundColor(Color.TRANSPARENT);
-                CrashSentinel.end();
+                CrashSentinel.end(token);
                 call.resolve();
             } catch (Exception e) {
-                CrashSentinel.end();
+                CrashSentinel.end(token);
                 call.reject("prepare failed: " + e.getMessage());
             }
         });

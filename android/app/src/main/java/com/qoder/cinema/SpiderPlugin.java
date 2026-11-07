@@ -597,25 +597,26 @@ public class SpiderPlugin extends Plugin {
         // 参数转换较轻量，先在桥接线程做完，重活（爬虫执行）进线程池
         Object[] javaArgs = toJavaArgs(args, arrayArgs);
         runSpider(call, "调用", INVOKE_TIMEOUT_MS, () -> {
-            // REV-24：哨兵包裹爬虫调用——native crash 时下次启动可检测到
+            // REV-24 / B2：哨兵包裹爬虫调用——native crash 时下次启动可检测到
+            String token = null;
             try {
                 JSONObject sentinelDetails = new JSONObject();
                 sentinelDetails.put("jarMd5", target.jarMd5 != null ? target.jarMd5 : "");
                 sentinelDetails.put("api", target.api);
                 sentinelDetails.put("method", method);
-                CrashSentinel.begin("spider.invoke", sentinelDetails);
+                token = CrashSentinel.begin("spider.invoke", sentinelDetails);
             } catch (Exception e) {
                 Log.w(TAG, "failed to write invoke sentinel", e);
             }
             try {
                 String json = invokeSpider(target, method, javaArgs);
-                CrashSentinel.end();
+                CrashSentinel.end(token);
                 JSObject ret = new JSObject();
                 ret.put("json", json);
                 ret.put("logs", new JSArray(Arrays.asList(targetLogs())));
                 call.resolve(ret);
             } catch (Exception e) {
-                CrashSentinel.end();
+                CrashSentinel.end(token);
                 throw e;
             }
         });
@@ -987,17 +988,19 @@ public class SpiderPlugin extends Plugin {
             throw new IllegalStateException("spider quarantined (crash x2): " + quarantineSig);
         }
 
-        // REV-24：写哨兵——若后续 DexClassLoader/init 触发 native crash，下次启动可检测到
+        // REV-24 / B2：写哨兵——若后续 DexClassLoader/init 触发 native crash，下次启动可检测到
+        String token = null;
         try {
             JSONObject sentinelDetails = new JSONObject();
             sentinelDetails.put("jarMd5", jarMd5);
             sentinelDetails.put("api", api);
             sentinelDetails.put("jarUrl", cleanUrl);
-            CrashSentinel.begin("spider.load", sentinelDetails);
+            token = CrashSentinel.begin("spider.load", sentinelDetails);
         } catch (Exception e) {
             Log.w(TAG, "failed to write sentinel", e);
         }
 
+        try {
         // 加载前做 ABI 预检：带 native 库的 jar（ftyguard 系列）如果只有 ARM 版本，
         // 在 x86 模拟器上会由 native 代码触发 JNI abort（SIGABRT 杀进程，catch 不住）。
         // 必须在 DexClassLoader 之前拒绝，否则一个后台预热就能把整个 App 打崩。
@@ -1047,7 +1050,7 @@ public class SpiderPlugin extends Plugin {
         Throwable initFatal = invokeInit(spider, new GuardedSpiderContext(context), initExt, api, loader);
         if (initFatal != null) {
             // 主动清除哨兵：这是可预期的加载失败而非崩溃
-            CrashSentinel.end();
+            CrashSentinel.end(token);
             throw new IllegalStateException(
                     "爬虫初始化失败（" + api + "）：已禁用该源（"
                             + initFatal.getClass().getSimpleName() + ": " + initFatal.getMessage() + "）",
@@ -1064,8 +1067,12 @@ public class SpiderPlugin extends Plugin {
             applyUserAgent(spider, userAgent);
         }
         Log.i(TAG, "loaded spider: " + api + (loaderReused ? " (reused loader)" : ""));
-        CrashSentinel.end();
+        CrashSentinel.end(token);
         return new LoadedSpider(spider, api, dexDir, jarMd5);
+        } catch (Exception e) {
+            CrashSentinel.end(token);
+            throw e;
+        }
     }
 
     /**

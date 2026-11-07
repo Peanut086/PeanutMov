@@ -123,10 +123,35 @@ export interface LibraryService {
     year: number | null,
     excludeSourceId: string,
   ): Promise<{ mediaId: string; sourceName: string } | null>;
+  /**
+   * 跨源候选列表（详情页切换来源用）
+   *
+   * scope='cache' 只查本地缓存（毫秒级、可离线）；scope='network' 扇出搜索（8-30s）。
+   * 结果按源去重（每个源只保留一条，优先年份精确匹配），排除 douban/禁用源。
+   */
+  listSourceCandidates(
+    target: { title: string; year: number | null },
+    opts?: {
+      scope?: 'cache' | 'network';
+      excludeSourceId?: string;
+      excludeMediaId?: string;
+      forceAll?: boolean;
+      signal?: AbortSignal;
+    },
+  ): Promise<MediaItem[]>;
 }
 
 /** 首屏缓存有效期（技术方案 6 章：cached < 5min） */
 const BROWSE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** 候选列表缓存有效期（5 分钟） */
+const CANDIDATE_CACHE_TTL_MS = 5 * 60 * 1000;
+interface CandidateCacheEntry {
+  at: number;
+  items: MediaItem[];
+}
+const candidateCache = new Map<string, CandidateCacheEntry>();
+const candidateInflight = new Map<string, Promise<MediaItem[]>>();
 
 /** 播放地址内存缓存（避免每次播放都重跑 detailContent + playerContent） */
 interface ResolvedPlayCacheEntry {
@@ -970,6 +995,69 @@ export const libraryService: LibraryService = {
   },
 
   /**
+   * 跨源候选列表（详情页切换来源用）
+   *
+   * scope='cache' 只查本地缓存（毫秒级、可离线）；scope='network' 扇出搜索（8-30s）。
+   * 结果按源去重（每个源只保留一条，优先年份精确匹配），排除 douban/禁用源。
+   */
+  async listSourceCandidates(
+    target: { title: string; year: number | null },
+    opts?: {
+      scope?: 'cache' | 'network';
+      excludeSourceId?: string;
+      excludeMediaId?: string;
+      forceAll?: boolean;
+      signal?: AbortSignal;
+    },
+  ): Promise<MediaItem[]> {
+    const scope = opts?.scope ?? 'cache';
+    const keyword = (await import('@/sources/douban/playMatch')).stripTitleNoise(target.title) || target.title;
+
+    // 缓存 key：rootTitle + year + excludeSourceId（排除项影响结果）
+    const cacheKey = `${keyword}|${target.year ?? ''}|${opts?.excludeSourceId ?? ''}`;
+    const cached = candidateCache.get(cacheKey);
+    if (scope === 'cache' && cached && Date.now() - cached.at < CANDIDATE_CACHE_TTL_MS) {
+      return cached.items;
+    }
+
+    // in-flight 去重：同一 key 的并发请求共享 Promise
+    const inflight = candidateInflight.get(cacheKey);
+    if (inflight) return inflight;
+
+    const promise = (async () => {
+      let results: MediaItem[];
+      if (scope === 'cache') {
+        results = await mediaRepo.searchByTitle(keyword, SEARCH_LOCAL_LIMIT);
+      } else {
+        // network scope：调用 search 扇出，pageSize 放大以容纳更多候选
+        const searchResult = await libraryService.search({
+          keyword,
+          pageSize: 100,
+          forceAll: opts?.forceAll,
+          signal: opts?.signal,
+        });
+        results = searchResult.items;
+      }
+
+      const { pickSourceCandidates } = await import('@/sources/douban/playMatch');
+      const allSources = await sourceRepo.list();
+      const sourceById = new Map(allSources.map((s) => [s.id, s]));
+      const candidates = pickSourceCandidates(target.title, target.year, results, sourceById, {
+        excludeSourceId: opts?.excludeSourceId,
+        excludeMediaId: opts?.excludeMediaId,
+      });
+
+      const items = candidates.map((c) => c.item);
+      candidateCache.set(cacheKey, { at: Date.now(), items });
+      candidateInflight.delete(cacheKey);
+      return items;
+    })();
+
+    candidateInflight.set(cacheKey, promise);
+    return promise;
+  },
+
+  /**
    * B2：跨源同名搜索——在其它启用源里找同名同年的可播条目
    *
    * 供 DetailView / PlayerView 的「换源」按钮复用。返回候选 mediaId 与源名，
@@ -982,26 +1070,21 @@ export const libraryService: LibraryService = {
   ): Promise<{ mediaId: string; sourceName: string } | null> {
     if (!title || !navigator.onLine) return null;
     try {
-      const { pickPlayCandidates } = await import('@/sources/douban/playMatch');
-      const { sourceService } = await import('@/services/sourceService');
-      const [result, allSources] = await Promise.all([
-        libraryService.search({ keyword: title }),
-        sourceService.list(),
-      ]);
+      const candidates = await libraryService.listSourceCandidates(
+        { title, year },
+        { scope: 'network', excludeSourceId },
+      );
+      const allSources = await sourceRepo.list();
       const sourceById = new Map(allSources.map((s) => [s.id, s]));
-      const candidates = pickPlayCandidates(
-        title,
-        year,
-        result.items,
-        sourceById,
-        (id) => healthService.latencyOf(id),
-      ).filter((candidate) => candidate.source.id !== excludeSourceId);
-      for (const candidate of candidates) {
+
+      for (const item of candidates) {
         try {
           // 候选必须真的有剧集——只校验「详情能加载」会从空壳换到另一个空壳（网盘/盘搜源）
-          const detail = await libraryService.getDetail(candidate.item.id);
+          const detail = await libraryService.getDetail(item.id);
           if (detail.episodes.length === 0) continue;
-          return { mediaId: candidate.item.id, sourceName: candidate.source.name };
+          const source = sourceById.get(item.sourceId);
+          if (!source) continue;
+          return { mediaId: item.id, sourceName: source.name };
         } catch {
           continue; // 候选源也失败 → 顺延下一个
         }

@@ -112,6 +112,12 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+    // A1：让 .so 在安装时解压到 nativeLibraryDir（xCrash dumper 依赖此路径）
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 repositories {
