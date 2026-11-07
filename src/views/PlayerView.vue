@@ -357,6 +357,17 @@ watch(
   },
 );
 
+// 退出全屏时收起沉浸态轨道菜单，避免面板残留到竖屏
+watch(
+  () => player.fullscreen,
+  (fullscreen) => {
+    if (!fullscreen) {
+      audioTrackOpen.value = false;
+      subtitleTrackOpen.value = false;
+    }
+  },
+);
+
 const castSupported = ref<boolean | null>(null);
 /** 最近一次解析出的播放源（投屏/分享用，避免再次解析触发网络请求） */
 const currentPlayback = ref<PlaybackSource | null>(null);
@@ -1797,6 +1808,7 @@ onBeforeUnmount(() => {
           <button
             v-if="engineIsNative && immersive && !pipActive && embeddedTracks.audio.length > 0"
             class="player-audio-chip"
+            :class="{ 'player-audio-chip--hidden': !controlsVisible }"
             type="button"
             :aria-label="`音轨：${audioChipLabel}`"
             data-test="player-audio-chip"
@@ -2195,11 +2207,17 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   transform: translateY(-50%);
-  transition: var(--transition-color);
+  transition: opacity var(--duration-slow) var(--ease-standard), var(--transition-color);
 }
 
 .player-audio-chip:active {
   background-color: var(--color-bg-glass-strong);
+}
+
+/* 随控制栏同显同隐：隐藏态淡出并放行手势，避免右侧胶囊常显 */
+.player-audio-chip--hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .player-root--landscape .player-page {

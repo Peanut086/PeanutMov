@@ -172,7 +172,7 @@ const miniBuffered = computed(() =>
         :duration="duration"
         :buffered="buffered"
         :disabled="waiting && duration === 0"
-        :inline="compact"
+        :inline="compact || immersive"
         :seek-step="seekStep"
         @seek="emit('seek', $event)"
         @seeking="emit('seeking', $event)"
@@ -577,8 +577,19 @@ const miniBuffered = computed(() =>
   font-family: var(--font-family-number);
 }
 
+/* 全屏进度条贴底：按钮行上移、轨道沉到 footer 最底（order），
+   配合 inline 时间行，轨道不再高悬于控制区顶部（YouTube/B站口径） */
+.player-controls--immersive .controls-row {
+  order: 1;
+}
+
 .player-controls--immersive .controls-secondary {
+  order: 2;
   justify-content: flex-end;
+}
+
+.player-controls--immersive :deep(.seekbar) {
+  order: 3;
 }
 
 /* 控制条隐藏时的微进度条 */

@@ -52,7 +52,7 @@ public class MainApplication extends Application {
         // 1. 检查未清除的哨兵
         JSONObject sentinel = CrashSentinel.readUncleared();
         if (sentinel != null) {
-            Log.w(TAG, "found uncleared sentinel: " + sentinel.toString());
+            AppLog.w(TAG, "found uncleared sentinel: " + sentinel.toString());
             CrashSentinel.recordCrash(this, sentinel);
 
             // 根据哨兵内容生成隔离签名
@@ -63,7 +63,7 @@ public class MainApplication extends Application {
                 // 其余签名（exoplayer）沿用 24h 内 2 次阈值——播放崩溃更可能与具体内容相关。
                 if (signature.startsWith("spider:") || shouldQuarantine(signature)) {
                     CrashSentinel.quarantine(this, signature);
-                    Log.w(TAG, "quarantined: " + signature);
+                    AppLog.w(TAG, "quarantined: " + signature);
                 }
             }
             // 清除哨兵（已记录）
@@ -75,20 +75,32 @@ public class MainApplication extends Application {
         // 2. 读取 ApplicationExitInfo（API 30+）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
+                // 原生 SIGSEGV 等绕过 Java 崩溃处理器，只能靠 ApplicationExitInfo 归因。
+                // 华为屏蔽第三方 logcat，故写文件日志（W 级，开关关闭也落盘），查看页可见。
+                // 按时间戳去重：只记录上次启动之后新出现的退出，避免每次启动重复刷旧崩溃。
+                android.content.SharedPreferences exitPrefs =
+                        getSharedPreferences("crash-exit-info", MODE_PRIVATE);
+                long lastSeen = exitPrefs.getLong("lastTs", 0L);
+                long maxSeen = lastSeen;
                 List<ApplicationExitInfo> exitInfos = getApplicationContext()
                         .getSystemService(android.app.ActivityManager.class)
                         .getHistoricalProcessExitReasons(null, 0, 5);
                 for (ApplicationExitInfo info : exitInfos) {
+                    if (info.getTimestamp() > maxSeen) maxSeen = info.getTimestamp();
+                    if (info.getTimestamp() <= lastSeen) continue;
                     if (info.getReason() == ApplicationExitInfo.REASON_SIGNALED
                             || info.getReason() == ApplicationExitInfo.REASON_CRASH
                             || info.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE) {
-                        Log.w(TAG, "last exit: reason=" + info.getReason()
+                        AppLog.w("CrashExit", "last exit: reason=" + info.getReason()
                                 + " status=" + info.getStatus()
+                                + " timestamp=" + info.getTimestamp()
+                                + " process=" + info.getProcessName()
                                 + " description=" + info.getDescription());
                     }
                 }
+                if (maxSeen > lastSeen) exitPrefs.edit().putLong("lastTs", maxSeen).apply();
             } catch (Exception e) {
-                Log.w(TAG, "failed to read ApplicationExitInfo", e);
+                AppLog.w(TAG, "failed to read ApplicationExitInfo", e);
             }
         }
 

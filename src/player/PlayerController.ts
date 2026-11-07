@@ -248,6 +248,8 @@ export class PlayerController {
       this.setState('ready');
       this.progress.update(start, this.engine?.getDuration() ?? 0);
       this.progress.start();
+      // 切集/自动连播后通知 UI 同步当前集（上下集按钮禁用态依赖 player.episodeId）
+      this.emit('loaded', { episodeId: opts.episodeId });
       this.scheduleControlsHide();
       // P1-6: 起播后即预载下一集（给足时间预热连接/DNS），临近片尾的二次调用由幂等保护跳过
       this.preloadNext();

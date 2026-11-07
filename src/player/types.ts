@@ -28,8 +28,8 @@ export type PlayerEventMap = {
     failedIds: string[];
   };
   qualitychange: { quality: string; levels: string[] };
-  /** 引擎加载完成（可播放）——与 ready 的区别：loadedmetadata 前触发 */
-  loaded: void;
+  /** 一次加载成功完成（含切集/自动连播），携带当前集 id 供 UI 同步上下集按钮态 */
+  loaded: { episodeId: string };
   /** 全屏状态变化 */
   fullscreenchange: { fullscreen: boolean };
   /** v1.8/CHG-25：当前引擎变化（首次接入与原生→WebView 回退都会触发） */

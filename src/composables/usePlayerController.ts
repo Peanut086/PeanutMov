@@ -155,6 +155,12 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       player.patch({ duration, loading: false });
     });
 
+    // 每次加载成功（含切集/自动连播）同步当前集 id，
+    // 让 canPrev/canNext 这类依赖 player.episodeId 的派生状态实时重算
+    c.on('loaded', ({ episodeId }) => {
+      player.patch({ episodeId });
+    });
+
     c.on('timeupdate', ({ currentTime, duration, buffered }) => {
       // 节流：seek 时立即更新（拖动进度条需要即时响应），播放中 200ms 一次足够
       const now = performance.now();
@@ -615,8 +621,19 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
 
   /* ---------- 派生状态 ---------- */
 
-  const canNext = computed(() => controller.value?.canNext() ?? false);
-  const canPrev = computed(() => controller.value?.canPrev() ?? false);
+  // 依赖响应式的 currentOptions.episodes + player.episodeId：
+  // 控制器内部 this.options 非响应式，切集后若调命令式 canNext() 不会触发重算（按钮态冻结）
+  const episodeIndex = computed(() => {
+    const opts = currentOptions.value;
+    if (!opts) return -1;
+    return opts.episodes.findIndex((e) => e.episodeId === player.episodeId);
+  });
+  const canNext = computed(() => {
+    const opts = currentOptions.value;
+    const idx = episodeIndex.value;
+    return !!opts && idx >= 0 && idx < opts.episodes.length - 1;
+  });
+  const canPrev = computed(() => episodeIndex.value > 0);
   const hasEpisodeNav = computed(() => {
     const opts = currentOptions.value;
     return (opts?.episodes.length ?? 0) > 1;
