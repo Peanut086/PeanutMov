@@ -1160,9 +1160,9 @@ function openSourceManage(): void {
   margin-top: var(--space-4);
   padding: 10px var(--space-3);
   border-radius: var(--radius-md);
-  border: 1px solid rgba(96, 165, 250, 0.22);
-  background-color: var(--color-info-soft);
-  color: var(--color-info);
+  border: 1px solid var(--color-brand);
+  background-color: var(--color-brand-soft);
+  color: var(--color-brand-text);
   font: var(--text-caption);
   text-align: left;
 }
