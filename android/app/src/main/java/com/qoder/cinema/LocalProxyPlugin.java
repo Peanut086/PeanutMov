@@ -12,7 +12,6 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
@@ -23,6 +22,12 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 /**
  * LocalProxy —— 带 Referer/UA 注入的本地回环 HTTP 代理（MP4 防盗链）
@@ -73,6 +78,13 @@ public class LocalProxyPlugin extends Plugin {
     // P0-8: 302 跳转目标缓存（原始 URL → 最终 URL）
     private final Map<String, String> redirectCache = new ConcurrentHashMap<>();
     private final ExecutorService io = Executors.newCachedThreadPool();
+    // P2-7: OkHttp 共享连接池（HTTP/2 + keep-alive），替代 HttpURLConnection 逐次建连
+    private final OkHttpClient httpClient = new OkHttpClient.Builder()
+            .connectTimeout(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .readTimeout(READ_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            .followRedirects(false)  // 手动跟跳转，保留缓存逻辑
+            .followSslRedirects(true) // 允许 HTTP→HTTPS 跳转
+            .build();
     private volatile ServerSocket server;
     private volatile int port = 0;
 
@@ -186,11 +198,8 @@ public class LocalProxyPlugin extends Plugin {
         }
     }
 
-    private static HttpURLConnection openConnection(Target target, String url, String range) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-        conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-        conn.setReadTimeout(READ_TIMEOUT_MS);
-        conn.setInstanceFollowRedirects(false);
+    private static Request.Builder buildRequest(Target target, String url, String range) {
+        Request.Builder builder = new Request.Builder().url(url);
         for (Map.Entry<String, String> entry : target.headers.entrySet()) {
             String name = entry.getKey();
             boolean hop = false;
@@ -200,22 +209,20 @@ public class LocalProxyPlugin extends Plugin {
                     break;
                 }
             }
-            if (!hop) conn.setRequestProperty(name, entry.getValue());
+            if (!hop) builder.addHeader(name, entry.getValue());
         }
         if (range != null && !range.isEmpty()) {
-            conn.setRequestProperty("Range", range);
+            builder.addHeader("Range", range);
         }
-        if (conn.getRequestProperty("User-Agent") == null) {
-            conn.setRequestProperty("User-Agent",
+        if (target.headers.get("User-Agent") == null && target.headers.get("user-agent") == null) {
+            builder.addHeader("User-Agent",
                     "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Mobile Safari/537.36");
         }
-        return conn;
+        return builder;
     }
 
     private void forward(Socket client, Target target, String range, String token) throws Exception {
-        // 手动跟跳转：分片常 302 到 https 图片 CDN，而 HttpURLConnection 的
-        // setInstanceFollowRedirects 不会跨协议（http→https）跟随，3xx 会原样
-        // 冒到 CapacitorHttp 触发 "statusCode can't be in the [300, 399] range"。
+        // 手动跟跳转：分片常 302 到 https 图片 CDN，OkHttp followRedirects=false 时不会自动跟
         String url = target.url;
 
         // P0-8: 302 跳转目标缓存
@@ -224,16 +231,18 @@ public class LocalProxyPlugin extends Plugin {
             url = cachedRedirect;
         }
 
-        HttpURLConnection conn = openConnection(target, url, range);
-        int status = conn.getResponseCode();
+        Request request = buildRequest(target, url, range).build();
+        Response response = httpClient.newCall(request).execute();
+        int status = response.code();
+        
         for (int hop = 0; hop < MAX_REDIRECTS && status >= 300 && status < 400; hop++) {
-            String location = conn.getHeaderField("Location");
+            String location = response.header("Location");
             if (location == null || location.isEmpty()) break;
-            String next = new URL(new URL(url), location).toString();
-            conn.disconnect();
-            url = next;
-            conn = openConnection(target, url, range);
-            status = conn.getResponseCode();
+            response.close();
+            url = new java.net.URL(new java.net.URL(url), location).toString();
+            request = buildRequest(target, url, range).build();
+            response = httpClient.newCall(request).execute();
+            status = response.code();
         }
 
         // P0-8: 缓存跳转结果
@@ -243,25 +252,24 @@ public class LocalProxyPlugin extends Plugin {
 
         OutputStream out = client.getOutputStream();
         StringBuilder head = new StringBuilder("HTTP/1.1 ").append(status).append(" ")
-                .append(conn.getResponseMessage() == null ? "" : conn.getResponseMessage())
+                .append(response.message() == null ? "" : response.message())
                 .append("\r\n");
         boolean hasLength = false;
-        // 原始地址或 302 最终地址任一为 .m3u8 都按清单处理（避免跳转后丢扩展名导致不重写）
+        // 原始地址或 302 最终地址任一为 .m3u8 都按清单处理
         boolean isM3u8 = url.toLowerCase().contains(".m3u8") || target.url.toLowerCase().contains(".m3u8");
-        StringBuilder body = null;
-        for (Map.Entry<String, java.util.List<String>> entry : conn.getHeaderFields().entrySet()) {
-            String name = entry.getKey();
-            if (name == null) continue; // 状态行
+        
+        for (String name : response.headers().names()) {
+            if (name == null) continue;
             String lower = name.toLowerCase();
             if (lower.equals("transfer-encoding") || lower.equals("connection")) continue;
-            // P0-8: m3u8 重写时删 Content-Length（长度会变）
+            // P0-8: m3u8 重写时删 Content-Length
             if (isM3u8 && lower.equals("content-length")) continue;
-            for (String value : entry.getValue()) {
+            for (String value : response.headers(name)) {
                 head.append(name).append(": ").append(value).append("\r\n");
                 if (lower.equals("content-length")) hasLength = true;
             }
         }
-        // v1.8 优化：所有代理响应补 ACAO 头，解决 WebView CORS 限制
+        // v1.8 优化：所有代理响应补 ACAO 头
         head.append("Access-Control-Allow-Origin: *\r\n");
         head.append("Access-Control-Allow-Methods: GET, HEAD, Range\r\n");
         head.append("Access-Control-Allow-Headers: *\r\n");
@@ -270,23 +278,24 @@ public class LocalProxyPlugin extends Plugin {
         }
         head.append("\r\n");
         out.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
-        try (InputStream in = status >= 400 ? conn.getErrorStream() : conn.getInputStream()) {
-            if (in != null) {
-                // v1.8 优化：m3u8 清单需要重写相对 URL 为代理 URL
+        
+        try (ResponseBody body = response.body()) {
+            if (body != null) {
+                // v1.8 优化：m3u8 清单需要重写相对 URL
                 if (isM3u8 && status < 400) {
-                    body = new StringBuilder();
+                    StringBuilder m3u8Body = new StringBuilder();
                     byte[] buffer = new byte[32 * 1024];
                     int read;
+                    InputStream in = body.byteStream();
                     while ((read = in.read(buffer)) != -1) {
-                        body.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
+                        m3u8Body.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
                     }
-                    // 相对 URL 必须以 302 后的最终地址为基准解析；
-                    // token 直接来自请求路径（AND-18：不再反查/伪造 token）
-                    String rewritten = rewriteM3u8(body.toString(), url, token);
+                    String rewritten = rewriteM3u8(m3u8Body.toString(), url, token);
                     out.write(rewritten.getBytes(StandardCharsets.UTF_8));
                 } else {
                     byte[] buffer = new byte[32 * 1024];
                     int read;
+                    InputStream in = body.byteStream();
                     while ((read = in.read(buffer)) != -1) {
                         out.write(buffer, 0, read);
                     }
@@ -294,7 +303,7 @@ public class LocalProxyPlugin extends Plugin {
             }
         } finally {
             out.flush();
-            conn.disconnect();
+            response.close();
         }
     }
 
