@@ -152,6 +152,14 @@ public class NetdiskLoginActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        // 强制桌面 UA：移动 UA 会被官网重定向到「下载 App」落地页，无法登录
+        settings.setUserAgentString(BROWSER_UA);
+        // 宽视口 + 缩放：让桌面版页面在手机屏上可读可操作
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(true);
+        settings.setSupportZoom(true);
+        settings.setBuiltInZoomControls(true);
+        settings.setDisplayZoomControls(false);
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -195,9 +203,12 @@ public class NetdiskLoginActivity extends Activity {
         runOnUiThread(() -> statusText.setText(
                 automatic ? "检测到登录跳转，正在校验账号..." : "正在校验并保存 Cookie..."));
 
+        // 在主线程获取 WebView URL（WebView 方法必须在主线程调用）
+        final String currentUrl = webView.getUrl();
+
         new Thread(() -> {
             try {
-                String cookie = collectCookies();
+                String cookie = collectCookies(currentUrl);
                 if (cookie.isEmpty()) {
                     showMessage("未获取到 Cookie，请确认已登录后点击“我已登录，保存 Cookie”重试");
                     return;
@@ -255,13 +266,24 @@ public class NetdiskLoginActivity extends Activity {
     /**
      * 从平台配置的域名集合抓取 cookie，按 name 去重合并。
      * CookieManager 会返回 HttpOnly cookie；这里只做拼接，不打印内容（敏感信息）。
+     *
+     * @param currentUrl 当前 WebView URL（已在主线程获取）
      */
-    private String collectCookies() {
+    private String collectCookies(String currentUrl) {
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.flush();
 
+        // 合并配置域名 + 当前 WebView 实际所在域名（覆盖跨域登录跳转，如 123pan.com → yun.123pan.cn）
+        java.util.Set<String> origins = new java.util.LinkedHashSet<>(spec.cookieOrigins);
+        if (currentUrl != null) {
+            try {
+                origins.add(PlatformSpec.originOf(currentUrl));
+            } catch (Exception ignored) {
+            }
+        }
+
         Map<String, String> merged = new LinkedHashMap<>();
-        for (String origin : spec.cookieOrigins) {
+        for (String origin : origins) {
             String raw = cookieManager.getCookie(origin);
             if (raw == null || raw.isEmpty()) continue;
             for (String pair : raw.split(";")) {

@@ -43,6 +43,14 @@
               <p v-else-if="platform.memberType" class="platform-note">
                 <span class="platform-note__line">会员：{{ platform.memberType }}</span>
               </p>
+              <!-- 兜底：网页打不开时手动粘贴 Cookie -->
+              <button
+                class="paste-cookie-link"
+                type="button"
+                @click.stop="openPasteSheet(platform)"
+              >
+                网页打不开？手动粘贴 Cookie
+              </button>
             </div>
             <div class="platform-action">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
@@ -121,20 +129,48 @@
           <li>夸克支持账号校验，可显示昵称与会员信息</li>
           <li>UC / 123 / 天翼 / 阿里：Cookie 直填、账号能力未验证，不提供会员/容量信息</li>
           <li>所有 TVBox 系爬虫源共享登录态</li>
+          <li>网页打不开时，可在 PC 浏览器登录后用 EditThisCookie 等扩展导出 cookie 字符串粘贴进来</li>
         </ul>
       </div>
     </div>
+
+    <!-- 手动粘贴 Cookie 兜底弹层 -->
+    <BottomSheet v-model="pasteSheetOpen" :title="`${pastePlatform?.name ?? ''} - 手动粘贴 Cookie`">
+      <div class="paste-sheet">
+        <p class="paste-hint">
+          在 PC 浏览器登录对应网盘后，用 EditThisCookie 等扩展导出 cookie 字符串，粘贴到下方输入框。
+          格式示例：<code>name1=value1; name2=value2; ...</code>
+        </p>
+        <textarea
+          v-model="pasteCookieText"
+          class="paste-textarea"
+          placeholder="粘贴 cookie 字符串..."
+          rows="6"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <div class="paste-actions">
+          <button class="paste-btn paste-btn--cancel" type="button" @click="pasteSheetOpen = false">
+            取消
+          </button>
+          <button class="paste-btn paste-btn--confirm" type="button" @click="confirmPaste">
+            保存 Cookie
+          </button>
+        </div>
+      </div>
+    </BottomSheet>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
 import { useRouter } from 'vue-router';
-import { Netdisk, backupCookieFile, loginWebView, restoreCookieFile } from '@/native/netdiskPlugin';
+import { Netdisk, backupCookieFile, loginWebView, restoreCookieFile, writeCookieFile } from '@/native/netdiskPlugin';
 import { useToast } from '@/composables/useToast';
 import { getAllPlatforms, COOKIE_ONLY_CAPABILITY_NOTE, type NetdiskPlatform } from '@/services/netdiskPlatforms';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { writeNetdiskConfig } from '@/services/netdiskConfig';
+import BottomSheet from '@/components/common/BottomSheet.vue';
 
 const router = useRouter();
 const toast = useToast();
@@ -334,6 +370,40 @@ async function login(platform: PlatformStatus) {
   } catch (e) {
     console.error('Login failed', e);
     toast.error('登录失败');
+  }
+}
+
+// 手动粘贴 Cookie 兜底：网页打不开 / 登录失败时，用户可在 PC 浏览器登录后导出 cookie 粘贴
+const pasteSheetOpen = ref(false);
+const pastePlatform = ref<PlatformStatus | null>(null);
+const pasteCookieText = ref('');
+
+function openPasteSheet(platform: PlatformStatus) {
+  if (!hasAllFilesAccess.value) {
+    toast.error('请先授权所有文件访问权限');
+    return;
+  }
+  pastePlatform.value = platform;
+  pasteCookieText.value = '';
+  pasteSheetOpen.value = true;
+}
+
+async function confirmPaste() {
+  const platform = pastePlatform.value;
+  const raw = pasteCookieText.value.trim();
+  if (!platform || !raw) {
+    toast.error('请先粘贴 Cookie 内容');
+    return;
+  }
+  try {
+    const content = JSON.stringify({ a: '', b: '0', c: raw });
+    await writeCookieFile(platform.key, content);
+    pasteSheetOpen.value = false;
+    await checkLoginStatus();
+    toast.success(`${platform.name} Cookie 已保存（账号未验证）`);
+  } catch (e) {
+    console.error('Paste cookie failed', e);
+    toast.error('保存失败');
   }
 }
 
@@ -714,5 +784,107 @@ function goBack() {
   margin-top: 8px;
   font-size: 12px;
   color: var(--text-secondary, #aaa);
+}
+
+/* 手动粘贴 Cookie 兜底入口 */
+.paste-cookie-link {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--accent-color, #007aff);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.paste-cookie-link:hover {
+  color: var(--accent-color-hover, #0056b3);
+}
+
+/* 粘贴 Cookie 弹层内容 */
+.paste-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+
+.paste-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary, #aaa);
+}
+
+.paste-hint code {
+  padding: 2px 6px;
+  background: var(--bg-tertiary, #2a2a2a);
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--text-primary, #fff);
+}
+
+.paste-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 12px;
+  background: var(--bg-tertiary, #2a2a2a);
+  color: var(--text-primary, #fff);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 8px;
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.paste-textarea:focus {
+  border-color: var(--accent-color, #007aff);
+}
+
+.paste-textarea::placeholder {
+  color: var(--text-tertiary, #666);
+}
+
+.paste-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+.paste-btn {
+  padding: 12px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: none;
+}
+
+.paste-btn--cancel {
+  background: var(--bg-tertiary, #2a2a2a);
+  color: var(--text-primary, #fff);
+  border: 1px solid var(--border-color, #333);
+}
+
+.paste-btn--cancel:hover {
+  background: var(--bg-secondary, #1a1a1a);
+  border-color: var(--accent-color, #007aff);
+}
+
+.paste-btn--confirm {
+  background: var(--accent-color, #007aff);
+  color: #fff;
+}
+
+.paste-btn--confirm:hover {
+  background: var(--accent-color-hover, #0056b3);
 }
 </style>
