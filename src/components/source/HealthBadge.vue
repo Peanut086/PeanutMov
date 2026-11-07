@@ -35,6 +35,7 @@ const MAP: Record<SourceHealth, { label: string; tone: Tone }> = {
   timeout: { label: '连接超时', tone: 'info' },
   unreachable: { label: '无法连接', tone: 'danger' },
   bad_config: { label: '配置有误', tone: 'warning' },
+  empty: { label: '空壳', tone: 'warning' },
   unknown: { label: '未检测', tone: 'neutral' },
 };
 

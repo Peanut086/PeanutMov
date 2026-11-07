@@ -14,6 +14,7 @@ import { historyRepo } from '@/db/repositories/historyRepo';
 import { lineRepo } from '@/db/repositories/lineRepo';
 import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
+import { kvRepo } from '@/db/repositories/kvRepo';
 import { appEvents } from '@/services/events';
 import { downloadService } from '@/services/downloadService';
 import { healthService } from '@/services/healthService';
@@ -95,6 +96,12 @@ export interface LibraryService {
    * 点击结果 → 详情加载失败」的竞态（落库原本要等全部源 settle）。
    */
   getDetail(mediaId: string, opts?: { refresh?: boolean; item?: MediaItem }): Promise<MediaDetail>;
+  /**
+   * P0-FIX-1：轻量详情探活（可播性预检专用）。
+   * 只调 adapter.getDetail() 网络请求，**不写入数据库、不发事件、不清缓存**——
+   * 避免预检 12 条 × 5 次 SQLite 写阻塞主线程。
+   */
+  peekDetail(item: MediaItem): Promise<{ episodeCount: number; lineCount: number }>;
   getItem(mediaId: string): Promise<MediaItem | null>;
   /** REV-24：媒体缓存缺失时尝试自愈（从历史快照重建或按标题搜索） */
   recoverItem(mediaId: string): Promise<MediaItem | null>;
@@ -717,6 +724,14 @@ export const libraryService: LibraryService = {
     }
   },
 
+  async peekDetail(item) {
+    const source = await sourceRepo.get(item.sourceId);
+    if (!source) throw new AppError('E_SOURCE_UNAVAILABLE', '该源已被移除');
+    const adapter = await adapterFor(source);
+    const detail = await adapter.getDetail({ source, sourceItemId: item.sourceItemId });
+    return { episodeCount: detail.episodes.length, lineCount: detail.lines.length };
+  },
+
   async getItem(mediaId): Promise<MediaItem | null> {
     return mediaRepo.get(mediaId);
   },
@@ -1021,6 +1036,18 @@ async function refreshDetail(item: MediaItem): Promise<MediaDetail> {
   const detail = await adapter.getDetail(params);
   calibrateAlive(item.sourceId);
 
+  // P2-8：空壳健康态记录（连续 0 集自动降级）
+  if (detail.episodes.length === 0) {
+    void recordEmptyStreak(item.sourceId);
+  } else {
+    void resetEmptyStreak(item.sourceId);
+    // 有剧集时，若源之前被标记为 empty，恢复为 ok
+    if (source.health === 'empty') {
+      const { sourceService } = await import('@/services/sourceService');
+      await sourceService.noteAlive(item.sourceId);
+    }
+  }
+
   const now = Date.now();
   const mediaItem: MediaItem = {
     ...detail.item,
@@ -1059,3 +1086,38 @@ export async function markSourceFailedByError(sourceId: string, error: unknown):
 export const EMPTY_LIBRARY_FILTERS: LibraryFilters = EMPTY_FILTERS;
 
 export type { LibraryFilters };
+
+/* ---------- P2-8：空壳健康态（连续详情 0 集自动降级） ---------- */
+
+const KV_EMPTY_STREAK = 'source-empty-streak';
+const EMPTY_STREAK_THRESHOLD = 3;
+
+/** 记录空壳连续次数；达到阈值后标记源健康为 'empty' */
+async function recordEmptyStreak(sourceId: string): Promise<void> {
+  try {
+    const streaks = (await kvRepo.get<Record<string, number>>(KV_EMPTY_STREAK)) ?? {};
+    const count = (streaks[sourceId] ?? 0) + 1;
+    streaks[sourceId] = count;
+    await kvRepo.set(KV_EMPTY_STREAK, streaks);
+    if (count >= EMPTY_STREAK_THRESHOLD) {
+      const { sourceService } = await import('@/services/sourceService');
+      await sourceService.markHealth(sourceId, 'empty');
+      logger.warn('连续空壳，已标记源健康为 empty', { sourceId, streak: count });
+    }
+  } catch (e) {
+    logger.debug('记录空壳连续次数失败', { sourceId, error: toErrorShape(e) });
+  }
+}
+
+/** 重置空壳连续次数（详情有剧集时调用） */
+async function resetEmptyStreak(sourceId: string): Promise<void> {
+  try {
+    const streaks = (await kvRepo.get<Record<string, number>>(KV_EMPTY_STREAK)) ?? {};
+    if (streaks[sourceId] !== undefined) {
+      delete streaks[sourceId];
+      await kvRepo.set(KV_EMPTY_STREAK, streaks);
+    }
+  } catch {
+    // 静默
+  }
+}

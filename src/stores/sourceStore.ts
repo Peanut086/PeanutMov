@@ -261,7 +261,7 @@ export const useSourceStore = defineStore('source', () => {
 
   /**
    * 一键禁用全部失效源（爬虫订阅场景：体检后隔离死源）。
-   * 只处理「检测过且确定失效」的源：unreachable / bad_config / auth_failed；
+   * 只处理「检测过且确定失效」的源：unreachable / bad_config / auth_failed / empty；
    * timeout 可能是瞬时网络慢，保留不自动禁用。返回禁用数量。
    *
    * FIX-01：按 `BATCH_CONCURRENCY` 并发执行并逐项回调进度，避免 183 源时串行卡 UI；
@@ -277,7 +277,8 @@ export const useSourceStore = defineStore('source', () => {
         source.healthCheckedAt !== null &&
         (source.health === 'unreachable' ||
           source.health === 'bad_config' ||
-          source.health === 'auth_failed'),
+          source.health === 'auth_failed' ||
+          source.health === 'empty'),
     );
     if (targets.length === 0) return 0;
     let disabled = 0;

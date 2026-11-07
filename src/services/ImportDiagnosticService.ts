@@ -164,6 +164,7 @@ export type FailureCategory =
   | 'unreachable'
   | 'bad_config'
   | 'auth_failed'
+  | 'empty'
   | 'invalid_config'
   | 'duplicate'
   | 'unknown';
@@ -176,6 +177,7 @@ export const FAILURE_CATEGORIES: readonly FailureCategory[] = [
   'unreachable',
   'bad_config',
   'auth_failed',
+  'empty',
   'invalid_config',
   'duplicate',
   'unknown',
@@ -208,6 +210,11 @@ export const FAILURE_CATEGORY_META: Record<FailureCategory, FailureCategoryMeta>
   unreachable: { ...FAILURE_REASON_META.unreachable, retryable: false },
   bad_config: { ...FAILURE_REASON_META.bad_config, retryable: false },
   auth_failed: { ...FAILURE_REASON_META.auth_failed, retryable: false },
+  empty: {
+    label: '空壳',
+    hint: '搜索可返回但详情无剧集，建议禁用或换源',
+    retryable: false,
+  },
   invalid_config: {
     label: '配置无效',
     hint: '订阅条目缺少必填字段或字段非法，无法导入，需修订阅',

@@ -4,16 +4,18 @@
  * 页面四态（LoadState）与分页由 Store 维护，数据请求全部经 `libraryService`。
  */
 import { defineStore } from 'pinia';
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 import { libraryService } from '@/services/libraryService';
 import { EMPTY_LIBRARY_FILTERS, markSourceFailedByError } from '@/services/libraryService';
-import { failedSourceIds, groupSearchResults, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
+import { failedSourceIds, groupSearchResults, selectRepresentative } from '@/services/searchAggregate';
+import { playabilityService } from '@/services/playabilityService';
 import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
 import { PAGE_SIZE, SEARCH_LOCAL_LIMIT } from '@/shared/constants';
 import { AppError, isCanceled, toErrorShape } from '@/shared/errors';
 import { isOnline } from '@/native/network';
+import type { PlayabilityStatus } from '@/services/playabilityService';
 import type {
   AppErrorShape,
   Category,
@@ -43,7 +45,6 @@ export const useLibraryStore = defineStore('library', () => {
   const areaOptions = ref<string[]>([]);
 
   const searchKeyword = ref('');
-  const searchResults = ref<MediaItem[]>([]);
   const searchState = ref<LoadState>('idle');
   const searchFailed = ref<Array<{ sourceId: string; error: AppErrorShape }>>([]);
   /** P2-9：只重试失败源时的进行中标记（不打断已上屏结果） */
@@ -51,17 +52,20 @@ export const useLibraryStore = defineStore('library', () => {
   /** CHG-15：最近一次搜索实际参与的源数 / 被过滤掉的启用源数（空态诊断用） */
   const searchCandidates = ref(0);
   const searchFilteredOut = ref(0);
-  /* ---------- v1.7/CHG-20：聚合检索 ---------- */
-  /** 未去重的完整结果（分组视图的数据源；`searchResults` 是片名去重后的平铺视图） */
+  /* ---------- v2.0/P0-P1：聚合检索重构 ---------- */
+  /** 未去重的完整结果（分组视图的数据源） */
   const searchResultsAll = ref<MediaItem[]>([]);
   /** 组卡视图（默认）/ 按源平铺视图 */
   const searchViewMode = ref<'grouped' | 'flat'>('grouped');
   /** 检索范围：全部 / 仅站点 / 仅爬虫 / 仅豆瓣 / 选定源 */
   const searchScope = ref<SearchScope>('all');
   const searchSelectedSourceIds = ref<string[]>([]);
-  /** 慢源晚到提示：「+N 条新结果」计数（第一波上屏之后到达的条数） */
-  const searchLateCount = ref(0);
-  /** 聚合分组（按源健康 tier → 延迟 → 来源数排序） */
+  /** P1-7：仅看可播（过滤掉代表未确认可播的组） */
+  const searchPlayableOnly = ref(false);
+
+  const playabilityOf = (mediaId: string): PlayabilityStatus => playabilityService.statusOf(mediaId);
+
+  /** 聚合分组（v2.0：可播性 → 健康 tier → 延迟排序） */
   const searchGroups = computed<SearchResultGroup[]>(() => {
     if (searchResultsAll.value.length === 0) return [];
     return groupSearchResults(
@@ -69,8 +73,34 @@ export const useLibraryStore = defineStore('library', () => {
       searchKeyword.value,
       (sourceId) => sourceStore.sources.find((s) => s.id === sourceId)?.health ?? 'unknown',
       (sourceId) => sourceStore.latencyOf(sourceId),
+      playabilityOf,
     );
   });
+
+  /** 平铺视图：每组的代表条目（可播优先），computed 实时派生 */
+  const searchResults = computed<MediaItem[]>(() => {
+    const groups = searchPlayableOnly.value
+      ? searchGroups.value.filter((g) => {
+          const rep = selectRepresentative(g, playabilityOf);
+          return rep && playabilityOf(rep.id) === 'playable';
+        })
+      : searchGroups.value;
+    return groups
+      .map((g) => selectRepresentative(g, playabilityOf))
+      .filter((item): item is MediaItem => item !== undefined);
+  });
+
+  /** 搜索结果稳定后触发可播性预检（防抖：渐进返回不再反复起波） */
+  let playabilityDebounce: ReturnType<typeof setTimeout> | null = null;
+  watch(searchResultsAll, (items) => {
+    if (playabilityDebounce !== null) clearTimeout(playabilityDebounce);
+    playabilityDebounce = setTimeout(() => {
+      playabilityDebounce = null;
+      if (items.length === 0 || !isOnline()) return;
+      const candidates = items.slice(0, 12);
+      void playabilityService.ensureMany(candidates);
+    }, 400);
+  }, { flush: 'post' });
 
   const detail = ref<MediaDetail | null>(null);
   const detailState = ref<LoadState>('idle');
@@ -373,7 +403,6 @@ export const useLibraryStore = defineStore('library', () => {
     searchController?.abort();
     searchController = null;
     if (trimmed.length === 0) {
-      searchResults.value = [];
       searchResultsAll.value = [];
       searchFailed.value = [];
       searchState.value = 'idle';
@@ -382,23 +411,14 @@ export const useLibraryStore = defineStore('library', () => {
     searchState.value = 'loading';
     const controller = new AbortController();
     searchController = controller;
-    searchResults.value = [];
     searchResultsAll.value = [];
     searchFailed.value = [];
-    searchLateCount.value = 0;
-    /** 本次搜索已上屏的片名（P1-8 聚合去重：不同源的同名条目只显示一条） */
-    const titleSeen = new Set<string>();
-    /** 第一波（首源完成）之后到达的条目计为「晚到」（CHG-20 慢源提示） */
-    let firstBatchSeen = false;
     try {
       const result = await libraryService.search({
         keyword: trimmed,
         signal: controller.signal,
-        // CHG-15：空态"仍要搜索全部源"重试时跳过体检结论过滤
         forceAll: opts?.forceAll === true,
-        // CHG-20：范围筛选 + 会话级退避源排除
         sourceIds: opts?.sourceIds ?? scopeSourceIds(),
-        // CHG-12 渐进搜索：单源完成即上屏，先到先显示
         onPartial: ({ sourceId, items, error: sourceError, done, total }) => {
           if (controller.signal.aborted) return;
           searchProgress.value = { done, total };
@@ -408,48 +428,19 @@ export const useLibraryStore = defineStore('library', () => {
             return;
           }
           if (items.length > 0) {
+            // v2.0：直接追加到 searchResultsAll，去重/排序由 computed 处理
             searchResultsAll.value = [...searchResultsAll.value, ...items];
-            if (firstBatchSeen) searchLateCount.value += items.length;
-            firstBatchSeen = true;
-            const seenIds = new Set(searchResults.value.map((item) => item.id));
-            const fresh = items.filter((item) => {
-              const titleKey = titleDedupKey(item.title, item.year);
-              if (seenIds.has(item.id) || titleSeen.has(titleKey)) return false;
-              seenIds.add(item.id);
-              titleSeen.add(titleKey);
-              return true;
-            });
-            if (fresh.length > 0) {
-              searchResults.value = [...searchResults.value, ...fresh];
-            }
-          } else {
-            firstBatchSeen = true;
           }
         },
       });
       if (controller.signal.aborted) return;
-      // 终态列表同样按 id + 片名(含年份)去重（保持与渐进上屏一致的展示口径），并按相关度排序
-      const seenIds = new Set<string>();
-      const seenTitles = new Set<string>();
-      searchResults.value = sortByRelevance(
-        result.items.filter((item) => {
-          const titleKey = titleDedupKey(item.title, item.year);
-          if (seenIds.has(item.id) || seenTitles.has(titleKey)) return false;
-          seenIds.add(item.id);
-          seenTitles.add(titleKey);
-          return true;
-        }),
-        trimmed,
-      );
       for (const failure of result.failed) recordTimeoutStreak(failure.sourceId, failure.error.code);
       searchFailed.value = result.failed;
-      // CHG-15：诊断信息——0 源参与时 UI 给出原因与行动项，而不是"没搜到"
       searchCandidates.value = result.candidates;
       searchFilteredOut.value = result.filteredOut;
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
     } catch (e) {
       if (isCanceled(e) || controller.signal.aborted) return;
-      searchResults.value = [];
       searchResultsAll.value = [];
       searchFailed.value = [];
       searchState.value = 'error';
@@ -483,7 +474,6 @@ export const useLibraryStore = defineStore('library', () => {
     try {
       const result = await libraryService.search({
         keyword: kw,
-        // 失败源多半带着体检结论（unreachable 等），必须跳过过滤才有机会翻案
         forceAll: true,
         sourceIds: ids,
         pageSize: SEARCH_LOCAL_LIMIT,
@@ -495,17 +485,8 @@ export const useLibraryStore = defineStore('library', () => {
         return true;
       });
       if (freshAll.length > 0) searchResultsAll.value = [...searchResultsAll.value, ...freshAll];
-      const seenTitles = new Set(searchResults.value.map((item) => titleDedupKey(item.title, item.year)));
-      const fresh = freshAll.filter((item) => {
-        const titleKey = titleDedupKey(item.title, item.year);
-        if (seenTitles.has(titleKey)) return false;
-        seenTitles.add(titleKey);
-        return true;
-      });
-      if (fresh.length > 0) searchResults.value = sortByRelevance([...searchResults.value, ...fresh], kw);
       for (const failure of result.failed) recordTimeoutStreak(failure.sourceId, failure.error.code);
       searchFailed.value = result.failed;
-      // 翻案成功：解除会话退避，后续全量搜索重新纳入这些源
       const stillFailed = new Set(result.failed.map((failure) => failure.sourceId));
       for (const id of ids) {
         if (stillFailed.has(id)) continue;
@@ -515,8 +496,6 @@ export const useLibraryStore = defineStore('library', () => {
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
     } catch (e) {
       if (isCanceled(e)) return;
-      // 失败源整体仍不可用（libraryService 在「0 条且全部失败」时抛首个错误）：
-      // 保留原失败列表，但必须给用户反馈，否则按钮看起来「没反应」
       error.value = toErrorShape(e);
       appEvents.emit('toast', { text: '重试失败源未成功，可稍后再试或到源管理检查', type: 'info' });
     } finally {
@@ -574,11 +553,15 @@ export const useLibraryStore = defineStore('library', () => {
     searchController = null;
     searchProgress.value = null;
     searchKeyword.value = '';
-    searchResults.value = [];
     searchResultsAll.value = [];
     searchFailed.value = [];
-    searchLateCount.value = 0;
+    searchPlayableOnly.value = false;
     searchState.value = 'idle';
+    playabilityService.clear();
+  }
+
+  function setSearchPlayableOnly(value: boolean): void {
+    searchPlayableOnly.value = value;
   }
 
   async function loadDetail(mediaId: string, refresh = false): Promise<void> {
@@ -671,9 +654,10 @@ export const useLibraryStore = defineStore('library', () => {
     searchScope,
     searchSelectedSourceIds,
     searchGroups,
-    searchLateCount,
+    searchPlayableOnly,
     setSearchScope,
     setSearchViewMode,
+    setSearchPlayableOnly,
     detail,
     detailState,
     posterItems,

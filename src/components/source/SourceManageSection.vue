@@ -349,7 +349,8 @@ const unhealthyEnabled = computed(() =>
       source.healthCheckedAt !== null &&
       (source.health === 'unreachable' ||
         source.health === 'bad_config' ||
-        source.health === 'auth_failed'),
+        source.health === 'auth_failed' ||
+        source.health === 'empty'),
   ),
 );
 

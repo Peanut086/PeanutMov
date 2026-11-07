@@ -31,7 +31,7 @@ export interface HealthCenterSummary {
 }
 
 /** 失败原因分类（与 `SourceHealth` 的失败态一一对应） */
-export type FailureReason = 'timeout' | 'unreachable' | 'bad_config' | 'auth_failed';
+export type FailureReason = 'timeout' | 'unreachable' | 'bad_config' | 'auth_failed' | 'empty';
 
 export interface FailureBucket {
   reason: FailureReason;
@@ -69,6 +69,7 @@ export const HEALTH_FAILURE_REASONS: readonly FailureReason[] = [
   'unreachable',
   'bad_config',
   'auth_failed',
+  'empty',
 ];
 
 /** 失败原因文案与处置建议（与 `healthService.labelOf` 逐字一致） */
@@ -77,6 +78,7 @@ export const FAILURE_REASON_META: Record<FailureReason, { label: string; hint: s
   unreachable: { label: '无法连接', hint: '源站不可达，建议清理' },
   bad_config: { label: '配置有误', hint: '地址或协议有误，需修改配置' },
   auth_failed: { label: '认证失败', hint: '账号或 Token 失效，需更新凭据' },
+  empty: { label: '空壳', hint: '搜索可返回但详情无剧集，建议禁用' },
 };
 
 const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -87,7 +89,8 @@ export function isFailureHealth(health: SourceHealth): health is FailureReason {
     health === 'timeout' ||
     health === 'unreachable' ||
     health === 'bad_config' ||
-    health === 'auth_failed'
+    health === 'auth_failed' ||
+    health === 'empty'
   );
 }
 
@@ -116,6 +119,7 @@ export function failureDistributionOf(sources: readonly Source[]): FailureBucket
     unreachable: 0,
     bad_config: 0,
     auth_failed: 0,
+    empty: 0,
   };
   let failedTotal = 0;
   for (const source of sources) {

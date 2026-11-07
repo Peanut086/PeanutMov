@@ -1,118 +1,204 @@
 /**
- * 跨源聚合检索（v1.7 / CHG-20，纯函数无 IO）
+ * 跨源聚合检索（v2.0 / P0-P1 搜索优化，纯函数无 IO）
  *
- * 现状问题：远程检索逐源流式追加，同一部片在每个源各出一条（`item.id` 含 sourceId，
- * 去重等于没去），用户要在几十条重复卡片里自己辨认「同一部片」。
- *
- * 本模块把结果按「归一化片名 + 年份」归并成组：
- * - 归一化复用豆瓣借播的既有口径（`stripTitleNoise`：去季/部/清晰度/年份后缀、全半角、繁简不区分）；
- * - 组内按 源健康 tier → 延迟 → sort 排序（与 `pickPlayCandidates` 同一口径）；
- * - 相关度排序：精确 > 前缀 > 包含 > 分词包含 > 其它（分值严格递减）。
+ * 把搜索结果按「归一化根标题 + 年份宽容归组」合并成组：
+ * - 归一化复用 `stripTitleNoise`（去季/部/清晰度/年份后缀、全半角、繁简不区分）；
+ * - 年份宽容：同一根标题下，一方缺年份则并入有年份组；双方年份冲突才拆分；
+ * - 组内按 可播性 → 源健康 tier → 延迟 排序（P0-1 可播优先代表）；
+ * - 组间按 相关度 → 已确认有集 → 健康 tier → 延迟 → 来源数 排序。
  */
 import type { AppErrorShape, MediaItem, SearchResultGroup, SourceHealth } from '@/types';
+import type { PlayabilityStatus } from '@/services/playabilityService';
 import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
 import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
 import { classifySourceFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import type { SourceFailureKind } from '@/shared/sourceFailure';
 
-/** 组键：归一化根标题 + 年份（缺失为 unknown） */
-function groupKeyOf(title: string, year: number | null): string {
-  const root = stripTitleNoise(title) || normalizeTitleForMatch(title) || title.trim().toLowerCase();
-  return `${root}:${year ?? 'unknown'}`;
+/** 根标题（归一化后，用于归组） */
+function rootTitleOf(title: string): string {
+  return stripTitleNoise(title) || normalizeTitleForMatch(title) || title.trim().toLowerCase();
 }
 
-/** 组内条目排序：健康 tier → 延迟 → 保持到达顺序 */
+/** 从标题推断年份（item.year 为 null 时的兜底） */
+function inferYear(item: MediaItem): number | null {
+  if (item.year !== null) return item.year;
+  const match = item.title.match(/\b((?:19|20)\d{2})\b(?![集话期])/);
+  if (!match) return null;
+  const y = parseInt(match[1], 10);
+  return y >= 1900 && y <= 2099 ? y : null;
+}
+
+interface RawGroup {
+  key: string;
+  title: string;
+  year: number | null;
+  items: MediaItem[];
+  order: number;
+}
+
+/**
+ * 年份宽容归组（P1-5）：
+ * 同一根标题下，一方缺年份则并入有年份组；双方年份冲突才拆分。
+ */
+function buildYearTolerantGroups(items: MediaItem[]): Map<string, RawGroup> {
+  const buckets = new Map<string, MediaItem[]>();
+  const bucketOrder = new Map<string, number>();
+  let orderCounter = 0;
+  for (const item of items) {
+    const root = rootTitleOf(item.title);
+    let bucket = buckets.get(root);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(root, bucket);
+      bucketOrder.set(root, orderCounter++);
+    }
+    bucket.push(item);
+  }
+
+  const groups = new Map<string, RawGroup>();
+  for (const [root, bucketItems] of buckets) {
+    const yearCounts = new Map<number, number>();
+    const nullItems: MediaItem[] = [];
+    for (const item of bucketItems) {
+      const y = inferYear(item);
+      if (y === null) nullItems.push(item);
+      else yearCounts.set(y, (yearCounts.get(y) ?? 0) + 1);
+    }
+    const distinctYears = [...yearCounts.keys()];
+    const order = bucketOrder.get(root)!;
+
+    if (distinctYears.length <= 1) {
+      const year = distinctYears[0] ?? null;
+      const key = `${root}:${year ?? 'unknown'}`;
+      groups.set(key, { key, title: bucketItems[0].title, year, items: [...bucketItems], order });
+    } else {
+      const yearGroups = new Map<number, MediaItem[]>();
+      for (const item of bucketItems) {
+        const y = inferYear(item);
+        if (y === null) continue;
+        let g = yearGroups.get(y);
+        if (!g) { g = []; yearGroups.set(y, g); }
+        g.push(item);
+      }
+      let largestYear = distinctYears[0];
+      let largestSize = yearGroups.get(largestYear)?.length ?? 0;
+      for (const [y, g] of yearGroups) {
+        if (g.length > largestSize) { largestSize = g.length; largestYear = y; }
+      }
+      yearGroups.get(largestYear)!.push(...nullItems);
+      for (const [year, groupItems] of yearGroups) {
+        const key = `${root}:${year}`;
+        groups.set(key, { key, title: groupItems[0].title, year, items: groupItems, order });
+      }
+    }
+  }
+  return groups;
+}
+
+/** 可播性排序权重：playable=0, verifying/unknown=1, empty/error=2 */
+function playabilityRank(status: PlayabilityStatus): number {
+  if (status === 'playable') return 0;
+  if (status === 'verifying' || status === 'unknown') return 1;
+  return 2;
+}
+
+/** 组内条目排序：可播性 → 健康 tier → 延迟 → 到达顺序 */
 function sortGroupItems(
   items: MediaItem[],
   healthOf: (sourceId: string) => SourceHealth,
   latencyOf: (sourceId: string) => number | null,
+  playabilityOf: (mediaId: string) => PlayabilityStatus,
 ): MediaItem[] {
   if (items.length <= 1) return [...items];
-  return [...items].sort((a, b) => {
-    const tierA = HEALTH_TIER_ORDER[healthTierOf(healthOf(a.sourceId), latencyOf(a.sourceId))];
-    const tierB = HEALTH_TIER_ORDER[healthTierOf(healthOf(b.sourceId), latencyOf(b.sourceId))];
-    if (tierA !== tierB) return tierA - tierB;
-    const latencyA = latencyOf(a.sourceId);
-    const latencyB = latencyOf(b.sourceId);
-    const rankA = latencyA === null || !Number.isFinite(latencyA) ? Number.POSITIVE_INFINITY : latencyA;
-    const rankB = latencyB === null || !Number.isFinite(latencyB) ? Number.POSITIVE_INFINITY : latencyB;
-    if (rankA !== rankB) return rankA - rankB;
-    return 0; // 保持原始到达顺序（sort 稳定）
-  });
+  const indexed = items.map((item, i) => ({ item, i }));
+  return indexed
+    .sort((a, b) => {
+      const pA = playabilityRank(playabilityOf(a.item.id));
+      const pB = playabilityRank(playabilityOf(b.item.id));
+      if (pA !== pB) return pA - pB;
+      const tierA = HEALTH_TIER_ORDER[healthTierOf(healthOf(a.item.sourceId), latencyOf(a.item.sourceId))];
+      const tierB = HEALTH_TIER_ORDER[healthTierOf(healthOf(b.item.sourceId), latencyOf(b.item.sourceId))];
+      if (tierA !== tierB) return tierA - tierB;
+      const latA = latencyOf(a.item.sourceId);
+      const latB = latencyOf(b.item.sourceId);
+      const rA = latA === null || !Number.isFinite(latA) ? Number.POSITIVE_INFINITY : latA;
+      const rB = latB === null || !Number.isFinite(latB) ? Number.POSITIVE_INFINITY : latB;
+      if (rA !== rB) return rA - rB;
+      return a.i - b.i;
+    })
+    .map((e) => e.item);
 }
 
 /**
- * 按组展示时的组间排序（v1.8 修订）：
- * **相关度 → 组内最优 tier → 最优延迟 → 组大小 → 首次出现顺序**。
+ * 聚合分组（v2.0）：年份宽容归组 + 可播性优先排序。
  *
- * v1.7 把 tier 放在首位，实测产生「垃圾健康源霸屏」：采集站对任意关键词返回
- * 固定站内内容（如「找新影视片 001~N」），其源健康 tier 好，把唯一精确匹配
- * 的组（未体检源 tier=unknown）挤到列表尾部。搜索场景用户的意图是找片——
- * 相关度必须是第一优先级，健康度只在同等相关度时决定谁先（AC-121 口径修订）。
+ * 组间排序：**相关度 → 已确认有集 → 健康 tier → 延迟 → 来源数 → 首次出现顺序**。
  */
 export function groupSearchResults(
   items: MediaItem[],
   keyword: string,
   healthOf: (sourceId: string) => SourceHealth = () => 'unknown',
   latencyOf: (sourceId: string) => number | null = () => null,
+  playabilityOf: (mediaId: string) => PlayabilityStatus = () => 'unknown',
 ): SearchResultGroup[] {
-  const groups = new Map<string, { key: string; title: string; year: number | null; items: MediaItem[]; order: number }>();
-  let order = 0;
-  for (const item of items) {
-    const key = groupKeyOf(item.title, item.year);
-    const found = groups.get(key);
-    if (found) {
-      found.items.push(item);
-    } else {
-      groups.set(key, { key, title: item.title, year: item.year, items: [item], order: order++ });
-    }
+  const rawGroups = buildYearTolerantGroups(items);
+
+  const list: Array<RawGroup & { items: MediaItem[] }> = [];
+  for (const group of rawGroups.values()) {
+    list.push({
+      ...group,
+      items: sortGroupItems(group.items, healthOf, latencyOf, playabilityOf),
+    });
   }
 
-  const list = [...groups.values()].map((group) => ({
-    key: group.key,
-    title: group.title,
-    year: group.year,
-    items: sortGroupItems(group.items, healthOf, latencyOf),
-    order: group.order,
-  }));
-
-  const rankOf = (group: (typeof list)[number]): [number, number, number, number] => {
-    const best = group.items[0];
-    const tier = best
-      ? HEALTH_TIER_ORDER[healthTierOf(healthOf(best.sourceId), latencyOf(best.sourceId))]
+  type RankTuple = [number, number, number, number, number];
+  const rankOf = (group: (typeof list)[number]): RankTuple => {
+    const rep = group.items[0];
+    const pRank = rep ? playabilityRank(playabilityOf(rep.id)) : 1;
+    const tier = rep
+      ? HEALTH_TIER_ORDER[healthTierOf(healthOf(rep.sourceId), latencyOf(rep.sourceId))]
       : HEALTH_TIER_ORDER.unknown;
-    const latency = best ? latencyOf(best.sourceId) : null;
+    const latency = rep ? latencyOf(rep.sourceId) : null;
     const latencyRank = latency === null || !Number.isFinite(latency) ? Number.POSITIVE_INFINITY : latency;
-    // 相关度第一（越大越靠前取负）；同相关度时健康 tier / 延迟 / 来源数做次级排序
-    return [-scoreRelevance(group.title, keyword), tier, latencyRank, -group.items.length];
+    return [-scoreRelevance(group.title, keyword), pRank, tier, latencyRank, -group.items.length];
   };
 
   return list
     .sort((a, b) => {
-      const [tierA, latA, sizeA, relA] = rankOf(a);
-      const [tierB, latB, sizeB, relB] = rankOf(b);
-      if (tierA !== tierB) return tierA - tierB;
-      if (latA !== latB) return latA - latB;
-      if (sizeA !== sizeB) return sizeA - sizeB;
-      if (relA !== relB) return relA - relB;
+      const rA = rankOf(a);
+      const rB = rankOf(b);
+      for (let i = 0; i < rA.length; i++) {
+        if (rA[i] !== rB[i]) return rA[i] - rB[i];
+      }
       return a.order - b.order;
     })
     .map(({ key, title, year, items: groupItems }) => ({ key, title, year, items: groupItems }));
 }
 
 /**
+ * 选出组的代表条目（可播优先）：第一个 status === 'playable' 的条目；
+ * 都没有则取排序后的第一个（tier/latency 最优）。
+ */
+export function selectRepresentative(
+  group: SearchResultGroup,
+  playabilityOf: (mediaId: string) => PlayabilityStatus = () => 'unknown',
+): MediaItem | undefined {
+  for (const item of group.items) {
+    if (playabilityOf(item.id) === 'playable') return item;
+  }
+  return group.items[0];
+}
+
+/**
  * 相关度打分（v1.9/AC-121）：精确(4) > 前缀(3) > 包含(2) > 分词包含(1) > 无关(0)。
- * 四档严格递减：精确匹配必须压过前缀命中（旧实现两者同为 4，违反 AC-121）。
- * 关键词空格分词 AND 命中才给分词分；空关键词返回 0。
  */
 export function scoreRelevance(title: string, keyword: string): number {
   const t = normalizeTitleForMatch(title);
   const k = normalizeTitleForMatch(keyword);
   if (t.length === 0 || k.length === 0) return 0;
-  if (t === k) return 4; // 精确
-  if (t.startsWith(k)) return 3; // 前缀（含关键词但更长的标题）
-  if (t.includes(k)) return 2; // 包含（关键词落在标题中段）
-  // 分词：空格分隔，全部命中才计分
+  if (t === k) return 4;
+  if (t.startsWith(k)) return 3;
+  if (t.includes(k)) return 2;
   const words = keyword.trim().split(/\s+/).map((w) => normalizeTitleForMatch(w)).filter((w) => w.length > 0);
   if (words.length > 1 && words.every((w) => t.includes(w))) return 1;
   return 0;
@@ -128,30 +214,15 @@ export function sortByRelevance(items: MediaItem[], keyword: string): MediaItem[
 }
 
 /**
- * 平铺视图的去重键：片名（去空白、小写）+ 年份（CHG-28 修订）。
- * 原实现只按片名，同名不同年的片（如《三体》2008 / 2023 剧集版）会被误并成一条，
- * 与聚合视图的 `groupKeyOf`（片名+年份）口径不一致。
+ * 平铺视图的去重键（保留兼容旧调用方；主流程已改用年份宽容归组）。
  */
 export function titleDedupKey(title: string, year: number | null): string {
   const normalized = title.trim().toLowerCase().replace(/\s+/g, '');
   return `${normalized}:${year ?? 'unknown'}`;
 }
 
-/* ---------- OPT-04：失败源汇总（结果页「失败源默认折叠」面板的数据来源） ---------- */
+/* ---------- OPT-04：失败源汇总 ---------- */
 
-/**
- * 失败原因 → 搜索场景短标签。
- *
- * 分类口径唯一：`classifySourceFailure`（`shared/sourceFailure.ts`）；这里只换措辞——
- * 该模块的 `guidanceOf` 面向「播放失败」，搜索场景的 `unknown` 说「播放失败」会误导。
- */
-/**
- * 失败原因短标签（面板「一句话原因」用）
- *
- * 与 `@/shared/sourceFailure` 的 `guidanceOf().title` 同一口径，只在措辞上
- * 压短到面板一行放得下（如「规则脚本异常（源站问题）」→「规则脚本异常」），
- * 不新增第二套分类。
- */
 export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
   source_dead: '源站已失效',
   timeout: '解析超时',
@@ -162,10 +233,8 @@ export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
   unknown: '原因未知',
 };
 
-/** 汇总里最多列几类原因（面板一行放得下；明细行仍逐源可查） */
 export const SEARCH_FAILURE_REASON_LIMIT = 2;
 
-/** 面板明细行（一源一行；`detail` 已收敛脚本内部异常） */
 export interface SearchFailureRow {
   sourceId: string;
   kind: SourceFailureKind;
@@ -174,26 +243,18 @@ export interface SearchFailureRow {
 }
 
 export interface SearchFailureSummary {
-  /** 失败源数（按 sourceId 去重） */
   total: number;
   rows: SearchFailureRow[];
-  /** 原因聚类（count 降序，同数保持首次出现顺序） */
   reasons: Array<{ label: string; count: number }>;
-  /** 一句话原因（如「33 源站已失效 · 5 规则脚本异常」）；无失败为空串 */
   text: string;
 }
 
-/** 失败源 id 列表（去重、保持首次出现顺序）：只重试这些源，不重查全部 */
 export function failedSourceIds(
   failures: ReadonlyArray<{ sourceId: string; error: AppErrorShape }>,
 ): string[] {
   return [...new Set(failures.map((failure) => failure.sourceId))];
 }
 
-/**
- * 失败源汇总：按 sourceId 去重（同一源只算一次，保留最后一次错误），
- * 再按 `classifySourceFailure` 聚类成一句话。任何输入都不抛错。
- */
 export function summarizeSearchFailures(
   failures: ReadonlyArray<{ sourceId: string; error: AppErrorShape }>,
   opts?: { reasonLimit?: number },

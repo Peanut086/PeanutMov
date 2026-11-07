@@ -570,11 +570,13 @@ export const sourceService = {
    * 为什么需要：体检的探活口径（尤其爬虫 jar 冷启动）与真实链路不完全等价，
    * 一次体检抖动就能让好源长期挂「无法连接」，并叠加 `applyHealthDegradation`
    * 的连续 3 次计数把源自动禁掉。真实调用成功是比探活更强的证据，必须回写。
-   * 已是 ok 时直接返回，不产生额外写库与事件。
+   *
+   * P2-8：'empty' 状态（空壳）不在此处重置——它需要详情有剧集才能恢复，
+   * 由 libraryService.refreshDetail 专门处理。
    */
   async noteAlive(sourceId: string): Promise<void> {
     const existing = await sourceRepo.get(sourceId);
-    if (!existing || existing.health === 'ok') return;
+    if (!existing || existing.health === 'ok' || existing.health === 'empty') return;
     await sourceService.markHealth(sourceId, 'ok', null);
   },
 

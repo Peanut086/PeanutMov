@@ -126,6 +126,8 @@ export const healthService = {
         return '无法连接';
       case 'bad_config':
         return '配置有误';
+      case 'empty':
+        return '空壳';
       default:
         return '未检测';
     }

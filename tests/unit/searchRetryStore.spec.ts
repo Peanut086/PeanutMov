@@ -139,7 +139,6 @@ describe('libraryStore.retryFailedSources（OPT-04）', () => {
     const store = useLibraryStore();
     store.searchKeyword = '庆余年';
     store.searchState = 'success';
-    store.searchResults = [makeItem('s1', '庆余年')];
     store.searchResultsAll = [makeItem('s1', '庆余年')];
     store.searchFailed = [
       { sourceId: 's1', error: err('E_TIMEOUT') },
@@ -159,9 +158,11 @@ describe('libraryStore.retryFailedSources（OPT-04）', () => {
 
     expect(store.searchRetrying).toBe(false);
     expect(store.searchFailed).toEqual([{ sourceId: 's2', error: expect.objectContaining({ code: 'E_TIMEOUT' }) }]);
-    // 平铺列表按标题去重：已有「庆余年」不重复插入，新片名照常追加
-    expect(store.searchResults.map((item) => item.title)).toEqual(['庆余年', '庆余年 第二季']);
+    // 平铺列表（原始）按标题去重：已有「庆余年」不重复插入，新片名照常追加
     expect(store.searchResultsAll).toHaveLength(2);
+    expect(store.searchResultsAll.map((item) => item.title)).toEqual(['庆余年', '庆余年 第二季']);
+    // 聚合视图：同根标题归为一组，只返回代表条目
+    expect(store.searchResults).toHaveLength(1);
     expect(store.searchState).toBe('success');
   });
 
@@ -169,7 +170,6 @@ describe('libraryStore.retryFailedSources（OPT-04）', () => {
     const store = useLibraryStore();
     store.searchKeyword = '庆余年';
     store.searchState = 'success';
-    store.searchResults = [makeItem('s9', '其它片')];
     store.searchResultsAll = [makeItem('s9', '其它片')];
     store.searchFailed = [{ sourceId: 's1', error: err('E_TIMEOUT') }];
     vi.spyOn(libraryService, 'search').mockResolvedValue(result({ items: [makeItem('s1', '庆余年')] }));
@@ -185,7 +185,7 @@ describe('libraryStore.retryFailedSources（OPT-04）', () => {
     const store = useLibraryStore();
     store.searchKeyword = '庆余年';
     store.searchState = 'success';
-    store.searchResults = [makeItem('s9', '其它片')];
+    store.searchResultsAll = [makeItem('s9', '其它片')];
     const failed = [{ sourceId: 's1', error: err('E_NETWORK') }];
     store.searchFailed = failed;
     const toasts: string[] = [];

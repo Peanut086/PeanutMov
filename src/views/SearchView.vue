@@ -11,6 +11,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type { MediaItem, SearchResultGroup, SearchScope } from '@/types';
+import type { PlayabilityStatus } from '@/services/playabilityService';
 
 import OfflineBanner from '@/components/common/OfflineBanner.vue';
 import SearchBar from '@/components/common/SearchBar.vue';
@@ -31,6 +32,8 @@ import { useUiStore } from '@/stores/uiStore';
 import { useToast } from '@/composables/useToast';
 import { mediaSubtitle } from '@/components/common/format';
 import { toErrorShape } from '@/shared/errors';
+import { playabilityService } from '@/services/playabilityService';
+import { scoreRelevance } from '@/services/searchAggregate';
 // OPT-07：搜索建议服务
 import { getSearchSuggestions, getHotSearchTags } from '@/services/suggestService';
 
@@ -270,6 +273,56 @@ function toggleViewMode(): void {
 
 const viewToggleLabel = computed(() => (library.searchViewMode === 'grouped' ? '平铺' : '聚合'));
 
+/* ---------- P0-P1：可播性徽章、相关度折叠、仅看可播 ---------- */
+
+function playabilityStatus(mediaId: string): PlayabilityStatus {
+  return playabilityService.statusOf(mediaId);
+}
+
+function playabilityDotClass(status: PlayabilityStatus): string {
+  switch (status) {
+    case 'playable': return 'play-dot--playable';
+    case 'verifying': return 'play-dot--verifying';
+    case 'empty': return 'play-dot--empty';
+    case 'error': return 'play-dot--error';
+    default: return '';
+  }
+}
+
+function playabilityLabel(status: PlayabilityStatus): string {
+  switch (status) {
+    case 'playable': return '可播';
+    case 'verifying': return '检测中';
+    case 'empty': return '无剧集';
+    case 'error': return '加载失败';
+    default: return '';
+  }
+}
+
+/** P0-4：相关度 > 0 的组（精确/前缀/包含/分词） */
+const relevantGroups = computed(() =>
+  library.searchGroups.filter((g) => scoreRelevance(g.title, library.searchKeyword) > 0),
+);
+
+/** P0-4：相关度 = 0 的组（折叠到"其它匹配"） */
+const otherGroups = computed(() =>
+  library.searchGroups.filter((g) => scoreRelevance(g.title, library.searchKeyword) === 0),
+);
+
+/** 无相关结果时自动展开"其它匹配" */
+const otherGroupsExpanded = ref(false);
+watch(relevantGroups, (groups) => {
+  if (groups.length === 0 && otherGroups.value.length > 0) otherGroupsExpanded.value = true;
+}, { immediate: true });
+
+function toggleOtherGroups(): void {
+  otherGroupsExpanded.value = !otherGroupsExpanded.value;
+}
+
+function togglePlayableOnly(): void {
+  library.setSearchPlayableOnly(!library.searchPlayableOnly);
+}
+
 /** 聚合行副标题：`2024 · 科幻 · 3 个来源` */
 function groupMeta(group: SearchResultGroup): string {
   const parts: string[] = [];
@@ -482,44 +535,111 @@ function openSourceManage(): void {
                 </svg>
                 {{ viewToggleLabel }}
               </button>
+              <button
+                class="playable-toggle"
+                :class="{ 'playable-toggle--active': library.searchPlayableOnly }"
+                type="button"
+                :aria-pressed="library.searchPlayableOnly"
+                @click="togglePlayableOnly"
+              >
+                仅看可播
+              </button>
             </div>
           </div>
 
           <!-- 聚合视图：同片跨源归并，点行进详情换源 -->
-          <ul v-if="library.searchViewMode === 'grouped'" class="result-list">
-            <li v-for="group in library.searchGroups" :key="group.key">
-              <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
-                <span class="result-row__poster">
-                  <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" />
-                </span>
-                <span class="result-row__body">
-                  <span class="result-row__title">{{ group.title }}</span>
-                  <span class="result-row__meta">
-                    {{ groupMeta(group) }}
-                    <button
-                      v-if="group.items.length > 1"
-                      class="source-count-btn"
-                      type="button"
-                      @click.stop="openSourcePicker(group)"
+          <template v-if="library.searchViewMode === 'grouped'">
+            <ul class="result-list">
+              <li v-for="group in relevantGroups" :key="group.key">
+                <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
+                  <span class="result-row__poster">
+                    <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" />
+                  </span>
+                  <span class="result-row__body">
+                    <span class="result-row__title">
+                      {{ group.title }}
+                      <span
+                        v-if="playabilityStatus(group.items[0]!.id) !== 'unknown'"
+                        class="play-dot"
+                        :class="playabilityDotClass(playabilityStatus(group.items[0]!.id))"
+                        :aria-label="playabilityLabel(playabilityStatus(group.items[0]!.id))"
+                      />
+                    </span>
+                    <span class="result-row__meta">
+                      {{ groupMeta(group) }}
+                      <span v-if="group.items[0]!.tags.length > 0" class="item-tags">
+                        <span v-for="tag in group.items[0]!.tags.slice(0, 3)" :key="tag" class="item-tag">{{ tag }}</span>
+                      </span>
+                      <span v-if="group.items[0]!.episodeCount" class="item-ep-count">
+                        {{ group.items[0]!.episodeCount >= 100 ? '连载中' : `全${group.items[0]!.episodeCount}集` }}
+                      </span>
+                      <button
+                        v-if="group.items.length > 1"
+                        class="source-count-btn"
+                        type="button"
+                        @click.stop="openSourcePicker(group)"
+                      >
+                        切换
+                        <IconChevron :size="12" class="source-count-btn__arrow" />
+                      </button>
+                    </span>
+                  </span>
+                  <span class="result-row__tail">
+                    <span
+                      v-if="ratingText(group.items[0])"
+                      class="rating-tag"
+                      :aria-label="`评分 ${ratingText(group.items[0])}`"
                     >
-                      切换
-                      <IconChevron :size="12" class="source-count-btn__arrow" />
-                    </button>
+                      {{ ratingText(group.items[0]) }}
+                    </span>
+                    <IconChevron :size="16" class="result-row__chevron" />
                   </span>
-                </span>
-                <span class="result-row__tail">
-                  <span
-                    v-if="ratingText(group.items[0])"
-                    class="rating-tag"
-                    :aria-label="`评分 ${ratingText(group.items[0])}`"
-                  >
-                    {{ ratingText(group.items[0]) }}
-                  </span>
-                  <IconChevron :size="16" class="result-row__chevron" />
-                </span>
+                </button>
+              </li>
+            </ul>
+
+            <!-- P0-4：相关度 0 的结果折叠 -->
+            <div v-if="otherGroups.length > 0" class="other-groups-section">
+              <button class="other-groups-toggle" type="button" @click="toggleOtherGroups">
+                其它匹配（{{ otherGroups.length }}）
+                <IconChevron :size="14" class="other-groups-toggle__arrow" :class="{ 'other-groups-toggle__arrow--open': otherGroupsExpanded }" />
               </button>
-            </li>
-          </ul>
+              <ul v-if="otherGroupsExpanded" class="result-list result-list--muted">
+                <li v-for="group in otherGroups" :key="group.key">
+                  <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
+                    <span class="result-row__poster">
+                      <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" />
+                    </span>
+                    <span class="result-row__body">
+                      <span class="result-row__title">
+                        {{ group.title }}
+                        <span
+                          v-if="playabilityStatus(group.items[0]!.id) !== 'unknown'"
+                          class="play-dot"
+                          :class="playabilityDotClass(playabilityStatus(group.items[0]!.id))"
+                        />
+                      </span>
+                      <span class="result-row__meta">
+                        {{ groupMeta(group) }}
+                        <button
+                          v-if="group.items.length > 1"
+                          class="source-count-btn"
+                          type="button"
+                          @click.stop="openSourcePicker(group)"
+                        >
+                          切换
+                          <IconChevron :size="12" class="source-count-btn__arrow" />
+                        </button>
+                      </span>
+                    </span>
+                    <span class="result-row__tail">
+                      <IconChevron :size="16" class="result-row__chevron" />
+                    </span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </template>
 
           <!-- 平铺视图：按相关度排序的单条列表 -->
           <ul v-else class="result-list">
@@ -529,8 +649,20 @@ function openSourceManage(): void {
                   <PosterImage :src="item.posterUrl" :alt="item.title" />
                 </span>
                 <span class="result-row__body">
-                  <span class="result-row__title">{{ item.title }}</span>
-                  <span class="result-row__meta">{{ itemMeta(item) }}</span>
+                  <span class="result-row__title">
+                    {{ item.title }}
+                    <span
+                      v-if="playabilityStatus(item.id) !== 'unknown'"
+                      class="play-dot"
+                      :class="playabilityDotClass(playabilityStatus(item.id))"
+                    />
+                  </span>
+                  <span class="result-row__meta">
+                    {{ itemMeta(item) }}
+                    <span v-if="item.tags.length > 0" class="item-tags">
+                      <span v-for="tag in item.tags.slice(0, 3)" :key="tag" class="item-tag">{{ tag }}</span>
+                    </span>
+                  </span>
                 </span>
                 <span class="result-row__tail">
                   <span v-if="ratingText(item)" class="rating-tag" :aria-label="`评分 ${ratingText(item)}`">
@@ -542,21 +674,6 @@ function openSourceManage(): void {
             </li>
           </ul>
         </section>
-
-        <!-- 慢源晚到提示：不重排已浏览内容，点击刷新排序 -->
-        <button
-          v-if="library.searchLateCount > 0 && !isSearching"
-          class="search-late"
-          type="button"
-          @click="retry"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-            <path d="M12 5.5v6l3.6 2.2" />
-            <path d="M20.4 12a8.4 8.4 0 1 1-2.6-6" />
-            <path d="M20.6 4.2v4.4h-4.4" />
-          </svg>
-          爬虫源晚到 {{ library.searchLateCount }} 条新结果，点击重新排序
-        </button>
 
         <div v-if="isSearching" class="search-progress" role="status">
           <LoadingSpinner :size="16" />
@@ -1048,7 +1165,6 @@ function openSourceManage(): void {
 }
 
 /* ---------- 进程提示条 ---------- */
-.search-late,
 .search-progress {
   display: flex;
   align-items: center;
@@ -1062,16 +1178,6 @@ function openSourceManage(): void {
   color: var(--color-info);
   font: var(--text-caption);
   text-align: left;
-}
-
-.search-late svg {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
-}
-
-.search-late:active {
-  background-color: rgba(96, 165, 250, 0.22);
 }
 
 .search-offline-hint {
@@ -1206,5 +1312,133 @@ function openSourceManage(): void {
   flex: 0 0 auto;
   color: var(--color-text-tertiary);
   transform: rotate(90deg);
+}
+
+/* ---------- P0-P1：可播性徽章与标签 ---------- */
+
+.play-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: 5px;
+  vertical-align: middle;
+  flex: 0 0 auto;
+}
+
+.play-dot--playable {
+  background-color: var(--color-success, #34c759);
+  box-shadow: 0 0 0 2px rgba(52, 199, 89, 0.18);
+}
+
+.play-dot--verifying {
+  background-color: var(--color-warning, #f0a830);
+  animation: play-dot-pulse 1.2s ease-in-out infinite;
+}
+
+.play-dot--empty {
+  background-color: var(--color-text-tertiary, #999);
+  opacity: 0.5;
+}
+
+.play-dot--error {
+  background-color: var(--color-danger, #ff3b30);
+  opacity: 0.6;
+}
+
+@keyframes play-dot-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+.item-tags {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.item-tag {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background-color: rgba(128, 128, 128, 0.12);
+  color: var(--color-text-secondary, #666);
+  font: 500 10px / 1.4 var(--font-family-base);
+  white-space: nowrap;
+}
+
+.item-ep-count {
+  display: inline-block;
+  margin-left: 4px;
+  color: var(--color-text-tertiary, #999);
+  font: 10px / 1.4 var(--font-family-base);
+  white-space: nowrap;
+}
+
+.playable-toggle {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 14px;
+  border: 1px solid var(--color-border, #e0e0e0);
+  background: none;
+  color: var(--color-text-secondary, #666);
+  font: 500 12px / 1 var(--font-family-base);
+  cursor: pointer;
+  transition: all var(--duration-fast);
+  white-space: nowrap;
+}
+
+.playable-toggle:active {
+  background-color: var(--color-bg-pressed);
+}
+
+.playable-toggle--active {
+  background-color: var(--color-success-soft, rgba(52, 199, 89, 0.12));
+  border-color: var(--color-success, #34c759);
+  color: var(--color-success, #34c759);
+}
+
+/* ---------- P0-4：相关度 0 折叠区 ---------- */
+
+.other-groups-section {
+  margin-top: var(--space-3);
+}
+
+.other-groups-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: 10px var(--layout-page-padding-x);
+  background: none;
+  border: none;
+  color: var(--color-text-tertiary, #999);
+  font: 500 13px / 1 var(--font-family-base);
+  cursor: pointer;
+  text-align: left;
+}
+
+.other-groups-toggle:active {
+  color: var(--color-text-secondary);
+}
+
+.other-groups-toggle__arrow {
+  transition: transform var(--duration-fast);
+  transform: rotate(90deg);
+}
+
+.other-groups-toggle__arrow--open {
+  transform: rotate(270deg);
+}
+
+.result-list--muted {
+  opacity: 0.7;
+}
+
+.result-list--muted .result-row__title {
+  color: var(--color-text-secondary, #666);
 }
 </style>
