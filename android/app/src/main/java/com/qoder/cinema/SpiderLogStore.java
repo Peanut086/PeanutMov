@@ -213,7 +213,11 @@ public final class SpiderLogStore {
                 String n = f.getName();
                 // Extract the number suffix: spider-YYYY-MM-DD.N.log or spider-YYYY-MM-DD.N.log.gz
                 String withoutExt = n.endsWith(".gz") ? n.substring(0, n.length() - 3) : n;
-                String suffix = withoutExt.substring(base.length() + 1, withoutExt.length() - 4);
+                // 跳过无编号文件（如当前日志 spider-YYYY-MM-DD.log）
+                int numStart = base.length() + 1;
+                int numEnd = withoutExt.length() - 4;
+                if (numEnd <= numStart) continue;
+                String suffix = withoutExt.substring(numStart, numEnd);
                 try {
                     int idx = Integer.parseInt(suffix);
                     if (idx > max) max = idx;

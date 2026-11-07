@@ -38,6 +38,8 @@ public class MainApplication extends Application {
         // 必须在这里（进程启动、Capacitor 插件 load 之前）完成，渠道才以本工程的
         // 名称/重要性登记；排期、持久化、重启恢复仍由 @capacitor/local-notifications 负责。
         ReminderNotifications.bootstrap(this);
+        // P2-15：xCrash 原生崩溃/ANR 捕获（须在 installCrashHandler 之前，避免链式覆盖）
+        xcrash.XCrash.init(this);
         // P3：安装全局崩溃处理器，写 FATAL 日志后交还默认处理
         installCrashHandler();
         // REV-24：初始化崩溃哨兵并检查上次异常退出
