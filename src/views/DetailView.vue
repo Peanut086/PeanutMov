@@ -28,6 +28,7 @@ import IconDownload from '@/components/icons/IconDownload.vue';
 import IconPlay from '@/components/icons/IconPlay.vue';
 import IconCast from '@/components/icons/IconCast.vue';
 import IconChevron from '@/components/icons/IconChevron.vue';
+import TactilePushButton from '@/components/leibox/tactile-push-button/TactilePushButton.vue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
@@ -969,16 +970,27 @@ function openCompliance(): void {
     <!-- OPT-08：固定底部操作栏 -->
     <section v-if="item && !loading && !isError" class="detail-actions-bar">
       <div class="detail-actions-bar__inner">
-        <button
-          class="btn btn--primary btn--lg detail-actions__main"
-          type="button"
+        <TactilePushButton
+          class="detail-actions__main"
+          :class="{ 'detail-actions__main--disabled': !hasEpisodes }"
+          :options="{
+            text: playingNavigate ? '正在打开播放页…' : primaryLabel,
+            height: 56
+          }"
+          :style="{
+            '--button-font-size': '16px',
+            '--button-padding-x': '1.2em',
+            '--button-padding-y': '0.6em',
+            '--button-surface-start': '#F0A82E',
+            '--button-surface-end': '#D98A12',
+            '--button-text-start': '#170F00',
+            '--button-text-end': '#170F00',
+            '--button-press-scale': '0.95'
+          }"
           :disabled="!hasEpisodes"
           :aria-busy="prechecking || playingNavigate ? 'true' : undefined"
           @click="onPrimary"
-        >
-          <IconPlay :size="20" />
-          {{ playingNavigate ? '正在打开播放页…' : primaryLabel }}
-        </button>
+        />
         <button
           class="detail-actions__icon"
           :class="{ 'detail-actions__icon--bump': favoriteBump, 'detail-actions__icon--on': isFavorite }"
@@ -1190,6 +1202,11 @@ function openCompliance(): void {
 .detail-actions__main[aria-busy="true"] {
   opacity: 0.75;
   cursor: wait;
+  pointer-events: none;
+}
+
+.detail-actions__main--disabled {
+  opacity: 0.4;
   pointer-events: none;
 }
 

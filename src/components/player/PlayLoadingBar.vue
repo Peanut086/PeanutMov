@@ -2,9 +2,11 @@
 /**
  * 播放加载进度条（问题一）
  *
- * 在 loading 遮罩中显示：进度条 + 阶段文案 + 已耗时秒数。
+ * 在 loading 遮罩中显示：点阵加载动效 + 进度条 + 阶段文案 + 已耗时秒数。
  * 进度由父组件按阶段权重驱动，本组件只负责渲染。
  */
+import AiImageGeneration from '@/components/leibox/ai-generating/AiImageGeneration.vue';
+
 defineProps<{
   progress: number;
   stageText: string;
@@ -21,8 +23,8 @@ function formatElapsed(sec: number): string {
 
 <template>
   <div class="play-loading" role="status" aria-live="polite">
-    <div class="play-loading__spinner">
-      <span class="play-loading__ring" />
+    <div class="play-loading__dots">
+      <AiImageGeneration :options="{ height: 120, title: stageText }" />
     </div>
     <div class="play-loading__bar-track">
       <div
@@ -30,10 +32,9 @@ function formatElapsed(sec: number): string {
         :style="{ width: `${Math.min(100, Math.max(0, progress)).toFixed(1)}%` }"
       />
     </div>
-    <p class="play-loading__text">{{ stageText }}</p>
     <p class="play-loading__meta">{{ formatElapsed(elapsed) }}</p>
   </div>
-</template>
+</template>>
 
 <style scoped>
 .play-loading {
@@ -50,23 +51,13 @@ function formatElapsed(sec: number): string {
   color: #fff;
 }
 
-.play-loading__spinner {
-  width: 32px;
-  height: 32px;
-}
-
-.play-loading__ring {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.2);
-  border-top-color: var(--color-brand, #4fc3f7);
-  animation: play-loading-spin 800ms linear infinite;
-}
-
-@keyframes play-loading-spin {
-  to { transform: rotate(360deg); }
+.play-loading__dots {
+  width: 120px;
+  height: 120px;
+  overflow: hidden;
+  transform: scale(0.285);
+  transform-origin: top left;
+  margin-bottom: -86px;
 }
 
 .play-loading__bar-track {
@@ -80,16 +71,8 @@ function formatElapsed(sec: number): string {
 .play-loading__bar-fill {
   height: 100%;
   border-radius: 2px;
-  background: var(--color-brand, #4fc3f7);
+  background: var(--color-brand, #F0A82E);
   transition: width 300ms ease-out;
-}
-
-.play-loading__text {
-  margin: 0;
-  font-size: 14px;
-  line-height: 1.4;
-  color: rgba(255, 255, 255, 0.92);
-  text-align: center;
 }
 
 .play-loading__meta {
@@ -100,7 +83,6 @@ function formatElapsed(sec: number): string {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .play-loading__ring { animation-duration: 1600ms; }
   .play-loading__bar-fill { transition-duration: 600ms; }
 }
 </style>
