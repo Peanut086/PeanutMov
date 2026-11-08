@@ -241,6 +241,12 @@ async function ensurePlayable(ep: Episode): Promise<boolean> {
       toast.error('该集暂无可播放地址');
       return false;
     }
+    // P1: 源返回数据不一致（P0-3 触发）→ 提示用户切换源
+    if (err.code === 'E_SOURCE_UNAVAILABLE') {
+      markUnavailable(ep.id);
+      toast.error('当前源数据异常，建议切换其他源');
+      return false;
+    }
     if (err.code === 'E_NETDISK_LOGIN_REQUIRED') {
       // P3-2 + FIX-A：先本地自检，区分「权限缺失」「cookie 文件异常」「真未登录」
       try {

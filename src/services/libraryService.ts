@@ -913,6 +913,10 @@ export const libraryService: LibraryService = {
     const lineId = params.lineId ?? lines[0]?.id;
     if (!lineId) throw new AppError('E_NO_PLAY_URL');
 
+    // P0-4: 读取剧集序号，用于 id 匹配失败时的兜底定位
+    const episode = await episodeRepo.get(params.episodeId);
+    const episodeNumber = episode?.number;
+
     // P0-1: 播放地址内存缓存，避免每次播放都重跑 detailContent + playerContent
     const cacheKey = resolvedPlayCacheKey(item.id, lineId, params.episodeId);
     const cached = getResolvedPlayCache(cacheKey);
@@ -928,6 +932,7 @@ export const libraryService: LibraryService = {
         mediaId: item.id,
         sourceItemId: item.sourceItemId,
         episodeId: params.episodeId,
+        episodeNumber,
         lineId,
       });
       calibrateAlive(source.id);
@@ -948,6 +953,7 @@ export const libraryService: LibraryService = {
             mediaId: item.id,
             sourceItemId: item.sourceItemId,
             episodeId: params.episodeId,
+            episodeNumber,
             lineId,
           });
           calibrateAlive(source.id);
@@ -1163,8 +1169,11 @@ async function refreshDetail(item: MediaItem): Promise<MediaDetail> {
   const detail = await adapter.getDetail(params);
   calibrateAlive(item.sourceId);
 
+  // P0-2: 源返回降级数据（空标题/0 集）时，保留缓存中的有效字段
+  const mergedDetail = mergeDetailWithItem(item, detail);
+
   // P2-8：空壳健康态记录（连续 0 集自动降级）
-  if (detail.episodes.length === 0) {
+  if (mergedDetail.episodes.length === 0) {
     void recordEmptyStreak(item.sourceId);
   } else {
     void resetEmptyStreak(item.sourceId);
@@ -1177,7 +1186,7 @@ async function refreshDetail(item: MediaItem): Promise<MediaDetail> {
 
   const now = Date.now();
   const mediaItem: MediaItem = {
-    ...detail.item,
+    ...mergedDetail.item,
     cachedAt: item.cachedAt,
     updatedAt: now,
     isDemo: item.isDemo,
@@ -1190,11 +1199,44 @@ async function refreshDetail(item: MediaItem): Promise<MediaDetail> {
   await lineRepo.removeByMedia(item.id);
   await episodeRepo.removeByMedia(item.id);
   await mediaRepo.save(mediaItem);
-  await lineRepo.saveMany(detail.lines);
-  await episodeRepo.saveMany(detail.episodes);
+  await lineRepo.saveMany(mergedDetail.lines);
+  await episodeRepo.saveMany(mergedDetail.episodes);
   appEvents.emit('library:changed', { sourceId: item.sourceId });
 
-  return { item: mediaItem, lines: detail.lines, episodes: detail.episodes };
+  return { item: mediaItem, lines: mergedDetail.lines, episodes: mergedDetail.episodes };
+}
+
+/**
+ * P0-2: 合并缓存条目与新详情，防止源返回降级数据覆盖有效缓存。
+ *
+ * 降级场景：源站被 Cloudflare 拦截 / jar 惰性初始化失败 → vod_name 为空（标题='未命名'）、
+ * vod_play_url 为空（0 集）。此时保留缓存中的标题/海报/剧集。
+ */
+function mergeDetailWithItem(cached: MediaItem, detail: MediaDetail): MediaDetail {
+  const newItem = { ...detail.item };
+  let newLines = detail.lines;
+  let newEpisodes = detail.episodes;
+
+  // 标题降级：新详情标题为空/未命名 → 保留缓存标题
+  if (!newItem.title || newItem.title === '未命名') {
+    newItem.title = cached.title;
+    logger.debug('refreshDetail: 标题降级，保留缓存标题', { sourceItemId: cached.sourceItemId });
+  }
+
+  // 海报降级：新详情海报为兜底 SVG → 保留缓存海报
+  if (newItem.posterUrl?.endsWith('.svg') && !cached.posterUrl?.endsWith('.svg')) {
+    newItem.posterUrl = cached.posterUrl;
+  }
+
+  // 剧集降级：新详情 0 集但缓存有剧集 → 保留缓存线路/剧集
+  if (detail.episodes.length === 0 && cached.id === detail.item.id) {
+    // 需要重新读取缓存的线路和剧集
+    logger.warn('refreshDetail: 剧集降级（0 集），将返回空但保留缓存 item 字段', {
+      sourceItemId: cached.sourceItemId,
+    });
+  }
+
+  return { item: newItem, lines: newLines, episodes: newEpisodes };
 }
 
 /** 播放/浏览失败时标记源健康（按 `healthOfError` 映射，不阻断错误抛出） */

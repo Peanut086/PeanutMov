@@ -299,6 +299,8 @@ export interface ResolvePlayParams {
   sourceItemId: string;
   episodeId: string;
   lineId: string;
+  /** P0-4: 剧集序号（用于 id 匹配失败时的兜底定位） */
+  episodeNumber?: number;
   signal?: AbortSignal;
 }
 

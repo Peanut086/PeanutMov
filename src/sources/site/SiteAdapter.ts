@@ -8,6 +8,7 @@
 import { AppError } from '@/shared/errors';
 import { mediaIdOf } from '@/shared/id';
 import { joinUrl, toAbsoluteUrl, withQuery } from '@/shared/url';
+import { logger } from '@/shared/logger';
 import { BaseAdapter, type ProbeResult } from '@/sources/base/BaseAdapter';
 import { deriveHasMore } from '@/sources/base/pagination';
 import { crawl } from '@/sources/pipeline/scheduler';
@@ -136,11 +137,35 @@ export class SiteAdapter extends BaseAdapter {
     const { source, sourceItemId } = params;
     this.assertEnabled(source);
     const response = await this.request(source, 'detail', { ids: sourceItemId, signal: params.signal });
-    const vod = response.list?.find((entry) => vodIdOf(entry) === sourceItemId) ?? response.list?.[0];
-    if (!vod) throw new AppError('E_NOT_FOUND');
+    const list = response.list ?? [];
+    const matched = list.find((entry) => vodIdOf(entry) === sourceItemId);
+    // P0-3: list[0] 兜底仅在「单条且无 vod_id」时安全；多条目或条目有 id 但不匹配时拒绝
+    const vod = matched ?? (list.length === 1 && !vodIdHasValue(list[0]) ? list[0] : null);
+    if (!vod) {
+      logger.warn('SiteAdapter.getDetail: 源返回条目与请求不一致', {
+        source: source.name,
+        sourceItemId,
+        listCount: list.length,
+        firstVodId: list[0] ? vodIdOf(list[0]) : null,
+      });
+      throw new AppError('E_SOURCE_UNAVAILABLE', '源详情返回的条目与请求不一致', {
+        detail: `sourceItemId=${sourceItemId}, listCount=${list.length}`,
+      });
+    }
 
+    // P0-1: mediaId 必须基于请求时的 sourceItemId（而非 API 返回的 vodId，后者可能为空/不稳定）
+    const stableMediaId = mediaIdOf(source.id, sourceItemId);
     const item = this.toItem(source, vod);
-    const { lines, episodes } = this.buildLinesWithRaw(source, vod, mediaIdOf(source.id, vodIdOf(vod)));
+    item.id = stableMediaId;
+    item.sourceItemId = sourceItemId;
+    const { lines, episodes } = this.buildLinesWithRaw(source, vod, stableMediaId);
+    logger.debug('SiteAdapter.getDetail: 详情加载完成', {
+      source: source.name,
+      sourceItemId,
+      title: item.title,
+      lines: lines.length,
+      episodes: episodes.length,
+    });
     return { item, lines, episodes };
   }
 
@@ -202,19 +227,32 @@ export class SiteAdapter extends BaseAdapter {
   }
 
   async resolvePlayUrl(params: ResolvePlayParams): Promise<PlaybackSource> {
-    const { source, sourceItemId, lineId, episodeId } = params;
+    const { source, sourceItemId, lineId, episodeId, episodeNumber } = params;
     this.assertEnabled(source);
     const response = await this.request(source, 'detail', { ids: sourceItemId, signal: params.signal });
-    const vod = response.list?.find((entry) => vodIdOf(entry) === sourceItemId) ?? response.list?.[0];
-    if (!vod) throw new AppError('E_NOT_FOUND');
+    const list = response.list ?? [];
+    const matched = list.find((entry) => vodIdOf(entry) === sourceItemId);
+    // P0-3: list[0] 兜底仅在「单条且无 vod_id」时安全
+    const vod = matched ?? (list.length === 1 && !vodIdHasValue(list[0]) ? list[0] : null);
+    if (!vod) {
+      throw new AppError('E_SOURCE_UNAVAILABLE', '源详情返回的条目与请求不一致', {
+        detail: `sourceItemId=${sourceItemId}, listCount=${list.length}`,
+      });
+    }
 
-    const { lines, rawEpisodes } = this.buildLinesWithRaw(source, vod, mediaIdOf(source.id, vodIdOf(vod)));
+    // P0-1: mediaId 基于请求参数而非 API 返回的 vodId（可能为空/不稳定）
+    const stableMediaId = mediaIdOf(source.id, sourceItemId);
+    const { lines, rawEpisodes } = this.buildLinesWithRaw(source, vod, stableMediaId);
     const lineIndex = lines.findIndex((line) => line.id === lineId);
     const line = lines[lineIndex >= 0 ? lineIndex : 0];
     if (!line) throw new AppError('E_NO_PLAY_URL');
-    const list = rawEpisodes[line.index] ?? [];
-    const episodeIndex = list.findIndex((entry) => entry.id === episodeId);
-    const picked = list[episodeIndex >= 0 ? episodeIndex : 0];
+    const epList = rawEpisodes[line.index] ?? [];
+    let episodeIndex = epList.findIndex((entry) => entry.id === episodeId);
+    // P0-4: id 匹配失败时，按序号兜底
+    if (episodeIndex < 0 && episodeNumber !== undefined) {
+      episodeIndex = epList.findIndex((entry) => entry.number === episodeNumber);
+    }
+    const picked = epList[episodeIndex >= 0 ? episodeIndex : 0];
     if (!picked || picked.url.length === 0) throw new AppError('E_NO_PLAY_URL');
 
     const absolute = toAbsoluteUrl(source.baseUrl, picked.url) ?? picked.url;
@@ -394,4 +432,12 @@ export class SiteAdapter extends BaseAdapter {
   private toItem(source: Source, vod: TvboxVod): MediaItem {
     return toItemFromVod(source, vod, (input) => this.makeItem(source, input));
   }
+}
+
+/** P0-3: 检查 vod 条目是否有有效的 vod_id（非空/非 'unknown' 兜底值） */
+function vodIdHasValue(vod: TvboxVod): boolean {
+  const id = vod.vod_id;
+  if (id === null || id === undefined) return false;
+  if (typeof id === 'string' && id.trim().length === 0) return false;
+  return true;
 }

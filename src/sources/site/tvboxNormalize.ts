@@ -191,17 +191,22 @@ export function buildLinesWithRaw(
       index,
     });
     const rawList: RawEpisode[] = [];
-    segment.episodes.forEach((entry, epIndex) => {
-      const number = epIndex + 1;
-      const title = episodeTitleOf(entry.name, epIndex);
-      const id = episodeIdOf(mediaId, lineId, number);
-      rawList.push({ id, url: entry.url, title, number });
+    // P0-5: 按 url 去重（源可能返回重复集），去重后按顺序重新编号 1..N
+    const seenUrls = new Set<string>();
+    let sequenceNumber = 0;
+    segment.episodes.forEach((entry) => {
+      if (!entry.url || seenUrls.has(entry.url)) return;
+      seenUrls.add(entry.url);
+      sequenceNumber += 1;
+      const title = episodeTitleOf(entry.name, sequenceNumber - 1);
+      const id = episodeIdOf(mediaId, lineId, sequenceNumber);
+      rawList.push({ id, url: entry.url, title, number: sequenceNumber });
       episodes.push({
         id,
         mediaId,
         sourceId: source.id,
         lineId,
-        number,
+        number: sequenceNumber,
         title,
         durationSec: null,
         subtitles: [],

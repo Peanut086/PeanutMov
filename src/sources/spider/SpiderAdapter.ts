@@ -101,6 +101,14 @@ function extOf(source: Source): SpiderSourceExt {
   };
 }
 
+/** P0-3: 检查 vod 条目是否有有效的 vod_id（非空/非 'unknown' 兜底值） */
+function vodIdHasValue(vod: TvboxVod): boolean {
+  const id = vod.vod_id;
+  if (id === null || id === undefined) return false;
+  if (typeof id === 'string' && id.trim().length === 0) return false;
+  return true;
+}
+
 /**
  * P4-3: 判断是否为网盘源
  * 通过 initExt 或 baseUrl 中的关键词识别
@@ -755,11 +763,35 @@ export class SpiderAdapter extends BaseAdapter {
       { 0: [sourceItemId] },
       params.signal,
     );
-    const vod = response.list?.find((entry) => vodIdOf(entry) === sourceItemId) ?? response.list?.[0];
-    if (!vod) throw new AppError('E_NOT_FOUND');
+    const list = response.list ?? [];
+    const matched = list.find((entry) => vodIdOf(entry) === sourceItemId);
+    // P0-3: list[0] 兜底仅在「单条且无 vod_id」时安全；多条目或条目有 id 但不匹配时拒绝
+    const vod = matched ?? (list.length === 1 && !vodIdHasValue(list[0]) ? list[0] : null);
+    if (!vod) {
+      logger.warn('SpiderAdapter.getDetail: 源返回条目与请求不一致', {
+        source: source.name,
+        sourceItemId,
+        listCount: list.length,
+        firstVodId: list[0] ? vodIdOf(list[0]) : null,
+      });
+      throw new AppError('E_SOURCE_UNAVAILABLE', '源详情返回的条目与请求不一致', {
+        detail: `sourceItemId=${sourceItemId}, listCount=${list.length}`,
+      });
+    }
 
+    // P0-1: mediaId 必须基于请求时的 sourceItemId（而非爬虫返回的 vodId，后者可能为空/不稳定）
+    const stableMediaId = mediaIdOf(source.id, sourceItemId);
     const item = this.toItem(source, vod);
-    const { lines, episodes } = buildLinesWithRaw(source, vod, mediaIdOf(source.id, vodIdOf(vod)));
+    item.id = stableMediaId;
+    item.sourceItemId = sourceItemId;
+    const { lines, episodes } = buildLinesWithRaw(source, vod, stableMediaId);
+    logger.debug('SpiderAdapter.getDetail: 详情加载完成', {
+      source: source.name,
+      sourceItemId,
+      title: item.title,
+      lines: lines.length,
+      episodes: episodes.length,
+    });
     return { item, lines, episodes };
   }
 
@@ -828,12 +860,16 @@ export class SpiderAdapter extends BaseAdapter {
    * - 线路 id 失效（库缓存过期）但别的线路有这一集 → 换线路，**不换集**；
    * - `episodeId` 为空（单集电影 / 未指定集）→ 取首条线路的第 1 集，这是语义正确的默认；
    * - `episodeId` 非空但哪条线路都没有 → 返回 null，由调用方报错。
+   *
+   * P0-4: 新增 episodeNumber 兜底——当 episodeId 匹配失败（如缓存数据来自旧版本），
+   * 按序号匹配同一位置的剧集。
    */
   private locateEpisode(
     lines: PlayLine[],
     rawEpisodes: RawEpisode[][],
     lineId: string | null | undefined,
     episodeId: string | null | undefined,
+    episodeNumber?: number,
   ): { line: PlayLine; picked: RawEpisode } | null {
     const wantedLine = lines.find((entry) => entry.id === lineId) ?? null;
     const wantedEpisode = String(episodeId ?? '').trim();
@@ -843,9 +879,18 @@ export class SpiderAdapter extends BaseAdapter {
       return list.find((entry) => entry.id === wantedEpisode) ?? null;
     };
 
+    const pickByNumber = (line: PlayLine): RawEpisode | null => {
+      if (episodeNumber === undefined || !Number.isFinite(episodeNumber)) return null;
+      const list = rawEpisodes[line.index] ?? [];
+      return list.find((entry) => entry.number === episodeNumber) ?? null;
+    };
+
     if (wantedLine !== null) {
       const picked = pickIn(wantedLine);
       if (picked !== null) return { line: wantedLine, picked };
+      // P0-4: id 匹配失败，尝试按序号兜底
+      const byNumber = pickByNumber(wantedLine);
+      if (byNumber !== null) return { line: wantedLine, picked: byNumber };
     }
 
     if (wantedEpisode.length > 0) {
@@ -853,6 +898,14 @@ export class SpiderAdapter extends BaseAdapter {
         if (line === wantedLine) continue;
         const picked = pickIn(line);
         if (picked !== null) return { line, picked };
+      }
+      // P0-4: 所有线路 id 都匹配失败，尝试按序号兜底
+      if (episodeNumber !== undefined) {
+        for (const line of lines) {
+          if (line === wantedLine) continue;
+          const byNumber = pickByNumber(line);
+          if (byNumber !== null) return { line, picked: byNumber };
+        }
       }
       return null;
     }
@@ -864,7 +917,7 @@ export class SpiderAdapter extends BaseAdapter {
   }
 
   async resolvePlayUrl(params: ResolvePlayParams): Promise<PlaybackSource> {
-    const { source, sourceItemId, lineId, episodeId } = params;
+    const { source, sourceItemId, lineId, episodeId, episodeNumber } = params;
     this.assertEnabled(source);
 
     // 1. 取剧集列表（与 SiteAdapter 同一口径），定位用户点的那一集
@@ -875,10 +928,19 @@ export class SpiderAdapter extends BaseAdapter {
       { 0: [sourceItemId] },
       params.signal,
     );
-    const vod = response.list?.find((entry) => vodIdOf(entry) === sourceItemId) ?? response.list?.[0];
-    if (!vod) throw new AppError('E_NOT_FOUND');
-    const { lines, rawEpisodes } = buildLinesWithRaw(source, vod, mediaIdOf(source.id, vodIdOf(vod)));
-    const located = this.locateEpisode(lines, rawEpisodes, lineId, episodeId);
+    const list = response.list ?? [];
+    const matched = list.find((entry) => vodIdOf(entry) === sourceItemId);
+    // P0-3: list[0] 兜底仅在「单条且无 vod_id」时安全
+    const vod = matched ?? (list.length === 1 && !vodIdHasValue(list[0]) ? list[0] : null);
+    if (!vod) {
+      throw new AppError('E_SOURCE_UNAVAILABLE', '源详情返回的条目与请求不一致', {
+        detail: `sourceItemId=${sourceItemId}, listCount=${list.length}`,
+      });
+    }
+    // P0-1: mediaId 基于请求参数而非爬虫返回的 vodId（可能为空/不稳定）
+    const stableMediaId = mediaIdOf(source.id, sourceItemId);
+    const { lines, rawEpisodes } = buildLinesWithRaw(source, vod, stableMediaId);
+    const located = this.locateEpisode(lines, rawEpisodes, lineId, episodeId, episodeNumber);
     if (located === null) {
       // FIX-05：找不到用户点的那一集就报错，不能悄悄播第一集
       throw new AppError('E_NO_PLAY_URL', '该源没有这一集', {
