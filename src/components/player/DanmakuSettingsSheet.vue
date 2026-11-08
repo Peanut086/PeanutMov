@@ -27,6 +27,11 @@ const danmaku = computed<DanmakuSettings>(
       areaPercent: 50,
       merge: true,
       safeBottomPercent: 15,
+      bold: false,
+      strokeStyle: 'shadow',
+      density: 'normal',
+      filterTop: false,
+      filterBottom: false,
     },
 );
 

@@ -768,6 +768,16 @@ export interface DanmakuSettings {
   merge: boolean;
   /** 底部安全区百分比（默认 15，字幕区禁显） */
   safeBottomPercent: number;
+  /** 弹幕加粗 */
+  bold: boolean;
+  /** 描边风格：none=无 / shadow=阴影 / outline=描边 */
+  strokeStyle: 'none' | 'shadow' | 'outline';
+  /** 密度：sparse/normal/dense，影响同屏上限系数 */
+  density: 'sparse' | 'normal' | 'dense';
+  /** 过滤顶部固定弹幕 */
+  filterTop: boolean;
+  /** 过滤底部固定弹幕 */
+  filterBottom: boolean;
 }
 
 export type DeepPartial<T> = {

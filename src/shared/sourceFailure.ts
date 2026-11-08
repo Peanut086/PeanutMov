@@ -213,6 +213,20 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
   },
 };
 
+/**
+ * 判定一段错误是否属于"瞬态可自动重试"类型。
+ *
+ * 适用场景：guard jar 惰性初始化失败（首次 NPE，第二次热路径成功）、
+ * 解析页偶发空结果（E_NO_PLAY_URL）、源站瞬时 5xx/超时。
+ * 不适用：鉴权、磁力、DRM、安全模式、隔离、类名不匹配——这些重试无意义。
+ */
+export function isTransientFailure(kind: SourceFailureKind): boolean {
+  return kind === 'source_internal'
+    || kind === 'rule_script'
+    || kind === 'timeout'
+    || kind === 'source_dead';
+}
+
 /** 分类 → 文案与动作 */
 export function guidanceOf(error: AppErrorShape | null | undefined): SourceFailureGuidance {
   const kind = classifySourceFailure(error);

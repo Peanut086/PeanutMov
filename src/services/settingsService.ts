@@ -140,6 +140,11 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       areaPercent: 50,
       merge: true,
       safeBottomPercent: 15,
+      bold: false,
+      strokeStyle: 'shadow',
+      density: 'normal',
+      filterTop: false,
+      filterBottom: false,
     },
     /* v1.8/P4：网盘画质与线程配置 */
     netdisk: {
@@ -250,6 +255,11 @@ function sanitize(input: AppSettings): AppSettings {
   danmaku.safeBottomPercent = Math.max(0, Math.min(50, Number(danmaku.safeBottomPercent) || 0));
   danmaku.merge = Boolean(danmaku.merge);
   danmaku.enabled = Boolean(danmaku.enabled);
+  danmaku.bold = Boolean(danmaku.bold);
+  if (!['none', 'shadow', 'outline'].includes(danmaku.strokeStyle)) danmaku.strokeStyle = 'shadow';
+  if (!['sparse', 'normal', 'dense'].includes(danmaku.density)) danmaku.density = 'normal';
+  danmaku.filterTop = Boolean(danmaku.filterTop);
+  danmaku.filterBottom = Boolean(danmaku.filterBottom);
 
   return {
     ...defaults,

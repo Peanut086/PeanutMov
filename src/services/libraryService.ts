@@ -31,7 +31,7 @@ import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
 import { mediaIdOf } from '@/shared/id';
 import { resolveSearchTimeoutMs } from '@/shared/searchBudget';
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
-import { sanitizeSourceMessage } from '@/shared/sourceFailure';
+import { classifySourceFailure, isTransientFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
 import type {
@@ -922,6 +922,33 @@ export const libraryService: LibraryService = {
       return playback;
     } catch (e) {
       const error = readableSourceError(e);
+      const kind = classifySourceFailure(error.toShape());
+      // 瞬态失败（jar 惰性初始化 NPE、源站瞬时 5xx/超时、解析页偶发空）自动重试一次。
+      // 重试前清缓存，避免命中同一份坏结果；UI 通过 play:stage 事件感知"正在重试"。
+      if (isTransientFailure(kind)) {
+        logger.warn('resolvePlay 瞬态失败，自动重试一次', { kind, mediaId: item.id, episodeId: params.episodeId, detail: error.message });
+        resolvedPlayCache.delete(cacheKey);
+        appEvents.emit('play:stage', { stage: 'retrying', detail: kind });
+        try {
+          const playback = await adapter.resolvePlayUrl({
+            source,
+            mediaId: item.id,
+            sourceItemId: item.sourceItemId,
+            episodeId: params.episodeId,
+            lineId,
+          });
+          calibrateAlive(source.id);
+          setResolvedPlayCache(cacheKey, playback);
+          return playback;
+        } catch (retryErr) {
+          const retryError = readableSourceError(retryErr);
+          if (retryError.code === 'E_NETWORK' || retryError.code === 'E_TIMEOUT' || retryError.code === 'E_HTTP_5XX') {
+            await markSourceFailed(source.id, retryError);
+            throw new AppError('E_SOURCE_UNAVAILABLE', undefined, { detail: retryError.message });
+          }
+          throw retryError;
+        }
+      }
       if (error.code === 'E_NETWORK' || error.code === 'E_TIMEOUT' || error.code === 'E_HTTP_5XX') {
         await markSourceFailed(source.id, error);
         throw new AppError('E_SOURCE_UNAVAILABLE', undefined, { detail: error.message });

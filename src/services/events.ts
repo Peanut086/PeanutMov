@@ -22,6 +22,8 @@ export type AppEventMap = {
   'local:missing': { taskId: string; mediaId: string; episodeId: string; text: string };
   'settings:changed': { patch: Record<string, unknown> };
   'toast': { text: string; type: 'info' | 'success' | 'error' };
+  /** 播放链路阶段上报（问题一/问题二：进度条 + 重试提示） */
+  'play:stage': { stage: 'resolving' | 'preparing' | 'connecting' | 'buffering' | 'retrying' | 'done'; detail?: string };
 };
 
 export type AppEventName = keyof AppEventMap;

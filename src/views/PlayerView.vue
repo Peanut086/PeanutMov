@@ -44,7 +44,6 @@ import QualitySheet from '@/components/player/QualitySheet.vue';
 import DisplayModeSheet from '@/components/player/DisplayModeSheet.vue';
 import PlayerErrorPanel from '@/components/player/PlayerErrorPanel.vue';
 import NextEpisodePrompt from '@/components/player/NextEpisodePrompt.vue';
-import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import EpisodeList from '@/components/media/EpisodeList.vue';
 import LineSelector from '@/components/media/LineSelector.vue';
@@ -64,6 +63,7 @@ import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFal
 import { DanmakuOverlay } from '@/player/DanmakuOverlay';
 import { danmakuService } from '@/services/danmakuService';
 import DanmakuSettingsSheet from '@/components/player/DanmakuSettingsSheet.vue';
+import DanmakuStylePanel from '@/components/player/DanmakuStylePanel.vue';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
 import { QUALITY_AUTO } from '@/player/constants';
@@ -77,6 +77,8 @@ import { sourceService } from '@/services/sourceService';
 import { downloadService } from '@/services/downloadService';
 import { pickPlayCandidates } from '@/sources/douban/playMatch';
 import { healthService } from '@/services/healthService';
+import { appEvents } from '@/services/events';
+import PlayLoadingBar from '@/components/player/PlayLoadingBar.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -432,28 +434,91 @@ async function onRedownload(): Promise<void> {
 
 /* ---------- 加载播放源 ---------- */
 /**
- * 起播等待分级提示（P1-9）：resolvePlay + 引擎加载超过 6s 时升级文案，
- * 让用户知道是「源慢」而不是 App 卡死。
+ * 起播等待分级进度（问题一）：
+ * resolvePlay → preparing → connecting → buffering → done，按阶段权重推进 progress。
+ * 同一阶段内按已耗时秒数做对数渐进，避免视觉卡死。
  */
-const loadingHint = ref('正在加载…');
-let loadingHintTimer: ReturnType<typeof setTimeout> | null = null;
+const loadingStageText = ref('正在加载…');
+const loadingProgress = ref(0);
+const loadingElapsed = ref(0);
+let loadingStartTime = 0;
+let loadingRafId = 0;
+/** 当前所处阶段及其权重区间 [from, to] */
+type StageKey = 'resolving' | 'preparing' | 'connecting' | 'buffering' | 'done';
+let currentStage: StageKey = 'resolving';
+const STAGE_RANGES: Record<StageKey, [number, number]> = {
+  resolving: [0, 45],
+  preparing: [45, 52],
+  connecting: [52, 80],
+  buffering: [80, 95],
+  done: [95, 100],
+};
+const STAGE_TEXT: Record<StageKey, string> = {
+  resolving: '正在解析播放地址…',
+  preparing: '正在准备数据…',
+  connecting: '正在连接播放器…',
+  buffering: '正在缓冲首帧…',
+  done: '即将播放',
+};
 
-function startLoadingHint(): void {
-  clearLoadingHint();
-  loadingHint.value = '正在加载…';
-  loadingHintTimer = setTimeout(() => {
-    loadingHint.value = '源响应较慢，仍在连接…可稍候，或返回后换线路';
-  }, 6000);
+function setStage(stage: StageKey, detail?: string): void {
+  if (stage === currentStage && !detail) return;
+  currentStage = stage;
+  if (stage === 'done') {
+    loadingProgress.value = 100;
+    loadingStageText.value = STAGE_TEXT.done;
+    return;
+  }
+  loadingStageText.value = detail
+    ? `${STAGE_TEXT[stage]}（${detail}）`
+    : STAGE_TEXT[stage];
+  // 阶段切换时把 progress 拉到区间起点，避免回退
+  const [from] = STAGE_RANGES[stage];
+  if (loadingProgress.value < from) loadingProgress.value = from;
 }
 
-function clearLoadingHint(): void {
-  if (loadingHintTimer !== null) {
-    clearTimeout(loadingHintTimer);
-    loadingHintTimer = null;
+function startLoadingProgress(): void {
+  cancelLoadingProgress();
+  loadingStartTime = Date.now();
+  loadingProgress.value = 0;
+  loadingElapsed.value = 0;
+  currentStage = 'resolving';
+  loadingStageText.value = STAGE_TEXT.resolving;
+  const tick = (): void => {
+    const elapsedMs = Date.now() - loadingStartTime;
+    loadingElapsed.value = Math.floor(elapsedMs / 1000);
+    const [from, to] = STAGE_RANGES[currentStage];
+    const span = to - from;
+    // 对数渐进：阶段内按 sqrt(elapsed/预算) 逼近上限，避免卡死感
+    const stageBudgetMs = currentStage === 'resolving' ? 10000 : 5000;
+    const ratio = Math.min(1, Math.sqrt(elapsedMs / stageBudgetMs));
+    const target = from + span * ratio * 0.9; // 留 10% 给事件驱动跳变
+    if (target > loadingProgress.value) loadingProgress.value = target;
+    // 6s 后升级文案（保留旧逻辑的"源响应较慢"提示）
+    if (elapsedMs > 6000 && currentStage === 'resolving') {
+      loadingStageText.value = '源响应较慢，仍在连接…';
+    }
+    loadingRafId = requestAnimationFrame(tick);
+  };
+  loadingRafId = requestAnimationFrame(tick);
+}
+
+function cancelLoadingProgress(): void {
+  if (loadingRafId) {
+    cancelAnimationFrame(loadingRafId);
+    loadingRafId = 0;
   }
 }
 
-onBeforeUnmount(clearLoadingHint);
+// 监听 play:stage 事件（来自 libraryService 重试上报等）
+const offPlayStage = appEvents.on('play:stage', (payload) => {
+  if (payload.stage === 'retrying') {
+    setStage('resolving', '首次连接失败，正在重试…');
+    loadingProgress.value = 20;
+    loadingStartTime = Date.now(); // 重置已耗时
+  }
+});
+onBeforeUnmount(offPlayStage);
 
 /**
  * 直链带防盗链头时经本机回环代理注入（P1-6）。
@@ -482,7 +547,7 @@ async function loadLocalPlay(
 ): Promise<void> {
   pageLoading.value = true;
   loadError.value = null;
-  startLoadingHint();
+  startLoadingProgress();
   try {
     const prepared = await preparePlayback(playback);
     currentPlayback.value = prepared;
@@ -514,7 +579,7 @@ async function loadLocalPlay(
     loadError.value = toErrorShape(e, 'E_NO_PLAY_URL').message;
   } finally {
     pageLoading.value = false;
-    clearLoadingHint();
+    cancelLoadingProgress();
   }
 }
 
@@ -536,14 +601,16 @@ async function resolveAndLoad(): Promise<boolean> {
   loadError.value = null;
   loadErrorShape.value = null;
   noVideoDismissed.value = false;
-  startLoadingHint();
+  startLoadingProgress();
   // v1.7/CHG-21：记录起播时刻——失败自动兜底只在窗口期内触发
   failoverStartedAt.value = Date.now();
   try {
     const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
     if (epoch !== loadEpoch) return false;
+    setStage('preparing');
     const prepared = await preparePlayback(playback);
     if (epoch !== loadEpoch) return false;
+    setStage('connecting');
     currentPlayback.value = prepared;
     const rec = history.progressOf(it.sourceId, it.id);
     let start = 0;
@@ -598,6 +665,7 @@ async function resolveAndLoad(): Promise<boolean> {
 
     await load(opts);
     if (epoch !== loadEpoch) return false;
+    setStage('done');
     // 「本地文件不可用，已切换网络源」时在页面给出「重新下载」入口（AC-78②）
     detectLocalMissing();
     // `load()` 内部把失败写入 player.error 而不抛出，这里显式判定
@@ -622,7 +690,7 @@ async function resolveAndLoad(): Promise<boolean> {
     // 只有最新一代负责收尾，避免旧任务把新任务的 loading 关掉
     if (epoch === loadEpoch) {
       pageLoading.value = false;
-      clearLoadingHint();
+      cancelLoadingProgress();
     }
   }
 }
@@ -1173,10 +1241,14 @@ function onBackgroundExit(): void {
 /* ---------- v1.7/CHG-22：弹幕（只读展示） ---------- */
 
 const danmakuOpen = ref(false);
+const danmakuStylePanelOpen = ref(false);
 const danmakuOverlay = shallowRef<DanmakuOverlay | null>(null);
 
 /** P1-3：弹幕设置面板打开时也暂停自动隐藏 */
 watch(danmakuOpen, (open) => {
+  if (open) pauseAutoHide();
+});
+watch(danmakuStylePanelOpen, (open) => {
   if (open) pauseAutoHide();
 });
 
@@ -1190,6 +1262,11 @@ const danmakuSettings = computed(
       areaPercent: 50,
       merge: true,
       safeBottomPercent: 15,
+      bold: false,
+      strokeStyle: 'shadow' as const,
+      density: 'normal' as const,
+      filterTop: false,
+      filterBottom: false,
     },
 );
 
@@ -1811,6 +1888,7 @@ onBeforeUnmount(() => {
             @cast="onCast"
             @toggle-danmaku="toggleDanmaku"
             @open-danmaku-settings="danmakuOpen = true"
+            @open-danmaku-style="danmakuStylePanelOpen = !danmakuStylePanelOpen"
             @toggle-pip="togglePip"
           />
 
@@ -1829,8 +1907,11 @@ onBeforeUnmount(() => {
 
           <!-- loading -->
           <div v-if="pageLoading && !loadError" class="player-loading" role="status" aria-live="polite">
-            <LoadingSpinner :size="32" />
-            <p class="player-loading__text">{{ loadingHint }}</p>
+            <PlayLoadingBar
+              :progress="loadingProgress"
+              :stage-text="loadingStageText"
+              :elapsed="loadingElapsed"
+            />
             <button class="btn btn--ghost btn--sm" type="button" @click="goBack">取消</button>
           </div>
 
@@ -1914,6 +1995,9 @@ onBeforeUnmount(() => {
             @cancel="onBackgroundExit"
           />
         </PlayerSurface>
+
+        <!-- 弹幕样式实时调节面板（非模态，叠在 player-stage 内） -->
+        <DanmakuStylePanel :open="danmakuStylePanelOpen" />
       </div>
 
       <!-- 竖屏下方信息区（全屏时隐藏） -->

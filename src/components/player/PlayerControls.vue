@@ -86,6 +86,7 @@ const emit = defineEmits<{
   (e: 'cast'): void;
   (e: 'toggle-danmaku'): void;
   (e: 'open-danmaku-settings'): void;
+  (e: 'open-danmaku-style'): void;
   (e: 'toggle-pip'): void;
 }>();
 
@@ -141,6 +142,15 @@ const miniBuffered = computed(() =>
           @click="emit('toggle-danmaku')"
         >
           <span class="danmaku-icon" aria-hidden="true">弹</span>
+        </button>
+        <button
+          v-if="danmakuEnabled"
+          class="controls-btn"
+          type="button"
+          aria-label="弹幕样式调节"
+          @click="emit('open-danmaku-style')"
+        >
+          <span class="danmaku-style-icon" aria-hidden="true">彩</span>
         </button>
         <button
           class="controls-btn"
@@ -434,6 +444,16 @@ const miniBuffered = computed(() =>
   font-size: 18px;
   font-weight: 700;
   line-height: 1;
+}
+
+.danmaku-style-icon {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  background: linear-gradient(135deg, #ff6b6b, #4fc3f7, #69db7c);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .controls-bottom {

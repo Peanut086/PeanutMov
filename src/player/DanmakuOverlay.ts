@@ -93,9 +93,33 @@ export class DanmakuOverlay {
   }
 
   setSettings(settings: DanmakuSettings): void {
+    const prev = this.settings;
     this.settings = settings;
+    // 字号变化：所有已入屏位图作废，下次绘制时按新字号重建
+    if (settings.fontSize !== prev.fontSize) {
+      for (const track of this.tracks) {
+        track.bitmap = null;
+        track.width = this.measure(track.comment.text);
+      }
+    }
+    // 速度变化：按比例重算已入屏 track 的剩余时长，视觉速度连续不跳变
+    if (settings.speed !== prev.speed) {
+      const now = this.currentTime();
+      for (const track of this.tracks) {
+        const oldDuration = track.duration;
+        const newDuration = Math.max(4, 10 / Math.max(0.5, settings.speed));
+        const age = now - track.bornAt;
+        const ratio = age / oldDuration;
+        track.duration = newDuration;
+        track.bornAt = now - ratio * newDuration;
+      }
+    }
+    // 区域/安全区变化：裁剪超出新 laneCount 的固定弹幕轨道
+    if (settings.areaPercent !== prev.areaPercent || settings.safeBottomPercent !== prev.safeBottomPercent) {
+      const newLanes = this.laneCount('scroll');
+      this.tracks = this.tracks.filter((t) => t.comment.mode !== 'scroll' || t.lane < newLanes);
+    }
     this.resize();
-    // 字号/密度变化后必须重画，否则上一帧画面会一直停到下次 timeupdate
     this.lastDrawnTime = Number.NaN;
   }
 
@@ -189,12 +213,17 @@ export class DanmakuOverlay {
 
   /** 把进入时间窗的弹幕铺进轨道 */
   private spawn(now: number): void {
+    const densityCoeff = this.settings.density === 'sparse' ? 0.6 : this.settings.density === 'dense' ? 1.5 : 1;
+    const maxOnScreen = Math.max(10, Math.round(DANMAKU_MAX_ONSCREEN * densityCoeff));
     while (this.cursor < this.comments.length) {
       const comment = this.comments[this.cursor]!;
       if (comment.time > now + 0.2) break;
       this.cursor += 1;
       if (now - comment.time > 1) continue; // 过期（seek 后残留）
-      if (this.tracks.length >= DANMAKU_MAX_ONSCREEN) break;
+      // 过滤顶部/底部固定弹幕
+      if (this.settings.filterTop && comment.mode === 'top') continue;
+      if (this.settings.filterBottom && comment.mode === 'bottom') continue;
+      if (this.tracks.length >= maxOnScreen) break;
       const width = this.measure(comment.text);
       const duration = Math.max(4, 10 / Math.max(0.5, this.settings.speed));
       const lane = this.allocateLane(comment, width, duration, now);
@@ -218,7 +247,8 @@ export class DanmakuOverlay {
   private measure(text: string): number {
     const ctx = this.ctx;
     if (!ctx) return 0;
-    ctx.font = `${this.settings.fontSize}px sans-serif`;
+    const weight = this.settings.bold ? 'bold ' : '';
+    ctx.font = `${weight}${this.settings.fontSize}px sans-serif`;
     return ctx.measureText(text).width;
   }
 
@@ -302,11 +332,20 @@ export class DanmakuOverlay {
   private ensureBitmap(track: Track): HTMLCanvasElement {
     const fontSize = this.settings.fontSize;
     const dpr = this.dpr;
-    if (track.bitmap !== null && track.bitmapFontSize === fontSize && track.bitmapDpr === dpr) {
+    const bold = this.settings.bold;
+    const strokeMode = this.settings.strokeStyle;
+    if (
+      track.bitmap !== null
+      && track.bitmapFontSize === fontSize
+      && track.bitmapDpr === dpr
+      && (track as unknown as { _bold?: boolean })._bold === bold
+      && (track as unknown as { _stroke?: string })._stroke === strokeMode
+    ) {
       return track.bitmap;
     }
-    const lineWidth = Math.max(2, fontSize / 8);
-    const pad = Math.ceil(lineWidth / 2) + 2;
+    const weight = bold ? 'bold ' : '';
+    const lineWidth = strokeMode === 'none' ? 0 : Math.max(2, fontSize / 8);
+    const pad = strokeMode === 'none' ? 2 : Math.ceil(lineWidth / 2) + 2;
     const height = Math.ceil(fontSize * 1.5);
     const width = Math.max(1, Math.ceil(track.width + pad * 2));
     const bitmap = document.createElement('canvas');
@@ -315,20 +354,38 @@ export class DanmakuOverlay {
     const bctx = bitmap.getContext('2d');
     if (bctx) {
       bctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      bctx.font = `${fontSize}px sans-serif`;
+      bctx.font = `${weight}${fontSize}px sans-serif`;
       bctx.textBaseline = 'middle';
       bctx.lineWidth = lineWidth;
-      bctx.strokeStyle = 'rgba(0,0,0,0.7)';
       const baseline = height / 2;
-      bctx.strokeText(track.comment.text, pad, baseline);
-      bctx.fillStyle = `#${(track.comment.color & 0xffffff).toString(16).padStart(6, '0')}`;
-      bctx.fillText(track.comment.text, pad, baseline);
+      if (strokeMode === 'shadow') {
+        bctx.shadowColor = 'rgba(0,0,0,0.7)';
+        bctx.shadowBlur = lineWidth;
+        bctx.shadowOffsetX = 1;
+        bctx.shadowOffsetY = 1;
+        bctx.fillStyle = `#${(track.comment.color & 0xffffff).toString(16).padStart(6, '0')}`;
+        bctx.fillText(track.comment.text, pad, baseline);
+        bctx.shadowColor = 'transparent';
+        bctx.shadowBlur = 0;
+        bctx.shadowOffsetX = 0;
+        bctx.shadowOffsetY = 0;
+      } else if (strokeMode === 'outline') {
+        bctx.strokeStyle = 'rgba(0,0,0,0.8)';
+        bctx.strokeText(track.comment.text, pad, baseline);
+        bctx.fillStyle = `#${(track.comment.color & 0xffffff).toString(16).padStart(6, '0')}`;
+        bctx.fillText(track.comment.text, pad, baseline);
+      } else {
+        bctx.fillStyle = `#${(track.comment.color & 0xffffff).toString(16).padStart(6, '0')}`;
+        bctx.fillText(track.comment.text, pad, baseline);
+      }
     }
     track.bitmap = bitmap;
     track.bitmapFontSize = fontSize;
     track.bitmapDpr = dpr;
     track.bitmapPad = pad;
     track.bitmapHeight = height;
+    (track as unknown as { _bold: boolean })._bold = bold;
+    (track as unknown as { _stroke: string })._stroke = strokeMode;
     return bitmap;
   }
 }
