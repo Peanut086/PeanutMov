@@ -205,7 +205,8 @@ export const SUBSCRIPTION_AUTO_DISABLE_STREAK = 3;
 
 /* ---------- v1.7：播放（CHG-21） ---------- */
 /** 起播失败自动兜底窗口：窗口内失败自动换线→换源 */
-export const PLAYER_FAILOVER_WINDOW_MS = 10000;
+// P1-1：从 10s 扩到 35s——爬虫源冷启动超时 30s，旧 10s 窗口在慢源下形同虚设
+export const PLAYER_FAILOVER_WINDOW_MS = 35000;
 /**
  * 爬虫源 playerContent 单次超时（P1-6）：
  * jar 已缓存命中（热句柄）时 10s 足够；只有「下载/镜像降级」链路才允许 30s。

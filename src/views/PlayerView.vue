@@ -27,7 +27,7 @@ import type { PlayerLoadOptions } from '@/player/types';
 import { emptyEmbeddedTracks, type EmbeddedTrackState } from '@/player/PlayerController';
 import { shouldIgnoreShortcut } from '@/player/shortcutGuard';
 import { formatClock } from '@/shared/time';
-import { toErrorShape, isCanceled } from '@/shared/errors';
+import { toErrorShape, isCanceled, AppError } from '@/shared/errors';
 import { guidanceOf, magnetUrlOf } from '@/shared/sourceFailure';
 
 import PlayerSurface from '@/components/player/PlayerSurface.vue';
@@ -267,6 +267,8 @@ const playerCtl = usePlayerController({
   resizeMode: currentResizeMode.value,
   longPressRate: longPressRate.value,
   describe: () => {
+    // 页面卸载后不再写回进度，避免死实例拿错上下文污染历史记录
+    if (!pageAlive) return null;
     const it = item.value;
     const ep = currentEpisode.value;
     if (!it) return null;
@@ -303,6 +305,10 @@ const {
   canNext,
   canPrev,
   hasEpisodeNav,
+  nextEpisodeId,
+  prevEpisodeId,
+  autoNextTarget,
+  acknowledgeAutoNext,
   createController,
   load,
   reload,
@@ -325,6 +331,32 @@ const {
   pauseAutoHide,
   setControlsVisible,
 } = playerCtl;
+
+/**
+ * P0-1：上下集按钮走路由更新，与选集/自动连播共用同一入口（episodeId watcher）。
+ * 之前直接调 controller.switchTo 会导致 describe() / 进度写回 / 弹幕与路由不同步。
+ */
+function goToNextEpisode(): void {
+  const id = nextEpisodeId.value;
+  if (!id) return;
+  const ep = episodes.value.find((e) => e.id === id);
+  if (ep) chooseEpisode(ep);
+}
+
+function goToPrevEpisode(): void {
+  const id = prevEpisodeId.value;
+  if (!id) return;
+  const ep = episodes.value.find((e) => e.id === id);
+  if (ep) chooseEpisode(ep);
+}
+
+/** P0-1：自动连播倒计时结束后走路由更新 */
+watch(autoNextTarget, (targetId) => {
+  if (!targetId) return;
+  const ep = episodes.value.find((e) => e.id === targetId);
+  acknowledgeAutoNext();
+  if (ep) chooseEpisode(ep);
+});
 
 /* ---------- 面板 ---------- */
 const speedOpen = ref(false);
@@ -536,6 +568,13 @@ async function preparePlayback(playback: PlaybackSource): Promise<PlaybackSource
 let loadEpoch = 0;
 
 /**
+ * 页面存活守卫：卸载后所有异步续体必须自行退出，避免后台链路劫持路由/覆盖全局状态。
+ * 与 loadEpoch 配合——卸载时 ++loadEpoch 作废在飞任务的代次校验。
+ */
+let pageAlive = true;
+const pageAbort = new AbortController();
+
+/**
  * REV-24：详情加载失败但本地有下载完成的任务时，直接加载本地播放。
  * 不走 resolveAndLoad（它依赖 item/episodes），而是直接构造播放参数。
  */
@@ -606,10 +645,10 @@ async function resolveAndLoad(): Promise<boolean> {
   failoverStartedAt.value = Date.now();
   try {
     const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
-    if (epoch !== loadEpoch) return false;
+    if (!pageAlive || epoch !== loadEpoch) return false;
     setStage('preparing');
     const prepared = await preparePlayback(playback);
-    if (epoch !== loadEpoch) return false;
+    if (!pageAlive || epoch !== loadEpoch) return false;
     setStage('connecting');
     currentPlayback.value = prepared;
     const rec = history.progressOf(it.sourceId, it.id);
@@ -664,7 +703,7 @@ async function resolveAndLoad(): Promise<boolean> {
     };
 
     await load(opts);
-    if (epoch !== loadEpoch) return false;
+    if (!pageAlive || epoch !== loadEpoch) return false;
     setStage('done');
     // 「本地文件不可用，已切换网络源」时在页面给出「重新下载」入口（AC-78②）
     detectLocalMissing();
@@ -677,7 +716,9 @@ async function resolveAndLoad(): Promise<boolean> {
     }
     return ok;
   } catch (e) {
-    if (epoch !== loadEpoch) return false;
+    if (!pageAlive || epoch !== loadEpoch) return false;
+    // P0-3：解析失败也失效缓存，避免重试复用坏 URL
+    library.invalidatePlayCache(mediaId.value);
     const shape = toErrorShape(e, 'E_NO_PLAY_URL');
     // 失败换线时并发解析会双跑：先成功者已在播，后失败者（嗅探 15s 超时）若把
     // 错误面板盖上去，用户看到的是「有声音却报无播放地址」。播放中一律不覆盖。
@@ -688,7 +729,7 @@ async function resolveAndLoad(): Promise<boolean> {
     return false;
   } finally {
     // 只有最新一代负责收尾，避免旧任务把新任务的 loading 关掉
-    if (epoch === loadEpoch) {
+    if (pageAlive && epoch === loadEpoch) {
       pageLoading.value = false;
       cancelLoadingProgress();
     }
@@ -744,6 +785,10 @@ onMounted(async () => {
 /* ---------- 关闭时写回进度 ---------- */
 onBeforeUnmount(() => {
   cancelAutoNext();
+  // 页面存活守卫：卸载后作废所有在飞异步链，防止后台链路劫持路由/覆盖全局状态
+  pageAlive = false;
+  ++loadEpoch;
+  pageAbort.abort();
   // P1-4：记忆音量/亮度写回
   if (settings.player?.rememberVolumeBrightness) {
     const brightness = Math.round(dimOpacityToBrightness(player.dim));
@@ -817,6 +862,12 @@ async function removeHistoryAndGoBack(): Promise<void> {
  */
 let pendingLineSwitchEpisode: string | null = null;
 
+/**
+ * 换源/外部导航改路由时，`mediaId` watcher 会触发重复加载。
+ * 用"待加载目标媒体"标记让 watcher 跳过自己发起的那一次。
+ */
+let pendingMediaSwitch: string | null = null;
+
 /** 当前线路下按集号取目标集（保持集号，AC-31）；找不到同集号时回退首集 */
 function episodeOnLine(lineIdValue: string, number: number): Episode | null {
   const all = library.detail?.episodes ?? [];
@@ -856,7 +907,9 @@ async function switchLine(targetLineId: string): Promise<void> {
     lineId.value = targetLineId;
     pendingLineSwitchEpisode = targetEpisode?.id ?? previousEpisodeId;
     await replaceRoute(targetEpisode?.id ?? previousEpisodeId, targetLineId);
+    if (!pageAlive) return;
     if (await resolveAndLoad()) {
+      if (!pageAlive) return;
       // P1-4: 切线成功后跳转到原位置（跳过前 5 秒的"从头开始"场景）
       if (currentPositionSec > 5) {
         playerCtl.controller.value?.seek(currentPositionSec);
@@ -865,6 +918,7 @@ async function switchLine(targetLineId: string): Promise<void> {
     }
 
     // ---- 回退原线路 ----
+    if (!pageAlive) return;
     lineId.value = previousLineId;
     pendingLineSwitchEpisode = previousEpisodeId;
     await replaceRoute(previousEpisodeId, previousLineId);
@@ -939,6 +993,7 @@ async function retryWithNativeEngine(): Promise<void> {
   forceNativeEngine.value = true;
   toast.info('已切换原生引擎重试');
   await resolveAndLoad();
+  if (!pageAlive) return;
   if (player.error || loadError.value) {
     forceNativeEngine.value = false;
     toast.info('原生引擎也没能解码，建议换线路');
@@ -964,36 +1019,87 @@ function withinFailoverWindow(): boolean {
   return failoverStartedAt.value > 0 && Date.now() - failoverStartedAt.value <= PLAYER_FAILOVER_WINDOW_MS;
 }
 
-/** 在其它启用源里找同名同年的可播条目，返回其 mediaId 与源名 */
-async function findAlternateSource(): Promise<{ mediaId: string; sourceName: string } | null> {
+/**
+ * P1-3：轻量换源——限制搜索范围与超时，避免用户等太久。
+ *
+ * 与详情页的完整跨源搜索不同，播放中换源只尝试「健康度最好的 5 个其它源」，
+ * 整体超时 12s。找到第一个可播候选即返回，不再继续搜索。
+ */
+const ALTERNATE_SEARCH_TIMEOUT_MS = 12000;
+const ALTERNATE_MAX_CANDIDATES = 5;
+
+async function lookupAlternateSource(): Promise<{
+  mediaId: string;
+  episodeId: string;
+  sourceName: string;
+} | null> {
   const it = item.value;
   if (!it || !isOnlineNow()) return null;
   try {
-    const [result, allSources] = await Promise.all([libraryService.search({ keyword: it.title }), sourceService.list()]);
+    // P1-3：给搜索加超时，避免慢源拖住整体换源速度
+    const searchPromise = libraryService.search({ keyword: it.title, signal: pageAbort.signal });
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new AppError('E_TIMEOUT', '换源搜索超时')), ALTERNATE_SEARCH_TIMEOUT_MS),
+    );
+    const [result, allSources] = await Promise.all([
+      Promise.race([searchPromise, timeoutPromise]),
+      sourceService.list(),
+    ]);
+    if (!pageAlive) return null;
     const sourceById = new Map(allSources.map((s) => [s.id, s]));
     const candidates = pickPlayCandidates(it.title, it.year, result.items, sourceById, (id) =>
       healthService.latencyOf(id),
-    ).filter((candidate) => candidate.source.id !== it.sourceId);
+    )
+      .filter((candidate) => candidate.source.id !== it.sourceId)
+      .slice(0, ALTERNATE_MAX_CANDIDATES);
     for (const candidate of candidates) {
       try {
         const detail = await libraryService.getDetail(candidate.item.id);
-        const target = detail.episodes.find((ep) => ep.number === (currentEpisode.value?.number ?? 1)) ?? detail.episodes[0];
+        if (!pageAlive) return null;
+        const target =
+          detail.episodes.find((ep) => ep.number === (currentEpisode.value?.number ?? 1)) ?? detail.episodes[0];
         if (!target) continue;
-        await router.replace({
-          name: 'player',
-          params: { mediaId: candidate.item.id, episodeId: target.id },
-        });
-        // mediaId 变化不会自动触发重载：显式加载新详情与新集
-        await library.loadDetail(candidate.item.id);
-        return { mediaId: candidate.item.id, sourceName: candidate.source.name };
+        return { mediaId: candidate.item.id, episodeId: target.id, sourceName: candidate.source.name };
       } catch {
         continue; // 候选源也失败 → 顺延下一个
       }
     }
   } catch {
-    /* 搜索失败：按无候选处理 */
+    /* 搜索失败/超时：按无候选处理 */
   }
   return null;
+}
+
+/**
+ * 应用换源结果：导航到目标 mediaId/episodeId、加载详情、复位线路、触发播放。
+ * 每一步都检查 pageAlive，避免后台链路劫持路由。
+ */
+async function applyAlternateSource(target: {
+  mediaId: string;
+  episodeId: string;
+  sourceName: string;
+}): Promise<boolean> {
+  if (!pageAlive) return false;
+  // 复位线路（旧线路 id 对新片无效）
+  lineId.value = null;
+  // 抑制 episodeId / mediaId watcher 重复加载（与 switchLine 共用机制）
+  pendingLineSwitchEpisode = target.episodeId;
+  pendingMediaSwitch = target.mediaId;
+  try {
+    // P0-2：显式清空 lineId query，避免旧线路 id 残留导致新源 0 集
+    await router.replace({
+      name: 'player',
+      params: { mediaId: target.mediaId, episodeId: target.episodeId },
+      query: {},
+    });
+    if (!pageAlive) return false;
+    await library.loadDetail(target.mediaId);
+    if (!pageAlive) return false;
+    return await resolveAndLoad();
+  } finally {
+    pendingLineSwitchEpisode = null;
+    pendingMediaSwitch = null;
+  }
 }
 
 function isOnlineNow(): boolean {
@@ -1014,6 +1120,7 @@ async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): 
       if (other) {
         toast.info('起播失败，自动切换到其它线路…');
         await switchLine(other.id);
+        if (!pageAlive) return;
         if (player.error === null && loadError.value === null) return; // 换线成功
       }
     }
@@ -1022,14 +1129,17 @@ async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): 
       failoverSourceTried.value = true;
       player.patch({ error: null });
       toast.info('当前源无法播放，正在尝试其它来源…');
-      const target = await findAlternateSource();
+      const target = await lookupAlternateSource();
+      if (!pageAlive) return;
       if (target) {
         toast.info(`已切换到「${target.sourceName}」继续播放`);
-        await resolveAndLoad();
-        if (player.error === null && loadError.value === null) return;
+        const ok = await applyAlternateSource(target);
+        if (!pageAlive) return;
+        if (ok && player.error === null && loadError.value === null) return;
       }
     }
     // 兜底失败：恢复错误面板（清掉的错误重新呈现）
+    if (!pageAlive) return;
     if (player.error === null && loadError.value === null) {
       if (origin === 'player') player.patch({ error });
       else {
@@ -1045,7 +1155,11 @@ async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): 
 watch(
   () => player.error,
   (error) => {
-    if (error) void runFailover(error, 'player');
+    if (error) {
+      // P0-3：播放出错时失效缓存，避免重试/换线复用已过期的坏 URL
+      library.invalidatePlayCache(mediaId.value);
+      void runFailover(error, 'player');
+    }
   },
 );
 
@@ -1067,16 +1181,19 @@ async function onSwitchSource(): Promise<void> {
   player.patch({ error: null });
   try {
     toast.info('正在尝试其它来源…');
-    const target = await findAlternateSource();
+    const target = await lookupAlternateSource();
+    if (!pageAlive) return;
     if (target) {
       toast.info(`已切换到「${target.sourceName}」继续播放`);
-      await resolveAndLoad();
-      if (player.error === null && loadError.value === null) return;
+      const ok = await applyAlternateSource(target);
+      if (!pageAlive) return;
+      if (ok && player.error === null && loadError.value === null) return;
     }
   } finally {
     failoverRunning.value = false;
   }
   // 手动也失败：恢复错误面板（清掉的错误重新呈现）
+  if (!pageAlive) return;
   if (player.error === null && loadError.value === null && lastError) {
     player.patch({ error: lastError });
   }
@@ -1225,7 +1342,9 @@ function chooseEpisode(ep: Episode): void {
 }
 
 function retryPanel(): void {
-  reload();
+  // P0-3：重试时先失效缓存，避免复用导致失败的旧 URL
+  library.invalidatePlayCache(mediaId.value);
+  void resolveAndLoad();
 }
 
 function onBackgroundContinue(): void {
@@ -1557,6 +1676,23 @@ watch(episodeIdParam, async (next, prev) => {
   announceOfflineEpisode();
 });
 
+/* ---------- 监听 route 媒体变化（换源/外部导航时复位状态） ---------- */
+watch(mediaId, async (next, prev) => {
+  if (next === prev || !detailReady.value) return;
+  // applyAlternateSource 自己发起的导航，跳过以避免重复加载
+  if (pendingMediaSwitch !== null && next === pendingMediaSwitch) return;
+  // 复位每媒体状态（旧线路 id 对新片无效、旧下线提示不跨片）
+  lineId.value = null;
+  announcedOffline.value = null;
+  localMissingTaskId.value = null;
+  failoverLineTried.value = false;
+  failoverSourceTried.value = false;
+  // 外部导航改路由（如用户从相关列表点另一部片）：重新加载详情与播放
+  await library.loadDetail(next);
+  if (!pageAlive) return;
+  await resolveAndLoad();
+});
+
 /* ---------- 沉浸态 ---------- */
 const immersive = computed(() => player.fullscreen);
 
@@ -1875,8 +2011,8 @@ onBeforeUnmount(() => {
             :pip-active="pipActive"
             @back="goBack"
             @toggle-play="togglePlay"
-            @prev="prevEpisode"
-            @next="nextEpisode"
+            @prev="goToPrevEpisode"
+            @next="goToNextEpisode"
             @seek="seek"
             @seeking="player.patch({ currentTime: $event })"
             @open-speed="speedOpen = true"
@@ -1983,7 +2119,7 @@ onBeforeUnmount(() => {
             mode="auto-next"
             :countdown="countdown"
             :next-label="canNext ? '下一集' : ''"
-            @confirm="nextEpisode"
+            @confirm="goToNextEpisode"
             @cancel="cancelAutoNext"
           />
 

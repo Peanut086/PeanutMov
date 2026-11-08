@@ -142,6 +142,9 @@ export class PlayerController {
   /** 预检代次：新一次加载/卸载时递增，旧预检返回后据此放弃，避免旧结果污染新播放 */
   private preflightEpoch = 0;
 
+  /** 加载代次：load() 入口递增，await 后校验，过期则中止（防止卸载后僵尸播放） */
+  private loadSeq = 0;
+
   private readonly subtitles: SubtitleManager;
   private readonly progress: ProgressReporter;
   /** 缓存最近一次字幕文本，跳过同一 cue 内的重复 emit */
@@ -220,6 +223,8 @@ export class PlayerController {
 
   async load(opts: PlayerLoadOptions): Promise<void> {
     if (this.destroyed) throw new AppError('E_INVALID_STATE', '播放器已销毁');
+    // 递增加载代次：await 后校验，过期则中止（防止卸载后僵尸播放）
+    const seq = ++this.loadSeq;
     // 切集/切线路：取消上一轮尚未触发的网络重试，避免旧重试把新加载顶掉（REV-06）
     this.clearRetryTimer();
     // 上一集的预载参数对新集已过期（CHG-21）
@@ -242,6 +247,11 @@ export class PlayerController {
 
     try {
       await this.attachEngine(opts.playback);
+      // 加载期间被更新的加载/销毁取消：不覆盖新状态、不误报错误
+      if (this.destroyed || seq !== this.loadSeq) {
+        this.destroyEngine();
+        throw new AppError('E_ABORTED', '播放已切换，本次加载作废');
+      }
       const start = this.resolveStartPosition(opts);
       if (start > 0) this.engine?.seek(start);
       this.engine?.setRate(this.rate);
@@ -317,6 +327,11 @@ export class PlayerController {
       nativeEngine.attach(host);
       try {
         await this.withMetadataTimeout(nativeEngine.load(playback), NATIVE_METADATA_TIMEOUT_MS);
+        // 加载期间被销毁：销毁刚创建的引擎，不赋值给 this.engine
+        if (this.destroyed) {
+          nativeEngine.destroy();
+          throw new AppError('E_ABORTED', '播放器已销毁，本次加载作废');
+        }
         this.engine = nativeEngine;
         this.setEngineKind('native');
         this.quality = QUALITY_AUTO;
@@ -366,10 +381,15 @@ export class PlayerController {
         },
       });
       hlsEngine.attach(host);
-      this.engine = hlsEngine;
-      this.setEngineKind('hls');
       try {
         await this.withMetadataTimeout(hlsEngine.load(playback), HLS_METADATA_TIMEOUT_MS);
+        // 加载期间被销毁：销毁刚创建的引擎，不赋值给 this.engine
+        if (this.destroyed) {
+          hlsEngine.destroy();
+          throw new AppError('E_ABORTED', '播放器已销毁，本次加载作废');
+        }
+        this.engine = hlsEngine;
+        this.setEngineKind('hls');
         this.progress.update(0, hlsEngine.getDuration());
         return;
       } catch (e) {
@@ -393,12 +413,17 @@ export class PlayerController {
         onError: (error) => this.handleEngineError(error),
       });
       videoEngine.attach(host);
-      this.engine = videoEngine;
-      this.setEngineKind('video');
-      this.quality = QUALITY_AUTO;
-      this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
       try {
         await this.withMetadataTimeout(videoEngine.load(playback));
+        // 加载期间被销毁：销毁刚创建的引擎，不赋值给 this.engine
+        if (this.destroyed) {
+          videoEngine.destroy();
+          throw new AppError('E_ABORTED', '播放器已销毁，本次加载作废');
+        }
+        this.engine = videoEngine;
+        this.setEngineKind('video');
+        this.quality = QUALITY_AUTO;
+        this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
         return;
       } catch (e) {
         webviewFailed = true;
@@ -423,6 +448,11 @@ export class PlayerController {
       nativeEngine.attach(host);
       try {
         await this.withMetadataTimeout(nativeEngine.load(playback), NATIVE_METADATA_TIMEOUT_MS);
+        // 加载期间被销毁：销毁刚创建的引擎，不赋值给 this.engine
+        if (this.destroyed) {
+          nativeEngine.destroy();
+          throw new AppError('E_ABORTED', '播放器已销毁，本次加载作废');
+        }
         this.engine = nativeEngine;
         this.setEngineKind('native');
         this.quality = QUALITY_AUTO;
@@ -617,9 +647,14 @@ export class PlayerController {
   /* ================= 播放控制 ================= */
 
   async play(): Promise<void> {
-    if (!this.engine) return;
+    if (!this.engine || this.destroyed) return;
     try {
       await this.engine.play();
+      // 播放期间被销毁：立即暂停，不更新状态
+      if (this.destroyed) {
+        this.engine.pause();
+        return;
+      }
       this.setState('playing');
       this.progress.start();
     } catch (e) {

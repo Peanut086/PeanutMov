@@ -293,6 +293,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   /* ---------- 加载 ---------- */
 
   const currentOptions = shallowRef<PlayerLoadOptions | null>(null);
+  /** 页面存活标记：卸载后异步续体不再写 player store，避免死实例污染新页面 */
+  let alive = true;
 
   async function load(opts: PlayerLoadOptions): Promise<void> {
     const c = controller.value;
@@ -314,13 +316,18 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     }
     try {
       await c.load(opts);
+      // 加载期间页面卸载：不再继续 play，避免僵尸播放
+      if (!alive || controller.value !== c) return;
       await c.play();
+      if (!alive || controller.value !== c) return;
       // 成功路径显式清空错误：旧一轮（已被取代）的失败不得残留在画面上
       if (player.error) player.patch({ error: null });
     } catch (e) {
       // REV-28：切集/切线路会作废旧加载，旧加载抛 E_ABORTED 属正常竞态，
       // 不能把取消当失败写到 player.error 上（会盖住正在播放的新画面）。
       if (isCanceled(e)) return;
+      // 页面已卸载：不再写错误状态
+      if (!alive || controller.value !== c) return;
       player.patch({ error: toErrorShape(e), loading: false, playing: false });
     }
   }
@@ -403,30 +410,33 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     ui.toast(`已切换到 ${rate}x`, 'info', 1500);
   }
 
-  async function nextEpisode(): Promise<void> {
-    const c = controller.value;
-    if (!c?.canNext()) return;
-    try {
-      cancelAutoNext();
-      await c.nextEpisode();
-      player.patch({ playing: true });
-      ui.toast('已切到下一集', 'info', 1500);
-    } catch (e) {
-      ui.toast(toErrorShape(e).message, 'error');
-    }
+  /**
+   * P0-1：下一集/上一集的目标 ID（响应式）。
+   *
+   * 由 PlayerView 读取后走路由更新（`chooseEpisode`），保证 `describe()` / 进度写回 /
+   * 弹幕匹配与路由上的 `episodeId` 一致——之前直接调 `controller.switchTo` 会绕过路由，
+   * 导致自动连播/上下集按钮切完后历史记录与弹幕仍锚在旧集。
+   */
+  const nextEpisodeId = computed(() => {
+    const opts = currentOptions.value;
+    const idx = episodeIndex.value;
+    if (!opts || idx < 0 || idx >= opts.episodes.length - 1) return null;
+    return opts.episodes[idx + 1]?.episodeId ?? null;
+  });
+  const prevEpisodeId = computed(() => {
+    const opts = currentOptions.value;
+    const idx = episodeIndex.value;
+    if (!opts || idx <= 0) return null;
+    return opts.episodes[idx - 1]?.episodeId ?? null;
+  });
+
+  /** P0-1：仅取消倒计时，实际切集由 PlayerView 走路由完成 */
+  function nextEpisode(): void {
+    cancelAutoNext();
   }
 
-  async function prevEpisode(): Promise<void> {
-    const c = controller.value;
-    if (!c?.canPrev()) return;
-    try {
-      cancelAutoNext();
-      await c.prevEpisode();
-      player.patch({ playing: true });
-      ui.toast('已切到上一集', 'info', 1500);
-    } catch (e) {
-      ui.toast(toErrorShape(e).message, 'error');
-    }
+  function prevEpisode(): void {
+    cancelAutoNext();
   }
 
   async function switchQuality(quality: string): Promise<void> {
@@ -554,18 +564,23 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
 
   /* ---------- 自动连播 ---------- */
 
+  /**
+   * P0-1：自动连播目标集 ID。倒计时归零时写入，由 PlayerView watch 后走路由更新。
+   * null = 无待处理的自动连播。
+   */
+  const autoNextTarget = ref<string | null>(null);
+
   function scheduleAutoNext(): void {
     cancelAutoNext();
     if (!options.autoPlayNext) return;
-    const c = controller.value;
-    if (!c?.canNext()) return;
+    if (!nextEpisodeId.value) return;
     countdown.value = AUTO_NEXT_COUNTDOWN_SEC;
     countdownTimer = setInterval(() => {
       if (countdown.value === null) return;
       countdown.value -= 1;
       if (countdown.value <= 0) {
         cancelAutoNext();
-        void nextEpisode();
+        autoNextTarget.value = nextEpisodeId.value;
       }
     }, 1000);
   }
@@ -576,6 +591,11 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       countdownTimer = null;
     }
     countdown.value = null;
+  }
+
+  /** PlayerView 处理完自动连播后调用，清除目标 */
+  function acknowledgeAutoNext(): void {
+    autoNextTarget.value = null;
   }
 
   /* ---------- 后台/可见性 ---------- */
@@ -604,6 +624,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   });
 
   onBeforeUnmount(() => {
+    alive = false;
     logger.info('播放器卸载：销毁 controller', { hasController: controller.value != null });
     document.removeEventListener('visibilitychange', handleVisibility);
     if (hideTimer !== null) clearTimeout(hideTimer);
@@ -655,6 +676,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     canPrev,
     hasEpisodeNav,
     isEnded,
+    nextEpisodeId,
+    prevEpisodeId,
     createController,
     load,
     reload,
@@ -682,6 +705,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     showHud,
     clearHud,
     scheduleAutoNext,
+    autoNextTarget,
+    acknowledgeAutoNext,
   };
 }
 

@@ -20,17 +20,18 @@ export interface SearchSuggestion {
   highlight?: string; // 高亮片段（匹配关键词）
 }
 
-/** 热门搜索清单（内置，可后续改为远程配置） */
+/** 热门搜索清单（P2：换成真实中文热搜词，替代旧版演示内容） */
 const HOT_SEARCH_LIST: readonly string[] = [
-  'Big Buck Bunny',
-  'Sintel',
-  'Tears of Steel',
-  'Elephant Dream',
-  'Cosmos Laundromat',
-  '示例',
-  '动画',
-  '科幻',
-  '2024',
+  '流浪地球',
+  '三体',
+  '庆余年',
+  '与凤行',
+  '繁花',
+  '漫长的季节',
+  '狂飙',
+  '满江红',
+  '流浪地球2',
+  '长相思',
 ];
 
 /**

@@ -45,7 +45,23 @@ const activeSuggestionIndex = ref(-1);
 // REV-13：generation counter 防止旧 blur timeout 竞态
 let blurGeneration = 0;
 
+// P2：IME 输入法组合期间不触发逐键搜索（拼音/五笔等输入过程中每字母都会触发 input）
+const composing = ref(false);
+
+function onCompositionStart(): void {
+  composing.value = true;
+}
+
+function onCompositionEnd(ev: CompositionEvent): void {
+  composing.value = false;
+  // 组合结束时用最终值触发一次更新
+  emit('update:modelValue', (ev.target as HTMLInputElement).value);
+  activeSuggestionIndex.value = -1;
+}
+
 function onInput(ev: Event): void {
+  // IME 组合中跳过——等 compositionend 再发
+  if (composing.value) return;
   emit('update:modelValue', (ev.target as HTMLInputElement).value);
   activeSuggestionIndex.value = -1;
 }
@@ -151,6 +167,8 @@ function deleteSuggestion(text: string): void {
         @keydown="onKeydown"
         @focus="onFocus"
         @blur="onBlur"
+        @compositionstart="onCompositionStart"
+        @compositionend="onCompositionEnd"
       />
       <button
         v-if="hasValue && !readonly"

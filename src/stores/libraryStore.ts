@@ -105,6 +105,12 @@ export const useLibraryStore = defineStore('library', () => {
   const detail = ref<MediaDetail | null>(null);
   const detailState = ref<LoadState>('idle');
 
+  /**
+   * 详情请求代次：并发调用 loadDetail 时，只有最新一次的结果会写入 store。
+   * 避免后台链路（如换源兜底）的迟到响应覆盖当前页面的详情。
+   */
+  let detailSeq = 0;
+
   const posterItems = computed(() => items.value);
   const isEmpty = computed(() => items.value.length === 0 && state.value === 'success');
 
@@ -581,6 +587,7 @@ export const useLibraryStore = defineStore('library', () => {
   }
 
   async function loadDetail(mediaId: string, refresh = false): Promise<void> {
+    const seq = ++detailSeq;
     detailState.value = refresh ? 'refreshing' : 'loading';
     error.value = null;
     try {
@@ -588,6 +595,8 @@ export const useLibraryStore = defineStore('library', () => {
       // 避免「点进详情 → E_NOT_FOUND」的竞态（见 libraryService.getDetail）
       const hint = searchResultsAll.value.find((item) => item.id === mediaId) ?? undefined;
       const result = await libraryService.getDetail(mediaId, { refresh, item: hint });
+      // 过期结果丢弃：后发先至的更新请求已启动，本次结果不再写入
+      if (seq !== detailSeq) return;
       detail.value = result;
       detailState.value = 'success';
     } catch (e) {
@@ -596,9 +605,11 @@ export const useLibraryStore = defineStore('library', () => {
       if (code === 'E_NOT_FOUND' && !refresh) {
         try {
           const recovered = await libraryService.recoverItem(mediaId);
+          if (seq !== detailSeq) return; // 自愈期间有新请求，丢弃
           if (recovered) {
             // 自愈成功，重新加载详情
             const result = await libraryService.getDetail(mediaId, { refresh: false, item: recovered });
+            if (seq !== detailSeq) return;
             detail.value = result;
             detailState.value = 'success';
             return;
@@ -608,6 +619,7 @@ export const useLibraryStore = defineStore('library', () => {
         }
       }
 
+      if (seq !== detailSeq) return; // 错误处理前再次检查，避免覆盖新请求的结果
       detail.value = null;
       detailState.value = 'error';
       error.value = toErrorShape(e);
@@ -620,6 +632,7 @@ export const useLibraryStore = defineStore('library', () => {
         code === 'E_HTTP_5XX'
       ) {
         const cachedItem = await libraryService.getItem(mediaId);
+        if (seq !== detailSeq) return;
         if (cachedItem) {
           await markSourceFailedByError(cachedItem.sourceId, e);
         }
@@ -633,6 +646,11 @@ export const useLibraryStore = defineStore('library', () => {
     lineId?: string | null,
   ): Promise<PlaybackSource> {
     return libraryService.resolvePlay({ mediaId, episodeId, lineId: lineId ?? null });
+  }
+
+  /** P0-3：失效播放地址缓存（播放出错时调用，重试不再复用坏 URL） */
+  function invalidatePlayCache(mediaId: string): void {
+    libraryService.invalidatePlayCache(mediaId);
   }
 
   async function toDownloadInputs(
@@ -695,6 +713,7 @@ export const useLibraryStore = defineStore('library', () => {
     clearSearch,
     loadDetail,
     resolvePlay,
+    invalidatePlayCache,
     toDownloadInputs,
     loadHome,
   };

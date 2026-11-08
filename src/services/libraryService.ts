@@ -139,6 +139,8 @@ export interface LibraryService {
       signal?: AbortSignal;
     },
   ): Promise<MediaItem[]>;
+  /** P0-3：失效指定媒体的播放地址缓存（播放出错时调用，避免重试复用坏 URL） */
+  invalidatePlayCache(mediaId: string): void;
 }
 
 /** 首屏缓存有效期（技术方案 6 章：cached < 5min） */
@@ -169,6 +171,11 @@ function getResolvedPlayCache(key: string): PlaybackSource | null {
   const entry = resolvedPlayCache.get(key);
   if (!entry) return null;
   if (Date.now() - entry.cachedAt > RESOLVED_PLAY_TTL_MS) {
+    resolvedPlayCache.delete(key);
+    return null;
+  }
+  // P0-3：直链过期时间优先于内存 TTL——网盘/爬虫源的 URL 可能 5 分钟就过期
+  if (entry.playback.expiresAt != null && Date.now() > entry.playback.expiresAt) {
     resolvedPlayCache.delete(key);
     return null;
   }
@@ -637,6 +644,9 @@ export const libraryService: LibraryService = {
     if (isOnline()) {
       const total = enabled.length;
       let done = 0;
+      // P0-4：全局搜索截止时间——避免个别慢源拖住整体响应
+      const SEARCH_GLOBAL_DEADLINE_MS = 28000;
+      const searchStartedAt = Date.now();
       /** 单源完成即通知（CHG-12 渐进搜索）；取消的源不计入失败、不回调 */
       const settleOne = async (source: Source, index: number): Promise<void> => {
         try {
@@ -671,6 +681,9 @@ export const libraryService: LibraryService = {
         workers.push(
           (async () => {
             while (cursor < enabled.length) {
+              // P0-4：全局截止时间 + 外部取消 → 不再启动新源
+              if (params.signal?.aborted) return;
+              if (Date.now() - searchStartedAt > SEARCH_GLOBAL_DEADLINE_MS) return;
               const idx = cursor++;
               const source = enabled[idx];
               if (source) await settleOne(source, idx);
@@ -1120,6 +1133,10 @@ export const libraryService: LibraryService = {
       /* 搜索失败：按无候选处理 */
     }
     return null;
+  },
+
+  invalidatePlayCache(mediaId: string): void {
+    invalidateResolvedPlayCache(mediaId);
   },
 
 };

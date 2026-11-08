@@ -6,7 +6,7 @@
  * - 所有原生监听在 `destroy()` 中解绑，避免重复挂载造成内存泄漏
  */
 import type { AppErrorShape, PlaybackSource, ResizeMode } from '@/types';
-import { toErrorShape } from '@/shared/errors';
+import { AppError, toErrorShape } from '@/shared/errors';
 
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 
@@ -73,7 +73,22 @@ export class VideoEngine implements PlayableEngine {
       };
       const onError = (): void => {
         cleanup();
-        reject(new Error(this.video.error?.message ?? 'media error'));
+        // P1-2：按 MediaError.code 映射具体错误码，不再统一折叠为 E_DECODE
+        const mediaError = this.video.error;
+        const msg = mediaError?.message ?? 'media error';
+        switch (mediaError?.code) {
+          case MediaError.MEDIA_ERR_NETWORK:
+            reject(new AppError('E_NETWORK', `网络错误：${msg}`));
+            break;
+          case MediaError.MEDIA_ERR_DECODE:
+            reject(new AppError('E_DECODE', `解码错误：${msg}`));
+            break;
+          case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+            reject(new AppError('E_UNSUPPORTED_FORMAT', `格式不支持：${msg}`));
+            break;
+          default:
+            reject(new AppError('E_DECODE', msg));
+        }
       };
       const cleanup = (): void => {
         this.video.removeEventListener('loadedmetadata', onLoaded);
