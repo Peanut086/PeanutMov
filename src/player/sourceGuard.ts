@@ -94,6 +94,26 @@ export function isM3u8Url(url: string | null | undefined): boolean {
   return pathnameOfUrl(url).toLowerCase().endsWith('.m3u8');
 }
 
+/** 媒体后缀：命中即认为是直链/清单，不是网页播放页 */
+const MEDIA_EXTENSION = /\.(m3u8|mp4|m4v|mov|webm|ts|mkv|flv|mpd)$/i;
+/** 网页播放页路径特征（含 Guard 源常见的 /v_play/） */
+const PLAY_PAGE_PATH = /\/(share|play|vodplay|player|v_play)\//i;
+/** 页面级扩展名 */
+const PAGE_EXTENSION = /\.(html?|shtml|php)$/i;
+
+/**
+ * 是否为"网页播放页"地址（HTML 页面而非媒体流）。
+ *
+ * 这类地址交给 ExoPlayer/<video> 必然失败且白等超时；解析层应已换回直链，
+ * 走到播放器层仍是页面时快速失败，交由容错链换线/换源。
+ */
+export function isWebPlayPageUrl(url: string | null | undefined): boolean {
+  const path = pathnameOfUrl(url);
+  if (path.length === 0) return false;
+  if (MEDIA_EXTENSION.test(path)) return false;
+  return PLAY_PAGE_PATH.test(path) || PAGE_EXTENSION.test(path);
+}
+
 /**
  * 文本中是否出现不受支持的加密声明（SAMPLE-AES 等）。
  * 同时用于两处输入：manifest 全文（预检 fetch 的文本）、URL 自身（上游若把

@@ -229,7 +229,7 @@ public class SpiderPlugin extends Plugin {
      * jar 内的实际类是 `com.github.catvod.spider.XBPQ`（去掉 `csp_`/`py_` 前缀）。
      * 少数 jar 直接放同名类（`csp_XBPQ` 本身），两种都尝试。
      */
-    private static String resolveSpiderClassName(String api, ClassLoader loader) throws ClassNotFoundException {
+    private static String resolveSpiderClassName(String api, ClassLoader loader, File jarFile) throws ClassNotFoundException {
         String stripped = api.replaceFirst("^(csp|py)_", "");
         String[] candidates = {
                 SPIDER_PACKAGE + stripped,
@@ -245,7 +245,79 @@ public class SpiderPlugin extends Plugin {
                 last = e;
             }
         }
+        // 自愈：订阅 api 与 jar 内类名不匹配（如 csp_XPathGuard 但 jar 里是别的名字）。
+        // jar 内若唯一一个可加载的 Spider 实现，改用它；多个/零个则保留原错误，不臆测。
+        String healed = findSoleSpiderClassName(jarFile, loader);
+        if (healed != null) {
+            Log.w(TAG, "spider class self-heal: api=" + api + " -> " + healed + " (" + jarFile.getName() + ")");
+            return healed;
+        }
         throw last != null ? last : new ClassNotFoundException(api);
+    }
+
+    /**
+     * 配置/jar 类名不匹配自愈：扫描 dex 字符串池里 com.github.catvod.spider 下的顶层类
+     * 描述符（`Lcom/github/catvod/spider/XXX;`），逐个 loadClass 校验为可实例化的 Spider
+     * 实现。唯一一个 → 返回它；零个或多个 → 返回 null（保留原 ClassNotFound）。
+     *
+     * TVBox jar 是 dex 格式（classes.dex），没有 .class zip 条目，故按字节扫描字符串池，
+     * 与 isGuardJar 的 dex 特征扫描同源。guard jar 的真实爬虫类加密在 .guard 内，
+     * 明文 dex 扫不到 → 自然返回 null，不受影响。
+     */
+    private static String findSoleSpiderClassName(File jarFile, ClassLoader loader) {
+        java.util.LinkedHashSet<String> candidates = new java.util.LinkedHashSet<>();
+        byte[] marker = "Lcom/github/catvod/spider/".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jarFile)) {
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = entries.nextElement();
+                if (entry.isDirectory() || !entry.getName().endsWith(".dex")) continue;
+                byte[] dex;
+                try (InputStream in = zip.getInputStream(entry)) {
+                    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+                    byte[] buf = new byte[65536];
+                    int read;
+                    while ((read = in.read(buf)) > 0) out.write(buf, 0, read);
+                    dex = out.toByteArray();
+                }
+                int from = 0;
+                while (true) {
+                    int idx = indexOf(dex, marker, from);
+                    if (idx < 0) break;
+                    int start = idx + marker.length;
+                    int end = start;
+                    while (end < dex.length && dex[end] != ';' && end - start < 200) end++;
+                    if (end < dex.length && dex[end] == ';') {
+                        String simple = new String(dex, start, end - start, java.nio.charset.StandardCharsets.US_ASCII);
+                        // 顶层类：不含 $（内部类）、不含 /（子包）、非空、排除宿主注入辅助类 Init
+                        if (!simple.isEmpty() && simple.indexOf('$') < 0 && simple.indexOf('/') < 0
+                                && !simple.equals("Init")) {
+                            candidates.add(SPIDER_PACKAGE + simple);
+                        }
+                    }
+                    from = end + 1;
+                }
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "spider class scan failed: " + jarFile.getName() + " -> " + e.getMessage());
+            return null;
+        }
+        String sole = null;
+        for (String className : candidates) {
+            try {
+                Class<?> clazz = loader.loadClass(className);
+                if (!Spider.class.isAssignableFrom(clazz)) continue;
+                if (clazz.isInterface() || java.lang.reflect.Modifier.isAbstract(clazz.getModifiers())) continue;
+                if (sole != null) {
+                    Log.w(TAG, "spider self-heal skipped: multiple Spider impls in " + jarFile.getName());
+                    return null;
+                }
+                sole = className;
+            } catch (Throwable t) {
+                // 加载失败（类未定义/触发 native 异常）忽略，继续看下一个候选
+            }
+        }
+        return sole;
     }
 
     private static class LoadedSpider {
@@ -1043,7 +1115,7 @@ public class SpiderPlugin extends Plugin {
             initGuardJar(loader, context, jarFile, api);
         }
 
-        String className = resolveSpiderClassName(api, loader);
+        String className = resolveSpiderClassName(api, loader, jarFile);
         Class<?> clazz = loader.loadClass(className);
         Object instance = clazz.getDeclaredConstructor().newInstance();
         if (!(instance instanceof Spider)) {
@@ -1443,9 +1515,14 @@ public class SpiderPlugin extends Plugin {
 
     /** 字节数组子串查找（dex 特征串匹配） */
     private static int indexOf(byte[] haystack, byte[] needle) {
+        return indexOf(haystack, needle, 0);
+    }
+
+    /** 字节数组子串查找（dex 特征串匹配），从 from 偏移开始 */
+    private static int indexOf(byte[] haystack, byte[] needle, int from) {
         if (needle.length == 0 || haystack.length < needle.length) return -1;
         outer:
-        for (int i = 0; i <= haystack.length - needle.length; i++) {
+        for (int i = Math.max(0, from); i <= haystack.length - needle.length; i++) {
             for (int j = 0; j < needle.length; j++) {
                 if (haystack[i + j] != needle[j]) continue outer;
             }

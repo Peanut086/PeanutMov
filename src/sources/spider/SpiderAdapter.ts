@@ -23,7 +23,14 @@ import {
   TIMEOUT_SPIDER_PLAY_HOT_MS,
 } from '@/shared/constants';
 import { logger } from '@/shared/logger';
-import { isMagnetUrl, MAGNET_MESSAGE, sanitizeSourceMessage } from '@/shared/sourceFailure';
+import {
+  isMagnetUrl,
+  MAGNET_MESSAGE,
+  QUARANTINE_MESSAGE,
+  SAFE_MODE_MESSAGE,
+  SPIDER_MISMATCH_MESSAGE,
+  sanitizeSourceMessage,
+} from '@/shared/sourceFailure';
 import { isNative } from '@/shared/platform';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { httpClient } from '@/sources/base/httpClient';
@@ -303,6 +310,14 @@ function raceNative<T>(
 function nativeErrorOf(e: unknown, fallback: AppError): AppError {
   if (e instanceof AppError) return e;
   const message = e instanceof Error ? e.message : String(e);
+  // 保护态/隔离态：原文含 IllegalStateException 会被收敛成"源侧执行异常"，
+  // 这里前置识别，让 UI 与容错链拿到对症原因。
+  if (message.includes('safe mode active')) {
+    return new AppError('E_SOURCE_UNAVAILABLE', SAFE_MODE_MESSAGE, { detail: message, cause: e });
+  }
+  if (message.includes('quarantined')) {
+    return new AppError('E_SOURCE_UNAVAILABLE', QUARANTINE_MESSAGE, { detail: message, cause: e });
+  }
   if (message.includes('超时')) {
     return new AppError('E_TIMEOUT', message);
   }
@@ -330,7 +345,7 @@ function nativeErrorOf(e: unknown, fallback: AppError): AppError {
     return new AppError('E_PARSE', 'jar 校验失败，源文件已损坏或被替换', { detail: message, cause: e });
   }
   if (/ClassNotFound|ClassCastException|NoSuchMethod/.test(message)) {
-    return new AppError('E_PARSE', '爬虫类缺失，源配置与 jar 不匹配', { detail: message, cause: e });
+    return new AppError('E_PARSE', SPIDER_MISMATCH_MESSAGE, { detail: message, cause: e });
   }
   if (message.includes('jar too large')) {
     return new AppError('E_PARSE', 'jar 文件过大，无法加载', { detail: message, cause: e });

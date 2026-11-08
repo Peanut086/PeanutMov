@@ -616,6 +616,7 @@ async function resolveAndLoad(): Promise<boolean> {
     if (player.playing) return false;
     loadErrorShape.value = shape;
     loadError.value = shape.message;
+    void runFailover(shape, 'resolve');
     return false;
   } finally {
     // 只有最新一代负责收尾，避免旧任务把新任务的 loading 关掉
@@ -931,43 +932,52 @@ function isOnlineNow(): boolean {
   return navigator.onLine !== false;
 }
 
-/** 起播窗口内失败：自动换线（一次）→ 自动换源（一次）→ 才落到错误面板 */
+/** 起播窗口内失败：自动换线（一次）→ 自动换源（一次）→ 才落到错误面板。
+ * 引擎错误与解析错误共用同一条链（解析失败过去只落错误面板，不自动兜底）。 */
+async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): Promise<void> {
+  if (failoverRunning.value) return;
+  if (!FAILOVER_ERROR_CODES.has(error.code) || !withinFailoverWindow()) return;
+  failoverRunning.value = true;
+  try {
+    // ① 换线路
+    if (!failoverLineTried.value && lines.value.length > 1) {
+      failoverLineTried.value = true;
+      const other = lines.value.find((l) => l.id !== currentLineId.value);
+      if (other) {
+        toast.info('起播失败，自动切换到其它线路…');
+        await switchLine(other.id);
+        if (player.error === null && loadError.value === null) return; // 换线成功
+      }
+    }
+    // ② 换源（同名同年在其它源重找片源；进度按集号延续）
+    if (!failoverSourceTried.value) {
+      failoverSourceTried.value = true;
+      player.patch({ error: null });
+      toast.info('当前源无法播放，正在尝试其它来源…');
+      const target = await findAlternateSource();
+      if (target) {
+        toast.info(`已切换到「${target.sourceName}」继续播放`);
+        await resolveAndLoad();
+        if (player.error === null && loadError.value === null) return;
+      }
+    }
+    // 兜底失败：恢复错误面板（清掉的错误重新呈现）
+    if (player.error === null && loadError.value === null) {
+      if (origin === 'player') player.patch({ error });
+      else {
+        loadErrorShape.value = error;
+        loadError.value = error.message;
+      }
+    }
+  } finally {
+    failoverRunning.value = false;
+  }
+}
+
 watch(
   () => player.error,
-  async (error) => {
-    if (!error || failoverRunning.value) return;
-    if (!FAILOVER_ERROR_CODES.has(error.code) || !withinFailoverWindow()) return;
-    failoverRunning.value = true;
-    try {
-      // ① 换线路
-      if (!failoverLineTried.value && lines.value.length > 1) {
-        failoverLineTried.value = true;
-        const other = lines.value.find((l) => l.id !== currentLineId.value);
-        if (other) {
-          toast.info('起播失败，自动切换到其它线路…');
-          await switchLine(other.id);
-          if (player.error === null && loadError.value === null) return; // 换线成功
-        }
-      }
-      // ② 换源（同名同年在其它源重找片源；进度按集号延续）
-      if (!failoverSourceTried.value) {
-        failoverSourceTried.value = true;
-        player.patch({ error: null });
-        toast.info('当前源无法播放，正在尝试其它来源…');
-        const target = await findAlternateSource();
-        if (target) {
-          toast.info(`已切换到「${target.sourceName}」继续播放`);
-          await resolveAndLoad();
-          if (player.error === null && loadError.value === null) return;
-        }
-      }
-      // 兜底失败：恢复错误面板（清掉的错误重新呈现）
-      if (player.error === null && loadError.value === null) {
-        player.patch({ error });
-      }
-    } finally {
-      failoverRunning.value = false;
-    }
+  (error) => {
+    if (error) void runFailover(error, 'player');
   },
 );
 

@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router';
 import AppTabBar from '@/components/layout/AppTabBar.vue';
 import ToastHost from '@/components/common/ToastHost.vue';
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue';
+import SafeModeBanner from '@/components/common/SafeModeBanner.vue';
 import { useTheme } from '@/composables/useTheme';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
@@ -180,6 +181,7 @@ function recover(): void {
     </div>
 
     <template v-else>
+      <SafeModeBanner />
       <!-- 底部 TabBar 为 fixed，由外壳统一预留空间，页面无需各自处理 -->
       <div class="app-content" :class="{ 'app-content--tabbar': showTabBar }">
         <RouterView v-slot="{ Component, route: current }">

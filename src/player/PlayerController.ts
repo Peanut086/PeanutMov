@@ -26,7 +26,9 @@ import type {
 } from '@/player/types';
 import {
   CONTROLS_HIDE_DELAY_MS,
+  HLS_METADATA_TIMEOUT_MS,
   LOAD_METADATA_TIMEOUT_MS,
+  NATIVE_METADATA_TIMEOUT_MS,
   NETWORK_RETRY_DELAY_MS,
   NETWORK_RETRY_TIMES,
   NO_VIDEO_CHECK_DELAY_MS,
@@ -50,7 +52,7 @@ import { GestureRecognizer, type GestureIntent } from '@/player/GestureRecognize
 import { ProgressReporter, type ProgressSnapshot } from '@/player/ProgressReporter';
 import { FullscreenController } from '@/player/FullscreenController';
 import { OrientationController } from '@/player/OrientationController';
-import { assertSourceSupported, scanManifestForDrm } from '@/player/sourceGuard';
+import { assertSourceSupported, isWebPlayPageUrl, scanManifestForDrm } from '@/player/sourceGuard';
 
 /**
  * EXT-07：内嵌字幕/音轨面板类型与空状态。
@@ -267,6 +269,11 @@ export class PlayerController {
 
   /** 根据格式与原生能力选择引擎并 attach/load */
   private async attachEngine(playback: PlaybackSource): Promise<void> {
+    // 解析层应已把网页播放页换回直链；走到这里仍是页面说明解析失败，
+    // 快速报错交给容错链换线/换源，不让两个引擎对着 HTML 白等超时。
+    if (isWebPlayPageUrl(playback.url)) {
+      throw new AppError('E_NO_PLAY_URL', '播放地址仍是网页播放页，未解析到视频直链');
+    }
     const format = playback.format === 'other' ? guessFormatFromUrl(playback.url) ?? 'mp4' : playback.format;
 
     this.destroyEngine();
@@ -309,7 +316,7 @@ export class PlayerController {
       });
       nativeEngine.attach(host);
       try {
-        await this.withMetadataTimeout(nativeEngine.load(playback));
+        await this.withMetadataTimeout(nativeEngine.load(playback), NATIVE_METADATA_TIMEOUT_MS);
         this.engine = nativeEngine;
         this.setEngineKind('native');
         this.quality = QUALITY_AUTO;
@@ -362,7 +369,7 @@ export class PlayerController {
       this.engine = hlsEngine;
       this.setEngineKind('hls');
       try {
-        await hlsEngine.load(playback);
+        await this.withMetadataTimeout(hlsEngine.load(playback), HLS_METADATA_TIMEOUT_MS);
         this.progress.update(0, hlsEngine.getDuration());
         return;
       } catch (e) {
@@ -415,7 +422,7 @@ export class PlayerController {
       });
       nativeEngine.attach(host);
       try {
-        await this.withMetadataTimeout(nativeEngine.load(playback));
+        await this.withMetadataTimeout(nativeEngine.load(playback), NATIVE_METADATA_TIMEOUT_MS);
         this.engine = nativeEngine;
         this.setEngineKind('native');
         this.quality = QUALITY_AUTO;
@@ -470,11 +477,11 @@ export class PlayerController {
     }
   }
 
-  private withMetadataTimeout(promise: Promise<void>): Promise<void> {
+  private withMetadataTimeout(promise: Promise<void>, timeoutMs: number = LOAD_METADATA_TIMEOUT_MS): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new AppError('E_TIMEOUT', '加载超时，请检查网络后重试'));
-      }, LOAD_METADATA_TIMEOUT_MS);
+      }, timeoutMs);
       promise.then(
         () => {
           clearTimeout(timer);

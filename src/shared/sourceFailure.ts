@@ -20,6 +20,9 @@ export type SourceFailureKind =
   | 'protocol_unsupported'
   | 'rule_script'
   | 'source_internal'
+  | 'safe_mode'
+  | 'quarantined'
+  | 'spider_mismatch'
   | 'auth'
   | 'unknown';
 
@@ -48,6 +51,12 @@ export const RULE_SCRIPT_MESSAGE = '规则脚本异常（源站问题）';
 export const SOURCE_INTERNAL_MESSAGE = '源侧执行异常（源站问题）';
 /** 磁力链接的统一文案（App 无种子下载链路，只能外部打开） */
 export const MAGNET_MESSAGE = '磁力链接需用外部下载器/播放器打开';
+/** 安全模式保护：爬虫源与原生播放器被暂停（近期连续崩溃触发） */
+export const SAFE_MODE_MESSAGE = '安全模式保护中：爬虫源已暂停';
+/** 爬虫隔离：同签名 24h 内崩溃 2 次，隔离 7 天 */
+export const QUARANTINE_MESSAGE = '该爬虫因连续崩溃被隔离';
+/** 订阅 api 类名与 jar 内容不匹配 */
+export const SPIDER_MISMATCH_MESSAGE = '爬虫类缺失，源配置与 jar 不匹配';
 
 const MAGNET_PREFIX = 'magnet:';
 
@@ -120,6 +129,10 @@ export function classifySourceFailure(error: AppErrorShape | null | undefined): 
   if (!error) return 'unknown';
   const text = `${error.message ?? ''} ${error.detail ?? ''}`;
   if (isMagnetUrl(error.detail) || isMagnetUrl(error.message)) return 'protocol_unsupported';
+  // 保护态/配置态优先于内部异常判定（detail 里带 IllegalStateException 等原文）
+  if (error.message === SAFE_MODE_MESSAGE || text.includes('safe mode active')) return 'safe_mode';
+  if (error.message === QUARANTINE_MESSAGE || /quarantined/i.test(text)) return 'quarantined';
+  if (error.message === SPIDER_MISMATCH_MESSAGE) return 'spider_mismatch';
   if (isRuleScriptMessage(text) || error.message === RULE_SCRIPT_MESSAGE) return 'rule_script';
   if (isSourceInternalMessage(text) || error.message === SOURCE_INTERNAL_MESSAGE) return 'source_internal';
 
@@ -172,6 +185,21 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
     title: SOURCE_INTERNAL_MESSAGE,
     hint: '爬虫在源站侧执行出错（空指针、结构不符等），本 App 无法修复。建议换源或换线路。',
     actions: ['switch-source', 'switch-line'],
+  },
+  safe_mode: {
+    title: SAFE_MODE_MESSAGE,
+    hint: '近期连续崩溃触发了保护，爬虫源与原生播放器被暂停。点顶部提示条「恢复」立即解除；下次稳定启动也会自动退出。',
+    actions: ['retry', 'switch-source'],
+  },
+  quarantined: {
+    title: QUARANTINE_MESSAGE,
+    hint: '同一爬虫短时间内崩溃 2 次被隔离 7 天（源体检可手动解除）。建议换源播放。',
+    actions: ['switch-source', 'health-check'],
+  },
+  spider_mismatch: {
+    title: SPIDER_MISMATCH_MESSAGE,
+    hint: '订阅里写的爬虫类名与 jar 内容不符（源配置过期）。单蜘蛛 jar 会自动自愈；仍失败请更新订阅或换源。',
+    actions: ['switch-source', 'edit-source'],
   },
   auth: {
     title: '源鉴权失败',

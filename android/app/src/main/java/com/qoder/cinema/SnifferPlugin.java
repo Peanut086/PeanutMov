@@ -50,11 +50,39 @@ public class SnifferPlugin extends Plugin {
      */
     private static final Pattern MEDIA_URL = Pattern.compile(
             "(\\.(m3u8|mp4|m4v|mkv|flv|ts|webm|mov|avi)(\\?|#|$)" +
+            "|(m3u8|mp4)(\\?|#|$|/)" +
             "|/video/[^?#]+" +
+            "|/play/[^?#]+" +
+            "|/vodplay/[^?#]+" +
             "|/stream[^?#]*" +
             "|[?&]type=video" +
             "|[?&]format=(mp4|m3u8|ts|webm))",
             Pattern.CASE_INSENSITIVE);
+
+    /** 静态资源后缀：video.src 上报时排除，避免把播放器脚本/封面当媒体 */
+    private static final Pattern ASSET_URL = Pattern.compile(
+            "\\.(js|css|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|json)(\\?|#|$)",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * 页面注入脚本：hook fetch/XHR/媒体 src setter，并轮询 video/audio/source 标签。
+     * Guard 源常见无扩展名直链、靠 JS 给 video.src 赋值的播放器，仅靠请求 URL 特征会漏嗅。
+     * media() 为权威上报（播放器自己认定的地址），request() 仍按 MEDIA_URL 过滤防 JSON 误报。
+     */
+    private static final String INJECT_JS =
+            "(function(){" +
+            "if(window.__pnSniff)return;window.__pnSniff=true;" +
+            "var B=window.PeanutSniffer;if(!B)return;" +
+            "function media(u){try{if(u&&/^https?:/i.test(u))B.media(String(u));}catch(e){}}" +
+            "function req(u){try{if(u&&/^https?:/i.test(u))B.request(String(u));}catch(e){}}" +
+            "var d=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src');" +
+            "if(d&&d.set)Object.defineProperty(HTMLMediaElement.prototype,'src',{" +
+            "configurable:true,get:d.get,set:function(v){media(v);return d.set.call(this,v);}});" +
+            "var of=window.fetch;if(of)window.fetch=function(i){try{req(typeof i==='string'?i:(i&&i.url));}catch(e){}return of.apply(this,arguments);};" +
+            "var oo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u){req(u);return oo.apply(this,arguments);};" +
+            "setInterval(function(){var els=document.querySelectorAll('video,audio,source');" +
+            "for(var i=0;i<els.length;i++){var e=els[i];media(e.currentSrc||e.src);}},500);" +
+            "})();";
 
     /** 响应 响应 拦截的 Content-Type（shouldInterceptRequest 无法读 response header，留作扩展点） */
     private static final Pattern MEDIA_MIME = Pattern.compile(
@@ -66,13 +94,47 @@ public class SnifferPlugin extends Plugin {
     private static class SniffJob {
         final PluginCall call;
         final WebView webView;
+        final String pageUrl;
         final AtomicBoolean settled = new AtomicBoolean(false);
         final Runnable timeoutTask;
 
-        SniffJob(PluginCall call, WebView webView, Runnable timeoutTask) {
+        SniffJob(PluginCall call, WebView webView, String pageUrl, Runnable timeoutTask) {
             this.call = call;
             this.webView = webView;
+            this.pageUrl = pageUrl;
             this.timeoutTask = timeoutTask;
+        }
+    }
+
+    /** 页面 JS → 原生上报桥；只接受 http(s)，权威上报排除静态资源后缀 */
+    private class SniffBridge {
+        private final String jobId;
+
+        SniffBridge(String jobId) {
+            this.jobId = jobId;
+        }
+
+        @android.webkit.JavascriptInterface
+        public void media(String url) {
+            main.post(() -> consider(jobId, url, true));
+        }
+
+        @android.webkit.JavascriptInterface
+        public void request(String url) {
+            main.post(() -> consider(jobId, url, false));
+        }
+    }
+
+    private void consider(String jobId, String url, boolean authoritative) {
+        if (url == null || url.isEmpty()) return;
+        SniffJob job = jobs.get(jobId);
+        if (job == null || job.settled.get()) return;
+        if (url.equals(job.pageUrl)) return;
+        if (authoritative) {
+            if (ASSET_URL.matcher(url).find()) return;
+            finish(jobId, url);
+        } else if (MEDIA_URL.matcher(url).find()) {
+            finish(jobId, url);
         }
     }
 
@@ -117,8 +179,9 @@ public class SnifferPlugin extends Plugin {
                             Map<String, String> headers, long timeoutMs) {
         WebView webView = new WebView(getContext());
         Runnable timeoutTask = () -> finish(jobId, null);
-        SniffJob job = new SniffJob(call, webView, timeoutTask);
+        SniffJob job = new SniffJob(call, webView, url, timeoutTask);
         jobs.put(jobId, job);
+        webView.addJavascriptInterface(new SniffBridge(jobId), "PeanutSniffer");
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -154,6 +217,13 @@ public class SnifferPlugin extends Plugin {
                 if (!target.equals(url) && MEDIA_URL.matcher(target).find()) {
                     finish(jobId, target);
                 }
+                view.evaluateJavascript(INJECT_JS, null);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String target) {
+                // 主文档就绪后再注入一次（幂等），覆盖 onPageStarted 时 document 未就绪的情形
+                view.evaluateJavascript(INJECT_JS, null);
             }
         });
 

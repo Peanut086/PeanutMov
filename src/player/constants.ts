@@ -11,8 +11,14 @@ export const PLAYER_ENGINE_KIND = {
   HLS: 'hls',
 } as const;
 
-/** 加载元数据超时（与 shared 的 TIMEOUT_LOAD_METADATA_MS 一致，本地引用便于阅读） */
-export const LOAD_METADATA_TIMEOUT_MS = 15000;
+/** 加载元数据超时（WebView video 引擎；慢源给足余量，本地引用便于阅读） */
+export const LOAD_METADATA_TIMEOUT_MS = 20000;
+
+/** 原生引擎元数据超时：ExoPlayer 对坏地址失败很快，10s 足够，避免回退前白等 */
+export const NATIVE_METADATA_TIMEOUT_MS = 10000;
+
+/** HLS 引擎元数据超时：hls.js 自身重试可能挂死，外层兜底 */
+export const HLS_METADATA_TIMEOUT_MS = 25000;
 
 /**
  * HLS 清单预检超时（AC-40）
