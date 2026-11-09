@@ -53,6 +53,8 @@ export const useLibraryStore = defineStore('library', () => {
   /** CHG-15：最近一次搜索实际参与的源数 / 被过滤掉的启用源数（空态诊断用） */
   const searchCandidates = ref(0);
   const searchFilteredOut = ref(0);
+  /** SO-02：全局截止（28s）后因超时未启动搜索的源 ID */
+  const searchSkippedIds = ref<string[]>([]);
   /* ---------- v2.0/P0-P1：聚合检索重构 ---------- */
   /** 未去重的完整结果（分组视图的数据源） */
   const searchResultsAll = ref<MediaItem[]>([]);
@@ -84,7 +86,10 @@ export const useLibraryStore = defineStore('library', () => {
     const groups = searchPlayableOnly.value
       ? searchGroups.value.filter((g) => {
           const rep = selectRepresentative(g, playabilityOf, reliabilityOf);
-          return rep && playabilityOf(rep.id) === 'playable';
+          if (!rep) return false;
+          // SO-07：未检测/检测中不过滤，只排除确认不可播（empty/error）
+          const status = playabilityOf(rep.id);
+          return status === 'playable' || status === 'unknown' || status === 'verifying';
         })
       : searchGroups.value;
     return groups
@@ -99,7 +104,8 @@ export const useLibraryStore = defineStore('library', () => {
     playabilityDebounce = setTimeout(() => {
       playabilityDebounce = null;
       if (items.length === 0 || !isOnline()) return;
-      const candidates = items.slice(0, 12);
+      // SO-07：扩大预检范围，前 30 条（原 12 条太少导致后续条目始终显示"未检测"）
+      const candidates = items.slice(0, 30);
       void playabilityService.ensureMany(candidates);
     }, 400);
   }, { flush: 'post' });
@@ -421,6 +427,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchController = controller;
     searchResultsAll.value = [];
     searchFailed.value = [];
+    searchSkippedIds.value = [];
     try {
       const result = await libraryService.search({
         keyword: trimmed,
@@ -446,6 +453,7 @@ export const useLibraryStore = defineStore('library', () => {
       searchFailed.value = result.failed;
       searchCandidates.value = result.candidates;
       searchFilteredOut.value = result.filteredOut;
+      searchSkippedIds.value = result.skippedSourceIds;
 
       // 阶段 5：把 result.items 中未上屏的本地缓存条目并入 searchResultsAll
       // 这样曾经成功过的源会稳定出现在「N 个来源」里，不再完全看当次网络脸色
@@ -522,6 +530,51 @@ export const useLibraryStore = defineStore('library', () => {
       if (isCanceled(e)) return;
       error.value = toErrorShape(e);
       appEvents.emit('toast', { text: '重试失败源未成功，可稍后再试或到源管理检查', type: 'info' });
+    } finally {
+      searchRetrying.value = false;
+    }
+  }
+
+  /**
+   * SO-02：继续搜索因全局截止（28s）而未启动的源。
+   *
+   * 与 retryFailedSources 类似：增量搜索 skipped 源，结果并入当前列表（不闪空）。
+   * 搜索中的源不再重复搜索（skipped 源就是没启动的那些）。
+   */
+  async function continueSearchSkipped(): Promise<void> {
+    const kw = searchKeyword.value.trim();
+    const ids = searchSkippedIds.value;
+    if (kw.length === 0 || ids.length === 0 || searchRetrying.value) return;
+    if (searchState.value === 'loading') return;
+    searchRetrying.value = true;
+    try {
+      const result = await libraryService.search({
+        keyword: kw,
+        forceAll: true,
+        sourceIds: ids,
+        pageSize: SEARCH_LOCAL_LIMIT,
+      });
+      const seenIds = new Set(searchResultsAll.value.map((item) => item.id));
+      const freshAll = result.items.filter((item) => {
+        if (seenIds.has(item.id)) return false;
+        seenIds.add(item.id);
+        return true;
+      });
+      if (freshAll.length > 0) searchResultsAll.value = [...searchResultsAll.value, ...freshAll];
+      for (const failure of result.failed) recordTimeoutStreak(failure.sourceId, failure.error.code);
+      searchFailed.value = [...searchFailed.value, ...result.failed];
+      // 从 skipped 里移除已搜的（无论成败）
+      const searched = new Set(ids);
+      searchSkippedIds.value = searchSkippedIds.value.filter((id) => !searched.has(id));
+      // 追加新一轮的 skipped（如果这批也有源被截止）
+      if (result.skippedSourceIds.length > 0) {
+        searchSkippedIds.value = [...searchSkippedIds.value, ...result.skippedSourceIds];
+      }
+      searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
+    } catch (e) {
+      if (isCanceled(e)) return;
+      error.value = toErrorShape(e);
+      appEvents.emit('toast', { text: '继续搜索未成功，可稍后再试', type: 'info' });
     } finally {
       searchRetrying.value = false;
     }
@@ -686,6 +739,8 @@ export const useLibraryStore = defineStore('library', () => {
     searchProgress,
     searchCandidates,
     searchFilteredOut,
+    searchSkippedIds,
+    continueSearchSkipped,
     searchViewMode,
     searchScope,
     searchSelectedSourceIds,

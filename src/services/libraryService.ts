@@ -122,6 +122,7 @@ export interface LibraryService {
     title: string,
     year: number | null,
     excludeSourceId: string,
+    targetEpisodeId?: string,
   ): Promise<{ mediaId: string; sourceName: string } | null>;
   /**
    * 跨源候选列表（详情页切换来源用）
@@ -391,17 +392,38 @@ async function searchOneSource(
   // P1-6：搜索扇出前预热（爬虫源 jar 加载与搜索并发；warmup 内部对同源去重）
   prewarm(adapter, source);
   const controller = new AbortController();
+  // SO-05：source.ext.timeout（秒）作为单源覆盖，优先于 adapter 默认值
+  const extTimeoutMs = readExtTimeoutMs(source);
+  const baseMs = extTimeoutMs ?? adapter.searchTimeoutMs ?? TIMEOUT_SEARCH_MS;
   // OPT-04：单源预算可配置（standard = 既有行为；fast/patient 按倍率缩放后钳制）
-  const budgetMs = resolveSearchTimeoutMs(adapter.searchTimeoutMs ?? TIMEOUT_SEARCH_MS, await searchBudgetPreset());
-  const timer = setTimeout(() => controller.abort(), budgetMs);
+  const budgetMs = resolveSearchTimeoutMs(baseMs, await searchBudgetPreset());
+  // SO-01：区分「预算到期」与「用户取消」——预算到期抛 E_TIMEOUT（计入失败/触发退避），
+  // 用户取消仍走 E_ABORTED（静默）。之前两者都 abort 同一个 controller，超时被 isCanceled 吞掉。
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, budgetMs);
   const onAbort = (): void => controller.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
-    return await adapter.search({ source, keyword, page: 1, pageSize, signal: controller.signal });
+    return await adapter.search({ source, keyword, page: 1, pageSize, signal: controller.signal, budgetMs });
+  } catch (e) {
+    if (timedOut) {
+      throw new AppError('E_TIMEOUT', `搜索超时（${Math.round(budgetMs / 1000)} 秒）`, { detail: source.name });
+    }
+    throw e;
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
   }
+}
+
+/** SO-05：读取 source.ext.timeout（秒→ms），非正数或非数值返回 undefined */
+function readExtTimeoutMs(source: Source): number | undefined {
+  const raw = (source.ext as Record<string, unknown> | null)?.timeout;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
+  return Math.round(raw * 1000);
 }
 
 /** 隐藏演示内容开关（AC-98） */
@@ -618,7 +640,7 @@ export const libraryService: LibraryService = {
 
   async search(params): Promise<SearchResult> {
     const keyword = params.keyword.trim();
-    if (keyword.length === 0) return { items: [], sourceIds: [], failed: [], candidates: 0, filteredOut: 0 };
+    if (keyword.length === 0) return { items: [], sourceIds: [], failed: [], candidates: 0, filteredOut: 0, skippedSourceIds: [] };
     const pageSize = params.pageSize ?? SEARCH_LOCAL_LIMIT;
     const hideDemo = await hideDemoEnabled();
 
@@ -640,8 +662,16 @@ export const libraryService: LibraryService = {
 
     const failed: Array<{ sourceId: string; error: AppErrorShape }> = [];
     const remoteResults: Array<MediaItem[] | null> = [];
+    let launched = 0;
 
     if (isOnline()) {
+      // SO-06：搜索扇出前批量预热所有爬虫源（fire-and-forget），jar 下载与搜索并发
+      // 而非等 searchOneSource 内逐个预热再搜索——首源不再吃满冷启动超时。
+      for (const source of enabled) {
+        void adapterFor(source)
+          .then((adapter) => prewarm(adapter, source))
+          .catch(() => undefined);
+      }
       const total = enabled.length;
       let done = 0;
       // P0-4：全局搜索截止时间——避免个别慢源拖住整体响应
@@ -692,10 +722,12 @@ export const libraryService: LibraryService = {
         );
       }
       await Promise.all(workers);
+      launched = cursor;
     } else {
       for (const source of enabled) {
         failed.push({ sourceId: source.id, error: toErrorShape(new AppError('E_NETWORK')) });
       }
+      launched = enabled.length;
     }
 
     const remote = remoteResults
@@ -712,7 +744,10 @@ export const libraryService: LibraryService = {
       merged.push(item);
     }
 
-    if (merged.length === 0 && failed.length > 0 && failed.length === enabled.length && enabled.length > 0) {
+    // SO-02：全局截止后未启动的源
+    const skippedSourceIds = enabled.slice(launched).map((s) => s.id);
+
+    if (merged.length === 0 && failed.length > 0 && failed.length + skippedSourceIds.length === enabled.length && enabled.length > 0) {
       const first = failed[0];
       if (first) {
         throw new AppError(first.error.code, first.error.message, {
@@ -723,7 +758,7 @@ export const libraryService: LibraryService = {
     }
 
     const sourceIds = [...new Set(merged.map((item) => item.sourceId))];
-    return { items: merged.slice(0, pageSize), sourceIds, failed, candidates: enabled.length, filteredOut };
+    return { items: merged.slice(0, pageSize), sourceIds, failed, candidates: enabled.length, filteredOut, skippedSourceIds };
   },
 
   async getDetail(mediaId, opts): Promise<MediaDetail> {

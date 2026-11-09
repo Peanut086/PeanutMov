@@ -496,6 +496,9 @@ function leave(): void {
             <div class="import-recommend__text">
               <strong>{{ item.name }}</strong>
               <span class="import-recommend__note">{{ item.note }}</span>
+              <span v-if="item.tags.length > 0" class="import-recommend__tags">
+                <span v-for="tag in item.tags" :key="tag" class="import-recommend__tag">{{ tag }}</span>
+              </span>
             </div>
             <button class="btn btn--secondary btn--md" type="button" :disabled="parsing" @click="useRecommended(item)">
               评测
@@ -825,6 +828,23 @@ function leave(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.import-recommend__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.import-recommend__tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius-full, 999px);
+  background-color: var(--color-bg-base, #f5f5f5);
+  color: var(--color-text-secondary, #666);
+  font-size: 11px;
+  line-height: 18px;
 }
 
 .import-strategy {

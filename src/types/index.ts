@@ -285,6 +285,8 @@ export interface BrowseParams extends PageQuery {
 export interface SearchParams extends PageQuery {
   source: Source;
   keyword: string;
+  /** SO-05：计算后的单源预算（ms），透传给 crawl/invoke 内部超时 */
+  budgetMs?: number;
 }
 
 export interface GetDetailParams {
@@ -315,6 +317,8 @@ export interface SearchResult {
   filteredOut: number;
   /** v1.7/CHG-20：按「归一化片名+年份」聚合的分组视图（items 为组内按源质量排序的条目） */
   groups?: SearchResultGroup[];
+  /** SO-02：全局截止（28s）后因超时未启动搜索的源 ID */
+  skippedSourceIds: string[];
 }
 
 /** v1.7/CHG-20 聚合检索：检索范围 */

@@ -254,6 +254,9 @@ export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
   protocol_unsupported: '格式不支持',
   rule_script: '规则脚本异常',
   source_internal: '源侧执行异常',
+  safe_mode: '安全模式暂停',
+  quarantined: '爬虫被隔离',
+  spider_mismatch: '爬虫类缺失',
   auth: '需要登录',
   unknown: '原因未知',
 };

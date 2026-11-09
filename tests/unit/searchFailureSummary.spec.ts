@@ -156,11 +156,14 @@ describe('SEARCH_FAILURE_LABELS（分类标签穷举）', () => {
     'protocol_unsupported',
     'rule_script',
     'source_internal',
+    'safe_mode',
+    'quarantined',
+    'spider_mismatch',
     'auth',
     'unknown',
   ];
 
-  it('7 类失败原因都有非空标签', () => {
+  it('10 类失败原因都有非空标签', () => {
     for (const kind of KINDS) {
       expect(SEARCH_FAILURE_LABELS[kind].trim().length).toBeGreaterThan(0);
     }

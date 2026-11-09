@@ -129,7 +129,7 @@ export class SiteAdapter extends BaseAdapter {
     this.assertEnabled(source);
     const kw = keyword.trim();
     if (kw.length === 0) return [];
-    const response = await this.request(source, 'search', { keyword: kw, page: params.page, signal: params.signal });
+    const response = await this.request(source, 'search', { keyword: kw, page: params.page, signal: params.signal, budgetMs: params.budgetMs });
     return (response.list ?? []).slice(0, params.pageSize).map((vod) => this.toItem(source, vod));
   }
 
@@ -336,6 +336,8 @@ export class SiteAdapter extends BaseAdapter {
       /** 服务端筛选选中值（key→value），仅 list 动作使用 */
       filter?: Record<string, string> | null;
       signal?: AbortSignal;
+      /** SO-05：透传搜索预算到 crawl 管道 */
+      budgetMs?: number;
     },
   ): Promise<TvboxListResponse> {
     const ext = extOf(source);
@@ -394,6 +396,7 @@ export class SiteAdapter extends BaseAdapter {
           url,
           headers: this.headersWith(source, { Accept: 'application/json' }),
           signal: opts.signal,
+          budgetMs: opts.budgetMs,
         });
         return result.value;
       } catch (e) {
@@ -408,8 +411,14 @@ export class SiteAdapter extends BaseAdapter {
       }
     };
 
+    // SO-09：搜索直接走 videolist，跳过先试 detail 再回退的两步流程（省一半预算）。
+    // 列表/详情仍保留 detail→videolist 回退。
+    if (action === 'search') {
+      return send('videolist');
+    }
+
     const first = await send('detail');
-    // 老版 CMS 只认 `ac=videolist`：列表/搜索/详情返回空时回退一次。
+    // 老版 CMS 只认 `ac=videolist`：列表/详情返回空时回退一次。
     // 自定义路径不参与回退（用户已显式指定 URL 模板）。
     if (usesCustomPath) return first;
     if ((first.list?.length ?? 0) > 0) return first;

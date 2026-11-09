@@ -79,6 +79,8 @@ export interface SpiderSourceExt {
   /** 传给 `Spider.init(context, ext)` 的原始 ext */
   initExt: string;
   searchable?: boolean;
+  /** SO-05：单源搜索超时覆盖（秒），来自订阅 ext.timeout */
+  timeout?: number;
 }
 
 /**
@@ -660,9 +662,12 @@ export class SpiderAdapter extends BaseAdapter {
     /** 位置下标 → 数组值：List 形参必须走这里（桥接会展平嵌套数组） */
     arrayArgs?: Record<number, string[]>,
     signal?: AbortSignal,
+    /** SO-05：调用方传入的预算超时，覆盖默认 NATIVE_INVOKE_TIMEOUT_MS */
+    timeoutMs?: number,
   ) {
     signal?.throwIfAborted();
     const handle = await this.ensureLoaded(source, signal);
+    const effectiveTimeout = timeoutMs ?? NATIVE_INVOKE_TIMEOUT_MS;
     try {
       let result: { json: string | null; logs?: string[] };
       if (extOf(source).kind === 'js') {
@@ -675,13 +680,13 @@ export class SpiderAdapter extends BaseAdapter {
               arg: JSON.stringify(drpyArgOf(method, args)),
             }),
           signal,
-          NATIVE_INVOKE_TIMEOUT_MS,
+          effectiveTimeout,
         );
       } else {
         result = await raceNative(
           () => SpiderNative.invoke({ handle, method, args, arrayArgs }),
           signal,
-          NATIVE_INVOKE_TIMEOUT_MS,
+          effectiveTimeout,
         );
       }
       return parseSpiderJson(result.json, method, source.name);
@@ -748,7 +753,7 @@ export class SpiderAdapter extends BaseAdapter {
     // 原生侧已做 null 回退（P2-9），但主动传 3 参可避免一次无效反射调用。
     const args: Array<string | number | boolean> =
       extOf(source).kind === 'js' ? [kw, true, params.page ?? 1] : [kw, true];
-    const response = await this.invoke(source, 'searchContent', args, undefined, params.signal);
+    const response = await this.invoke(source, 'searchContent', args, undefined, params.signal, params.budgetMs);
     return (response.list ?? []).slice(0, params.pageSize).map((vod) => this.toItem(source, vod));
   }
 

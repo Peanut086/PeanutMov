@@ -25,7 +25,6 @@ import IconClose from '@/components/icons/IconClose.vue';
 import { useLibraryStore } from '@/stores/libraryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useSourceStore } from '@/stores/sourceStore';
-import { useDebounce } from '@/composables/useDebounce';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useUiStore } from '@/stores/uiStore';
 import { useToast } from '@/composables/useToast';
@@ -104,11 +103,13 @@ function pickSource(candidate: SourceCandidate): void {
 const zeroCandidates = computed(
   () => showEmpty.value && library.searchCandidates === 0 && library.searchFilteredOut > 0,
 );
-const emptyDescription = computed(() =>
-  zeroCandidates.value
-    ? `${library.searchFilteredOut} 个启用源因体检失效或类型不支持被跳过，可强制重试或检查源`
-    : '换个关键词，或检查源是否启用',
-);
+/** SO-02：有因全局截止而未搜索的源 */
+const hasSkipped = computed(() => library.searchSkippedIds.length > 0);
+const emptyDescription = computed(() => {
+  if (zeroCandidates.value) return `${library.searchFilteredOut} 个启用源因体检失效或类型不支持被跳过，可强制重试或检查源`;
+  if (hasSkipped.value) return `仅搜索了 ${library.searchCandidates - library.searchSkippedIds.length} / ${library.searchCandidates} 个源，剩余 ${library.searchSkippedIds.length} 个因超时未搜索`;
+  return '换个关键词，或检查源是否启用';
+});
 const showError = computed(
   () =>
     !showInitial.value &&
@@ -126,16 +127,21 @@ async function retryFailed(): Promise<void> {
   await library.retryFailedSources();
 }
 
-const debouncedSearch = useDebounce((value: string) => {
-  void runSearch(value, false);
-}, 300);
+/** SO-02：继续搜索因全局截止而未启动的源 */
+async function continueSkipped(): Promise<void> {
+  await library.continueSearchSkipped();
+}
 
+// SO-08：输入不再自动远程扇出，仅清空结果；远程搜索交给 submitSearch
 watch(keyword, (value) => {
   if (value.trim().length === 0) {
     library.clearSearch();
     return;
   }
-  debouncedSearch(value);
+  // 关键词变化时清空旧结果，避免展示与当前输入无关的内容
+  if (library.searchKeyword !== value.trim()) {
+    library.clearSearch();
+  }
 });
 
 onMounted(async () => {
@@ -174,20 +180,17 @@ async function pushHistory(kw: string): Promise<void> {
 }
 
 function submitSearch(value: string): void {
-  debouncedSearch.cancel();
   void runSearch(value, true);
 }
 
 function chooseHistory(word: string): void {
   keyword.value = word;
-  debouncedSearch.cancel();
   void runSearch(word, true);
 }
 
 // OPT-07：选中建议项
 function selectSuggestion(word: string): void {
   keyword.value = word;
-  debouncedSearch.cancel();
   void runSearch(word, true);
 }
 
@@ -261,12 +264,40 @@ const scopeOptions: Array<{ value: SearchScope; label: string }> = [
   { value: 'site', label: '站点' },
   { value: 'spider', label: '爬虫' },
   { value: 'douban', label: '豆瓣' },
+  { value: 'selected', label: '选定' },
 ];
 
+// SO-04：选定源多选弹层
+const sourceSelectOpen = ref(false);
+const sourceSelectIds = ref<string[]>([]);
+
 function applyScope(scope: SearchScope): void {
+  if (scope === 'selected') {
+    // 打开源多选弹层，不立即搜索
+    sourceSelectIds.value = [...library.searchSelectedSourceIds];
+    sourceSelectOpen.value = true;
+    return;
+  }
   library.setSearchScope(scope);
   if (keyword.value.trim().length > 0) void runSearch(keyword.value, false);
 }
+
+function confirmSourceSelect(): void {
+  library.setSearchScope('selected', sourceSelectIds.value);
+  sourceSelectOpen.value = false;
+  if (keyword.value.trim().length > 0) void runSearch(keyword.value, false);
+}
+
+function toggleSourceId(id: string): void {
+  const idx = sourceSelectIds.value.indexOf(id);
+  if (idx >= 0) {
+    sourceSelectIds.value.splice(idx, 1);
+  } else {
+    sourceSelectIds.value.push(id);
+  }
+}
+
+const selectedSourceCount = computed(() => library.searchSelectedSourceIds.length);
 
 function toggleViewMode(): void {
   library.setSearchViewMode(library.searchViewMode === 'grouped' ? 'flat' : 'grouped');
@@ -380,7 +411,7 @@ function openSourceManage(): void {
             :aria-pressed="library.searchScope === scope.value"
             @click="applyScope(scope.value)"
           >
-            {{ scope.label }}
+            {{ scope.label }}<span v-if="scope.value === 'selected' && selectedSourceCount > 0" class="scope-chip__count">{{ selectedSourceCount }}</span>
           </button>
         </div>
       </div>
@@ -492,6 +523,15 @@ function openSourceManage(): void {
           :busy="isSearching"
           @retry="retryFailed"
         />
+        <!-- SO-02：全局截止未搜索源披露 -->
+        <div v-if="hasSkipped" class="search-skipped-disclosure">
+          <p class="search-skipped-disclosure__text">
+            仅搜索了 {{ library.searchCandidates - library.searchSkippedIds.length }} / {{ library.searchCandidates }} 个源，剩余 {{ library.searchSkippedIds.length }} 个因超时未搜索
+          </p>
+          <button class="btn btn--secondary btn--sm" type="button" :disabled="library.searchRetrying || isSearching" @click="continueSkipped">
+            继续搜索剩余 {{ library.searchSkippedIds.length }} 个源
+          </button>
+        </div>
       </template>
 
       <!-- 结果 -->
@@ -695,6 +735,48 @@ function openSourceManage(): void {
       :can-search-more="false"
       @select="pickSource"
     />
+
+    <!-- SO-04：选定源多选弹层 -->
+    <Teleport to="body">
+      <Transition name="sheet-fade">
+        <div v-if="sourceSelectOpen" class="source-select-sheet" @click.self="sourceSelectOpen = false">
+          <div class="source-select-sheet__panel">
+            <div class="source-select-sheet__head">
+              <h3 class="source-select-sheet__title">选定搜索源</h3>
+              <button class="source-select-sheet__close" type="button" @click="sourceSelectOpen = false">
+                <IconClose />
+              </button>
+            </div>
+            <div class="source-select-sheet__actions">
+              <button class="btn btn--ghost btn--sm" type="button" @click="sourceSelectIds = sources.enabledSources.map(s => s.id)">全选</button>
+              <button class="btn btn--ghost btn--sm" type="button" @click="sourceSelectIds = []">清空</button>
+            </div>
+            <ul class="source-select-sheet__list">
+              <li
+                v-for="source in sources.enabledSources"
+                :key="source.id"
+                class="source-select-sheet__item"
+                :class="{ 'source-select-sheet__item--checked': sourceSelectIds.includes(source.id) }"
+                @click="toggleSourceId(source.id)"
+              >
+                <span class="source-select-sheet__check">
+                  <svg v-if="sourceSelectIds.includes(source.id)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                </span>
+                <span class="source-select-sheet__name">{{ source.name }}</span>
+                <span class="source-select-sheet__type">{{ source.type }}</span>
+              </li>
+            </ul>
+            <div class="source-select-sheet__footer">
+              <button class="btn btn--primary" type="button" :disabled="sourceSelectIds.length === 0" @click="confirmSourceSelect">
+                搜索选定的 {{ sourceSelectIds.length }} 个源
+              </button>
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </Teleport>
   </main>
 </template>
 
@@ -1357,5 +1439,178 @@ function openSourceManage(): void {
 
 .result-list--muted .result-row__title {
   color: var(--color-text-secondary, #666);
+}
+
+/* ---------- SO-04：选定源 scope chip 计数 ---------- */
+.scope-chip__count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-brand, #f0a82e);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* ---------- SO-04：选定源多选弹层 ---------- */
+.source-select-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal, 1000);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background-color: rgba(0, 0, 0, 0.45);
+}
+
+.source-select-sheet__panel {
+  width: 100%;
+  max-height: 75vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-bg-surface, #fff);
+  border-radius: var(--radius-xl, 16px) var(--radius-xl, 16px) 0 0;
+  overflow: hidden;
+}
+
+.source-select-sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  border-bottom: 1px solid var(--color-border, #e5e5e5);
+}
+
+.source-select-sheet__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary, #111);
+}
+
+.source-select-sheet__close {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: var(--color-text-secondary, #666);
+  cursor: pointer;
+  border-radius: var(--radius-full);
+}
+
+.source-select-sheet__close:active {
+  background-color: var(--color-bg-pressed, #f0f0f0);
+}
+
+.source-select-sheet__actions {
+  display: flex;
+  gap: var(--space-2, 8px);
+  padding: var(--space-2, 8px) var(--space-4, 16px);
+}
+
+.source-select-sheet__list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0 var(--space-2, 8px);
+  margin: 0;
+  list-style: none;
+}
+
+.source-select-sheet__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  padding: var(--space-3, 12px);
+  border-radius: var(--radius-md, 10px);
+  cursor: pointer;
+  transition: background-color var(--duration-fast, 150ms);
+}
+
+.source-select-sheet__item:active {
+  background-color: var(--color-bg-pressed, #f0f0f0);
+}
+
+.source-select-sheet__item--checked {
+  background-color: var(--color-brand-soft, rgba(240, 168, 46, 0.1));
+}
+
+.source-select-sheet__check {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--color-border, #ccc);
+  border-radius: var(--radius-sm, 6px);
+  color: var(--color-brand, #f0a82e);
+  flex-shrink: 0;
+}
+
+.source-select-sheet__item--checked .source-select-sheet__check {
+  border-color: var(--color-brand, #f0a82e);
+  background-color: var(--color-brand, #f0a82e);
+  color: #fff;
+}
+
+.source-select-sheet__check svg {
+  width: 14px;
+  height: 14px;
+}
+
+.source-select-sheet__name {
+  flex: 1 1 auto;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text-primary, #111);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-select-sheet__type {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--color-text-tertiary, #999);
+  padding: 2px 8px;
+  background-color: var(--color-bg-base, #f5f5f5);
+  border-radius: var(--radius-full);
+}
+
+.source-select-sheet__footer {
+  padding: var(--space-3, 12px) var(--space-4, 16px) calc(var(--space-3, 12px) + var(--safe-bottom, 0px));
+  border-top: 1px solid var(--color-border, #e5e5e5);
+}
+
+.source-select-sheet__footer .btn {
+  width: 100%;
+}
+
+/* sheet 过渡 */
+.sheet-fade-enter-active,
+.sheet-fade-leave-active {
+  transition: opacity var(--duration-normal, 250ms) var(--ease-standard, ease);
+}
+
+.sheet-fade-enter-active .source-select-sheet__panel,
+.sheet-fade-leave-active .source-select-sheet__panel {
+  transition: transform var(--duration-normal, 250ms) var(--ease-standard, ease);
+}
+
+.sheet-fade-enter-from,
+.sheet-fade-leave-to {
+  opacity: 0;
+}
+
+.sheet-fade-enter-from .source-select-sheet__panel,
+.sheet-fade-leave-to .source-select-sheet__panel {
+  transform: translateY(100%);
 }
 </style>

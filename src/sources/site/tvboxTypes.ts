@@ -76,6 +76,8 @@ export interface SiteExt {
   detailPath?: string | null;
   /** 功能扩展-6：解析接口列表（按顺序尝试；支持 `{url}` 占位符或已带 `?url=`） */
   resolvers?: string[] | null;
+  /** SO-05：单源搜索超时覆盖（秒），来自订阅 ext.timeout */
+  timeout?: number;
 }
 
 export interface TvboxPlayLine {
