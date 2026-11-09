@@ -5,7 +5,7 @@
  * 横向滚动、隐藏滚动条、选中态 brand-soft 底 + brand-text 文字。
  * 首项固定为「全部」（categoryId = null）。
  */
-import { nextTick, ref, watch } from 'vue';
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 
 import type { Category } from '@/types';
 
@@ -22,27 +22,49 @@ const props = withDefaults(
 const emit = defineEmits<{ (e: 'update:modelValue', v: string | null): void }>();
 
 const scrollerRef = ref<HTMLElement | null>(null);
+const indicatorRef = ref<HTMLElement | null>(null);
 
 function choose(value: string | null): void {
   if (value === props.modelValue) return;
   emit('update:modelValue', value);
 }
 
-// 选中项滚动进视野（切换分类后保持 Tab 可见）
-watch(
-  () => props.modelValue,
-  async () => {
-    await nextTick();
-    const scroller = scrollerRef.value;
-    if (!scroller) return;
-    const active = scroller.querySelector<HTMLElement>('[data-active="true"]');
-    active?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
-  },
-);
+/** 选中项滚动进视野 + 滑块跟随 */
+async function syncIndicator(): Promise<void> {
+  const scroller = scrollerRef.value;
+  const indicator = indicatorRef.value;
+  if (!scroller || !indicator) return;
+  const active = scroller.querySelector<HTMLElement>('[data-active="true"]');
+  if (!active) return;
+  // 滑块绝对定位于滚动容器内，offsetLeft 即相对于容器内容区的坐标，随滚动自然位移
+  indicator.style.transform = `translateX(${active.offsetLeft}px)`;
+  indicator.style.width = `${active.offsetWidth}px`;
+  active.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+}
+
+watch(() => props.modelValue, () => { nextTick(syncIndicator); });
+watch(() => props.categories, () => { nextTick(syncIndicator); });
+
+// 窗口尺寸变化时重算（横竖屏切换 / 分屏）
+let resizeRaf = 0;
+function onResize(): void {
+  cancelAnimationFrame(resizeRaf);
+  resizeRaf = requestAnimationFrame(syncIndicator);
+}
+
+onMounted(() => {
+  nextTick(syncIndicator);
+  window.addEventListener('resize', onResize);
+});
+onUnmounted(() => {
+  window.removeEventListener('resize', onResize);
+  cancelAnimationFrame(resizeRaf);
+});
 </script>
 
 <template>
   <div ref="scrollerRef" class="category-tabs" role="tablist" aria-label="分类">
+    <span ref="indicatorRef" class="category-tabs__indicator" aria-hidden="true" />
     <button
       v-if="withAll"
       class="category-tabs__item"
@@ -73,6 +95,7 @@ watch(
 
 <style scoped>
 .category-tabs {
+  position: relative;
   display: flex;
   gap: var(--space-2);
   height: 44px;
@@ -81,6 +104,21 @@ watch(
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
   scroll-snap-type: x proximity;
+}
+
+/* 滑块：琥珀金胶囊，跟随选中项平滑滑动 */
+.category-tabs__indicator {
+  position: absolute;
+  top: var(--space-1);
+  left: 0;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-brand-soft);
+  border: 1px solid rgba(240, 168, 46, 0.4);
+  pointer-events: none;
+  transition: transform var(--duration-base) var(--ease-decelerate),
+    width var(--duration-base) var(--ease-decelerate);
+  will-change: transform, width;
 }
 
 .category-tabs::-webkit-scrollbar {
@@ -101,8 +139,8 @@ watch(
 }
 
 .category-tabs__item--active {
-  background-color: var(--color-brand-soft);
-  border-color: rgba(240, 168, 46, 0.4);
+  background-color: transparent;
+  border-color: transparent;
   color: var(--color-brand-text);
   font-weight: var(--font-weight-semibold);
 }

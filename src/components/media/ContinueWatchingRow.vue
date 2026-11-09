@@ -27,9 +27,10 @@ const emit = defineEmits<{
   <!-- compact 模式：水平条列表 -->
   <div v-if="compact" class="continue-compact" role="list">
     <div
-      v-for="rec in items"
+      v-for="(rec, idx) in items"
       :key="rec.id"
       class="continue-compact__item"
+      :style="{ '--i': idx }"
       role="listitem"
     >
       <button
@@ -76,9 +77,10 @@ const emit = defineEmits<{
   <!-- 默认模式：竖排卡片横滑 -->
   <div v-else class="continue-row" role="list">
     <div
-      v-for="rec in items"
+      v-for="(rec, idx) in items"
       :key="rec.id"
       class="continue-card"
+      :style="{ '--i': idx }"
       role="listitem"
     >
       <button
@@ -144,6 +146,19 @@ const emit = defineEmits<{
   flex: 0 0 auto;
   width: 112px;
   scroll-snap-align: start;
+  animation: cw-card-enter 250ms var(--ease-decelerate) both;
+  animation-delay: calc(var(--i, 0) * 50ms);
+}
+
+@keyframes cw-card-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .continue-card__main {
@@ -245,6 +260,19 @@ const emit = defineEmits<{
   border-radius: var(--radius-card);
   background-color: var(--color-bg-surface);
   border: var(--border-default);
+  animation: cw-item-enter 200ms var(--ease-decelerate) both;
+  animation-delay: calc(var(--i, 0) * 50ms);
+}
+
+@keyframes cw-item-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .continue-compact__main {
@@ -334,5 +362,12 @@ const emit = defineEmits<{
 .continue-compact__remove svg {
   width: 14px;
   height: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .continue-card,
+  .continue-compact__item {
+    animation: none;
+  }
 }
 </style>

@@ -4,7 +4,7 @@
  *
  * 总任务数、总进度、各状态计数；数据来自 `downloadStore.summary`。
  */
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 import type { DownloadSummary } from '@/types';
 
@@ -35,6 +35,12 @@ const counts = computed(() => {
     { label: '失败', value: s.failed },
   ].filter((c) => c.value > 0);
 });
+
+/** 进度变化时触发脉冲：移除 class → nextTick → 重新添加，让 animation 重新播放 */
+const pulseKey = ref(0);
+watch(percent, () => {
+  pulseKey.value++;
+});
 </script>
 
 <template>
@@ -54,7 +60,12 @@ const counts = computed(() => {
       aria-valuemax="100"
       aria-label="总下载进度"
     >
-      <span class="download-summary__bar-fill" :style="{ width: `${percent}%` }" />
+      <span
+        class="download-summary__bar-fill"
+        :class="{ 'download-summary__bar-fill--pulse': summary.downloading > 0 }"
+        :key="`fill-${pulseKey}`"
+        :style="{ width: `${percent}%` }"
+      />
     </div>
 
     <div class="download-summary__foot">
@@ -112,6 +123,23 @@ const counts = computed(() => {
   border-radius: inherit;
   background-color: var(--color-brand);
   transition: width var(--duration-base) var(--ease-standard);
+}
+
+/* 下载中时进度条亮度脉冲，像心跳监护仪的波形跳动 */
+.download-summary__bar-fill--pulse {
+  animation: progress-pulse 300ms var(--ease-standard);
+}
+
+@keyframes progress-pulse {
+  0% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.3);
+  }
+  100% {
+    filter: brightness(1);
+  }
 }
 
 .download-summary__foot {

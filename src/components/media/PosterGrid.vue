@@ -75,9 +75,10 @@ function isDownloaded(id: string, list: string[]): boolean {
       >
         <div class="poster-grid__inner">
           <div
-            v-for="item in visibleItems"
+            v-for="(item, idx) in visibleItems"
             :key="item.id"
             class="poster-grid__cell"
+            :style="{ '--i': idx }"
             role="listitem"
           >
             <PosterCard
@@ -96,9 +97,10 @@ function isDownloaded(id: string, list: string[]): boolean {
 
     <template v-else>
       <div
-        v-for="item in items"
+        v-for="(item, idx) in items"
         :key="item.id"
         class="poster-grid__cell"
+        :style="{ '--i': idx }"
         role="listitem"
       >
         <PosterCard
@@ -128,6 +130,19 @@ function isDownloaded(id: string, list: string[]): boolean {
   min-width: 0;
   content-visibility: auto;
   contain-intrinsic-size: 0 260px;
+  animation: cell-enter 250ms var(--ease-decelerate) both;
+  animation-delay: calc(var(--i, 0) * 40ms);
+}
+
+@keyframes cell-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /*
@@ -153,6 +168,12 @@ function isDownloaded(id: string, list: string[]): boolean {
 
   .poster-grid__inner {
     row-gap: var(--space-5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .poster-grid__cell {
+    animation: none;
   }
 }
 </style>

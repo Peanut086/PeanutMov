@@ -1082,6 +1082,18 @@ function openCompliance(): void {
   object-fit: cover;
   filter: blur(22px) brightness(0.46) saturate(1.15);
   transform: scale(1.12);
+  animation: backdrop-focus 500ms var(--ease-decelerate) both;
+}
+
+@keyframes backdrop-focus {
+  from {
+    transform: scale(1.08);
+    filter: blur(26px) brightness(0.4) saturate(1.15);
+  }
+  to {
+    transform: scale(1.12);
+    filter: blur(22px) brightness(0.46) saturate(1.15);
+  }
 }
 
 .detail__backdrop-fade {
@@ -1150,6 +1162,18 @@ function openCompliance(): void {
   flex: 1 1 auto;
   min-width: 0;
   padding-top: var(--space-1);
+  animation: hero-rise 350ms var(--ease-decelerate) 120ms both;
+}
+
+@keyframes hero-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .detail-hero__title {
@@ -1498,5 +1522,12 @@ function openCompliance(): void {
   flex: 0 0 auto;
   color: var(--color-text-tertiary);
   font: var(--text-caption);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detail__backdrop-img,
+  .detail-hero__meta {
+    animation: none;
+  }
 }
 </style>

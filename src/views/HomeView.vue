@@ -228,7 +228,12 @@ async function onPullRefresh(): Promise<void> {
             <RouterLink class="home-section__link" to="/library">全部内容</RouterLink>
           </div>
           <div class="home-grid">
-            <div v-for="item in recentRow" :key="item.id" class="home-grid__item">
+            <div
+              v-for="(item, idx) in recentRow"
+              :key="item.id"
+              class="home-grid__item"
+              :style="{ '--i': idx }"
+            >
               <PosterCard
                 :item="item"
                 :downloaded="downloadedIds.includes(item.id)"
@@ -327,6 +332,19 @@ async function onPullRefresh(): Promise<void> {
 
 .home-grid__item {
   min-width: 0;
+  animation: card-enter 250ms var(--ease-decelerate) both;
+  animation-delay: calc(var(--i, 0) * 40ms);
+}
+
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* 继续观看 compact 骨架 */
@@ -350,6 +368,18 @@ async function onPullRefresh(): Promise<void> {
   max-width: 300px;
   padding: var(--space-8) var(--space-4);
   text-align: center;
+  animation: empty-breathe 3s var(--ease-standard) infinite;
+}
+
+@keyframes empty-breathe {
+  0%, 100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 0.92;
+    transform: translateY(-3px);
+  }
 }
 
 .home-empty__title {
@@ -436,4 +466,11 @@ async function onPullRefresh(): Promise<void> {
 }
 
 /* 错误文案的兜底：无 error.message 时使用映射 */
+
+@media (prefers-reduced-motion: reduce) {
+  .home-empty,
+  .home-grid__item {
+    animation: none;
+  }
+}
 </style>
