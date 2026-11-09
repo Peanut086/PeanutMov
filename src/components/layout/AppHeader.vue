@@ -12,6 +12,7 @@ import { useRouter } from 'vue-router';
 import IconBack from '@/components/icons/IconBack.vue';
 import IconSearch from '@/components/icons/IconSearch.vue';
 import IconSettings from '@/components/icons/IconSettings.vue';
+import markSrc from '@/assets/brand/logo-mark.png';
 
 const props = withDefaults(
   defineProps<{
@@ -63,6 +64,7 @@ function goBack(): void {
     </button>
 
     <h1 class="app-header__title" :class="{ 'app-header__title--brand': brand }">
+      <img v-if="brand" class="app-header__mark" :src="markSrc" alt="" height="28" />
       <slot name="before-title" />
       <span class="truncate-1">{{ title }}</span>
     </h1>
@@ -127,6 +129,16 @@ function goBack(): void {
   font: var(--text-title-1);
   letter-spacing: var(--letter-spacing-tight);
   color: var(--color-text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.app-header__mark {
+  height: 28px;
+  width: auto;
+  flex-shrink: 0;
+  vertical-align: middle;
 }
 
 .app-header__title--brand {
