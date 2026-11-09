@@ -47,6 +47,14 @@ public class DrpyPlugin extends Plugin {
     private static final int READ_TIMEOUT_MS = 30000;
     private static final long MAX_RULE_BYTES = 8L * 1024 * 1024;
 
+    /**
+     * 下载内容是 HTML 页面而非 JS 源码时抛出。
+     * 与普通过载区分开：load() 捕获后可走 ext 回退（CHG-29）。
+     */
+    static final class HtmlResponseException extends Exception {
+        HtmlResponseException(String message) { super(message); }
+    }
+
     /** 同 SpiderPlugin：Capacitor 桥接是单线程，重活必须进独立线程池 */
     // OPT-21: 有界线程池（core 2 / max 8 / queue 32），防突发并发线程爆炸
     private final ExecutorService drpyExecutor = new java.util.concurrent.ThreadPoolExecutor(
@@ -132,12 +140,33 @@ public class DrpyPlugin extends Plugin {
         }
 
         runDrpy(call, "加载", LOAD_TIMEOUT_MS, () -> {
-            String code = ruleText != null && !ruleText.isEmpty()
-                    ? ruleText
-                    : loadRuleCode(getContext(), ruleUrl);
+            String code;
+            String effectiveRuleUrl = ruleUrl;
+            try {
+                code = ruleText != null && !ruleText.isEmpty()
+                        ? ruleText
+                        : loadRuleCode(getContext(), ruleUrl);
+            } catch (HtmlResponseException he) {
+                // CHG-29: api URL 返回 HTML 门户页（源站路径失效的典型表现）——
+                // 若 initExt 是 http(s) 规则文件地址，改从 ext 下载真正的规则代码，
+                // drpy_host.js 已内置完整 drpy2 API 绑定，不依赖远端运行时库。
+                if (initExt != null && initExt.matches("^https?://.+")) {
+                    Log.i(TAG, "api 返回 HTML，回退到 ext 规则文件: " + initExt);
+                    try {
+                        code = loadRuleCode(getContext(), initExt);
+                        effectiveRuleUrl = initExt;
+                    } catch (Exception extEx) {
+                        throw new IllegalStateException(
+                                "该站点脚本地址失效（服务器返回门户页），规则文件同样不可用：" + extEx.getMessage());
+                    }
+                } else {
+                    throw new IllegalStateException(
+                            "该站点脚本地址失效（服务器返回门户页而非 JS 源码），建议更换订阅源或在反馈中报告此站点");
+                }
+            }
             String handle = "dp-" + (++handleSeq);
             // v1.8/CHG-27：ruleUrl 传入运行时——catvod 模块规则的相对 import 需要基地址
-            DrpyRuntime runtime = new DrpyRuntime(getContext(), code, initExt, handle, ruleUrl);
+            DrpyRuntime runtime = new DrpyRuntime(getContext(), code, initExt, handle, effectiveRuleUrl);
 
             // OPT-19: LRU 回收（超上限时关闭最久未使用的运行时）
             if (loaded.size() >= MAX_LOADED_RUNTIMES) {
@@ -255,10 +284,13 @@ public class DrpyPlugin extends Plugin {
         File file = ruleCache.get(cacheKey);
         if (file != null && file.exists()) {
             // 旧版本可能已把 HTML 页缓存成 .js，命中时也要验一遍
-            if (inspectRuleContent(file) == null) return readRuleFile(file);
+            String problem = inspectRuleContent(file);
+            if (problem == null) return readRuleFile(file);
             Log.w(TAG, "cached rule is not JS, dropping: " + cacheKey);
             if (!file.delete()) Log.w(TAG, "cannot delete invalid cached rule");
             ruleCache.remove(cacheKey);
+            // 缓存是 HTML → 服务器一直返回门户页，直接走 HtmlResponseException 以便上层回退
+            if (problem.startsWith("返回的是 HTML")) throw new HtmlResponseException(problem + "：" + url);
         }
         File dir = new File(context.getFilesDir(), "drpy-rules");
         if (!dir.exists() && !dir.mkdirs()) {
@@ -280,6 +312,9 @@ public class DrpyPlugin extends Plugin {
                 }
                 ruleCache.put(cacheKey, target);
                 return readRuleFile(target);
+            } catch (HtmlResponseException he) {
+                // HTML 门户页：同域名其它候选路径也一样，直接传播给上层走 ext 回退
+                throw he;
             } catch (Exception e) {
                 lastError = e;
                 Log.w(TAG, "rule url candidate failed (#" + (i + 1) + "): " + tryUrl
@@ -316,10 +351,14 @@ public class DrpyPlugin extends Plugin {
             }
             // P1-C: 内容必须是 JS。GitHub blob 页 / 死镜像 / 防盗链都会 200 返回 HTML，
             // 直接喂给 QuickJS 只会报 `unexpected token '<'`，掩盖真实原因。
+            // CHG-29: HTML 走专用异常，上层可据此回退到 ext 规则文件。
             String problem = inspectRuleContent(temp);
             if (problem != null) {
                 long size = temp.length();
                 if (!temp.delete()) Log.w(TAG, "cannot delete invalid rule temp");
+                if (problem.startsWith("返回的是 HTML")) {
+                    throw new HtmlResponseException(problem + "（" + size + " 字节）：" + fetchUrl);
+                }
                 throw new IllegalStateException(problem + "（" + size + " 字节）：" + fetchUrl);
             }
             if (!temp.renameTo(target)) {
