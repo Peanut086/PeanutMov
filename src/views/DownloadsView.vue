@@ -461,7 +461,7 @@ function goLibrary(): void {
     </AppHeader>
 
     <PullToRefresh :loading="refreshing" @refresh="refresh">
-    <div class="downloads-body">
+    <div class="downloads-body" data-scroll="page">
       <OfflineBanner v-if="isOffline" text="离线模式，已完成内容可正常播放" />
 
       <!-- loading -->

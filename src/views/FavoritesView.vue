@@ -95,7 +95,7 @@ function goLibrary(): void {
       </template>
     </AppHeader>
 
-    <div class="favorites-body">
+    <div class="favorites-body" data-scroll="page">
       <div v-if="loading" class="favorites-loading" role="status">
         <LoadingSpinner :size="24" />
         <span>正在读取收藏…</span>

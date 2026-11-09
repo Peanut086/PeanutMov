@@ -760,7 +760,7 @@ async function clearCatchup(): Promise<void> {
   <main class="live-page" data-route="live">
     <AppHeader title="直播" back />
 
-    <div class="live-body">
+    <div class="live-body" data-scroll="page">
       <div v-if="loading" class="live-loading" role="status">
         <LoadingSpinner :size="24" />
         <span>正在读取直播源…</span>

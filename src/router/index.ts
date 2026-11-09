@@ -202,11 +202,57 @@ const router = createRouter({
   // Capacitor 下 file:///本地服务用 hash 模式更稳（技术方案 2 章）
   history: createWebHashHistory(),
   routes,
-  scrollBehavior(to, from, savedPosition) {
-    if (savedPosition) return savedPosition;
-    if (to.name === from.name && to.path === from.path) return undefined;
-    return { top: 0 };
+  scrollBehavior(to, _from, savedPosition) {
+    // 浏览器前进/后退：savedPosition 是 window 的，对内层容器无效
+    // 尝试从 history.state 恢复（由 beforeEach leave 钩子保存）
+    const savedScrollTop = (to.meta as { scrollTop?: number })?.scrollTop
+      ?? (history.state as { scrollTop?: number })?.scrollTop;
+
+    // 使用 nextTick 等待 DOM 更新后再滚动
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        const container = document.querySelector<HTMLElement>('[data-scroll="page"]');
+        if (container) {
+          // 有内层滚动容器：优先恢复保存的位置，否则回顶
+          if (savedPosition && typeof savedPosition.top === 'number') {
+            // savedPosition 来自浏览器，但 window 不滚动，忽略
+            container.scrollTop = 0;
+          } else if (typeof savedScrollTop === 'number' && savedScrollTop > 0) {
+            container.scrollTop = savedScrollTop;
+          } else {
+            container.scrollTop = 0;
+          }
+        } else {
+          // 无内层容器（如全屏页面）：使用 window 滚动
+          if (savedPosition) {
+            resolve(savedPosition);
+            return;
+          }
+        }
+        resolve({ top: 0 });
+      }, 100); // 等待路由组件挂载完成
+    });
   },
+});
+
+/**
+ * 保存滚动位置守卫：在路由离开前，将当前页面的 scrollTop 存入 history.state，
+ * 以便返回时恢复（非 KeepAlive 页面会重新挂载，scrollTop 会归零）。
+ * 只对有内层滚动容器的页面生效。
+ */
+router.beforeEach((_to) => {
+  // 只处理有 data-scroll="page" 的页面（即列表页）
+  const container = document.querySelector<HTMLElement>('[data-scroll="page"]');
+  if (container) {
+    const state = { ...(history.state as Record<string, unknown>), scrollTop: container.scrollTop };
+    try {
+      history.replaceState(state, '');
+    } catch {
+      // 静默失败
+    }
+  }
+  // 不阻塞后续守卫（合规守卫）
+  return true;
 });
 
 /**

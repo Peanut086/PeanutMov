@@ -374,7 +374,7 @@ function openSettings(): void {
     </div>
 
     <PullToRefresh :loading="refreshing" @refresh="refresh">
-    <div class="library-body">
+    <div class="library-body" data-scroll="page">
       <!-- loading -->
       <template v-if="showSkeleton">
         <PosterGrid :items="[]" loading :skeleton-count="6" />

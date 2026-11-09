@@ -520,7 +520,7 @@ async function exportLogs(): Promise<void> {
   <SafeArea tabbar data-route="settings">
     <AppHeader title="我的" />
 
-    <div class="settings-body">
+    <div class="settings-body" data-scroll="page">
       <div v-if="loading" class="settings-loading" role="status">
         <LoadingSpinner :size="24" />
         <span>正在读取设置…</span>

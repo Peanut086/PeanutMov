@@ -142,7 +142,7 @@ async function retry(): Promise<void> {
       </template>
     </AppHeader>
 
-    <div class="history-body">
+    <div class="history-body" data-scroll="page">
       <div v-if="loading" class="history-loading" role="status">
         <LoadingSpinner :size="24" />
         <span>正在读取历史…</span>

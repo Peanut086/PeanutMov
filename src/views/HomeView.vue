@@ -171,7 +171,7 @@ async function onPullRefresh(): Promise<void> {
     <AppHeader title="PeanutMov" brand search @search="openSearch" />
 
     <PullToRefresh :loading="pullRefreshing" @refresh="onPullRefresh">
-    <div class="home-body">
+    <div class="home-body" data-scroll="page">
       <OfflineBanner v-if="isOffline" />
 
       <!-- error：顶部错误卡，已有缓存仍展示 -->

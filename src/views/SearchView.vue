@@ -388,7 +388,7 @@ function openSourceManage(): void {
       <OfflineBanner v-if="isOffline" />
     </header>
 
-    <div class="search-body">
+    <div class="search-body" data-scroll="page">
       <!-- 初始：搜索历史 -->
       <template v-if="showInitial">
         <section v-if="history.length > 0" class="search-section">

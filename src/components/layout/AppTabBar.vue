@@ -11,6 +11,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useUiStore, type TabKey } from '@/stores/uiStore';
 import { useHaptic } from '@/composables/useHaptic';
+import { scrollToTop } from '@/shared/scroll';
 
 interface TabItem {
   key: TabKey;
@@ -59,7 +60,8 @@ function go(tab: TabItem): void {
   haptic('light');
   ui.setActiveTab(tab.key);
   if (route.path === tab.to) {
-    globalThis.scrollTo?.({ top: 0, behavior: 'smooth' });
+    // 点击当前 Tab：滚动内层容器回顶（window.scrollTo 对内层 overflow 容器无效）
+    scrollToTop();
     return;
   }
   void router.push(tab.to);
