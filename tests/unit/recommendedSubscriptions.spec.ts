@@ -12,11 +12,10 @@ import { recommendedSubscriptions } from '@/data/recommended/recommended';
 const FORBIDDEN = /破解|盗版|18\+|成人|r18|nsfw|vip|付费|会员/i;
 
 describe('AC-130 内置推荐订阅清单', () => {
-  it('可见条数落在 8~12 之间（当前应为 10）', () => {
+  it('可见条数 ≥ 8（v2 扩充后当前为 25）', () => {
     const manifest = recommendedSubscriptions();
     expect(manifest.items.length).toBeGreaterThanOrEqual(8);
-    expect(manifest.items.length).toBeLessThanOrEqual(12);
-    expect(manifest.items).toHaveLength(10);
+    expect(manifest.items).toHaveLength(25);
   });
 
   it('vip 域名不被误杀：3 条 *.kstore.vip 托管源全部保留', () => {
