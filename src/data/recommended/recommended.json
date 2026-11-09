@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "updatedAt": "2026-10-25",
+  "version": 2,
+  "updatedAt": "2026-11-09",
   "note": "人工筛选的推荐订阅清单（v1.7/CHG-24，FR-56）。只用于评测展示，导入必须用户逐项确认；不含成人/家庭宽带/已知死链条目。",
   "items": [
     { "name": "饭太硬", "url": "https://qist.wyfc.qzz.io/fty.json", "note": "社区老牌综合订阅", "tags": ["综合"] },
@@ -12,6 +12,20 @@
     { "name": "PG", "url": "https://www.252035.xyz/p/jsm.json", "note": "drpy 规则为主，需内置引擎", "tags": ["drpy"] },
     { "name": "摸鱼儿", "url": "https://6800.kstore.vip/fish.json", "note": "kstore 托管", "tags": ["综合"] },
     { "name": "IPv6 直播", "url": "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u", "note": "fanmingming IPTV（需 IPv6 网络）", "tags": ["直播"] },
-    { "name": "Guovin IPTV", "url": "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/ipv6/result.m3u", "note": "自动测速维护的直播列表", "tags": ["直播"] }
+    { "name": "Guovin IPTV", "url": "https://raw.githubusercontent.com/Guovin/iptv-api/gd/output/ipv6/result.m3u", "note": "自动测速维护的直播列表", "tags": ["直播"] },
+    { "name": "夏夏影", "url": "https://11405.kstore.space/xiaye/qk4k.json", "note": "kstore 托管，综合源", "tags": ["综合"] },
+    { "name": "哈吉米", "url": "https://17264.kstore.space/哈基米.png", "note": "kstore 托管", "tags": ["综合"] },
+    { "name": "老张", "url": "https://zhangqun1818.serv00.net/zq/api.json", "note": "serv00 免费托管，维护活跃", "tags": ["综合"] },
+    { "name": "挺好", "url": "https://ztha.top/TVBox/thdjk.json", "note": "独立站托管，口碑不错", "tags": ["综合"] },
+    { "name": "心魔", "url": "https://gh-proxy.com/raw.githubusercontent.com/yw88075/tvbox/main/yw.json", "note": "GitHub 反代，更新及时", "tags": ["综合"] },
+    { "name": "南风", "url": "https://gh-proxy.com/raw.githubusercontent.com/yoursmile7/TVBox/raw/branch/master/XC.json", "note": "GitHub 反代", "tags": ["综合"] },
+    { "name": "欧歌", "url": "https://xn--jory77o.v.nxog.top/m", "note": "多仓聚合，独立站", "tags": ["综合", "多仓"] },
+    { "name": "刺桐", "url": "https://www.cttv.vip/ys/json/ctys.json", "note": "独立站托管", "tags": ["综合"] },
+    { "name": "菠菜园 Pro", "url": "https://0.12yue.de5.net/5/x4pro.json", "note": "增强版，资源丰富", "tags": ["综合"] },
+    { "name": "巧技", "url": "http://cdn.qiaoji8.com/tvbox.json", "note": "CDN 托管，速度快", "tags": ["综合"] },
+    { "name": "动漫", "url": "https://www.yingm.cc/dm/dm.json", "note": "动漫专项源", "tags": ["动漫"] },
+    { "name": "戏曲音乐", "url": "https://z.qiqiv.cn/666", "note": "戏曲音乐专项", "tags": ["戏曲"] },
+    { "name": "noimank 多仓", "url": "https://gh-proxy.com/raw.githubusercontent.com/noimank/tvbox/main/tvboxmuti.json", "note": "GitHub 反代多仓聚合", "tags": ["多仓"] },
+    { "name": "游魂", "url": "https://www.iyouhun.com/tv/dc", "note": "独立站，多仓", "tags": ["综合", "多仓"] }
   ]
 }
