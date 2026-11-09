@@ -112,6 +112,12 @@ let zombieChecked = false;
 /** 前后台监听解绑函数（REV-22：切后台暂停、回前台按设置自动恢复） */
 let lifecycleUnbind: (() => void) | null = null;
 let lastLifecycleState: AppLifecycleState = 'active';
+/** FIX-D3：运行时卡死 watchdog 定时器 */
+let watchdogTimer: ReturnType<typeof setInterval> | null = null;
+/** FIX-D3：watchdog 判定停滞的阈值（90s 无进度更新） */
+const WATCHDOG_STALE_MS = 90_000;
+/** FIX-D3：watchdog 检查周期 */
+const WATCHDOG_INTERVAL_MS = 30_000;
 
 function sinkKindFor(): DownloadTask['sink'] {
   return isNative() ? 'filesystem' : 'idb-blob';
@@ -1039,6 +1045,8 @@ export const downloadService = {
   /** 启动/回前台恢复队列；同时接线应用生命周期（AC-72 / REV-22） */
   async bootstrap(): Promise<void> {
     downloadService.bindLifecycle();
+    // FIX-D3：启动运行时卡死 watchdog
+    startWatchdog();
     // EXT-04/FR-63（AC-149）：开机把持久化档位下发给限速器（JS 桶 + 原生桶）
     try {
       const settings = await settingsService.get();
@@ -1067,12 +1075,35 @@ export const downloadService = {
     if (zombieChecked) return;
     zombieChecked = true;
     const downloadingTasks = await downloadRepo.listByStatus(['downloading']);
+    const failedIds: string[] = [];
     for (const task of downloadingTasks) {
       const next = transition(task, 'fail');
       next.errorMessage = '应用重启，下载中断';
       await persist(next);
       emitDownload({ type: 'status', task: next, previous: 'downloading' });
+      failedIds.push(next.id);
       logger.info(`僵尸任务已标记失败: ${task.id}`);
+    }
+    // FIX-D6：autoResume 开启时，自动恢复因重启而失败的任务
+    if (failedIds.length > 0) {
+      try {
+        const settings = await settingsService.get();
+        if (settings.download.autoResume) {
+          const q = await ensureQueue();
+          for (const id of failedIds) {
+            const task = await downloadRepo.get(id);
+            if (!task || task.status !== 'failed') continue;
+            const next = transition(task, 'retry');
+            await persist(next);
+            emitDownload({ type: 'status', task: next, previous: 'failed' });
+            q.enqueue(next);
+          }
+          await emitQueueSummary();
+          logger.info(`自动恢复 ${failedIds.length} 个僵尸任务`);
+        }
+      } catch (e) {
+        logger.warn('自动恢复僵尸任务失败', toAppError(e).message);
+      }
     }
   },
 
@@ -1090,8 +1121,11 @@ export const downloadService = {
       lastLifecycleState = state;
       if (state === 'background') {
         if (isNative()) {
-          // Android：不暂停，继续下载
-          logger.debug('进入后台，Android 继续下载');
+          // FIX-D4：Android 后台启动前台 Service 保活 HLS/JS 下载
+          void startForegroundServiceIfNeeded().catch((e) => {
+            logger.warn('启动前台 Service 失败', toAppError(e).message);
+          });
+          logger.debug('进入后台，Android 启动前台 Service 保活下载');
         } else {
           // Web：暂停下载（WebView 可能被冻结）
           void downloadService.pauseAll('background').catch((e: unknown) => {
@@ -1108,9 +1142,11 @@ export const downloadService = {
         }
         return;
       }
-      // 回前台：释放 Wake Lock
+      // 回前台：释放 Wake Lock + 停止前台 Service
       if (!isNative()) {
         releaseWakeLock();
+      } else {
+        void stopForegroundServiceSafe().catch(() => undefined);
       }
       void downloadService.resumeAll().catch((e: unknown) => {
         logger.warn('回前台恢复下载失败', toAppError(e));
@@ -1342,6 +1378,7 @@ export const downloadService = {
     lifecycleUnbind = null;
     lastLifecycleState = 'active';
     releaseWakeLock();
+    stopWatchdog();
     queue?.dispose();
     queue = null;
     listeners.clear();
@@ -1349,6 +1386,77 @@ export const downloadService = {
     setDownloadEngine(null);
   },
 };
+
+/* ---------------- FIX-D3：运行时卡死 watchdog ---------------- */
+
+/** 启动 watchdog 定时器（30s 检查一次，90s 无进度判定卡死） */
+function startWatchdog(): void {
+  if (watchdogTimer) return;
+  watchdogTimer = setInterval(() => {
+    void runWatchdogCheck();
+  }, WATCHDOG_INTERVAL_MS);
+}
+
+function stopWatchdog(): void {
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+}
+
+async function runWatchdogCheck(): Promise<void> {
+  try {
+    if (!queue) return;
+    const tasks = await downloadRepo.listByStatus(['downloading']);
+    const now = Date.now();
+    for (const task of tasks) {
+      if (now - task.updatedAt < WATCHDOG_STALE_MS) continue;
+      if (queue.isActive(task.id)) {
+        // runner 还在但没进度 → 强制 abort 触发重试
+        queue.abortTask(task.id, `停滞 ${Math.round((now - task.updatedAt) / 1000)}s`);
+        logger.warn('watchdog: 强制中断停滞任务', { taskId: task.id, staleSec: Math.round((now - task.updatedAt) / 1000) });
+      } else {
+        // runner 不在活跃列表 → 孤儿任务，标记失败
+        const next = transition(task, 'fail');
+        next.errorMessage = '下载停滞（watchdog 检测）';
+        await downloadRepo.save(next);
+        emitDownload({ type: 'status', task: next, previous: 'downloading' });
+        void emitQueueSummary();
+        logger.warn('watchdog: 孤儿任务已标记失败', { taskId: task.id });
+      }
+    }
+  } catch (e) {
+    logger.warn('watchdog 检查异常', toAppError(e).message);
+  }
+}
+
+/* ---------------- FIX-D4：Android 前台 Service 保活 ---------------- */
+
+let foregroundServiceActive = false;
+
+async function startForegroundServiceIfNeeded(): Promise<void> {
+  if (!isNative() || foregroundServiceActive) return;
+  try {
+    const { nativeDownloadStartForegroundService } = await import('@/native/downloadPlugin');
+    await nativeDownloadStartForegroundService();
+    foregroundServiceActive = true;
+    logger.debug('前台 Service 已启动');
+  } catch (e) {
+    logger.warn('启动前台 Service 失败', toAppError(e).message);
+  }
+}
+
+async function stopForegroundServiceSafe(): Promise<void> {
+  if (!isNative() || !foregroundServiceActive) return;
+  try {
+    const { nativeDownloadStopForegroundService } = await import('@/native/downloadPlugin');
+    await nativeDownloadStopForegroundService();
+    foregroundServiceActive = false;
+    logger.debug('前台 Service 已停止');
+  } catch (e) {
+    logger.warn('停止前台 Service 失败', toAppError(e).message);
+  }
+}
 
 /* ---------------- Wake Lock（Web 端防止屏幕休眠） ---------------- */
 

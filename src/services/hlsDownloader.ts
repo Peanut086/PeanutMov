@@ -110,6 +110,12 @@ interface ManifestDocument {
 const DEFAULT_PARALLEL_SEGMENTS = 6;
 const MAX_SEGMENT_RETRIES = 2;
 const RETRY_BACKOFF_MS = [500, 1500];
+/** FIX-D1：单分片获取超时（30s），超时后触发重试 */
+const SEGMENT_FETCH_TIMEOUT_MS = 30_000;
+/** FIX-D1：清单 / 密钥获取超时（15s） */
+const MANIFEST_KEY_TIMEOUT_MS = 15_000;
+/** FIX-D1：主循环停滞阈值（60s 无任何分片完成 → 判定卡死） */
+const STALL_TIMEOUT_MS = 60_000;
 
 /**
  * 解析 m3u8 清单
@@ -503,16 +509,26 @@ export class HlsDownloader {
     // 3. 下载初始化分片（fMP4）
     if (playlist.initSegment) {
       try {
-        const response = await fetchImpl(resourceUrl(playlist.initSegment.url), {
-          method: 'GET',
-          headers: resourceHeaders(),
-          signal,
-          cache: 'no-store',
-        });
-        if (!response.ok) {
-          throw this.mapHttpError(response.status, '获取初始化分片失败');
+        // FIX-D1：初始化分片获取超时
+        const initController = new AbortController();
+        const onAbort = (): void => initController.abort();
+        signal.addEventListener('abort', onAbort, { once: true });
+        const initTimer = setTimeout(() => initController.abort(new AppError('E_NETWORK', '获取初始化分片超时')), MANIFEST_KEY_TIMEOUT_MS);
+        try {
+          const response = await fetchImpl(resourceUrl(playlist.initSegment.url), {
+            method: 'GET',
+            headers: resourceHeaders(),
+            signal: initController.signal,
+            cache: 'no-store',
+          });
+          if (!response.ok) {
+            throw this.mapHttpError(response.status, '获取初始化分片失败');
+          }
+          playlist.initSegment.data = new Uint8Array(await response.arrayBuffer());
+        } finally {
+          clearTimeout(initTimer);
+          signal.removeEventListener('abort', onAbort);
         }
-        playlist.initSegment.data = new Uint8Array(await response.arrayBuffer());
         logger.debug('下载初始化分片', { size: playlist.initSegment.data.byteLength });
       } catch (e) {
         if (e instanceof AppError) throw e;
@@ -526,20 +542,30 @@ export class HlsDownloader {
 
     for (const keyUri of keysToLoad) {
       try {
-        const response = await fetchImpl(resourceUrl(keyUri), {
-          method: 'GET',
-          headers: resourceHeaders(),
-          signal,
-          cache: 'no-store',
-        });
-        if (!response.ok) {
-          throw this.mapHttpError(response.status, `获取密钥失败: ${keyUri}`);
+        // FIX-D1：密钥获取超时
+        const keyController = new AbortController();
+        const onKeyAbort = (): void => keyController.abort();
+        signal.addEventListener('abort', onKeyAbort, { once: true });
+        const keyTimer = setTimeout(() => keyController.abort(new AppError('E_NETWORK', `获取密钥超时: ${keyUri}`)), MANIFEST_KEY_TIMEOUT_MS);
+        try {
+          const response = await fetchImpl(resourceUrl(keyUri), {
+            method: 'GET',
+            headers: resourceHeaders(),
+            signal: keyController.signal,
+            cache: 'no-store',
+          });
+          if (!response.ok) {
+            throw this.mapHttpError(response.status, `获取密钥失败: ${keyUri}`);
+          }
+          const keyData = new Uint8Array(await response.arrayBuffer());
+          if (keyData.byteLength !== 16) {
+            throw new AppError('E_PARSE', `密钥长度错误: ${keyData.byteLength} (应为 16)`);
+          }
+          keyCache.set(keyUri, keyData);
+        } finally {
+          clearTimeout(keyTimer);
+          signal.removeEventListener('abort', onKeyAbort);
         }
-        const keyData = new Uint8Array(await response.arrayBuffer());
-        if (keyData.byteLength !== 16) {
-          throw new AppError('E_PARSE', `密钥长度错误: ${keyData.byteLength} (应为 16)`);
-        }
-        keyCache.set(keyUri, keyData);
         logger.debug('加载密钥', { uri: keyUri });
       } catch (e) {
         if (e instanceof AppError) throw e;
@@ -569,18 +595,19 @@ export class HlsDownloader {
       completedSegments,
     });
 
-    // 6. 写入初始化分片（如果尚未完成）
-    if (playlist.initSegment?.data && !completedSegments.includes(-1)) {
+    // 6. 写入初始化分片（FIX-D5：用独立标志，不再向 completedSegments 写入 -1）
+    let initCompleted = completedSegments.includes(-1);
+    const initSegmentSize = playlist.initSegment?.data?.byteLength ?? 0;
+    if (playlist.initSegment?.data && !initCompleted) {
       await sink.write(playlist.initSegment.data);
       downloaded += playlist.initSegment.data.byteLength;
-      completedSegments.push(-1); // -1 表示初始化分片
+      initCompleted = true;
       await this.deps.saveProgress(task.id, {
         downloadedBytes: downloaded,
         completedSegments,
         updatedAt: now(),
       });
     } else if (playlist.initSegment?.data) {
-      // 初始化分片已完成，跳过写入但计入大小
       downloaded += playlist.initSegment.data.byteLength;
     }
 
@@ -591,13 +618,15 @@ export class HlsDownloader {
       // HLS 清单不带总大小，用「已完成分片平均体积 × 总分片数」估算总字节数，
       // 让进度条/剩余时间随下载推进收敛，下载完成后由实际大小覆盖。
       const totalSegments = playlist.segments.length;
-      let completedCount = completedSegments.length;
-      let segmentBytes = completedCount > 0 ? downloaded : 0;
+      // FIX-D5：completedCount 只计媒体分片（排除旧数据中的 -1 init 标记）
+      let completedCount = completedSegments.filter((i) => i >= 0).length;
+      let segmentBytes = completedCount > 0 ? downloaded - initSegmentSize : 0;
 
       // 7. 滑动窗口并行下载分片（完成一个立即补一个，避免批间等待）
-      const pendingSegments = segmentsWithIndex.filter(({ index }) => !completedSegments.includes(index));
+      // FIX-D5：过滤时排除 -1（旧数据兼容），只检查媒体分片索引
+      const pendingSegments = segmentsWithIndex.filter(({ index }) => index >= 0 && !completedSegments.includes(index));
       const writeBuffer = new Map<number, Uint8Array>();
-      let nextWriteIndex = completedSegments.length;
+      let nextWriteIndex = completedSegments.filter((i) => i >= 0).length;
       let queueIdx = 0;
       const activePromises = new Set<Promise<{ data: Uint8Array; index: number }>>();
 
@@ -605,35 +634,48 @@ export class HlsDownloader {
         let lastError: unknown;
         for (let attempt = 0; attempt <= MAX_SEGMENT_RETRIES; attempt++) {
           try {
-            const response = await fetchImpl(resourceUrl(seg.segment.url), {
-              method: 'GET',
-              headers: resourceHeaders(
-                seg.segment.byteRange
-                  ? { Range: `bytes=${seg.segment.byteRange.offset}-${seg.segment.byteRange.offset + seg.segment.byteRange.length - 1}` }
-                  : undefined,
-              ),
-              signal,
-              cache: 'no-store',
-            });
+            // FIX-D1：单分片超时，超时后 abort fetch 触发重试
+            const segController = new AbortController();
+            const onParentAbort = (): void => segController.abort();
+            signal.addEventListener('abort', onParentAbort, { once: true });
+            const timeoutId = setTimeout(() => segController.abort(new AppError('E_NETWORK', `分片下载超时 (${SEGMENT_FETCH_TIMEOUT_MS}ms)`)), SEGMENT_FETCH_TIMEOUT_MS);
 
-            if (!response.ok) {
-              throw this.mapHttpError(response.status, `下载分片失败: ${seg.segment.url}`);
-            }
+            try {
+              const response = await fetchImpl(resourceUrl(seg.segment.url), {
+                method: 'GET',
+                headers: resourceHeaders(
+                  seg.segment.byteRange
+                    ? { Range: `bytes=${seg.segment.byteRange.offset}-${seg.segment.byteRange.offset + seg.segment.byteRange.length - 1}` }
+                    : undefined,
+                ),
+                signal: segController.signal,
+                cache: 'no-store',
+              });
 
-            let data = new Uint8Array(await response.arrayBuffer());
-
-            if (seg.segment.key && seg.segment.key.method === 'AES-128') {
-              const key = keyCache.get(seg.segment.key.uri);
-              if (!key) {
-                throw new AppError('E_PARSE', `密钥未找到: ${seg.segment.key.uri}`);
+              if (!response.ok) {
+                throw this.mapHttpError(response.status, `下载分片失败: ${seg.segment.url}`);
               }
-              const iv = seg.segment.key.iv ? parseIV(seg.segment.key.iv) : this.getDefaultIV(seg.segment, playlist);
-              data = await decryptAes128(data, key, iv);
-            }
 
-            return { data: stripSegmentPrefix(data), index: seg.index };
+              let data = new Uint8Array(await response.arrayBuffer());
+
+              if (seg.segment.key && seg.segment.key.method === 'AES-128') {
+                const key = keyCache.get(seg.segment.key.uri);
+                if (!key) {
+                  throw new AppError('E_PARSE', `密钥未找到: ${seg.segment.key.uri}`);
+                }
+                const iv = seg.segment.key.iv ? parseIV(seg.segment.key.iv) : this.getDefaultIV(seg.segment, playlist);
+                data = await decryptAes128(data, key, iv);
+              }
+
+              return { data: stripSegmentPrefix(data), index: seg.index };
+            } finally {
+              clearTimeout(timeoutId);
+              signal.removeEventListener('abort', onParentAbort);
+            }
           } catch (e) {
             lastError = e;
+            if (signal.aborted) throw toAppError(e, 'E_ABORTED');
+            if (e instanceof AppError) throw e;
             if (attempt < MAX_SEGMENT_RETRIES) {
               const backoff = RETRY_BACKOFF_MS[attempt] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]!;
               logger.warn('分片下载失败，重试中', { attempt: attempt + 1, backoff, url: seg.segment.url, error: e });
@@ -668,6 +710,7 @@ export class HlsDownloader {
           if (currentTime - lastPersist >= 1000) {
             const elapsedSec = Math.max((currentTime - lastSampleAt) / 1000, 0.001);
             const speedBps = Math.max(0, Math.round((downloaded - lastSampleBytes) / elapsedSec));
+            // FIX-D5：用纯媒体分片数估算，排除 init segment
             const estimatedTotal =
               completedCount > 0
                 ? Math.max(downloaded, Math.round((segmentBytes / completedCount) * totalSegments))
@@ -691,10 +734,21 @@ export class HlsDownloader {
         launchNext();
       }
 
-      // 滑动窗口主循环
+      // 滑动窗口主循环（FIX-D1：停滞检测 watchdog）
+      let lastSettledAt = now();
       while (activePromises.size > 0) {
         if (signal.aborted) throw new AppError('E_ABORTED');
-        const result = await Promise.race(activePromises);
+        const elapsed = now() - lastSettledAt;
+        if (elapsed > STALL_TIMEOUT_MS) {
+          throw new AppError('E_NETWORK', `下载停滞超过 ${Math.round(elapsed / 1000)}s，自动中断`);
+        }
+        const result = await Promise.race([
+          ...activePromises,
+          new Promise<never>((_, reject) => {
+            setTimeout(() => reject(new AppError('E_NETWORK', '下载停滞')), STALL_TIMEOUT_MS - elapsed);
+          }),
+        ]);
+        lastSettledAt = now();
         writeBuffer.set(result.index, result.data);
         await writeCompleted();
         launchNext();
@@ -750,26 +804,47 @@ export class HlsDownloader {
     if (signal.aborted) throw new AppError('E_ABORTED');
     if (proxyBase && !isLocalhostUrl(url)) {
       try {
-        const response = await fetchImpl(`${proxyBase}/${encodeURIComponent(url)}`, {
-          method: 'GET',
-          signal,
-          cache: 'no-store',
-        });
-        if (response.ok) {
-          return { text: await response.text(), baseUrl: manifestBaseUrl(response.url, url) };
+        // FIX-D1：清单获取超时
+        const manifestController = new AbortController();
+        const onManifestAbort = (): void => manifestController.abort();
+        signal.addEventListener('abort', onManifestAbort, { once: true });
+        const manifestTimer = setTimeout(() => manifestController.abort(new AppError('E_NETWORK', `清单代理请求超时: ${url}`)), MANIFEST_KEY_TIMEOUT_MS);
+        try {
+          const response = await fetchImpl(`${proxyBase}/${encodeURIComponent(url)}`, {
+            method: 'GET',
+            signal: manifestController.signal,
+            cache: 'no-store',
+          });
+          if (response.ok) {
+            return { text: await response.text(), baseUrl: manifestBaseUrl(response.url, url) };
+          }
+          logger.warn('清单代理请求返回非 2xx，回退直连', { url, status: response.status });
+        } finally {
+          clearTimeout(manifestTimer);
+          signal.removeEventListener('abort', onManifestAbort);
         }
-        logger.warn('清单代理请求返回非 2xx，回退直连', { url, status: response.status });
       } catch (e) {
         if (signal.aborted) throw new AppError('E_ABORTED');
         logger.warn('清单代理请求失败，回退直连', { url, error: (e as Error)?.message ?? String(e) });
       }
     }
-    const response = await fetchImpl(url, {
-      method: 'GET',
-      headers: headers && Object.keys(headers).length > 0 ? headers : undefined,
-      signal,
-      cache: 'no-store',
-    });
+    // FIX-D1：直连清单也加超时
+    const directController = new AbortController();
+    const onDirectAbort = (): void => directController.abort();
+    signal.addEventListener('abort', onDirectAbort, { once: true });
+    const directTimer = setTimeout(() => directController.abort(new AppError('E_NETWORK', `清单直连请求超时: ${url}`)), MANIFEST_KEY_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        method: 'GET',
+        headers: headers && Object.keys(headers).length > 0 ? headers : undefined,
+        signal: directController.signal,
+        cache: 'no-store',
+      });
+    } finally {
+      clearTimeout(directTimer);
+      signal.removeEventListener('abort', onDirectAbort);
+    }
     if (!response.ok) throw this.mapHttpError(response.status, label);
     return { text: await response.text(), baseUrl: manifestBaseUrl(response.url, url) };
   }

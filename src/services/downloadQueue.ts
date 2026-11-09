@@ -248,6 +248,19 @@ export class DownloadQueue {
     return this.active.size;
   }
 
+  /** FIX-D3：检查指定任务是否正在活跃执行中 */
+  isActive(id: string): boolean {
+    return this.active.has(id);
+  }
+
+  /** FIX-D3：强制中断指定任务的执行（watchdog 检测到卡死时调用） */
+  abortTask(id: string, reason: string): void {
+    const entry = this.active.get(id);
+    if (entry) {
+      entry.controller.abort(new AppError('E_NETWORK', `watchdog: ${reason}`));
+    }
+  }
+
   get pendingIds(): string[] {
     return this.pending.map((entry) => entry.id);
   }

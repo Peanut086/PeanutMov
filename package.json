@@ -14,7 +14,8 @@
     "test:run": "vitest run",
     "test:cov": "vitest run --coverage",
     "cap:sync": "cap sync android",
-    "cap:android": "cap open android"
+    "cap:android": "cap open android",
+    "postinstall": "npx patch-package"
   },
   "dependencies": {
     "@capacitor-community/keep-awake": "^7.1.0",
@@ -41,6 +42,7 @@
     "@vue/test-utils": "^2.4.6",
     "fake-indexeddb": "^6.0.0",
     "happy-dom": "^15.11.7",
+    "patch-package": "^8.0.1",
     "sass": "^1.83.0",
     "typescript": "~5.7.2",
     "vite": "^6.0.7",

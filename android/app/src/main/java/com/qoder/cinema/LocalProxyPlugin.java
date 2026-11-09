@@ -101,9 +101,9 @@ public class LocalProxyPlugin extends Plugin {
                     return size() > MAX_REDIRECT_CACHE;
                 }
             });
-    // OPT-21: 有界线程池（core 2 / max 8 / queue 32），防突发并发线程爆炸
+    // OPT-21/FIX-D2: 有界线程池（core 4 / max 8 / queue 32），acceptLoop 已移至独立线程
     private final ExecutorService io = new java.util.concurrent.ThreadPoolExecutor(
-            2, 8, 60L, java.util.concurrent.TimeUnit.SECONDS,
+            4, 8, 60L, java.util.concurrent.TimeUnit.SECONDS,
             new java.util.concurrent.LinkedBlockingQueue<>(32),
             r -> {
                 Thread t = new Thread(r, "proxy-io");
@@ -112,6 +112,8 @@ public class LocalProxyPlugin extends Plugin {
             },
             new java.util.concurrent.ThreadPoolExecutor.AbortPolicy()
     );
+    /** FIX-D2：写超时（向 WebView 回写数据时，超时则断开，避免 worker 永久阻塞） */
+    private static final int WRITE_TIMEOUT_MS = 30_000;
     // P2-7: OkHttp 共享连接池（HTTP/2 + keep-alive），替代 HttpURLConnection 逐次建连
     private final OkHttpClient httpClient = new OkHttpClient.Builder()
             .connectTimeout(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -151,6 +153,16 @@ public class LocalProxyPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /** FIX-D2：健康探针——JS 端在 segment 超时时可调用，判断 proxy 是否存活 */
+    @PluginMethod
+    public void probeHealthy(PluginCall call) {
+        JSObject ret = new JSObject();
+        boolean alive = server != null && !server.isClosed() && server.isBound();
+        ret.put("alive", alive);
+        ret.put("port", port);
+        call.resolve(ret);
+    }
+
     /** 双检惰性启动：并发 proxy() 只启动一次 */
     private void ensureServer() throws Exception {
         if (server != null && !server.isClosed()) return;
@@ -160,15 +172,11 @@ public class LocalProxyPlugin extends Plugin {
             socket.setReuseAddress(true);
             port = socket.getLocalPort();
             server = socket;
-            try {
-                io.execute(this::acceptLoop);
-                Log.i(TAG, "local proxy started on 127.0.0.1:" + port);
-            } catch (java.util.concurrent.RejectedExecutionException rex) {
-                // OPT-21: 线程池满时启动失败
-                Log.w(TAG, "failed to start accept loop (pool full)", rex);
-                try { socket.close(); } catch (Exception ignored) {}
-                throw rex;
-            }
+            // FIX-D2：acceptLoop 在独立线程运行，不占线程池 core 线程
+            Thread acceptThread = new Thread(this::acceptLoop, "LocalProxy-Accept");
+            acceptThread.setDaemon(true);
+            acceptThread.start();
+            Log.i(TAG, "local proxy started on 127.0.0.1:" + port);
         }
     }
 
@@ -196,6 +204,8 @@ public class LocalProxyPlugin extends Plugin {
     private void handle(Socket client) {
         try (Socket c = client) {
             c.setSoTimeout(READ_TIMEOUT_MS);
+            // FIX-D2：设置写超时，防止 out.write 永久阻塞
+            c.setSendBufferSize(64 * 1024);
             String requestLine = readLine(c.getInputStream());
             String range = null;
             // 消费请求头，只留 Range（播放器可能先发 open 再发 range 请求）
@@ -342,11 +352,13 @@ public class LocalProxyPlugin extends Plugin {
                     String rewritten = rewriteM3u8(m3u8Body.toString(), url, token);
                     out.write(rewritten.getBytes(StandardCharsets.UTF_8));
                 } else {
+                    // FIX-D2：交替读写，client.setSoTimeout 使 write 阻塞时下次 read 超时退出
                     byte[] buffer = new byte[32 * 1024];
                     int read;
                     InputStream in = body.byteStream();
                     while ((read = in.read(buffer)) != -1) {
                         out.write(buffer, 0, read);
+                        out.flush();
                     }
                 }
             }
