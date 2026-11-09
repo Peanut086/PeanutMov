@@ -17,6 +17,7 @@ import { seedService } from '@/services/seedService';
 import { downloadService } from '@/services/downloadService';
 import { subscriptionLifecycleService } from '@/services/subscriptionLifecycleService';
 import { appEvents } from '@/services/events';
+import { lineHealthService } from '@/services/lineHealthService';
 import { configureDoubanRuntime } from '@/sources/douban/doubanRuntime';
 import { useUiStore } from '@/stores/uiStore';
 import { toAppError } from '@/shared/errors';
@@ -35,6 +36,15 @@ export async function initSettings(): Promise<void> {
     await settingsService.get();
   } catch (e) {
     logger.error('设置初始化失败（不阻塞启动）', toAppError(e, 'E_DB'));
+  }
+}
+
+/** 批次1：线路健康记忆初始化（加载持久化数据）；失败只记日志，不阻塞启动 */
+export async function initLineHealth(): Promise<void> {
+  try {
+    await lineHealthService.init();
+  } catch (e) {
+    logger.error('线路健康记忆初始化失败（不阻塞启动）', toAppError(e, 'E_DB'));
   }
 }
 

@@ -636,6 +636,8 @@ export interface AppSettings {
   smartPreloadEnabled?: boolean;
   /** OPT-15：预加载存储上限（MB），0 表示无限制 */
   preloadStorageLimitMb?: number;
+  /** 批次2-6：后台探测线路开关（默认开，关闭后只依赖播放反馈记忆） */
+  backgroundLineProbeEnabled?: boolean;
   /** EXT-06/FR-66：EPG 源上限（缺省取 constants 默认值） */
   epg?: EpgSourceLimits;
   updatedAt: Timestamp;

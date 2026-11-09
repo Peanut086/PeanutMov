@@ -176,16 +176,41 @@ export function groupSearchResults(
 }
 
 /**
- * 选出组的代表条目（可播优先）：第一个 status === 'playable' 的条目；
- * 都没有则取排序后的第一个（tier/latency 最优）。
+ * 选出组的代表条目（可播优先 + 线路可靠度）：
+ * 1. 第一个 status === 'playable' 且线路可靠度 > 0.3 的条目；
+ * 2. 都没有则取 playable 中可靠度最高的；
+ * 3. 都不可播则取排序后的第一个（tier/latency 最优）。
  */
 export function selectRepresentative(
   group: SearchResultGroup,
   playabilityOf: (mediaId: string) => PlayabilityStatus = () => 'unknown',
+  reliabilityOf?: (sourceId: string) => number,
 ): MediaItem | undefined {
+  // 批次2-5：引入线路可靠度
+  const RELIABILITY_THRESHOLD = 0.3;
+  
+  // 优先选 playable + 可靠度高的
+  let bestPlayable: MediaItem | undefined;
+  let bestReliability = -1;
+  
+  for (const item of group.items) {
+    if (playabilityOf(item.id) === 'playable') {
+      const reliability = reliabilityOf ? reliabilityOf(item.sourceId) : 0.5;
+      if (reliability > RELIABILITY_THRESHOLD && reliability > bestReliability) {
+        bestPlayable = item;
+        bestReliability = reliability;
+      }
+    }
+  }
+  
+  if (bestPlayable) return bestPlayable;
+  
+  // 退而求其次：任何 playable
   for (const item of group.items) {
     if (playabilityOf(item.id) === 'playable') return item;
   }
+  
+  // 都不可播，取第一个
   return group.items[0];
 }
 

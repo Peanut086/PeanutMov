@@ -32,12 +32,16 @@ import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
 import { useLibraryStore } from '@/stores/libraryStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useSourceStore } from '@/stores/sourceStore';
 import { useCacheStore } from '@/stores/cacheStore';
 import { useUiStore } from '@/stores/uiStore';
 import { castService } from '@/services/castService';
 import { libraryService } from '@/services/libraryService';
 import { playabilityService } from '@/services/playabilityService';
+import { lineHealthService, lineKey } from '@/services/lineHealthService';
+import { pickBestLine } from '@/services/lineRanking';
+import { probeLines } from '@/services/lineProbeService';
 import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useSmartPreload } from '@/composables/useSmartPreload';
@@ -54,6 +58,7 @@ const route = useRoute();
 const router = useRouter();
 const library = useLibraryStore();
 const sources = useSourceStore();
+const settings = useSettingsStore();
 const history = useHistoryStore();
 const favorites = useFavoriteStore();
 const downloads = useDownloadStore();
@@ -76,6 +81,7 @@ const descExpanded = ref(false);
 const pickerOpen = ref(false);
 const moreOpen = ref(false);
 const lineId = ref<string | null>(null);
+const manualLineId = ref<string | null>(null); // 用户手动选择的线路（会话内不再自动覆盖）
 const favoriteBump = ref(false);
 
 const loading = computed(() => library.detailState === 'loading' || library.detailState === 'idle');
@@ -118,6 +124,31 @@ const progressRecord = computed(() => {
   const it = item.value;
   if (!it) return null;
   return history.progressOf(it.sourceId, it.id);
+});
+
+/** 批次1：线路健康状态 Map（供 LineSelector 显示状态点） */
+const lineStatuses = computed(() => {
+  const it = item.value;
+  if (!it) return new Map<string, import('@/services/lineHealthService').LineHealthStatus>();
+  const map = new Map<string, import('@/services/lineHealthService').LineHealthStatus>();
+  for (const line of lines.value) {
+    const key = lineKey(it.sourceId, it.sourceItemId, line.name);
+    map.set(line.id, lineHealthService.statusOf(key));
+  }
+  return map;
+});
+
+/** 批次1：推荐的线路 ID（评分最高） */
+const recommendedLineId = computed(() => {
+  const it = item.value;
+  if (!it || lines.value.length === 0) return null;
+  const best = pickBestLine({
+    lines: lines.value,
+    historyEpisodeId: progressRecord.value?.episodeId ?? null,
+    episodes: detail.value?.episodes ?? [],
+    buildKey: (line) => lineKey(it.sourceId, it.sourceItemId, line.name),
+  });
+  return best?.id ?? null;
 });
 
 const isFavorite = computed(() => {
@@ -216,6 +247,7 @@ async function ensurePlayable(ep: Episode): Promise<boolean> {
   if (!it || prechecking.value) return false;
   prechecking.value = true;
   resolvingEpisodeId.value = ep.id;
+  const startTime = Date.now();
   try {
     const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
     // 预检只判断"能否播"，随后播放页会重新解析；本地源在这里产生的 blob URL 立即释放，避免泄漏
@@ -229,11 +261,26 @@ async function ensurePlayable(ep: Episode): Promise<boolean> {
     if (!playback.url) {
       markUnavailable(ep.id);
       toast.error('该集暂无可播放地址');
+      // 批次1：记录线路失败
+      const line = currentLine.value;
+      if (line) {
+        lineHealthService.recordFail(lineKey(it.sourceId, it.sourceItemId, line.name), 'E_NO_PLAY_URL');
+      }
       return false;
+    }
+    // 批次1：记录线路成功
+    const line = currentLine.value;
+    if (line) {
+      lineHealthService.recordSuccess(lineKey(it.sourceId, it.sourceItemId, line.name), Date.now() - startTime);
     }
     return true;
   } catch (e) {
     const err = toErrorShape(e);
+    // 批次1：记录线路失败（按错误分类）
+    const line = currentLine.value;
+    if (line) {
+      lineHealthService.recordFail(lineKey(it.sourceId, it.sourceItemId, line.name), err.code);
+    }
     if (err.code === 'E_NO_PLAY_URL') {
       // 唯一"前置拦截"场景：该集确实没有地址
       markUnavailable(ep.id);
@@ -302,7 +349,35 @@ async function load(refresh = false): Promise<void> {
   if (!mediaId.value) return;
   unavailableIds.value = [];
   await library.loadDetail(mediaId.value, refresh);
-  if (!lineId.value && lines.value[0]) lineId.value = lines.value[0].id;
+  
+  // 批次2-4：消费 ep query 参数（换源时保留集号）
+  const epQuery = route.query.ep;
+  const epNumber = epQuery ? parseInt(String(epQuery), 10) : null;
+
+  // 批次1：默认线路按评分选择（替代 lines[0]）
+  if (!lineId.value && lines.value.length > 0) {
+    const it = item.value;
+    if (it) {
+      // 如果有 ep query，优先找对应集号的线路
+      let historyEpId: string | null = progressRecord.value?.episodeId ?? null;
+      if (epNumber !== null && !Number.isNaN(epNumber)) {
+        const epByNumber = detail.value?.episodes.find((ep) => ep.number === epNumber);
+        if (epByNumber) {
+          historyEpId = epByNumber.id;
+        }
+      }
+
+      const best = pickBestLine({
+        lines: lines.value,
+        historyEpisodeId: historyEpId,
+        episodes: detail.value?.episodes ?? [],
+        buildKey: (line) => lineKey(it.sourceId, it.sourceItemId, line.name),
+      });
+      lineId.value = best?.id ?? lines.value[0]!.id;
+    } else {
+      lineId.value = lines.value[0].id;
+    }
+  }
 
   // 回填可播性缓存（真实加载结果）
   if (library.detail) {
@@ -316,6 +391,47 @@ async function load(refresh = false): Promise<void> {
     autoSwitchTried.add(currentId);
     void autoSwitchToPlayableSource();
   }
+
+  // 批次2：后台探测线路（fire-and-forget，不阻塞 UI）
+  if (!refresh && lines.value.length > 0 && !isOffline.value && !manualLineId.value && (settings.settings?.backgroundLineProbeEnabled ?? true)) {
+    void backgroundProbeAndSwitch();
+  }
+}
+
+/** 批次2：后台探测线路并自动切换到最优线路 */
+async function backgroundProbeAndSwitch(): Promise<void> {
+  const it = item.value;
+  if (!it || lines.value.length === 0) return;
+
+  // 选择目标集进行探测（优先历史集，否则第1集）
+  const targetEp = targetEpisode.value ?? episodes.value[0];
+  if (!targetEp) return;
+
+  const result = await probeLines({
+    item: it,
+    lines: lines.value,
+    targetEpisode: targetEp,
+    historyEpisodeId: progressRecord.value?.episodeId ?? null,
+  });
+
+  // 探测完成后，如果用户已手动选择线路，不再自动切换
+  if (manualLineId.value) return;
+
+  if (result.successLineId && result.successLineId !== lineId.value) {
+    // 找到更优线路，自动切换
+    const newLine = lines.value.find((l) => l.id === result.successLineId);
+    if (newLine) {
+      toast.info(`已选到可播线路「${newLine.name}」`);
+      lineId.value = newLine.id;
+    }
+  } else if (result.allFailed) {
+    // 所有线路都失败，触发来源兜底（批次3）
+    const currentId = mediaId.value;
+    if (!autoSwitchTried.has(currentId)) {
+      autoSwitchTried.add(currentId);
+      void autoSwitchToPlayableSource();
+    }
+  }
 }
 
 /** P0-2：自动换源到可播的其它来源（静默，不弹 Toast 除非成功） */
@@ -323,9 +439,11 @@ async function autoSwitchToPlayableSource(): Promise<void> {
   const it = item.value;
   if (!it) return;
 
+  // 批次3：传入目标集 ID 以便验证候选源的可播性
+  const targetEpId = targetEpisode.value?.id ?? episodes.value[0]?.id;
   // 直接走 findAlternateByTitle（内部使用 listSourceCandidates）
   try {
-    const alternate = await libraryService.findAlternateByTitle(it.title, it.year, it.sourceId);
+    const alternate = await libraryService.findAlternateByTitle(it.title, it.year, it.sourceId, targetEpId);
     if (alternate) {
       toast.success(`已自动切换到「${alternate.sourceName}」`);
       await router.replace({ name: 'detail', params: { mediaId: alternate.mediaId } });
@@ -333,6 +451,12 @@ async function autoSwitchToPlayableSource(): Promise<void> {
   } catch {
     // 静默失败，用户仍可手动换源
   }
+}
+
+/** 批次1：用户手动选择线路 → 设置 manualLineId（会话内不再自动覆盖） */
+function onManualLineSelect(newLineId: string): void {
+  lineId.value = newLineId;
+  manualLineId.value = newLineId;
 }
 
 /** 本次详情页会话内已尝试过自动换源的 mediaId（防循环） */
@@ -346,6 +470,7 @@ onMounted(async () => {
 
 watch(mediaId, () => {
   lineId.value = null;
+  manualLineId.value = null;
   descExpanded.value = false;
   preloadHintDismissed.value = false;
   unavailableIds.value = [];
@@ -880,7 +1005,9 @@ function openCompliance(): void {
               v-if="lines.length > 1"
               :lines="lines"
               :model-value="currentLineId"
-              @update:model-value="lineId = $event"
+              :line-statuses="lineStatuses"
+              :recommended-line-id="recommendedLineId"
+              @update:model-value="onManualLineSelect"
             />
           </div>
 

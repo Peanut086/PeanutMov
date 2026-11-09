@@ -9,7 +9,7 @@ import { createPinia } from 'pinia';
 
 import App from '@/App.vue';
 import router, { setComplianceGate } from '@/router';
-import { bindAppToasts, complianceGate, ensureDemoData, initDoubanRuntime, initDownloads, initSettings, initSubscriptionAutoRefresh } from '@/stores/bootstrap';
+import { bindAppToasts, complianceGate, ensureDemoData, initDoubanRuntime, initDownloads, initLineHealth, initSettings, initSubscriptionAutoRefresh } from '@/stores/bootstrap';
 
 import '@/styles/global.css';
 import '@/styles/player.css';
@@ -39,6 +39,9 @@ async function bootstrap(): Promise<void> {
   bindAppToasts();
 
   await initSettings();
+
+  // 批次1：线路健康记忆初始化（加载持久化数据）
+  await initLineHealth();
 
   // P1：恢复 JS logger 级别（根据原生存储的详细日志开关状态）
   await restoreLogLevel();

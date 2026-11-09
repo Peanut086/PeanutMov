@@ -10,6 +10,7 @@ import { libraryService } from '@/services/libraryService';
 import { EMPTY_LIBRARY_FILTERS, markSourceFailedByError } from '@/services/libraryService';
 import { failedSourceIds, groupSearchResults, selectRepresentative } from '@/services/searchAggregate';
 import { playabilityService } from '@/services/playabilityService';
+import { lineHealthService } from '@/services/lineHealthService';
 import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
 import { PAGE_SIZE, SEARCH_LOCAL_LIMIT } from '@/shared/constants';
@@ -79,14 +80,15 @@ export const useLibraryStore = defineStore('library', () => {
 
   /** 平铺视图：每组的代表条目（可播优先），computed 实时派生 */
   const searchResults = computed<MediaItem[]>(() => {
+    const reliabilityOf = (sourceId: string) => lineHealthService.sourceReliability(sourceId);
     const groups = searchPlayableOnly.value
       ? searchGroups.value.filter((g) => {
-          const rep = selectRepresentative(g, playabilityOf);
+          const rep = selectRepresentative(g, playabilityOf, reliabilityOf);
           return rep && playabilityOf(rep.id) === 'playable';
         })
       : searchGroups.value;
     return groups
-      .map((g) => selectRepresentative(g, playabilityOf))
+      .map((g) => selectRepresentative(g, playabilityOf, reliabilityOf))
       .filter((item): item is MediaItem => item !== undefined);
   });
 

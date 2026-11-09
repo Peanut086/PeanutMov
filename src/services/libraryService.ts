@@ -1113,6 +1113,7 @@ export const libraryService: LibraryService = {
     title: string,
     year: number | null,
     excludeSourceId: string,
+    targetEpisodeId?: string,
   ): Promise<{ mediaId: string; sourceName: string } | null> {
     if (!title || !navigator.onLine) return null;
     try {
@@ -1130,6 +1131,52 @@ export const libraryService: LibraryService = {
           if (detail.episodes.length === 0) continue;
           const source = sourceById.get(item.sourceId);
           if (!source) continue;
+
+          // 批次3：验证候选源的最优线路是否真的可播（探测目标集）
+          if (targetEpisodeId && detail.lines.length > 0) {
+            const targetEp = detail.episodes.find((ep) => ep.id === targetEpisodeId) ?? detail.episodes[0];
+            if (targetEp) {
+              // 按评分选最优线路进行探测
+              const { pickBestLine } = await import('@/services/lineRanking');
+              const { lineKey } = await import('@/services/lineHealthService');
+              const bestLine = pickBestLine({
+                lines: detail.lines,
+                historyEpisodeId: targetEp.id,
+                episodes: detail.episodes,
+                buildKey: (line) => lineKey(item.sourceId, item.sourceItemId, line.name),
+              });
+              if (bestLine) {
+                try {
+                  // 探测该线路（8s 超时）
+                  const probePromise = libraryService.resolvePlay({
+                    mediaId: item.id,
+                    episodeId: targetEp.id,
+                    lineId: bestLine.id,
+                  });
+                  const timeoutPromise = new Promise<never>((_, reject) =>
+                    setTimeout(() => reject(new Error('E_TIMEOUT')), 8000),
+                  );
+                  await Promise.race([probePromise, timeoutPromise]);
+                  // 探测成功，记录到线路健康
+                  const { lineHealthService } = await import('@/services/lineHealthService');
+                  lineHealthService.recordSuccess(
+                    lineKey(item.sourceId, item.sourceItemId, bestLine.name),
+                    0, // 不记录耗时
+                  );
+                } catch {
+                  // 探测失败，跳过该候选
+                  const { lineHealthService } = await import('@/services/lineHealthService');
+                  const { lineKey } = await import('@/services/lineHealthService');
+                  lineHealthService.recordFail(
+                    lineKey(item.sourceId, item.sourceItemId, bestLine.name),
+                    'E_NO_PLAY_URL',
+                  );
+                  continue;
+                }
+              }
+            }
+          }
+
           return { mediaId: item.id, sourceName: source.name };
         } catch {
           continue; // 候选源也失败 → 顺延下一个

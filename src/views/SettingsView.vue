@@ -353,6 +353,11 @@ async function setSmartPreloadEnabled(value: boolean): Promise<void> {
   await update({ smartPreloadEnabled: value }, value ? '已开启智能预加载' : '已关闭智能预加载');
 }
 
+// 批次2-6：后台探测线路
+async function setBackgroundLineProbeEnabled(value: boolean): Promise<void> {
+  await update({ backgroundLineProbeEnabled: value }, value ? '已开启后台线路探测' : '已关闭后台线路探测');
+}
+
 async function setPreloadStorageLimitMb(value: number): Promise<void> {
   preloadLimitOpen.value = false;
   const label = value === 0 ? '无限制' : value >= 1024 ? `${value / 1024} GB` : `${value} MB`;
@@ -647,6 +652,12 @@ async function exportLogs(): Promise<void> {
             description="WiFi 环境下提示预加载内容到本地"
             :switch-value="settings.settings?.smartPreloadEnabled ?? false"
             @update:switch-value="setSmartPreloadEnabled"
+          />
+          <SettingsRow
+            label="后台线路探测"
+            description="进详情页后自动探测可播线路（提升首次播放成功率）"
+            :switch-value="settings.settings?.backgroundLineProbeEnabled ?? true"
+            @update:switch-value="setBackgroundLineProbeEnabled"
           />
           <SettingsRow
             label="预加载存储上限"

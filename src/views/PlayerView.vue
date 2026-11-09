@@ -57,6 +57,8 @@ import { useLibraryStore } from '@/stores/libraryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useSourceStore } from '@/stores/sourceStore';
 import { castService } from '@/services/castService';
+import { lineHealthService, lineKey } from '@/services/lineHealthService';
+import { rankLines } from '@/services/lineRanking';
 import { useBackButton } from '@/composables/useBackButton';
 import { usePlayerController } from '@/composables/usePlayerController';
 import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
@@ -146,6 +148,7 @@ const item = computed(() => library.detail?.item ?? null);
 const lines = computed(() => library.detail?.lines ?? []);
 const lineId = ref<string | null>(null);
 const currentLineId = computed(() => lineId.value ?? lineIdParam.value ?? lines.value[0]?.id ?? null);
+const currentLine = computed(() => lines.value.find((l) => l.id === currentLineId.value) ?? null);
 
 const episodes = computed<Episode[]>(() => {
   const det = library.detail;
@@ -159,6 +162,31 @@ const currentEpisode = computed<Episode | null>(() => {
   const list = episodes.value;
   if (episodeIdParam.value) return list.find((ep) => ep.id === episodeIdParam.value) ?? list[0] ?? null;
   return list[0] ?? null;
+});
+
+/** 批次1：线路健康状态 Map（供 LineSelector 显示状态点） */
+const lineStatuses = computed(() => {
+  const it = item.value;
+  if (!it) return new Map<string, import('@/services/lineHealthService').LineHealthStatus>();
+  const map = new Map<string, import('@/services/lineHealthService').LineHealthStatus>();
+  for (const line of lines.value) {
+    const key = lineKey(it.sourceId, it.sourceItemId, line.name);
+    map.set(line.id, lineHealthService.statusOf(key));
+  }
+  return map;
+});
+
+/** 批次1：推荐的线路 ID（评分最高） */
+const recommendedLineId = computed(() => {
+  const it = item.value;
+  if (!it || lines.value.length === 0) return null;
+  const ranked = rankLines({
+    lines: lines.value,
+    historyEpisodeId: null, // 播放页不恢复历史线路
+    episodes: episodes.value,
+    buildKey: (line) => lineKey(it.sourceId, it.sourceItemId, line.name),
+  });
+  return ranked[0]?.id ?? null;
 });
 
 /**
@@ -643,6 +671,7 @@ async function resolveAndLoad(): Promise<boolean> {
   startLoadingProgress();
   // v1.7/CHG-21：记录起播时刻——失败自动兜底只在窗口期内触发
   failoverStartedAt.value = Date.now();
+  const resolveStartTime = Date.now();
   try {
     const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
     if (!pageAlive || epoch !== loadEpoch) return false;
@@ -713,6 +742,11 @@ async function resolveAndLoad(): Promise<boolean> {
       // 起播成功：重置自动兜底状态（CHG-21），下次失败重新各试一次
       failoverLineTried.value = false;
       failoverSourceTried.value = false;
+      // 批次1：记录线路成功
+      const line = currentLine.value;
+      if (line && it) {
+        lineHealthService.recordSuccess(lineKey(it.sourceId, it.sourceItemId, line.name), Date.now() - resolveStartTime);
+      }
     }
     return ok;
   } catch (e) {
@@ -720,6 +754,11 @@ async function resolveAndLoad(): Promise<boolean> {
     // P0-3：解析失败也失效缓存，避免重试复用坏 URL
     library.invalidatePlayCache(mediaId.value);
     const shape = toErrorShape(e, 'E_NO_PLAY_URL');
+    // 批次1：记录线路失败（按错误分类）
+    const line = currentLine.value;
+    if (line && it) {
+      lineHealthService.recordFail(lineKey(it.sourceId, it.sourceItemId, line.name), shape.code);
+    }
     // 失败换线时并发解析会双跑：先成功者已在播，后失败者（嗅探 15s 超时）若把
     // 错误面板盖上去，用户看到的是「有声音却报无播放地址」。播放中一律不覆盖。
     if (player.playing) return false;
@@ -1106,22 +1145,43 @@ function isOnlineNow(): boolean {
   return navigator.onLine !== false;
 }
 
-/** 起播窗口内失败：自动换线（一次）→ 自动换源（一次）→ 才落到错误面板。
+/** 起播窗口内失败：自动换线（最多3条按评分排序）→ 自动换源（一次）→ 才落到错误面板。
  * 引擎错误与解析错误共用同一条链（解析失败过去只落错误面板，不自动兜底）。 */
 async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): Promise<void> {
   if (failoverRunning.value) return;
   if (!FAILOVER_ERROR_CODES.has(error.code) || !withinFailoverWindow()) return;
   failoverRunning.value = true;
   try {
-    // ① 换线路
+    // ① 换线路（批次1：按评分排序，最多试3条）
     if (!failoverLineTried.value && lines.value.length > 1) {
       failoverLineTried.value = true;
-      const other = lines.value.find((l) => l.id !== currentLineId.value);
-      if (other) {
-        toast.info('起播失败，自动切换到其它线路…');
-        await switchLine(other.id);
-        if (!pageAlive) return;
-        if (player.error === null && loadError.value === null) return; // 换线成功
+      const it = item.value;
+      if (!it) {
+        // 无 item 时回退到原逻辑（取第一条其它线路）
+        const other = lines.value.find((l) => l.id !== currentLineId.value);
+        if (other) {
+          toast.info('起播失败，自动切换到其它线路…');
+          await switchLine(other.id);
+          if (!pageAlive) return;
+          if (player.error === null && loadError.value === null) return;
+        }
+      } else {
+        // 批次1：按评分排序取候选线路
+        const ranked = rankLines({
+          lines: lines.value,
+          historyEpisodeId: null, // failover 不恢复历史
+          episodes: episodes.value,
+          buildKey: (line) => lineKey(it.sourceId, it.sourceItemId, line.name),
+        });
+        const candidates = ranked.filter((l) => l.id !== currentLineId.value).slice(0, 3);
+        
+        for (const candidate of candidates) {
+          if (!pageAlive) return;
+          toast.info(`起播失败，自动切换到线路「${candidate.name}」…`);
+          await switchLine(candidate.id);
+          if (!pageAlive) return;
+          if (player.error === null && loadError.value === null) return; // 换线成功
+        }
       }
     }
     // ② 换源（同名同年在其它源重找片源；进度按集号延续）
@@ -1158,6 +1218,12 @@ watch(
     if (error) {
       // P0-3：播放出错时失效缓存，避免重试/换线复用已过期的坏 URL
       library.invalidatePlayCache(mediaId.value);
+      // 批次1：记录线路失败（按错误分类）
+      const line = currentLine.value;
+      const it = item.value;
+      if (line && it) {
+        lineHealthService.recordFail(lineKey(it.sourceId, it.sourceItemId, line.name), error.code);
+      }
       void runFailover(error, 'player');
     }
   },
@@ -2258,6 +2324,8 @@ onBeforeUnmount(() => {
               v-if="lines.length > 1"
               :lines="lines"
               :model-value="currentLineId"
+              :line-statuses="lineStatuses"
+              :recommended-line-id="recommendedLineId"
               @update:model-value="onSwitchLineById"
             />
           </div>

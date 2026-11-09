@@ -161,6 +161,8 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
     smartPreloadEnabled: false,
     /* OPT-15：预加载存储上限（默认 1GB = 1024MB） */
     preloadStorageLimitMb: 1024,
+    /* 批次2-6：后台探测线路开关（默认开） */
+    backgroundLineProbeEnabled: true,
     /* EXT-05 phase1：定时备份 / 版本保留 / 加密 */
     backup: { ...BACKUP_DEFAULTS },
     updatedAt: now,
@@ -283,6 +285,7 @@ function sanitize(input: AppSettings): AppSettings {
     searchBudget: isSearchBudgetPreset(input.searchBudget) ? input.searchBudget : SEARCH_BUDGET_DEFAULT,
     smartPreloadEnabled: input.smartPreloadEnabled === undefined ? false : Boolean(input.smartPreloadEnabled),
     preloadStorageLimitMb: validatePreloadLimit(input.preloadStorageLimitMb, defaults.preloadStorageLimitMb!),
+    backgroundLineProbeEnabled: input.backgroundLineProbeEnabled === undefined ? true : Boolean(input.backgroundLineProbeEnabled),
     backup: sanitizeBackup(input.backup),
     danmaku,
     searchHistory: Array.isArray(input.searchHistory)
