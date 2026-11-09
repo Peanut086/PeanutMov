@@ -1089,6 +1089,12 @@ public class SpiderPlugin extends Plugin {
         dalvik.system.DexClassLoader loader = loaderCache.get(jarKey);
         boolean loaderReused = loader != null;
         if (loader == null) {
+            // Android 14+（targetSdk>=34）：ART 强制要求 DexClassLoader 加载的文件只读，
+            // 违反抛 SecurityException: Writable dex file ... is not allowed。
+            // 旧缓存 jar 默认可写，加载前统一补只读；只读不影响目录级删除/rename。
+            if (jarFile.canWrite() && !jarFile.setReadOnly()) {
+                throw new IllegalStateException("无法置 jar 只读（Android 14+ 必需）: " + jarKey);
+            }
             ClassLoader parent = context.getClassLoader();
             loader = new dalvik.system.DexClassLoader(
                     jarFile.getAbsolutePath(),
@@ -1149,6 +1155,13 @@ public class SpiderPlugin extends Plugin {
         return new LoadedSpider(spider, api, dexDir, jarMd5);
         } catch (Exception e) {
             CrashSentinel.end(token);
+            // C: Android 14+ DCL 限制——把晦涩的 SecurityException 转成用户可读文案，
+            // 避免前端显示"该线路已失效"误导用户换源（实际是 App 未适配平台限制）。
+            if (e instanceof SecurityException && e.getMessage() != null
+                    && e.getMessage().contains("Writable dex")) {
+                throw new IllegalStateException(
+                        "系统安全限制（Android 14+ 动态加载要求只读），请更新 App 版本", e);
+            }
             throw e;
         }
     }
@@ -2033,6 +2046,10 @@ public class SpiderPlugin extends Plugin {
             }
             if (!temp.renameTo(jar)) {
                 throw new IllegalStateException("cannot save jar");
+            }
+            // 新下载落盘即只读（纵深防御）：失败不阻断，加载前 A 方案会兜底。
+            if (!jar.setReadOnly()) {
+                Log.w(TAG, "failed to setReadOnly on downloaded jar: " + jar.getAbsolutePath());
             }
         } finally {
             conn.disconnect();
