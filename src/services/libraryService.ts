@@ -665,13 +665,6 @@ export const libraryService: LibraryService = {
     let launched = 0;
 
     if (isOnline()) {
-      // SO-06：搜索扇出前批量预热所有爬虫源（fire-and-forget），jar 下载与搜索并发
-      // 而非等 searchOneSource 内逐个预热再搜索——首源不再吃满冷启动超时。
-      for (const source of enabled) {
-        void adapterFor(source)
-          .then((adapter) => prewarm(adapter, source))
-          .catch(() => undefined);
-      }
       const total = enabled.length;
       let done = 0;
       // P0-4：全局搜索截止时间——避免个别慢源拖住整体响应
