@@ -299,30 +299,38 @@ export class DownloadEngine {
     return new Promise<boolean>((resolve) => {
       let resolved = false;
       const removeListeners: Array<() => void> = [];
+      // OPT-16: 原生路径进度节流（对齐 JS 路径 persistInterval，1s 持久化一次）
+      let lastPersist = 0;
+      const PERSIST_INTERVAL_MS = 1000;
 
       const cleanup = () => {
         removeListeners.forEach((fn) => fn());
       };
 
-      // 监听进度
+      // 监听进度（节流）
       removeListeners.push(
         onProgress((event) => {
           if (event.taskId !== task.id) return;
-          this.deps.saveProgress(task.id, {
-            downloadedBytes: event.downloadedBytes,
-            totalBytes: event.totalBytes > 0 ? event.totalBytes : task.totalBytes,
-            speedBps: event.speedBps,
-            updatedAt: now(),
-          });
-          appEvents.emit('downloads:changed', { id: task.id });
+          const currentTime = now();
+          if (currentTime - lastPersist >= PERSIST_INTERVAL_MS) {
+            lastPersist = currentTime;
+            this.deps.saveProgress(task.id, {
+              downloadedBytes: event.downloadedBytes,
+              totalBytes: event.totalBytes > 0 ? event.totalBytes : task.totalBytes,
+              speedBps: event.speedBps,
+              updatedAt: currentTime,
+            });
+            appEvents.emit('downloads:changed', { id: task.id });
+          }
         }),
       );
 
-      // 监听完成
+      // 监听完成（强制 flush）
       removeListeners.push(
         onCompleted(async (event) => {
           if (event.taskId !== task.id) return;
           cleanup();
+          lastPersist = now(); // OPT-16: 标记已持久化
           await this.deps.saveProgress(task.id, {
             downloadedBytes: event.totalBytes,
             totalBytes: event.totalBytes,

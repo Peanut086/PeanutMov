@@ -63,6 +63,7 @@ const isEmpty = computed(() => downloads.state === 'empty' || downloads.tasks.le
 const notifiedCompletedIds = new Set<string>();
 
 /** OPT-13: 监听下载完成事件，触发触觉反馈 + Toast */
+/** OPT-16: 去掉 deep:true（store 每次不可变替换数组，浅 watch 已能触发） */
 watch(
   () => downloads.tasks,
   (tasks) => {
@@ -73,7 +74,7 @@ watch(
         notifiedCompletedIds.delete(id);
       }
     }
-    for (const task of tasks) {
+           for (const task of tasks) {
       if (task.status === 'completed' && !notifiedCompletedIds.has(task.id)) {
         notifiedCompletedIds.add(task.id);
         haptic('medium');
@@ -81,7 +82,6 @@ watch(
       }
     }
   },
-  { deep: true },
 );
 
 const filtered = computed(() => {

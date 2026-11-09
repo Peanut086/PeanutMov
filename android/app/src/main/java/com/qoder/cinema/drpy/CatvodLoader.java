@@ -525,7 +525,10 @@ public final class CatvodLoader {
 
     /* ---------------- 模块下载（带磁盘缓存） ---------------- */
 
-    private static final Map<String, String> memoryCache = new HashMap<>();
+    // OPT-19: 线程安全的内存缓存（替代 HashMap）
+    private static final Map<String, String> memoryCache = new java.util.concurrent.ConcurrentHashMap<>();
+    // OPT-19: 磁盘缓存 TTL（24h 后重新下载，确保规则更新生效）
+    private static final long DISK_CACHE_TTL_MS = 24 * 60 * 60 * 1000L;
 
     private static String fetchModule(Context ctx, String url) throws Exception {
         String cached = memoryCache.get(url);
@@ -534,9 +537,30 @@ public final class CatvodLoader {
         File dir = new File(ctx.getFilesDir(), "catvod-modules");
         if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("cannot create catvod-modules dir");
         File target = new File(dir, md5Of(url) + ".js");
-        if (!target.exists()) {
-            downloadTo(url, target);
+
+        // OPT-19: 磁盘缓存过期检查（TTL 24h）
+        boolean needsDownload = !target.exists();
+        if (!needsDownload) {
+            long age = System.currentTimeMillis() - target.lastModified();
+            if (age > DISK_CACHE_TTL_MS) {
+                Log.i(TAG, "disk cache expired for " + url + " (age=" + (age / 1000 / 60) + "min)");
+                needsDownload = true;
+            }
         }
+
+        if (needsDownload) {
+            try {
+                downloadTo(url, target);
+            } catch (Exception e) {
+                // OPT-19: 下载失败时回退到旧缓存（stale-while-revalidate）
+                if (target.exists()) {
+                    Log.w(TAG, "download failed, using stale cache: " + url);
+                } else {
+                    throw e;
+                }
+            }
+        }
+
         byte[] bytes = readAll(target);
         String code = new String(bytes, "UTF-8");
         memoryCache.put(url, code);

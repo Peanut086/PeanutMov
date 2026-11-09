@@ -60,7 +60,25 @@ public class LocalProxyPlugin extends Plugin {
         }
     }
 
+    // OPT-14: 302 缓存条目（带时间戳，过期后回源）
+    private static class RedirectEntry {
+        final String url;
+        final long cachedAt;
+
+        RedirectEntry(String url) {
+            this.url = url;
+            this.cachedAt = System.currentTimeMillis();
+        }
+
+        boolean isExpired() {
+            return System.currentTimeMillis() - cachedAt > REDIRECT_TTL_MS;
+        }
+    }
+
     private static final int MAX_TARGETS = 100;
+    // OPT-14: 302 缓存容量与 TTL（签名直链过期后回源重新跟跳转）
+    private static final int MAX_REDIRECT_CACHE = 200;
+    private static final long REDIRECT_TTL_MS = 10 * 60 * 1000L; // 10 min
 
     /**
      * AND-18：token → 目标表。原实现用裸 LinkedHashMap（accessOrder LRU），
@@ -75,9 +93,25 @@ public class LocalProxyPlugin extends Plugin {
                     return size() > MAX_TARGETS; // P0-8: LRU，最多保留 100 个 token
                 }
             });
-    // P0-8: 302 跳转目标缓存（原始 URL → 最终 URL）
-    private final Map<String, String> redirectCache = new ConcurrentHashMap<>();
-    private final ExecutorService io = Executors.newCachedThreadPool();
+    // OPT-14: 302 跳转目标缓存（LRU + TTL，替代裸 ConcurrentHashMap）
+    private final Map<String, RedirectEntry> redirectCache = Collections.synchronizedMap(
+            new LinkedHashMap<String, RedirectEntry>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, RedirectEntry> eldest) {
+                    return size() > MAX_REDIRECT_CACHE;
+                }
+            });
+    // OPT-21: 有界线程池（core 2 / max 8 / queue 32），防突发并发线程爆炸
+    private final ExecutorService io = new java.util.concurrent.ThreadPoolExecutor(
+            2, 8, 60L, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.LinkedBlockingQueue<>(32),
+            r -> {
+                Thread t = new Thread(r, "proxy-io");
+                t.setDaemon(true);
+                return t;
+            },
+            new java.util.concurrent.ThreadPoolExecutor.AbortPolicy()
+    );
     // P2-7: OkHttp 共享连接池（HTTP/2 + keep-alive），替代 HttpURLConnection 逐次建连
     private final OkHttpClient httpClient = new OkHttpClient.Builder()
             .connectTimeout(CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -126,8 +160,15 @@ public class LocalProxyPlugin extends Plugin {
             socket.setReuseAddress(true);
             port = socket.getLocalPort();
             server = socket;
-            io.execute(this::acceptLoop);
-            Log.i(TAG, "local proxy started on 127.0.0.1:" + port);
+            try {
+                io.execute(this::acceptLoop);
+                Log.i(TAG, "local proxy started on 127.0.0.1:" + port);
+            } catch (java.util.concurrent.RejectedExecutionException rex) {
+                // OPT-21: 线程池满时启动失败
+                Log.w(TAG, "failed to start accept loop (pool full)", rex);
+                try { socket.close(); } catch (Exception ignored) {}
+                throw rex;
+            }
         }
     }
 
@@ -137,7 +178,13 @@ public class LocalProxyPlugin extends Plugin {
         while (!socket.isClosed()) {
             try {
                 Socket client = socket.accept();
-                io.execute(() -> handle(client));
+                try {
+                    io.execute(() -> handle(client));
+                } catch (java.util.concurrent.RejectedExecutionException rex) {
+                    // OPT-21: 线程池满时关闭新连接
+                    com.qoder.cinema.AppLog.w(TAG, "rejecting connection (pool full)", rex);
+                    try { client.close(); } catch (Exception ignored) {}
+                }
             } catch (Exception e) {
                 if (socket.isClosed()) return;
                 com.qoder.cinema.AppLog.w(TAG, "accept failed", e);
@@ -225,10 +272,12 @@ public class LocalProxyPlugin extends Plugin {
         // 手动跟跳转：分片常 302 到 https 图片 CDN，OkHttp followRedirects=false 时不会自动跟
         String url = target.url;
 
-        // P0-8: 302 跳转目标缓存
-        String cachedRedirect = redirectCache.get(url);
-        if (cachedRedirect != null) {
-            url = cachedRedirect;
+        // OPT-14: 302 跳转目标缓存（带 TTL 检查，过期则回源）
+        RedirectEntry cachedEntry = redirectCache.get(url);
+        if (cachedEntry != null && !cachedEntry.isExpired()) {
+            url = cachedEntry.url;
+        } else if (cachedEntry != null) {
+            redirectCache.remove(url);
         }
 
         Request request = buildRequest(target, url, range).build();
@@ -245,9 +294,9 @@ public class LocalProxyPlugin extends Plugin {
             status = response.code();
         }
 
-        // P0-8: 缓存跳转结果
+        // OPT-14: 缓存跳转结果（带时间戳）
         if (!url.equals(target.url)) {
-            redirectCache.put(target.url, url);
+            redirectCache.put(target.url, new RedirectEntry(url));
         }
 
         OutputStream out = client.getOutputStream();

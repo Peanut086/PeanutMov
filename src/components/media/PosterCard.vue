@@ -149,6 +149,7 @@ function onClick(): void {
 }
 
 /* 角标统一为半透明胶囊，压在海报上不抢画面 */
+/* OPT-22: 去 backdrop-filter（低端 WebView 合成开销大），底色加深补偿可读性 */
 .poster-card__badge {
   position: absolute;
   top: var(--space-2);
@@ -158,9 +159,7 @@ function onClick(): void {
   display: inline-flex;
   align-items: center;
   border-radius: 6px;
-  background-color: rgba(0, 0, 0, 0.62);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  background-color: rgba(0, 0, 0, 0.72);
   color: #ffffff;
   font: var(--font-weight-semibold) 10.5px / 1 var(--font-family-number);
   letter-spacing: 0.01em;

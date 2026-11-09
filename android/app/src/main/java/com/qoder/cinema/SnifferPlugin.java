@@ -22,6 +22,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 
@@ -140,6 +142,9 @@ public class SnifferPlugin extends Plugin {
 
     private final Map<String, SniffJob> jobs = new ConcurrentHashMap<>();
     private int jobSeq = 0;
+    // OPT-18: 并发嗅探上限 2 个 WebView（每个数十 MB，防 OOM）
+    private static final int MAX_CONCURRENT_SNIFF = 2;
+    private final Semaphore sniffSemaphore = new Semaphore(MAX_CONCURRENT_SNIFF);
 
     @PluginMethod
     public void isSupported(PluginCall call) {
@@ -162,12 +167,24 @@ public class SnifferPlugin extends Plugin {
                         ? DEFAULT_TIMEOUT_MS
                         : requestedTimeoutMs;
 
+        // OPT-18: 并发上限，超限则排队等待（最多等 5s）
+        try {
+            if (!sniffSemaphore.tryAcquire(5, TimeUnit.SECONDS)) {
+                call.reject("嗅探并发已满（上限 " + MAX_CONCURRENT_SNIFF + "），请稍后重试");
+                return;
+            }
+        } catch (InterruptedException e) {
+            call.reject("嗅探等待被中断");
+            return;
+        }
+
         final String jobId = "sniff-" + (++jobSeq);
         main.post(() -> {
             try {
                 startSniff(call, jobId, url, headers, timeoutMs);
             } catch (Exception e) {
                 jobs.remove(jobId);
+                sniffSemaphore.release(); // OPT-18: 启动失败释放信号量
                 Log.w(TAG, "sniff setup failed", e);
                 call.reject("嗅探启动失败: " + e.getMessage());
             }
@@ -247,6 +264,8 @@ public class SnifferPlugin extends Plugin {
                 job.webView.destroy();
             } catch (Exception ignored) {
             }
+            // OPT-18: 释放信号量，允许下一个嗅探任务启动
+            sniffSemaphore.release();
             JSObject ret = new JSObject();
             ret.put("url", mediaUrl);
             job.call.resolve(ret);

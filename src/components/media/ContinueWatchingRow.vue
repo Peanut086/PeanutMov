@@ -226,10 +226,9 @@ const emit = defineEmits<{
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-full);
-  background-color: rgba(0, 0, 0, 0.58);
+  background-color: rgba(0, 0, 0, 0.68);
   color: #ffffff;
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  /* OPT-22: 去 backdrop-filter（低端 WebView 合成开销大），底色加深补偿 */
 }
 
 .continue-card__remove::after {

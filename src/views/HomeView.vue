@@ -28,6 +28,7 @@ import { useHistoryStore } from '@/stores/historyStore';
 import { useLibraryStore } from '@/stores/libraryStore';
 import { useSourceStore } from '@/stores/sourceStore';
 import { useToast } from '@/composables/useToast';
+import { appEvents } from '@/services/events';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { toErrorShape } from '@/shared/errors';
 
@@ -75,12 +76,29 @@ const sourceLooksBroken = computed(() => {
   return !source.enabled || source.health === 'unreachable' || source.health === 'bad_config';
 });
 
+// OPT-24: 首页加载 TTL（30s 内回 tab 不重复读库，事件驱动失效）
+const TTL_MS = 30_000;
+let lastLoadTime = 0;
+let isDirty = true;
+
+// 监听失效事件
+appEvents.on('downloads:changed', () => { isDirty = true; });
+appEvents.on('favorites:changed', () => { isDirty = true; });
+appEvents.on('history:changed', () => { isDirty = true; });
+
 async function load(): Promise<void> {
+  const now = Date.now();
+  // OPT-24: TTL 内且未脏则跳过
+  if (!isDirty && now - lastLoadTime < TTL_MS) {
+    return;
+  }
   localError.value = null;
   try {
     // REV-24：sources 用于 continuePlay 判断源是否存在
     await Promise.all([history.load(), downloads.load(), favorites.load(), sources.load()]);
     await library.loadHome();
+    lastLoadTime = now;
+    isDirty = false;
   } catch (e) {
     localError.value = toErrorShape(e).message;
   }

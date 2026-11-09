@@ -103,8 +103,18 @@ public class SpiderPlugin extends Plugin {
      * Capacitor 的插件方法全部走 bridge 的单一 taskHandler 线程（Bridge.java post 到
      * 同一个 Handler），同步执行会串行阻塞所有 JS→原生调用（搜索、播放、网络派发
      * 全部排队），表现为「搜索极慢 / 播放超时 / 首页永远骨架屏」。
+     * OPT-21: 有界线程池（core 2 / max 8 / queue 32），防突发并发线程爆炸
      */
-    private final ExecutorService spiderExecutor = Executors.newCachedThreadPool();
+    private final ExecutorService spiderExecutor = new java.util.concurrent.ThreadPoolExecutor(
+            2, 8, 60L, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.LinkedBlockingQueue<>(32),
+            r -> {
+                Thread t = new Thread(r, "spider-worker");
+                t.setDaemon(true);
+                return t;
+            },
+            new java.util.concurrent.ThreadPoolExecutor.AbortPolicy()
+    );
     /** 看门狗：超时后先给 JS 侧回错，避免调用方无限等待（任务线程本身无法强中断） */
     private final Handler watchdog = new Handler(Looper.getMainLooper());
     private static final long LOAD_TIMEOUT_MS = 75_000;
@@ -131,22 +141,31 @@ public class SpiderPlugin extends Plugin {
             }
         };
         watchdog.postDelayed(timeoutTask, timeoutMs);
-        spiderExecutor.execute(() -> {
-            // 爬虫内壳子系（AppTT 等）会同步请求 127.0.0.1:9978，执行前确保本地代理活着
-            SpiderProxyServer.ensureAlive();
-            try {
-                task.run();
-                if (settled.compareAndSet(false, true)) {
-                    watchdog.removeCallbacks(timeoutTask);
+        try {
+            spiderExecutor.execute(() -> {
+                // 爬虫内壳子系（AppTT 等）会同步请求 127.0.0.1:9978，执行前确保本地代理活着
+                SpiderProxyServer.ensureAlive();
+                try {
+                    task.run();
+                    if (settled.compareAndSet(false, true)) {
+                        watchdog.removeCallbacks(timeoutTask);
+                    }
+                } catch (Throwable e) {
+                    if (settled.compareAndSet(false, true)) {
+                        watchdog.removeCallbacks(timeoutTask);
+                        Log.w(TAG, op + " failed", e);
+                        call.reject(label + "失败: " + describeFailure(e));
+                    }
                 }
-            } catch (Throwable e) {
-                if (settled.compareAndSet(false, true)) {
-                    watchdog.removeCallbacks(timeoutTask);
-                    Log.w(TAG, op + " failed", e);
-                    call.reject(label + "失败: " + describeFailure(e));
-                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rex) {
+            // OPT-21: 线程池满时明确报错
+            if (settled.compareAndSet(false, true)) {
+                watchdog.removeCallbacks(timeoutTask);
+                Log.w(TAG, op + " rejected (pool full)", rex);
+                call.reject(label + "繁忙（线程池满），请稍后重试");
             }
-        });
+        }
     }
 
     /**

@@ -62,15 +62,10 @@ public class MainApplication extends Application {
 
     /**
      * REV-24 / B3：检查上次退出原因，若发现未清除的哨兵则记录并隔离
+     * OPT-17: tombstone 摄入与 ApplicationExitInfo 读取移后台（IO 重，不阻塞启动）
      */
     private void checkLastExit() {
-        // 0. 摄入 tombstone 摘要（A3）
-        CrashNative.TombstoneInfo tombstone = CrashNative.ingest(this);
-        if (tombstone != null) {
-            AppLog.w(TAG, "found native tombstone: " + tombstone.filename + " signal=" + tombstone.signal);
-        }
-
-        // 1. 检查未清除的哨兵（B1：per-invocation token 版）
+        // 1. 检查未清除的哨兵（B1：per-invocation token 版）—— 同步，决定安全模式
         java.util.List<JSONObject> sentinels = CrashSentinel.readUnclearedAll();
         if (!sentinels.isEmpty()) {
             // 取最新的（startedAt 最大）作为归因目标
@@ -101,43 +96,52 @@ public class MainApplication extends Application {
             checkSafeMode();
         }
 
-        // 2. 读取 ApplicationExitInfo（API 30+）
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                // 原生 SIGSEGV 等绕过 Java 崩溃处理器，只能靠 ApplicationExitInfo 归因。
-                // 华为屏蔽第三方 logcat，故写文件日志（W 级，开关关闭也落盘），查看页可见。
-                // 按时间戳去重：只记录上次启动之后新出现的退出，避免每次启动重复刷旧崩溃。
-                android.content.SharedPreferences exitPrefs =
-                        getSharedPreferences("crash-exit-info", MODE_PRIVATE);
-                long lastSeen = exitPrefs.getLong("lastTs", 0L);
-                long maxSeen = lastSeen;
-                List<ApplicationExitInfo> exitInfos = getApplicationContext()
-                        .getSystemService(android.app.ActivityManager.class)
-                        .getHistoricalProcessExitReasons(null, 0, 5);
-                for (ApplicationExitInfo info : exitInfos) {
-                    if (info.getTimestamp() > maxSeen) maxSeen = info.getTimestamp();
-                    if (info.getTimestamp() <= lastSeen) continue;
-                    if (info.getReason() == ApplicationExitInfo.REASON_SIGNALED
-                            || info.getReason() == ApplicationExitInfo.REASON_CRASH
-                            || info.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE) {
-                        AppLog.w("CrashExit", "last exit: reason=" + info.getReason()
-                                + " status=" + info.getStatus()
-                                + " timestamp=" + info.getTimestamp()
-                                + " process=" + info.getProcessName()
-                                + " description=" + info.getDescription());
-                    }
-                }
-                if (maxSeen > lastSeen) exitPrefs.edit().putLong("lastTs", maxSeen).apply();
-            } catch (Exception e) {
-                AppLog.w(TAG, "failed to read ApplicationExitInfo", e);
-            }
-        }
-
-        // 3. 稳定启动（无新崩溃）时自动静默退出安全模式——用户无感，爬虫源立即恢复
+        // 2. 稳定启动（无新崩溃）时自动静默退出安全模式——用户无感，爬虫源立即恢复
         if (sentinels.isEmpty() && isSafeMode(this)) {
             exitSafeMode(this);
             Log.i(TAG, "stable launch: auto-exited safe mode");
         }
+
+        // OPT-17: 以下 IO 重操作移后台线程
+        new Thread(() -> {
+            // 0. 摄入 tombstone 摘要（A3）
+            CrashNative.TombstoneInfo tombstone = CrashNative.ingest(this);
+            if (tombstone != null) {
+                AppLog.w(TAG, "found native tombstone: " + tombstone.filename + " signal=" + tombstone.signal);
+            }
+
+            // 3. 读取 ApplicationExitInfo（API 30+）
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    // 原生 SIGSEGV 等绕过 Java 崩溃处理器，只能靠 ApplicationExitInfo 归因。
+                    // 华为屏蔽第三方 logcat，故写文件日志（W 级，开关关闭也落盘），查看页可见。
+                    // 按时间戳去重：只记录上次启动之后新出现的退出，避免每次启动重复刷旧崩溃。
+                    android.content.SharedPreferences exitPrefs =
+                            getSharedPreferences("crash-exit-info", MODE_PRIVATE);
+                    long lastSeen = exitPrefs.getLong("lastTs", 0L);
+                    long maxSeen = lastSeen;
+                    List<ApplicationExitInfo> exitInfos = getApplicationContext()
+                            .getSystemService(android.app.ActivityManager.class)
+                            .getHistoricalProcessExitReasons(null, 0, 5);
+                    for (ApplicationExitInfo info : exitInfos) {
+                        if (info.getTimestamp() > maxSeen) maxSeen = info.getTimestamp();
+                        if (info.getTimestamp() <= lastSeen) continue;
+                        if (info.getReason() == ApplicationExitInfo.REASON_SIGNALED
+                                || info.getReason() == ApplicationExitInfo.REASON_CRASH
+                                || info.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE) {
+                            AppLog.w("CrashExit", "last exit: reason=" + info.getReason()
+                                    + " status=" + info.getStatus()
+                                    + " timestamp=" + info.getTimestamp()
+                                    + " process=" + info.getProcessName()
+                                    + " description=" + info.getDescription());
+                        }
+                    }
+                    if (maxSeen > lastSeen) exitPrefs.edit().putLong("lastTs", maxSeen).apply();
+                } catch (Exception e) {
+                    AppLog.w(TAG, "failed to read ApplicationExitInfo", e);
+                }
+            }
+        }, "startup-io").start();
     }
 
     /**

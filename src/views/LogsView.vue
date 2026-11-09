@@ -155,22 +155,29 @@ function stopPolling(): void {
 async function poll(): Promise<void> {
   if (!isNative()) {
     // Web 环境：直接从 logBus 读取
+    // OPT-24: 增量追加（按 id 去重，避免每秒全量重建列表）
     const buffer = getBuffer();
-    entries.value = buffer.map((e) => ({
-      id: e.id,
-      ts: e.ts,
-      level: e.level as LogLevel,
-      thread: 'JS',
-      tag: e.tag,
-      message: e.message,
-      raw: `${new Date(e.ts).toISOString()} ${e.level} [JS] ${e.tag}: ${e.message}`,
-    }));
-    if (autoScroll.value && listRef.value) {
-      requestAnimationFrame(() => {
-        if (listRef.value) {
-          listRef.value.scrollTop = listRef.value.scrollHeight;
-        }
-      });
+    const existingIds = new Set(entries.value.map((e) => e.id));
+    const newEntries = buffer
+      .filter((e) => !existingIds.has(e.id))
+      .map((e) => ({
+        id: e.id,
+        ts: e.ts,
+        level: e.level as LogLevel,
+        thread: 'JS',
+        tag: e.tag,
+        message: e.message,
+        raw: `${new Date(e.ts).toISOString()} ${e.level} [JS] ${e.tag}: ${e.message}`,
+      }));
+    if (newEntries.length > 0) {
+      entries.value = [...entries.value, ...newEntries];
+      if (autoScroll.value && listRef.value) {
+        requestAnimationFrame(() => {
+          if (listRef.value) {
+            listRef.value.scrollTop = listRef.value.scrollHeight;
+          }
+        });
+      }
     }
     return;
   }

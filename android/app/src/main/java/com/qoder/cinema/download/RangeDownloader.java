@@ -42,6 +42,12 @@ public class RangeDownloader {
     private static final int MULTI_RANGE_CONNECTIONS = 4;
     private static final long MIN_SIZE_FOR_MULTI_RANGE = 10 * 1024 * 1024; // 10MB 以上才用多 Range
 
+    // OPT-20: 共享 OkHttp 连接池（所有 RangeDownloader 实例复用）
+    private static final OkHttpClient SHARED_HTTP_CLIENT = new OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build();
+
     private final Context context;
     private final NativeDownloadManager.DownloadTask task;
     private final ProgressCallback progressCallback;
@@ -56,6 +62,8 @@ public class RangeDownloader {
     private String partFilePath;
     private String finalFilePath;
     private long totalBytes = -1;
+    // OPT-20: 进度节流字段加锁（多 Range 线程共写，防竞态）
+    private final Object progressLock = new Object();
     private long lastProgressTime = 0;
     private long lastReportedBytes = 0;
     private long lastSpeedCalcTime = 0;
@@ -81,10 +89,8 @@ public class RangeDownloader {
         this.completedCallback = completedCallback;
         this.errorCallback = errorCallback;
 
-        this.client = new OkHttpClient.Builder()
-                .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-                .build();
+        // OPT-20: 复用共享连接池
+        this.client = SHARED_HTTP_CLIENT;
 
         this.downloadedBytes.set(task.startBytes);
     }
@@ -439,16 +445,19 @@ public class RangeDownloader {
 
                     // 上报进度（节流，每个 range 独立计算）
                     long now = System.currentTimeMillis();
-                    if (now - lastProgressTime >= PROGRESS_INTERVAL_MS) {
-                        long speedBps = 0;
-                        long elapsed = now - lastSpeedCalcTime;
-                        if (elapsed > 0) {
-                            speedBps = ((downloadedBytes.get() - lastReportedBytes) * 1000) / elapsed;
-                            lastReportedBytes = downloadedBytes.get();
-                            lastSpeedCalcTime = now;
+                    // OPT-20: 加锁防多 Range 线程竞态
+                    synchronized (progressLock) {
+                        if (now - lastProgressTime >= PROGRESS_INTERVAL_MS) {
+                            long speedBps = 0;
+                            long elapsed = now - lastSpeedCalcTime;
+                            if (elapsed > 0) {
+                                speedBps = ((downloadedBytes.get() - lastReportedBytes) * 1000) / elapsed;
+                                lastReportedBytes = downloadedBytes.get();
+                                lastSpeedCalcTime = now;
+                            }
+                            progressCallback.onProgress(task.taskId, downloadedBytes.get(), totalFileSize, speedBps);
+                            lastProgressTime = now;
                         }
-                        progressCallback.onProgress(task.taskId, downloadedBytes.get(), totalFileSize, speedBps);
-                        lastProgressTime = now;
                     }
                 }
             } finally {
@@ -492,16 +501,19 @@ public class RangeDownloader {
 
                 // 上报进度（节流）
                 long now = System.currentTimeMillis();
-                if (now - lastProgressTime >= PROGRESS_INTERVAL_MS) {
-                    long speedBps = 0;
-                    long elapsed = now - lastSpeedCalcTime;
-                    if (elapsed > 0) {
-                        speedBps = (bytesSinceLastCalc * 1000) / elapsed;
-                        bytesSinceLastCalc = 0;
-                        lastSpeedCalcTime = now;
+                // OPT-20: 加锁防竞态
+                synchronized (progressLock) {
+                    if (now - lastProgressTime >= PROGRESS_INTERVAL_MS) {
+                        long speedBps = 0;
+                        long elapsed = now - lastSpeedCalcTime;
+                        if (elapsed > 0) {
+                            speedBps = (bytesSinceLastCalc * 1000) / elapsed;
+                            bytesSinceLastCalc = 0;
+                            lastSpeedCalcTime = now;
+                        }
+                        progressCallback.onProgress(task.taskId, downloadedBytes.get(), totalBytes, speedBps);
+                        lastProgressTime = now;
                     }
-                    progressCallback.onProgress(task.taskId, downloadedBytes.get(), totalBytes, speedBps);
-                    lastProgressTime = now;
                 }
             }
         } finally {

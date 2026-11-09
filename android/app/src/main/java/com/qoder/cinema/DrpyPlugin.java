@@ -48,7 +48,17 @@ public class DrpyPlugin extends Plugin {
     private static final long MAX_RULE_BYTES = 8L * 1024 * 1024;
 
     /** 同 SpiderPlugin：Capacitor 桥接是单线程，重活必须进独立线程池 */
-    private final ExecutorService drpyExecutor = Executors.newCachedThreadPool();
+    // OPT-21: 有界线程池（core 2 / max 8 / queue 32），防突发并发线程爆炸
+    private final ExecutorService drpyExecutor = new java.util.concurrent.ThreadPoolExecutor(
+            2, 8, 60L, java.util.concurrent.TimeUnit.SECONDS,
+            new java.util.concurrent.LinkedBlockingQueue<>(32),
+            r -> {
+                Thread t = new Thread(r, "drpy-worker");
+                t.setDaemon(true);
+                return t;
+            },
+            new java.util.concurrent.ThreadPoolExecutor.AbortPolicy()
+    );
     private final Handler watchdog = new Handler(Looper.getMainLooper());
     private static final long LOAD_TIMEOUT_MS = 75_000;
     private static final long INVOKE_TIMEOUT_MS = 30_000;
@@ -67,24 +77,37 @@ public class DrpyPlugin extends Plugin {
             }
         };
         watchdog.postDelayed(timeoutTask, timeoutMs);
-        drpyExecutor.execute(() -> {
-            try {
-                task.run();
-                if (settled.compareAndSet(false, true)) {
-                    watchdog.removeCallbacks(timeoutTask);
+        try {
+            drpyExecutor.execute(() -> {
+                try {
+                    task.run();
+                    if (settled.compareAndSet(false, true)) {
+                        watchdog.removeCallbacks(timeoutTask);
+                    }
+                } catch (Throwable e) {
+                    if (settled.compareAndSet(false, true)) {
+                        watchdog.removeCallbacks(timeoutTask);
+                        Log.w(TAG, op + " failed", e);
+                        call.reject(label + "失败: " + e.getMessage());
+                    }
                 }
-            } catch (Exception e) {
-                if (settled.compareAndSet(false, true)) {
-                    watchdog.removeCallbacks(timeoutTask);
-                    Log.w(TAG, op + " failed", e);
-                    call.reject(label + "失败: " + e.getMessage());
-                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException rex) {
+            // OPT-21: 线程池满时明确报错
+            if (settled.compareAndSet(false, true)) {
+                watchdog.removeCallbacks(timeoutTask);
+                Log.w(TAG, op + " rejected (pool full)", rex);
+                call.reject(label + "繁忙（线程池满），请稍后重试");
             }
-        });
+        }
     }
 
     /** handle → 运行时 */
     private final Map<String, DrpyRuntime> loaded = new ConcurrentHashMap<>();
+    // OPT-19: 运行时 LRU 回收（上限 8 个，空闲超 10min 自动 close）
+    private static final int MAX_LOADED_RUNTIMES = 8;
+    private static final long IDLE_EVICTION_MS = 10 * 60 * 1000L;
+    private final Map<String, Long> lastAccessTime = new ConcurrentHashMap<>();
     /** 规则地址 → 已下载文件，避免重复下载 */
     private final Map<String, File> ruleCache = new ConcurrentHashMap<>();
     private int handleSeq = 0;
@@ -115,11 +138,49 @@ public class DrpyPlugin extends Plugin {
             String handle = "dp-" + (++handleSeq);
             // v1.8/CHG-27：ruleUrl 传入运行时——catvod 模块规则的相对 import 需要基地址
             DrpyRuntime runtime = new DrpyRuntime(getContext(), code, initExt, handle, ruleUrl);
+
+            // OPT-19: LRU 回收（超上限时关闭最久未使用的运行时）
+            if (loaded.size() >= MAX_LOADED_RUNTIMES) {
+                evictIdleRuntime();
+            }
+
             loaded.put(handle, runtime);
+            lastAccessTime.put(handle, System.currentTimeMillis());
             JSObject ret = new JSObject();
             ret.put("handle", handle);
             call.resolve(ret);
         });
+    }
+
+    // OPT-19: 回收最久未使用的运行时（空闲超 10min 优先）
+    private void evictIdleRuntime() {
+        long now = System.currentTimeMillis();
+        String oldestHandle = null;
+        long oldestTime = Long.MAX_VALUE;
+        for (Map.Entry<String, Long> entry : lastAccessTime.entrySet()) {
+            long idle = now - entry.getValue();
+            if (idle > IDLE_EVICTION_MS) {
+                // 优先回收空闲超时的
+                oldestHandle = entry.getKey();
+                break;
+            }
+            if (entry.getValue() < oldestTime) {
+                oldestTime = entry.getValue();
+                oldestHandle = entry.getKey();
+            }
+        }
+        if (oldestHandle != null) {
+            DrpyRuntime evicted = loaded.remove(oldestHandle);
+            lastAccessTime.remove(oldestHandle);
+            if (evicted != null) {
+                try {
+                    evicted.close();
+                    Log.i(TAG, "evicted idle runtime: " + oldestHandle);
+                } catch (Exception e) {
+                    Log.w(TAG, "failed to close evicted runtime", e);
+                }
+            }
+        }
     }
 
     /** invoke({ handle, method, arg? }) → { json, logs }；method ∈ home|category|detail|search|play */
@@ -134,6 +195,9 @@ public class DrpyPlugin extends Plugin {
             call.reject("drpy instance not found");
             return;
         }
+
+        // OPT-19: 刷新访问时间
+        lastAccessTime.put(handle, System.currentTimeMillis());
 
         runDrpy(call, "调用", INVOKE_TIMEOUT_MS, () -> {
             String json = target.invoke(method, arg);
@@ -150,6 +214,7 @@ public class DrpyPlugin extends Plugin {
         String handle = call.getString("handle");
         DrpyRuntime target = handle == null ? null : loaded.remove(handle);
         if (target != null) {
+            lastAccessTime.remove(handle); // OPT-19: 清理访问时间
             try (DrpyRuntime ignored = target) {
                 // close() 在 try-with-resources 中执行
             } catch (Exception e) {

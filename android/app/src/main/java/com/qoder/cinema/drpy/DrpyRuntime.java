@@ -59,18 +59,21 @@ public class DrpyRuntime implements AutoCloseable {
 
     private static final ExecutorService ENGINE_INIT = Executors.newSingleThreadExecutor();
 
+    // OPT-19: 共享 OkHttp 连接池（所有 DrpyRuntime 实例复用，避免每实例独占）
+    private static final OkHttpClient SHARED_HTTP_CLIENT = new OkHttpClient.Builder()
+            .connectTimeout(15_000, TimeUnit.MILLISECONDS)
+            .readTimeout(15_000, TimeUnit.MILLISECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build();
+
     /** 绑定返回/入参统一走 JSON 字符串，避免桥接层类型转换歧义 */
     private final QuickJSContext context;
     private final ExecutorService engineThread;
     private final File localFile;
     private final Map<String, String> localStore = new HashMap<>();
     private final ArrayDeque<String> logs = new ArrayDeque<>();
-    private final OkHttpClient http = new OkHttpClient.Builder()
-            .connectTimeout(15_000, TimeUnit.MILLISECONDS)
-            .readTimeout(15_000, TimeUnit.MILLISECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .build();
+    private final OkHttpClient http = SHARED_HTTP_CLIENT;
 
     private volatile boolean closed = false;
 

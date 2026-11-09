@@ -98,8 +98,7 @@ function onClick(): void {
   align-items: center;
   border-radius: 6px;
   background-color: var(--color-danger-soft);
-  -webkit-backdrop-filter: blur(8px);
-  backdrop-filter: blur(8px);
+  /* OPT-22: 去 backdrop-filter（低端 WebView 合成开销大） */
   color: var(--color-danger);
   font: var(--font-weight-semibold) 10.5px / 1 var(--font-family-number);
 }

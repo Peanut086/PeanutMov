@@ -3,12 +3,10 @@ package com.qoder.cinema;
 import android.util.Log;
 
 import java.io.BufferedReader;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -19,7 +17,17 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+import okhttp3.ResponseBody;
 
 /**
  * 本地代理服务（TVBox 约定端口 9978）
@@ -73,6 +81,26 @@ public final class SpiderProxyServer {
             new java.util.concurrent.ConcurrentHashMap<>();
     private static final java.util.concurrent.ConcurrentHashMap<String, Object> PASS_INFLIGHT =
             new java.util.concurrent.ConcurrentHashMap<>();
+
+    // OPT-15: 共享 OkHttp 连接池（替代 HttpURLConnection 逐次建连）
+    private static final OkHttpClient httpClient = new OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .build();
+
+    // OPT-15: 有界线程池（替代每连接 new Thread，防 HLS 高频分片线程爆炸）
+    private static final ExecutorService workerPool = new ThreadPoolExecutor(
+            4, 16, 60L, TimeUnit.SECONDS,
+            new LinkedBlockingQueue<>(64),
+            r -> {
+                Thread t = new Thread(r, "spider-proxy-worker");
+                t.setDaemon(true);
+                return t;
+            },
+            new ThreadPoolExecutor.AbortPolicy()
+    );
 
     private static final class PassEntry {
         final Object[] payload;
@@ -191,9 +219,13 @@ public final class SpiderProxyServer {
                 Log.i(TAG, "local proxy listening on " + server.getInetAddress() + ":" + PORT);
                 while (true) {
                     Socket socket = server.accept();
-                    Thread worker = new Thread(() -> handle(socket), "spider-proxy-conn");
-                    worker.setDaemon(true);
-                    worker.start();
+                    try {
+                        // OPT-15: 提交到有界线程池（拒绝时关 socket，防线程爆炸）
+                        workerPool.execute(() -> handle(socket));
+                    } catch (RejectedExecutionException rex) {
+                        Log.w(TAG, "worker pool full, rejecting connection");
+                        try { socket.close(); } catch (IOException ignored) {}
+                    }
                 }
             } catch (Throwable e) {
                 if (!STARTED.get()) return;
@@ -427,39 +459,34 @@ public final class SpiderProxyServer {
     }
 
     private static Object[] fetchPassthrough(String url) {
-        try {
-            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
-            // P1-3: 超时从 8s 提到 15s（冷启动首抓 CDN 可达 ~7s）
-            conn.setConnectTimeout(15_000);
-            conn.setReadTimeout(15_000);
-            conn.setInstanceFollowRedirects(true);
-            conn.setRequestProperty("User-Agent",
-                    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
-            int status = conn.getResponseCode();
+        Request request = new Request.Builder()
+                .url(url)
+                .header("User-Agent",
+                        "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
+                .build();
+        try (Response response = httpClient.newCall(request).execute()) {
+            int status = response.code();
             if (status < 200 || status >= 300) {
                 Log.w(TAG, "passthrough upstream " + status + " url=" + url);
                 return null;
             }
 
-            // P1-3: 先读响应头判断 content-type，决定是否流式
-            String contentType = conn.getContentType();
+            String contentType = response.header("Content-Type");
             boolean isM3u8 = contentType != null && contentType.toLowerCase().contains("mpegurl");
 
-            java.io.InputStream in = status >= 200 && status < 400 ? conn.getInputStream() : conn.getErrorStream();
-
-            // 对于 m3u8，必须整包读取以 absolutize；对于其他内容，也整包读取但用更大缓冲区
-            ByteArrayOutputStream buf = new ByteArrayOutputStream(isM3u8 ? 8192 : 65536);
-            byte[] chunk = new byte[8192];
-            int n;
-            while ((n = in.read(chunk)) > 0) buf.write(chunk, 0, n);
-            in.close();
-            String body = new String(buf.toByteArray(), StandardCharsets.UTF_8);
+            ResponseBody body = response.body();
+            if (body == null) {
+                Log.w(TAG, "passthrough empty body url=" + url);
+                return null;
+            }
+            byte[] bytes = body.bytes();
+            String text = new String(bytes, StandardCharsets.UTF_8);
 
             Map<String, String> headers = new LinkedHashMap<>();
-            String rewritten = body;
-            if (body.stripLeading().startsWith("#EXTM3U")) {
+            String rewritten = text;
+            if (text.stripLeading().startsWith("#EXTM3U")) {
                 headers.put("Content-Type", "application/vnd.apple.mpegurl");
-                rewritten = absolutize(body, url);
+                rewritten = absolutize(text, url);
             } else {
                 headers.put("Content-Type", contentType != null ? contentType : "text/plain; charset=utf-8");
             }
@@ -472,35 +499,37 @@ public final class SpiderProxyServer {
     }
 
     /**
-     * P1-3: 流式透传（不缓存整个响应体到内存）
+     * OPT-15: 流式透传（不缓存整个响应体到内存）
      * 返回 [InputStream, contentType, contentLength]，调用方负责关闭流
      */
     private static Object[] fetchPassthroughStreaming(String url) {
-        HttpURLConnection conn = null;
+        Request request = new Request.Builder()
+                .url(url)
+                .header("User-Agent",
+                        "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36")
+                .build();
         try {
-            conn = (HttpURLConnection) new URL(url).openConnection();
-            conn.setConnectTimeout(15_000);
-            conn.setReadTimeout(15_000);
-            conn.setInstanceFollowRedirects(true);
-            conn.setRequestProperty("User-Agent",
-                    "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36");
-
-            int status = conn.getResponseCode();
+            Response response = httpClient.newCall(request).execute();
+            int status = response.code();
             if (status < 200 || status >= 300) {
                 Log.w(TAG, "passthrough streaming upstream " + status + " url=" + url);
-                conn.disconnect();
+                response.close();
                 return null;
             }
 
-            String contentType = conn.getContentType();
-            long contentLength = conn.getContentLengthLong();
-            InputStream in = conn.getInputStream();
+            String contentType = response.header("Content-Type");
+            long contentLength = response.body() != null ? response.body().contentLength() : -1;
+            ResponseBody body = response.body();
+            if (body == null) {
+                response.close();
+                return null;
+            }
+            InputStream in = body.byteStream();
 
             Log.i(TAG, "passthrough streaming " + status + " ct=" + contentType + " len=" + contentLength + " url=" + url);
             return new Object[]{in, contentType, contentLength};
         } catch (Exception e) {
             Log.w(TAG, "passthrough streaming failed: " + e + " url=" + url);
-            if (conn != null) conn.disconnect();
             return null;
         }
     }
