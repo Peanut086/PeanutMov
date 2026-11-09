@@ -13,6 +13,7 @@ import { HlsEngine } from '@/player/HlsEngine';
 import { OrientationController } from '@/player/OrientationController';
 import { VideoEngine, type VideoEngineEvents } from '@/player/VideoEngine';
 import { normalizeFormat } from '@/sources/base/normalize';
+import { guessFormatFromUrl } from '@/shared/url';
 import { deviceService } from '@/services/deviceService';
 import { setPlayerImmersive } from '@/native/playerUi';
 import type { PlaybackSource } from '@/types';
@@ -84,6 +85,8 @@ function engineEvents(): VideoEngineEvents {
     onError: (error) => {
       state.value = 'error';
       errorMessage.value = error.message;
+      if (channelTimer !== null) { clearTimeout(channelTimer); channelTimer = null; }
+      emit('timeout', props.url ?? '');
     },
   };
 }
@@ -101,7 +104,14 @@ async function loadChannel(url: string): Promise<void> {
   if (!container) return;
   fullscreenController.setElement(container);
 
-  // v1.7/CHG-21：起播 5s 超时 → 通知外层切同组下一路（FR-55）
+  if (url.startsWith('rtmp://')) {
+    state.value = 'error';
+    errorMessage.value = '当前环境不支持 RTMP 协议';
+    emit('timeout', url);
+    return;
+  }
+
+  // v1.7/CHG-21：起播超时 → 通知外层切同组下一路（FR-55）
   if (channelTimer !== null) clearTimeout(channelTimer);
   channelTimer = setTimeout(() => {
     channelTimer = null;
@@ -109,7 +119,9 @@ async function loadChannel(url: string): Promise<void> {
     emit('timeout', url);
   }, TIMEOUT_LIVE_CHANNEL_MS);
 
-  const format = normalizeFormat(url, 'mp4');
+  // FIX-L3: 直播场景下 URL 无法识别格式时默认按 HLS 尝试（IPTV 主流协议）
+  const detected = guessFormatFromUrl(url);
+  const format = detected ?? (normalizeFormat(url, 'mp4') === 'mp4' ? 'hls' : normalizeFormat(url, 'mp4'));
   const source: PlaybackSource = {
     url,
     format,
@@ -135,14 +147,12 @@ async function loadChannel(url: string): Promise<void> {
       channelTimer = null;
     }
   } catch (e) {
-    if (engine !== next) return; // 频道已再次切换，废弃本次结果
+    if (engine !== next) return;
     logger.warn('直播频道加载失败', url, e);
     state.value = 'error';
     errorMessage.value = e instanceof Error ? e.message : '频道加载失败';
-    if (channelTimer !== null) {
-      clearTimeout(channelTimer);
-      channelTimer = null;
-    }
+    if (channelTimer !== null) { clearTimeout(channelTimer); channelTimer = null; }
+    emit('timeout', url);
   }
 }
 

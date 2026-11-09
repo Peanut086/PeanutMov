@@ -224,6 +224,8 @@ export const LIVE_SYNC_COUNT = 3;
 export const TIMEOUT_LIVE_CHANNEL_MS = 8000;
 /** 直播失效判定：同频道连续起播失败次数 */
 export const LIVE_DEAD_STREAK = 2;
+/** 直播自动切路上限（达到后停止切路，避免死循环） */
+export const LIVE_AUTO_SWITCH_MAX = 5;
 
 /* ---------- v1.7：弹幕（CHG-22） ---------- */
 /** 同屏弹幕密度上限 */

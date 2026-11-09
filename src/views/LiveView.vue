@@ -34,7 +34,7 @@ import {
   extrasOfUrl,
 } from '@/services/channelIdentity';
 import { kvRepo } from '@/db/repositories/kvRepo';
-import { LIVE_DEAD_STREAK, EPG_PREFETCH_MAX, CATCHUP_MAX_DAYS } from '@/shared/constants';
+import { LIVE_DEAD_STREAK, LIVE_AUTO_SWITCH_MAX, EPG_PREFETCH_MAX, CATCHUP_MAX_DAYS } from '@/shared/constants';
 import { CATCHUP_TOKENS, validateCatchupTemplate } from '@/shared/catchupTemplate';
 import { useToast } from '@/composables/useToast';
 import { logger } from '@/shared/logger';
@@ -73,6 +73,10 @@ const favoriteNames = ref<Set<string>>(new Set());
 /** 失效频道：起播超时累计 ≥ LIVE_DEAD_STREAK 次沉底标记 */
 const deadNames = ref<Set<string>>(new Set());
 const failStreak = new Map<string, number>();
+/** FIX-L1: 自动切路计数器（达到上限后停止切路，避免死循环） */
+const autoSwitchCount = ref(0);
+/** FIX-L5: 全源不可用时展示引导卡片 */
+const allChannelsDead = ref(false);
 
 async function loadFavorites(): Promise<void> {
   const list = await kvRepo.get<string[]>(KV_LIVE_FAVORITES);
@@ -132,7 +136,7 @@ watch(
   },
 );
 
-/** 起播超时/失败：累计失效 → 切同组下一路（同名多路优先） */
+/** 起播超时/失败：累计失效 → 切同组下一路（同名多路优先，排除 dead 频道） */
 function onChannelTimeout(failedUrl: string): void {
   const flat = groups.value.flatMap((g) => g.channels);
   const failed = flat.find((c) => c.url === failedUrl) ?? null;
@@ -141,12 +145,30 @@ function onChannelTimeout(failedUrl: string): void {
     failStreak.set(failed.name, streak);
     if (streak >= LIVE_DEAD_STREAK) deadNames.value = new Set([...deadNames.value, failed.name]);
   }
-  const sameName = failed ? flat.filter((c) => c.name === failed.name && c.url !== failedUrl) : [];
+
+  autoSwitchCount.value++;
+  if (autoSwitchCount.value >= LIVE_AUTO_SWITCH_MAX) {
+    allChannelsDead.value = true;
+    playing.value = null;
+    toast.error('多个频道无法播放，请检查网络或更换直播源');
+    return;
+  }
+
+  const candidates = flat.filter((c) => !isDead(c.name) && c.url !== failedUrl);
+  if (candidates.length === 0) {
+    allChannelsDead.value = true;
+    playing.value = null;
+    toast.error('当前直播源所有频道均不可用，请更换直播源');
+    return;
+  }
+
+  const sameName = failed ? candidates.filter((c) => c.name === failed.name) : [];
   const idx = flat.findIndex((c) => c.url === failedUrl);
-  const next = sameName[0] ?? (idx >= 0 ? flat[idx + 1] : undefined) ?? flat[0];
-  if (next && next.url !== failedUrl) {
+  const nextInOrder = candidates.find((c) => flat.indexOf(c) > idx);
+  const next = sameName[0] ?? nextInOrder ?? candidates[0];
+
+  if (next) {
     toast.info(`频道无响应，已切换到「${next.name}」`);
-    // REV-18: 超时自动切路时也需设置过渡态，与 playChannel 行为一致
     channelSwitching.value = true;
     playing.value = { url: next.url, title: next.name };
   } else if (failed) {
@@ -446,7 +468,8 @@ async function loadPrefs(): Promise<void> {
 }
 
 function playChannel(channel: { name: string; url: string }): void {
-  // OPT-12: 切换频道时先淡出
+  autoSwitchCount.value = 0;
+  allChannelsDead.value = false;
   if (playing.value && playing.value.url !== channel.url) {
     channelSwitching.value = true;
   }
@@ -456,6 +479,35 @@ function playChannel(channel: { name: string; url: string }): void {
 /** OPT-12: 新流可播放后淡入 */
 function onPlayerCanplay(): void {
   channelSwitching.value = false;
+}
+
+/** FIX-L5: 重试当前直播源所有频道 */
+function retryAllChannels(): void {
+  autoSwitchCount.value = 0;
+  allChannelsDead.value = false;
+  deadNames.value = new Set();
+  failStreak.clear();
+  void reload();
+}
+
+/** FIX-L5: 切换到下一个直播源 */
+function switchToNextSource(): void {
+  if (records.value.length <= 1) return;
+  const idx = records.value.findIndex((r) => r.id === activeId.value);
+  const nextIdx = (idx + 1) % records.value.length;
+  const nextRecord = records.value[nextIdx];
+  if (nextRecord) {
+    autoSwitchCount.value = 0;
+    allChannelsDead.value = false;
+    deadNames.value = new Set();
+    failStreak.clear();
+    void selectRecord(nextRecord.id);
+  }
+}
+
+/** FIX-L5: 跳转到导入直播源页面 */
+function goImportSource(): void {
+  void router.push('/settings/sources/import');
 }
 
 function openEpgFull(): void {
@@ -751,6 +803,28 @@ async function clearCatchup(): Promise<void> {
           @timeout="onChannelTimeout"
           @canplay="onPlayerCanplay"
         />
+
+        <!-- FIX-L5: 全源不可用时展示引导卡片 -->
+        <div v-if="allChannelsDead" class="live-dead-guide">
+          <p class="live-dead-guide__title">当前直播源不可用</p>
+          <p class="live-dead-guide__desc">所有频道均无法播放，可能是网络问题或直播源已失效</p>
+          <div class="live-dead-guide__actions">
+            <button class="btn btn--primary btn--sm" type="button" @click="retryAllChannels">
+              重试
+            </button>
+            <button
+              v-if="records.length > 1"
+              class="btn btn--ghost btn--sm"
+              type="button"
+              @click="switchToNextSource"
+            >
+              切换直播源
+            </button>
+            <button class="btn btn--ghost btn--sm" type="button" @click="goImportSource">
+              导入新直播源
+            </button>
+          </div>
+        </div>
 
         <!-- v1.7/CHG-23：EPG 节目单（现在播 / 接下来） -->
         <div v-if="epgNow" class="live-epg">
@@ -1408,5 +1482,36 @@ async function clearCatchup(): Promise<void> {
 
 .live-sort__reset {
   align-self: center;
+}
+
+/* FIX-L5: 全源不可用引导卡片 */
+.live-dead-guide {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-5) var(--space-4);
+  margin: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-surface-elevated);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.live-dead-guide__title {
+  font: var(--text-body-strong);
+  color: var(--color-text-primary);
+}
+
+.live-dead-guide__desc {
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.live-dead-guide__actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: center;
 }
 </style>
