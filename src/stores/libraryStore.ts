@@ -8,7 +8,7 @@ import { computed, ref, watch } from 'vue';
 
 import { libraryService } from '@/services/libraryService';
 import { EMPTY_LIBRARY_FILTERS, markSourceFailedByError } from '@/services/libraryService';
-import { failedSourceIds, groupSearchResults, selectRepresentative } from '@/services/searchAggregate';
+import { failedSourceIds, groupSearchResults, normalizeSearchKeyword, selectRepresentative } from '@/services/searchAggregate';
 import { playabilityService } from '@/services/playabilityService';
 import { lineHealthService } from '@/services/lineHealthService';
 import { appEvents } from '@/services/events';
@@ -55,6 +55,8 @@ export const useLibraryStore = defineStore('library', () => {
   const searchFilteredOut = ref(0);
   /** SO-02：全局截止（28s）后因超时未启动搜索的源 ID */
   const searchSkippedIds = ref<string[]>([]);
+  /** P0-2：搜不到时自动建议的尾词（如"今天也是太阳雨"→"太阳雨"） */
+  const searchTailSuggestion = ref<string | null>(null);
   /* ---------- v2.0/P0-P1：聚合检索重构 ---------- */
   /** 未去重的完整结果（分组视图的数据源） */
   const searchResultsAll = ref<MediaItem[]>([]);
@@ -412,7 +414,7 @@ export const useLibraryStore = defineStore('library', () => {
     keyword: string,
     opts?: { forceAll?: boolean; sourceIds?: string[] },
   ): Promise<void> {
-    const trimmed = keyword.trim();
+    const trimmed = normalizeSearchKeyword(keyword);
     searchKeyword.value = keyword;
     searchController?.abort();
     searchController = null;
@@ -420,6 +422,7 @@ export const useLibraryStore = defineStore('library', () => {
       searchResultsAll.value = [];
       searchFailed.value = [];
       searchState.value = 'idle';
+      searchTailSuggestion.value = null;
       return;
     }
     searchState.value = 'loading';
@@ -428,6 +431,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchResultsAll.value = [];
     searchFailed.value = [];
     searchSkippedIds.value = [];
+    searchTailSuggestion.value = null;
     try {
       const result = await libraryService.search({
         keyword: trimmed,
@@ -471,6 +475,15 @@ export const useLibraryStore = defineStore('library', () => {
       }
 
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
+
+      // P0-2：搜不到时自动建议尾词（关键词 ≥ 5 字时取后 3 字）
+      if (searchState.value === 'empty' && trimmed.length >= 5) {
+        const tail = trimmed.slice(-3);
+        // 只有当尾词与关键词不同时才建议
+        if (tail !== trimmed) {
+          searchTailSuggestion.value = tail;
+        }
+      }
     } catch (e) {
       if (isCanceled(e) || controller.signal.aborted) return;
       searchResultsAll.value = [];
@@ -741,6 +754,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchFilteredOut,
     searchSkippedIds,
     continueSearchSkipped,
+    searchTailSuggestion,
     searchViewMode,
     searchScope,
     searchSelectedSourceIds,

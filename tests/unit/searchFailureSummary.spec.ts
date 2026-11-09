@@ -160,10 +160,11 @@ describe('SEARCH_FAILURE_LABELS（分类标签穷举）', () => {
     'quarantined',
     'spider_mismatch',
     'auth',
+    'keyword_ignored',
     'unknown',
   ];
 
-  it('10 类失败原因都有非空标签', () => {
+  it('11 类失败原因都有非空标签', () => {
     for (const kind of KINDS) {
       expect(SEARCH_FAILURE_LABELS[kind].trim().length).toBeGreaterThan(0);
     }

@@ -229,6 +229,27 @@ export function scoreRelevance(title: string, keyword: string): number {
   return 0;
 }
 
+/**
+ * P0-1：判定一批搜索结果是否属于"源忽略关键词"（典型：采集站关闭搜索，返回最新目录）。
+ *
+ * 判定条件（保守，避免误杀演员搜索）：
+ * - 返回条数 ≥ `minCount`（默认 15，量子资源等采集站固定返回 20）；
+ * - 所有条目标题对关键词的相关度均为 0（既不包含、也不分词命中）。
+ *
+ * 命中即视为"源忽略关键词"，调用方应过滤这批结果（不上屏、不落库、不判活）。
+ */
+export function isKeywordIgnored(
+  items: ReadonlyArray<{ title: string }>,
+  keyword: string,
+  minCount = 15,
+): boolean {
+  if (items.length < minCount) return false;
+  for (const item of items) {
+    if (scoreRelevance(item.title, keyword) > 0) return false;
+  }
+  return true;
+}
+
 /** 按相关度降序稳定排序（同分保持到达顺序） */
 export function sortByRelevance(items: MediaItem[], keyword: string): MediaItem[] {
   if (items.length <= 1) return [...items];
@@ -258,6 +279,7 @@ export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
   quarantined: '爬虫被隔离',
   spider_mismatch: '爬虫类缺失',
   auth: '需要登录',
+  keyword_ignored: '源忽略关键词',
   unknown: '原因未知',
 };
 
@@ -321,4 +343,16 @@ export function summarizeSearchFailures(
       .map((reason) => `${reason.count} ${reason.label}`)
       .join(' · '),
   };
+}
+
+/**
+ * P0-2：关键词规范化
+ *
+ * 去除用户可能从标题复制时带入的标点符号，提取纯文本关键词。
+ * 例如：《今天是太阳雨》 → 今天是太阳雨
+ */
+export function normalizeSearchKeyword(raw: string): string {
+  return raw
+    .replace(/[《》「」【】\[\]（）()〈〉〝〞〟‟‟″＂]/g, '')
+    .trim();
 }

@@ -105,8 +105,15 @@ const zeroCandidates = computed(
 );
 /** SO-02：有因全局截止而未搜索的源 */
 const hasSkipped = computed(() => library.searchSkippedIds.length > 0);
+/** P0-1：忽略关键词的源数量 */
+const keywordIgnoredCount = computed(() =>
+  library.searchFailed.filter((f) => f.error.code === 'E_KEYWORD_IGNORED').length,
+);
 const emptyDescription = computed(() => {
   if (zeroCandidates.value) return `${library.searchFilteredOut} 个启用源因体检失效或类型不支持被跳过，可强制重试或检查源`;
+  if (keywordIgnoredCount.value > 0 && library.searchResults.length === 0) {
+    return `${keywordIgnoredCount.value} 个源返回的内容与关键词无关（已过滤），其余源未命中`;
+  }
   if (hasSkipped.value) return `仅搜索了 ${library.searchCandidates - library.searchSkippedIds.length} / ${library.searchCandidates} 个源，剩余 ${library.searchSkippedIds.length} 个因超时未搜索`;
   return '换个关键词，或检查源是否启用';
 });
@@ -257,6 +264,14 @@ async function forceSearch(): Promise<void> {
   }
 }
 
+/** P0-2：用尾词建议重新搜索（关键词过长无结果时缩短搜索） */
+function searchWithTailSuggestion(): void {
+  const tail = library.searchTailSuggestion;
+  if (!tail) return;
+  keyword.value = tail;
+  void runSearch(tail, false);
+}
+
 /* ---------- v1.7/CHG-20：范围筛选与视图切换 ---------- */
 
 const scopeOptions: Array<{ value: SearchScope; label: string }> = [
@@ -341,14 +356,23 @@ const otherGroups = computed(() =>
   library.searchGroups.filter((g) => scoreRelevance(g.title, library.searchKeyword) === 0),
 );
 
-/** 无相关结果时自动展开"其它匹配" */
+/** P0-1：相关度 0 的结果默认折叠，不再自动展开 */
 const otherGroupsExpanded = ref(false);
-watch(relevantGroups, (groups) => {
-  if (groups.length === 0 && otherGroups.value.length > 0) otherGroupsExpanded.value = true;
-}, { immediate: true });
 
 function toggleOtherGroups(): void {
   otherGroupsExpanded.value = !otherGroupsExpanded.value;
+}
+
+/** P0-1：平铺视图也按相关度分流 */
+const relevantFlat = computed(() =>
+  library.searchResults.filter((item) => scoreRelevance(item.title, library.searchKeyword) > 0),
+);
+const otherFlat = computed(() =>
+  library.searchResults.filter((item) => scoreRelevance(item.title, library.searchKeyword) === 0),
+);
+const otherFlatExpanded = ref(false);
+function toggleOtherFlat(): void {
+  otherFlatExpanded.value = !otherFlatExpanded.value;
 }
 
 function togglePlayableOnly(): void {
@@ -500,6 +524,18 @@ function openSourceManage(): void {
           :action-text="zeroCandidates ? '仍要搜索全部源' : '返回'"
           @action="zeroCandidates ? forceSearch() : goBack()"
         />
+        <!-- P0-2：尾词建议（关键词过长且无结果时，建议缩短搜索） -->
+        <button
+          v-if="library.searchTailSuggestion"
+          class="search-tail-suggestion"
+          type="button"
+          @click="searchWithTailSuggestion"
+        >
+          <svg class="search-tail-suggestion__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M9 18l6-6-6-6" />
+          </svg>
+          试试搜索「<span class="search-tail-suggestion__keyword">{{ library.searchTailSuggestion }}</span>」
+        </button>
         <!-- CHG-15：0 源参与时给出诊断与去路；失败明细在空结果下也要可查 -->
         <button
           v-if="zeroCandidates"
@@ -682,38 +718,72 @@ function openSourceManage(): void {
             </div>
           </template>
 
-          <!-- 平铺视图：按相关度排序的单条列表 -->
-          <ul v-else class="result-list">
-            <li v-for="item in library.searchResults" :key="item.id">
-              <button class="result-row" type="button" @click="openDetail(item)">
-                <span class="result-row__poster">
-                  <PosterImage :src="item.posterUrl" :alt="item.title" />
-                </span>
-                <span class="result-row__body">
-                  <span class="result-row__title">
-                    {{ item.title }}
-                    <span
-                      v-if="playabilityStatus(item.id) !== 'unknown'"
-                      class="play-dot"
-                      :class="playabilityDotClass(playabilityStatus(item.id))"
-                    />
+          <!-- 平铺视图：按相关度分流，无关项折叠 -->
+          <template v-else>
+            <ul class="result-list">
+              <li v-for="item in relevantFlat" :key="item.id">
+                <button class="result-row" type="button" @click="openDetail(item)">
+                  <span class="result-row__poster">
+                    <PosterImage :src="item.posterUrl" :alt="item.title" />
                   </span>
-                  <span class="result-row__meta">
-                    {{ itemMeta(item) }}
-                    <span v-if="item.tags.length > 0" class="item-tags">
-                      <span v-for="tag in item.tags.slice(0, 3)" :key="tag" class="item-tag">{{ tag }}</span>
+                  <span class="result-row__body">
+                    <span class="result-row__title">
+                      {{ item.title }}
+                      <span
+                        v-if="playabilityStatus(item.id) !== 'unknown'"
+                        class="play-dot"
+                        :class="playabilityDotClass(playabilityStatus(item.id))"
+                      />
+                    </span>
+                    <span class="result-row__meta">
+                      {{ itemMeta(item) }}
+                      <span v-if="item.tags.length > 0" class="item-tags">
+                        <span v-for="tag in item.tags.slice(0, 3)" :key="tag" class="item-tag">{{ tag }}</span>
+                      </span>
                     </span>
                   </span>
-                </span>
-                <span class="result-row__tail">
-                  <span v-if="ratingText(item)" class="rating-tag" :aria-label="`评分 ${ratingText(item)}`">
-                    {{ ratingText(item) }}
+                  <span class="result-row__tail">
+                    <span v-if="ratingText(item)" class="rating-tag" :aria-label="`评分 ${ratingText(item)}`">
+                      {{ ratingText(item) }}
+                    </span>
+                    <IconChevron :size="16" class="result-row__chevron" />
                   </span>
-                  <IconChevron :size="16" class="result-row__chevron" />
-                </span>
+                </button>
+              </li>
+            </ul>
+
+            <div v-if="otherFlat.length > 0" class="other-groups-section">
+              <button class="other-groups-toggle" type="button" @click="toggleOtherFlat">
+                其它匹配（{{ otherFlat.length }}）
+                <IconChevron :size="14" class="other-groups-toggle__arrow" :class="{ 'other-groups-toggle__arrow--open': otherFlatExpanded }" />
               </button>
-            </li>
-          </ul>
+              <ul v-if="otherFlatExpanded" class="result-list result-list--muted">
+                <li v-for="item in otherFlat" :key="item.id">
+                  <button class="result-row" type="button" @click="openDetail(item)">
+                    <span class="result-row__poster">
+                      <PosterImage :src="item.posterUrl" :alt="item.title" />
+                    </span>
+                    <span class="result-row__body">
+                      <span class="result-row__title">
+                        {{ item.title }}
+                        <span
+                          v-if="playabilityStatus(item.id) !== 'unknown'"
+                          class="play-dot"
+                          :class="playabilityDotClass(playabilityStatus(item.id))"
+                        />
+                      </span>
+                      <span class="result-row__meta">
+                        {{ itemMeta(item) }}
+                      </span>
+                    </span>
+                    <span class="result-row__tail">
+                      <IconChevron :size="16" class="result-row__chevron" />
+                    </span>
+                  </button>
+                </li>
+              </ul>
+            </div>
+          </template>
         </section>
 
         <div v-if="isSearching" class="search-progress" role="status">
@@ -1282,6 +1352,39 @@ function openSourceManage(): void {
 
 .search-diagnose:active {
   background-color: rgba(251, 191, 36, 0.22);
+}
+
+/* P0-2：尾词建议按钮 */
+.search-tail-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 44px;
+  margin-top: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(59, 130, 246, 0.22);
+  background-color: rgba(59, 130, 246, 0.08);
+  color: var(--color-info);
+  font: var(--text-caption);
+  transition: var(--transition-color);
+}
+
+.search-tail-suggestion__icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.search-tail-suggestion__keyword {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-info);
+}
+
+.search-tail-suggestion:active {
+  background-color: rgba(59, 130, 246, 0.16);
 }
 
 /* OPT-04：失败源面板与上下内容的间距（面板自身样式在组件内） */

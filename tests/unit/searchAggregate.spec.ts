@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { groupSearchResults, scoreRelevance, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
+import { groupSearchResults, isKeywordIgnored, normalizeSearchKeyword, scoreRelevance, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
 import type { MediaItem } from '@/types';
 
 function makeItem(overrides: Partial<MediaItem> & { sourceId: string; title: string }): MediaItem {
@@ -192,5 +192,51 @@ describe('titleDedupKey（CHG-28：平铺去重含年份）', () => {
     expect(titleDedupKey('Big Buck', 2020)).toBe(titleDedupKey('bigbuck', 2020));
     expect(titleDedupKey('未知片', null)).toBe(titleDedupKey('未知片', null));
     expect(titleDedupKey('未知片', null)).not.toBe(titleDedupKey('未知片', 2020));
+  });
+});
+
+describe('isKeywordIgnored（P0-1：源忽略关键词检测）', () => {
+  it('返回数量 < minCount 时不判定为忽略', () => {
+    const items = [
+      makeItem({ sourceId: 'a', title: '完全不相关的标题' }),
+      makeItem({ sourceId: 'a', title: '另一个无关标题' }),
+    ];
+    expect(isKeywordIgnored(items, '太阳雨', 15)).toBe(false);
+  });
+
+  it('数量足够但有任何相关项时不判定为忽略', () => {
+    const items = Array.from({ length: 20 }, (_, i) =>
+      makeItem({ sourceId: 'a', title: i === 0 ? '今天是太阳雨' : `无关标题${i}` }),
+    );
+    expect(isKeywordIgnored(items, '太阳雨', 15)).toBe(false);
+  });
+
+  it('数量足够且全部无关时判定为忽略', () => {
+    const items = Array.from({ length: 20 }, (_, i) =>
+      makeItem({ sourceId: 'a', title: `找新影视片 ${String(i).padStart(3, '0')}` }),
+    );
+    expect(isKeywordIgnored(items, '太阳雨', 15)).toBe(true);
+  });
+});
+
+describe('normalizeSearchKeyword（P0-2：关键词规范化）', () => {
+  it('去除书名号', () => {
+    expect(normalizeSearchKeyword('《今天是太阳雨》')).toBe('今天是太阳雨');
+  });
+
+  it('去除各种括号和引号', () => {
+    expect(normalizeSearchKeyword('【庆余年】')).toBe('庆余年');
+    expect(normalizeSearchKeyword('[三体]')).toBe('三体');
+    expect(normalizeSearchKeyword('（流浪地球）')).toBe('流浪地球');
+    expect(normalizeSearchKeyword('(变形金刚)')).toBe('变形金刚');
+  });
+
+  it('保留核心文本并 trim', () => {
+    expect(normalizeSearchKeyword('  《坏线路验证片》  ')).toBe('坏线路验证片');
+  });
+
+  it('空字符串返回空', () => {
+    expect(normalizeSearchKeyword('')).toBe('');
+    expect(normalizeSearchKeyword('《》')).toBe('');
   });
 });

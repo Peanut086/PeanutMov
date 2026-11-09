@@ -39,6 +39,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   E_DB: '本地数据读写失败，请重试',
   E_VERSION_UNSUPPORTED: '数据版本不支持，请升级 App',
   E_CANCELED: '已取消',
+  E_KEYWORD_IGNORED: '源未返回与关键词相关的内容',
 };
 
 /* ---------- 可重试性（技术方案第 15 章"可重试"列） ---------- */

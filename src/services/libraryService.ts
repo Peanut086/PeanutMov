@@ -32,6 +32,7 @@ import { mediaIdOf } from '@/shared/id';
 import { resolveSearchTimeoutMs } from '@/shared/searchBudget';
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { classifySourceFailure, isTransientFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
+import { isKeywordIgnored } from '@/services/searchAggregate';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
 import type {
@@ -674,6 +675,17 @@ export const libraryService: LibraryService = {
       const settleOne = async (source: Source, index: number): Promise<void> => {
         try {
           const items = await searchOneSource(source, keyword, params.signal, pageSize);
+          // P0-1：识别"源忽略关键词"（采集站关闭搜索，返回目录页冒充结果）
+          // 命中则不上屏、不落库、不判活，记一条 keyword_ignored 失败
+          if (isKeywordIgnored(items, keyword)) {
+            const shape = new AppError('E_KEYWORD_IGNORED', '源未返回与关键词相关的内容', {
+              detail: source.name,
+            }).toShape();
+            failed.push({ sourceId: source.id, error: shape });
+            done += 1;
+            params.onPartial?.({ sourceId: source.id, items: [], error: shape, done, total });
+            return;
+          }
           // P0-3：搜索能返回（哪怕 0 条）就是「源活着」的强证据
           calibrateAlive(source.id);
           const visible = hideDemo ? items.filter((item) => !item.isDemo) : items;
@@ -740,8 +752,10 @@ export const libraryService: LibraryService = {
     // SO-02：全局截止后未启动的源
     const skippedSourceIds = enabled.slice(launched).map((s) => s.id);
 
-    if (merged.length === 0 && failed.length > 0 && failed.length + skippedSourceIds.length === enabled.length && enabled.length > 0) {
-      const first = failed[0];
+    // P0-1：keyword_ignored 不算"真失败"，不触发错误抛出
+    const realFailures = failed.filter((f) => f.error.code !== 'E_KEYWORD_IGNORED');
+    if (merged.length === 0 && realFailures.length > 0 && realFailures.length + skippedSourceIds.length === enabled.length && enabled.length > 0) {
+      const first = realFailures[0];
       if (first) {
         throw new AppError(first.error.code, first.error.message, {
           detail: first.error.detail,

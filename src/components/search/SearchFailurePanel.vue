@@ -36,7 +36,15 @@ const props = withDefaults(
 
 const emit = defineEmits<{ retry: [] }>();
 
-const summary = computed(() => summarizeSearchFailures(props.failures));
+// P0-1：keyword_ignored 不算"真失败"，从失败汇总中排除
+const realFailures = computed(() =>
+  props.failures.filter((f) => f.error.code !== 'E_KEYWORD_IGNORED'),
+);
+const keywordIgnoredCount = computed(() =>
+  props.failures.filter((f) => f.error.code === 'E_KEYWORD_IGNORED').length,
+);
+
+const summary = computed(() => summarizeSearchFailures(realFailures.value));
 const expanded = ref(false);
 const listId = `search-failure-list-${useId()}`;
 
@@ -54,7 +62,7 @@ function onRetry(): void {
 </script>
 
 <template>
-  <section v-if="summary.total > 0" class="fail-panel" aria-label="搜索失败源">
+  <section v-if="summary.total > 0 || keywordIgnoredCount > 0" class="fail-panel" aria-label="搜索失败源">
     <div class="fail-panel__head">
       <svg
         class="fail-panel__icon"
@@ -70,11 +78,15 @@ function onRetry(): void {
       </svg>
 
       <div class="fail-panel__text" aria-live="polite">
-        <p class="fail-panel__title">{{ summary.total }} 个源搜索失败</p>
+        <p v-if="summary.total > 0" class="fail-panel__title">{{ summary.total }} 个源搜索失败</p>
+        <p v-if="keywordIgnoredCount > 0" class="fail-panel__title fail-panel__title--muted">
+          {{ keywordIgnoredCount }} 个源忽略了关键词（已过滤）
+        </p>
         <p v-if="summary.text" class="fail-panel__reasons">{{ summary.text }}</p>
       </div>
 
       <button
+        v-if="summary.total > 0"
         class="fail-panel__retry"
         type="button"
         :disabled="retrying || busy"
@@ -142,6 +154,11 @@ function onRetry(): void {
   /* 标题用 primary 而非 warning：浅色主题下 warning 在 warning-soft 底上仅约 4.6:1，
      小字贴着 AA 下限；警示语义由琥珀色图标 + 实心重试按钮承担 */
   color: var(--color-text-primary);
+}
+
+.fail-panel__title--muted {
+  color: var(--color-text-secondary);
+  font-weight: var(--font-weight-normal);
 }
 
 .fail-panel__reasons {

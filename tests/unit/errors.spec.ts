@@ -43,11 +43,12 @@ const ALL_ERROR_CODES = [
   'E_DB',
   'E_VERSION_UNSUPPORTED',
   'E_CANCELED',
+  'E_KEYWORD_IGNORED',
 ] as const satisfies readonly ErrorCode[];
 
 describe('AC-60 错误码 → 用户文案映射', () => {
   it('遍历 ErrorCode 全枚举：每项都有映射且非空', () => {
-    expect(ALL_ERROR_CODES).toHaveLength(28);
+    expect(ALL_ERROR_CODES).toHaveLength(29);
     for (const code of ALL_ERROR_CODES) {
       const text = ERROR_MESSAGES[code];
       expect(text, `${code} 缺少映射`).toBeTypeOf('string');
@@ -97,6 +98,7 @@ describe('AC-60 错误码 → 用户文案映射', () => {
       E_DB: '本地数据读写失败，请重试',
       E_VERSION_UNSUPPORTED: '数据版本不支持，请升级 App',
       E_CANCELED: '已取消',
+      E_KEYWORD_IGNORED: '源未返回与关键词相关的内容',
     });
   });
 

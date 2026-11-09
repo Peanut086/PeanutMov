@@ -37,7 +37,8 @@ export type ErrorCode =
   | 'E_FILE_MISSING'
   | 'E_DB'
   | 'E_VERSION_UNSUPPORTED'
-  | 'E_CANCELED';
+  | 'E_CANCELED'
+  | 'E_KEYWORD_IGNORED';
 
 export interface AppErrorShape {
   code: ErrorCode;

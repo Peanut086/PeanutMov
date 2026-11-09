@@ -24,6 +24,7 @@ export type SourceFailureKind =
   | 'quarantined'
   | 'spider_mismatch'
   | 'auth'
+  | 'keyword_ignored'
   | 'unknown';
 
 /** UI 可渲染的动作 */
@@ -57,6 +58,8 @@ export const SAFE_MODE_MESSAGE = '安全模式保护中：爬虫源已暂停';
 export const QUARANTINE_MESSAGE = '该爬虫因连续崩溃被隔离';
 /** 订阅 api 类名与 jar 内容不匹配 */
 export const SPIDER_MISMATCH_MESSAGE = '爬虫类缺失，源配置与 jar 不匹配';
+/** 源返回了结果但全部与关键词无关（典型：采集站关闭搜索，返回最新目录） */
+export const KEYWORD_IGNORED_MESSAGE = '源忽略了关键词';
 
 const MAGNET_PREFIX = 'magnet:';
 
@@ -141,6 +144,8 @@ export function classifySourceFailure(error: AppErrorShape | null | undefined): 
       return 'protocol_unsupported';
     case 'E_TIMEOUT':
       return 'timeout';
+    case 'E_KEYWORD_IGNORED':
+      return 'keyword_ignored';
     case 'E_PARSE':
       // 解析失败但不像脚本异常：多为源站改版 / 返回结构变化
       return 'source_dead';
@@ -205,6 +210,11 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
     title: '源鉴权失败',
     hint: '账号、Token 或访问权限失效。请到源管理更新凭据后重试。',
     actions: ['edit-source', 'switch-source'],
+  },
+  keyword_ignored: {
+    title: KEYWORD_IGNORED_MESSAGE,
+    hint: '该源返回的内容与关键词无关（常见于关闭搜索的采集站，会把最新目录当结果）。已过滤，不影响其它源的结果。',
+    actions: ['switch-source'],
   },
   unknown: {
     title: '播放失败',
