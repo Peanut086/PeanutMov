@@ -249,7 +249,7 @@ export const EPG_DEFAULT_ENDPOINT = 'https://epg.112114.eu.org';
 
 /* ---------- v1.7：推荐订阅（CHG-24） ---------- */
 /** 内置推荐订阅清单版本（清单内容见 src/data/recommended/recommended.json） */
-export const RECOMMENDED_SUBSCRIPTIONS_VERSION = 1;
+export const RECOMMENDED_SUBSCRIPTIONS_VERSION = 2;
 
 /* ---------- EXT-06（FR-66 ~ FR-71）：IPTV/EPG 增强 ---------- */
 /** 内置默认 EPG 源 id（不可删除，端点为既有 EPG_DEFAULT_ENDPOINT） */
