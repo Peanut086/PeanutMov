@@ -1,15 +1,44 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="PeanutMov">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="PeanutMov">
   <defs>
-    <linearGradient id="pm-brand" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#ffc65c" />
-      <stop offset="0.48" stop-color="#f0a82e" />
-      <stop offset="1" stop-color="#d8901d" />
+    <linearGradient id="lg-body" gradientUnits="userSpaceOnUse" x1="-303" y1="-350" x2="303" y2="350">
+      <stop offset="0" stop-color="#FFD873"/>
+      <stop offset="0.45" stop-color="#FF9E2C"/>
+      <stop offset="1" stop-color="#F4511E"/>
     </linearGradient>
+    <linearGradient id="lg-rim" gradientUnits="userSpaceOnUse" x1="0" y1="-350" x2="0" y2="160">
+      <stop offset="0" stop-color="#FFF3D0" stop-opacity="0.95"/>
+      <stop offset="0.55" stop-color="#FFD98A" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#FFD98A" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="lg-shade" gradientUnits="userSpaceOnUse" x1="0" y1="80" x2="0" y2="350">
+      <stop offset="0" stop-color="#8A2908" stop-opacity="0"/>
+      <stop offset="1" stop-color="#7A2406" stop-opacity="0.35"/>
+    </linearGradient>
+    <radialGradient id="lg-gloss" gradientUnits="userSpaceOnUse" cx="-120" cy="-200" r="210">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="lg-clip"><path d="M -45,-324 Q 0,-350 45,-324 L 258.1,-201 Q 303.1,-175 303.1,-123 L 303.1,123 Q 303.1,175 258.1,201 L 45,324 Q 0,350 -45,324 L -258.1,201 Q -303.1,175 -303.1,123 L -303.1,-123 Q -303.1,-175 -258.1,-201 L -45,-324 Z"/></clipPath>
+    <mask id="lg-hole">
+      <rect x="-600" y="-600" width="1200" height="1200" fill="#fff"/>
+      <line x1="0" y1="-357" x2="110.4" y2="-122.7" stroke="#000" stroke-width="16" stroke-linecap="round"/>
+      <line x1="309.2" y1="-178.5" x2="161.4" y2="34.4" stroke="#000" stroke-width="16" stroke-linecap="round"/>
+      <line x1="309.2" y1="178.5" x2="51" y2="156.9" stroke="#000" stroke-width="16" stroke-linecap="round"/>
+      <line x1="0" y1="357" x2="-110.4" y2="122.7" stroke="#000" stroke-width="16" stroke-linecap="round"/>
+      <line x1="-309.2" y1="178.5" x2="-161.4" y2="-34.4" stroke="#000" stroke-width="16" stroke-linecap="round"/>
+      <line x1="-309.2" y1="-178.5" x2="-51" y2="-156.9" stroke="#000" stroke-width="16" stroke-linecap="round"/>
+      <polygon points="-78,-92 -78,92 82,0" fill="#000" stroke="#000" stroke-width="40" stroke-linejoin="round"/>
+    </mask>
   </defs>
-  <rect width="64" height="64" rx="14" fill="url(#pm-brand)" />
-  <g fill="none" stroke="#1a1206" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-    <rect x="13" y="21" width="38" height="26" rx="5" />
-    <path d="M13 27h38M20 21v-4M44 21v-4M19 33h9M19 39h15M33 33h12" />
-  </g>
-  <circle cx="45" cy="39" r="2.2" fill="#1a1206" />
-</svg>
+  <g transform="translate(512 512) scale(0.95)" mask="url(#lg-hole)">
+    <path d="M -45,-324 Q 0,-350 45,-324 L 258.1,-201 Q 303.1,-175 303.1,-123 L 303.1,123 Q 303.1,175 258.1,201 L 45,324 Q 0,350 -45,324 L -258.1,201 Q -303.1,175 -303.1,123 L -303.1,-123 Q -303.1,-175 -258.1,-201 L -45,-324 Z" fill="url(#lg-body)"/>
+    <polygon points="0,0 0,-350 303.1,-175" fill="#FFFFFF" opacity="0.06"/>
+    <polygon points="0,0 303.1,-175 303.1,175" fill="#000000" opacity="0.05"/>
+    <polygon points="0,0 303.1,175 0,350" fill="#FFFFFF" opacity="0.06"/>
+    <polygon points="0,0 0,350 -303.1,175" fill="#000000" opacity="0.05"/>
+    <polygon points="0,0 -303.1,175 -303.1,-175" fill="#FFFFFF" opacity="0.06"/>
+    <polygon points="0,0 -303.1,-175 0,-350" fill="#000000" opacity="0.05"/>
+    <path d="M -45,-324 Q 0,-350 45,-324 L 258.1,-201 Q 303.1,-175 303.1,-123 L 303.1,123 Q 303.1,175 258.1,201 L 45,324 Q 0,350 -45,324 L -258.1,201 Q -303.1,175 -303.1,123 L -303.1,-123 Q -303.1,-175 -258.1,-201 L -45,-324 Z" fill="url(#lg-shade)"/>
+    <ellipse cx="-120" cy="-200" rx="200" ry="150" fill="url(#lg-gloss)" clip-path="url(#lg-clip)"/>
+    <path d="M -45,-324 Q 0,-350 45,-324 L 258.1,-201 Q 303.1,-175 303.1,-123 L 303.1,123 Q 303.1,175 258.1,201 L 45,324 Q 0,350 -45,324 L -258.1,201 Q -303.1,175 -303.1,123 L -303.1,-123 Q -303.1,-175 -258.1,-201 L -45,-324 Z" fill="none" stroke="url(#lg-rim)" stroke-width="6"/>
+  </g></svg>
