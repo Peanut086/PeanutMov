@@ -77,7 +77,7 @@ import { pipService } from '@/native/pipService';
 import { onAppStateChange } from '@/native/appLifecycle';
 import { libraryService } from '@/services/libraryService';
 import { sourceService } from '@/services/sourceService';
-import { downloadService } from '@/services/downloadService';
+import { downloadService, selectCompletedTask } from '@/services/downloadService';
 import { pickPlayCandidates } from '@/sources/douban/playMatch';
 import { healthService } from '@/services/healthService';
 import { appEvents } from '@/services/events';
@@ -475,6 +475,13 @@ const switchingLine = ref(false);
  * 这里记下 taskId，在页面上常驻一条提示条并给出「重新下载」按钮。
  */
 const localMissingTaskId = ref<string | null>(null);
+/**
+ * P0-2：离线文件时间轴异常（`E_LOCAL_STALL`）的任务。
+ *
+ * 文件在、能打开、能出首帧，但位置永远不动——这类产物重试/换线都救不回来，
+ * 页面上唯一有意义的出口是重新下载（重下会走新的转封装 + 自检链路）。
+ */
+const localStallTaskId = ref<string | null>(null);
 const redownloading = ref(false);
 
 /** 投屏能力探测（AC-84）：`isSupported()===false` 时按钮渲染为禁用态 */
@@ -486,7 +493,7 @@ async function detectCastSupport(): Promise<void> {
   }
 }
 
-function detectLocalMissing(): void {
+async function detectLocalMissing(): Promise<void> {
   const it = item.value;
   const ep = currentEpisode.value;
   const playback = currentPlayback.value;
@@ -494,12 +501,36 @@ function detectLocalMissing(): void {
     localMissingTaskId.value = null;
     return;
   }
-  // 跨线路查找：先精确匹配 episodeId，再按 episodeNumber 回退
-  const completed = downloads.tasks.filter((t) => t.mediaId === it.id && t.status === 'completed');
-  const task = completed.find((t) => t.episodeId === ep.id)
-    ?? completed.find((t) => t.episodeNumber === ep.number)
-    ?? (completed.length === 1 ? completed[0] : null);
-  localMissingTaskId.value = task?.id ?? null;
+  // 判定直接复用服务层的 localMissingForMedia：它与 resolvePlay 用同一个匹配口径
+  // （selectCompletedTask），页面里再抄一份"唯一完成任务兜底"会把别的集误指认为本集。
+  const missing = await downloadService.localMissingForMedia(it.id, {
+    episodeId: ep.id,
+    episodeNumber: ep.number,
+  });
+  if (currentPlayback.value !== playback) return; // 期间已切集/切线，结果作废
+  localMissingTaskId.value = missing?.id ?? null;
+}
+
+/**
+ * P0-2：把停滞的本地产物指回它自己的下载任务（与 `tryPlayLocalFirst` 同一匹配口径）。
+ *
+ * 只认"已完成"任务：暂停中/失败的任务不该出现在"重新下载"入口里。
+ */
+function armLocalStallRedownload(): void {
+  const ep = currentEpisode.value;
+  if (!ep) {
+    localStallTaskId.value = null;
+    return;
+  }
+  const record = history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === ep.id);
+  const completed = downloads.tasks.filter(
+    (t) => t.mediaId === mediaId.value && t.status === 'completed',
+  );
+  const task = selectCompletedTask(completed, {
+    episodeId: ep.id,
+    episodeNumber: record?.episodeNumber ?? ep.number,
+  });
+  localStallTaskId.value = task?.id ?? null;
 }
 
 /**
@@ -510,13 +541,14 @@ function detectLocalMissing(): void {
  * `redownload()`（复用原记录：清空 blobKey/filePath、进度归零、重新入队）。
  */
 async function onRedownload(): Promise<void> {
-  const id = localMissingTaskId.value;
+  const id = localStallTaskId.value ?? localMissingTaskId.value;
   if (!id || redownloading.value) return;
   redownloading.value = true;
   try {
     await downloads.retry(id);
     // 任务已回到 queued（blobKey=null），提示条随状态变化消失
     localMissingTaskId.value = null;
+    localStallTaskId.value = null;
     toast.success('已重新加入下载队列', 3000);
   } catch (e) {
     toast.error(toErrorShape(e).message);
@@ -660,9 +692,9 @@ async function loadLocalPlay(
     if (stageRef.value && !controller.value) {
       createController(stageRef.value);
     }
-    // REV-24：构造最小化的 PlayerLoadOptions 用于本地播放
-    // 由于详情加载失败，我们只有 playback 和基本信息，需要构造占位符
-    await controller.value?.load({
+    // P0-3：与 resolveAndLoad 走同一个组合式 load——自动起播（await c.play()）
+    // 与错误落点（player.error）都在那条链里，直连 controller.load 会两者都错过。
+    await load({
       mediaId: mediaId.value ?? 'local',
       episodeId,
       lineId: 'local',
@@ -681,6 +713,33 @@ async function loadLocalPlay(
     pageLoading.value = false;
     cancelLoadingProgress();
   }
+}
+
+/**
+ * P1-4：本地优先起播（下载列表 `local=1` 入口与 REV-24 详情失败兜底共用）。
+ *
+ * 常规链路必然 `await library.loadDetail()`——离线/慢源时它要等满 HTTP 超时，
+ * 从下载列表点进来的已下载内容因此"一直卡住"。这里只查本机任务与本文件，
+ * 一行网络请求都不发。返回 false 表示本机没有这一集（或文件已丢），
+ * 由调用方回落到常规（网络）链路。
+ */
+async function tryPlayLocalFirst(episodeId: string): Promise<boolean> {
+  const record = history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === episodeId);
+  const completed = downloads.tasks.filter(
+    (t) => t.mediaId === mediaId.value && t.status === 'completed',
+  );
+  // 与 resolvePlay 同一套匹配口径（P0-2）：宁可不起播，也不播成别的集
+  const localTask = selectCompletedTask(completed, {
+    episodeId,
+    episodeNumber: record?.episodeNumber ?? null,
+  });
+  if (!localTask) return false;
+
+  const playback = await downloadService.taskToPlayback(localTask);
+  if (!playback || !pageAlive) return false;
+  await loadLocalPlay(playback, localTask.title, localTask.posterUrl, episodeId);
+  bindEmbeddedTracks();
+  return true;
 }
 
 /**
@@ -768,7 +827,7 @@ async function resolveAndLoad(): Promise<boolean> {
     if (!pageAlive || epoch !== loadEpoch) return false;
     setStage('done');
     // 「本地文件不可用，已切换网络源」时在页面给出「重新下载」入口（AC-78②）
-    detectLocalMissing();
+    void detectLocalMissing();
     // `load()` 内部把失败写入 player.error 而不抛出，这里显式判定
     const ok = loadError.value === null && player.error === null;
     if (ok) {
@@ -852,29 +911,20 @@ onMounted(async () => {
   await Promise.all([settings.load(), history.load(), favorites.load(), downloads.load(), sources.load()]);
   // P1-4 + API-12：亮度/音量起点（必须在 createController 之前，决定引擎倍率的初值）
   await initPlaybackLevels();
+
+  const episodeParam = typeof route.params.episodeId === 'string' ? route.params.episodeId : '';
+  // P1-4：下载列表入口（`?local=1`）先本地起播，详情后台补——离线时不再被网络解析吊住
+  if (route.query.local === '1' && episodeParam && (await tryPlayLocalFirst(episodeParam))) {
+    detailReady.value = true;
+    void library.loadDetail(mediaId.value);
+    return;
+  }
+
   await library.loadDetail(mediaId.value);
   detailReady.value = true;
   if (library.detailState === 'error') {
     // REV-24：详情失败但本地有下载完成的任务时，允许直接本地播放
-    const episodeId = route.params.episodeId as string | undefined;
-    if (episodeId) {
-      // 离线播放：跨线路查找（history record 提供 episodeNumber 用于回退）
-      const record = history.items.find((r) => r.mediaId === mediaId.value);
-      const localPlay = await downloadService.findLocalForMedia(mediaId.value, {
-        episodeId,
-        episodeNumber: record?.episodeNumber ?? null,
-      });
-      if (localPlay) {
-        // 本地播放可用，跳过详情加载错误，直接进入播放
-        if (stageRef.value) createController(stageRef.value);
-        if (record) {
-          pageLoading.value = false;
-          loadError.value = null;
-          await loadLocalPlay(localPlay, record.title, record.posterUrl, episodeId);
-          return;
-        }
-      }
-    }
+    if (episodeParam && (await tryPlayLocalFirst(episodeParam))) return;
     loadError.value = library.error?.message ?? '详情加载失败';
     pageLoading.value = false;
     return;
@@ -1306,6 +1356,12 @@ watch(
   () => player.error,
   (error) => {
     if (error) {
+      // P0-2：离线文件自身的问题与线路/源无关——不记线路失败、不作废播放地址缓存，
+      // 只挂出"重新下载"出口（E_LOCAL_STALL 不在 FAILOVER_ERROR_CODES 内，不会走换线/换源）
+      if (error.code === 'E_LOCAL_STALL') {
+        armLocalStallRedownload();
+        return;
+      }
       // P0-3：播放出错时失效缓存，避免重试/换线复用已过期的坏 URL
       library.invalidatePlayCache(mediaId.value);
       // 批次1：记录线路失败（按错误分类）
@@ -1315,6 +1371,9 @@ watch(
         lineHealthService.recordFail(lineKey(it.sourceId, it.sourceItemId, line.name), error.code);
       }
       void runFailover(error, 'player');
+    } else {
+      // 错误清除（重试/换集成功）：停滞出口跟着撤
+      localStallTaskId.value = null;
     }
   },
 );
@@ -2349,6 +2408,25 @@ onBeforeUnmount(() => {
           data-test="local-missing"
         >
           <span class="player-local-missing__text">本地文件不可用，已切换网络源</span>
+          <button
+            class="btn btn--secondary btn--sm player-local-missing__btn"
+            type="button"
+            data-test="redownload"
+            :disabled="redownloading"
+            @click="onRedownload"
+          >
+            {{ redownloading ? '重新下载中…' : '重新下载' }}
+          </button>
+        </div>
+
+        <!-- P0-2：离线文件时间轴异常（能打开但永不推进）：只给「重新下载」出口 -->
+        <div
+          v-if="localStallTaskId && !localMissingTaskId"
+          class="player-local-missing"
+          role="status"
+          data-test="local-stall"
+        >
+          <span class="player-local-missing__text">离线文件时间轴异常，本机播放器无法续读</span>
           <button
             class="btn btn--secondary btn--sm player-local-missing__btn"
             type="button"

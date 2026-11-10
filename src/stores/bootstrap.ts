@@ -73,6 +73,9 @@ export async function ensureDemoData(): Promise<void> {
  */
 export async function initDownloads(): Promise<void> {
   try {
+    // P0-3：先清洗「地址指向本地文件」的存量坏任务，再跑僵尸检测——
+    // 顺序颠倒会让它们被 autoResume 重新入队，回到"进度 0 的重试循环"。
+    await downloadService.repairLocalArtifactTasks();
     await downloadService.checkZombieTasks();
     await downloadService.checkCorruptedHlsTasks();
     await downloadService.bootstrap();

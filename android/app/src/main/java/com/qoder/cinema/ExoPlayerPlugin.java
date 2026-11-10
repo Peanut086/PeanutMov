@@ -129,6 +129,13 @@ public class ExoPlayerPlugin extends Plugin {
      */
     private static final long PROGRESS_WATCHDOG_MS = 6_000;
     private long lastHeartbeatAt = 0;
+    /**
+     * P0-3：`play()` 早于 `prepare()` 到达时记下的起播意图。
+     *
+     * 本地大文件的 prepare 与 JS 的 play 之间没有先后保证，旧实现里 player 还是 null
+     * 就直接 resolve，起播指令被静默丢弃（真机表现：点了播放却什么都不动）。
+     */
+    private boolean pendingPlay = false;
     private Runnable watchdogRunnable;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
@@ -365,6 +372,11 @@ public class ExoPlayerPlugin extends Plugin {
 
                 playerView.setPlayer(player);
                 player.prepare();
+                // P0-3：起播意图若在 prepare 之前到达，此刻补上
+                if (pendingPlay) {
+                    pendingPlay = false;
+                    player.setPlayWhenReady(true);
+                }
                 startWatchdog();
                 // v1.8 修复：WebView 背景透明，让下层 surface 透出
                 getBridge().getWebView().setBackgroundColor(Color.TRANSPARENT);
@@ -402,7 +414,12 @@ public class ExoPlayerPlugin extends Plugin {
     @PluginMethod
     public void play(PluginCall call) {
         getBridge().executeOnMainThread(() -> {
-            if (player != null) player.play();
+            // P0-3：player 还没建起来时不能把起播指令丢掉，prepare 里会补执行
+            if (player == null) {
+                pendingPlay = true;
+            } else {
+                player.play();
+            }
             call.resolve();
         });
     }
@@ -410,6 +427,8 @@ public class ExoPlayerPlugin extends Plugin {
     @PluginMethod
     public void pause(PluginCall call) {
         getBridge().executeOnMainThread(() -> {
+            // 用户主动暂停优先于任何待生效的起播意图
+            pendingPlay = false;
             if (player != null) player.pause();
             call.resolve();
         });

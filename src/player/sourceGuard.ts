@@ -21,6 +21,47 @@ import { MANIFEST_PREFLIGHT_TIMEOUT_MS } from '@/player/constants';
 /** DASH 拒绝文案（AC-40：提示「暂不支持该格式」并点明格式） */
 export const DASH_UNSUPPORTED_MESSAGE = '暂不支持 DASH(.mpd) 格式';
 
+/** 本地已下载产物作为下载源的拒绝文案（P0-1） */
+export const LOCAL_ARTIFACT_MESSAGE = '下载地址指向本地已下载文件，不能作为下载源，请从详情页重新下载';
+
+/** Capacitor 文件桥前缀：Android `https://localhost/_capacitor_file_/…`、iOS `capacitor://localhost/…` */
+const CAPACITOR_FILE_MARKER = /_capacitor_(?:file|content)_\//i;
+
+/** 只存在于设备/浏览器内部的协议，任何下载器都取不到字节 */
+const LOCAL_ONLY_SCHEME = /^(?:file|blob|content|capacitor|data):/i;
+
+/**
+ * 是否为「本地已下载产物」地址（而不是可从网络拉取的直链）。
+ *
+ * 播放链路把 `filePath` 经 `convertFileSrc` 转成 `https://localhost/_capacitor_file_/…`
+ * 交给 ExoPlayer；这个地址一旦被写进下载任务，原生 OkHttp 与 JS fetch 都只会拿到
+ * 0 字节，任务在自动重试 + 重启僵尸恢复里无限循环（表现为"下载启动慢、进度一直 0"）。
+ *
+ * 判定刻意保守：带端口的回环地址（本机 HLS 代理 `http://127.0.0.1:port/…`）与
+ * 本地 mock 源仍是可下载的网络地址，只有 WebView 自身源（无端口的 localhost）与
+ * 文件桥前缀才算产物。
+ */
+export function isLocalArtifactUrl(url: string | null | undefined): boolean {
+  if (typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (trimmed.length === 0) return false;
+  if (LOCAL_ONLY_SCHEME.test(trimmed)) return true;
+  if (CAPACITOR_FILE_MARKER.test(trimmed)) return true;
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+  try {
+    const { hostname, port } = new URL(trimmed);
+    const loopback =
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '0.0.0.0' ||
+      hostname === '::1' ||
+      hostname === '[::1]';
+    return loopback && port.length === 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 本地能无损解密的加密方式（其余一律按受保护内容拒绝）。
  * `NONE` 在解析层等价于无密钥；`AES-128` 由 hls.js / 下载侧各自解密。

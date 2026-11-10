@@ -32,6 +32,7 @@ export type ErrorCode =
   | 'E_UNSUPPORTED_FORMAT'
   | 'E_DRM_PROTECTED'
   | 'E_DECODE'
+  | 'E_LOCAL_STALL'
   | 'E_INVALID_STATE'
   | 'E_STORAGE_QUOTA'
   | 'E_FILE_MISSING'

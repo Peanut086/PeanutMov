@@ -129,7 +129,7 @@ export interface FailureDecision {
 
 export function decideAfterFailure(
   task: DownloadTask,
-  error: { code: DownloadTask['errorCode']; message: string | null },
+  error: { code: DownloadTask['errorCode']; message: string | null; retryable?: boolean },
   now: number = Date.now(),
 ): FailureDecision {
   const maxRetries = task.maxRetries >= 0 ? task.maxRetries : DOWNLOAD_MAX_RETRIES;
@@ -140,6 +140,11 @@ export function decideAfterFailure(
     speedBps: 0,
     updatedAt: now,
   };
+  // P0-1：错误模型判定不可重试（E_INVALID_INPUT / E_HTTP_403 / E_UNSUPPORTED_FORMAT…）
+  // 时直接落终态。坏地址退避重试只是把失败推迟 4 秒，还会让列表反复闪「等待中」。
+  if (error.retryable === false) {
+    return { action: 'fail', delayMs: 0, task: withError };
+  }
   if (task.retries >= maxRetries) {
     return { action: 'fail', delayMs: 0, task: withError };
   }
@@ -375,7 +380,11 @@ export class DownloadQueue {
     if (error.code === 'E_ABORTED' || error.code === 'E_CANCELED') return;
 
     const now = this.opts.now ?? Date.now;
-    const decision = decideAfterFailure(task, { code: error.code, message: error.message }, now());
+    const decision = decideAfterFailure(
+      task,
+      { code: error.code, message: error.message, retryable: error.retryable },
+      now(),
+    );
     if (decision.action === 'fail') {
       const next = transition(decision.task, 'fail', now());
       await this.opts.save(next);

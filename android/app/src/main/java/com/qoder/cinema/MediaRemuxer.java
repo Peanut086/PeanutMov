@@ -61,6 +61,10 @@ public final class MediaRemuxer {
     public static final String REASON_OUTPUT_EMPTY = "output-empty";
     public static final String REASON_TIMEOUT = "timeout";
     public static final String REASON_CANCELED = "canceled";
+    /** P0-1：时间轴自检不通过（产物完整但不可播），调用方按"保留 .ts"处理 */
+    public static final String REASON_VIDEO_TIMELINE = "video-timeline-degenerate";
+    public static final String REASON_AUDIO_TIMELINE = "audio-timeline-mismatch";
+    public static final String REASON_AUDIO_GRANULARITY = "audio-sample-granularity";
 
     /** 临时文件后缀；最终交付名形如 `ep3.mp4` → `ep3.mp4.part`（AC-143 "无 `.mp4.part` 残留"） */
     public static final String PART_SUFFIX = ".part";
@@ -77,6 +81,24 @@ public final class MediaRemuxer {
     private static final int CANCELLATION_CHECK_INTERVAL = 64;
     /** 预留空间下限：小于此值即使输入很小也判定写不下 */
     private static final long MIN_FREE_SPACE_MARGIN = 8L * 1024 * 1024;
+    /**
+     * P0-1：时间轴自检阈值——"样本间距被棘轮压平"的比例上限。
+     *
+     * 每出现一次"PTS 回退需要补偏移"就是一次压平。正常的 HLS 拼接只在分片边界
+     * 出现个位数次；真机坏件是 34,616/75,879（46%），阈值 5% 有两数量级余量。
+     */
+    private static final double VERIFY_MAX_RATCHET_RATIO = 0.05;
+    /** 自检最小样本量：太短的片段统计没有意义 */
+    private static final long VERIFY_MIN_SAMPLES = 200;
+    /** 音轨时长下限（相对视频）：坏件音频只铺到 52:41 而视频 1:28:13，比值 0.60 */
+    private static final double VERIFY_MIN_AUDIO_DURATION_RATIO = 0.90;
+    /**
+     * 音频样本粒度上限：一个 MP4 音频样本应按 `1024/samplerate` 推进。
+     *
+     * TS 的 PES 会把多帧 ADTS 打包成一个样本，棘轮后每个样本被记成 7 帧的时间
+     * （162.5ms vs 23.2ms）→ 比值 6.9。1.5 足够宽容正常抖动，又能拦住整段粒度错。
+     */
+    private static final double VERIFY_MAX_AUDIO_SPAN_FACTOR = 1.5;
     /** 失败归因日志开关：产物只在 media-remux 线程写几行，不需要独立设置项 */
     private static final boolean VERBOSE = true;
 
@@ -235,6 +257,22 @@ public final class MediaRemuxer {
                 throw new RemuxFailure(CODE_UNSUPPORTED, REASON_NO_SAMPLES);
             }
 
+            // P0-1：结构完整 ≠ 能播。时间轴不合格就当作不支持处理——`.part` 由 finally 删除，
+            // 输入 .ts 保留，播放回落到原生引擎直接解封装 TS。
+            String timelineIssue = inspectTimeline(stats);
+            if (timelineIssue != null) {
+                AppLog.w(TAG, "remux output rejected by timeline check: " + timelineIssue
+                        + " videoRatchets=" + stats.videoRatchets + "/" + stats.videoSamples
+                        + " audioRatchets=" + stats.audioRatchets + "/" + stats.audioSamples);
+                throw new RemuxFailure(CODE_UNSUPPORTED, timelineIssue);
+            }
+
+            if (VERBOSE) {
+                AppLog.i(TAG, "remux timeline ok video=" + stats.videoSamples
+                        + " audio=" + stats.audioSamples + " ratchets=" + stats.videoRatchets + "/"
+                        + stats.audioRatchets + " spanUs=" + stats.durationUs);
+            }
+
             // stop() 会把 MP4 的 moov 写完；失败（含 0 样本）由外层 catch 收口
             muxer.stop();
             muxerStarted = false;
@@ -306,6 +344,14 @@ public final class MediaRemuxer {
         long videoSamples;
         long audioSamples;
         long preSyncDropped;
+        /** P0-1：时间轴棘轮触发次数（每次触发都意味着一段样本被压成 1µs 间距） */
+        long videoRatchets;
+        long audioRatchets;
+        /** P0-1：音频轨"实际写出的时间跨度"对应的每样本间隔（µs），用于粒度判定 */
+        long audioSpanUs;
+        long audioFrameUs;
+        /** 视频/音频轨最后写出的样本时间（µs），即各自在产物里占据的时间跨度 */
+        long videoSpanUs;
         boolean sawSync;
         long durationUs;
     }
@@ -398,6 +444,7 @@ public final class MediaRemuxer {
                 // PTS 回绕 / 分片边界重置：补偏移量而不是压平时间轴，否则整段时长会塌陷
                 offset += (lastWritten - candidate) + 1;
                 candidate = lastWritten + 1;
+                if (isVideo) stats.videoRatchets++; else stats.audioRatchets++;
             }
             if (isVideo) {
                 videoOffsetUs = offset;
@@ -407,7 +454,13 @@ public final class MediaRemuxer {
                 lastAudioUs = candidate;
             }
 
-            info.set(0, size, candidate, extractor.getSampleFlags());
+            // Extractor 的 flag 与 MediaCodec.BufferInfo 的 flag 只是"看起来能直接抄"：
+            // PARTIAL_FRAME(4) 会被 muxer 读成 END_OF_STREAM、ENCRYPTED(2) 读成 CODEC_CONFIG，
+            // 于是大量正常样本被当成流尾/编解码配置写进 MP4（真机坏件的次要成因）。
+            // 只有同步样本这一位语义一致，单独映射成关键帧标志。
+            int muxerFlags = (extractor.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                    ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+            info.set(0, size, candidate, muxerFlags);
             muxer.writeSampleData(outTrack, buffer, info);
             stats.writtenSamples++;
             if (isVideo) stats.videoSamples++; else stats.audioSamples++;
@@ -430,7 +483,57 @@ public final class MediaRemuxer {
         if (stats.durationUs <= 0 && selection.durationUs > 0) {
             stats.durationUs = selection.durationUs;
         }
+        stats.videoSpanUs = Math.max(0L, lastVideoUs);
+        stats.audioSpanUs = Math.max(0L, lastAudioUs);
+        stats.audioFrameUs = aacFrameDurationUs(selection.audioFormat);
         return stats;
+    }
+
+    /**
+     * AAC 单帧时长（µs）：一帧固定 1024 个采样点。
+     *
+     * 非 AAC 音频返回 0，表示"这条判据不适用"，不做无依据的否决。
+     */
+    private static long aacFrameDurationUs(MediaFormat audioFormat) {
+        if (audioFormat == null) return 0L;
+        String mime = audioFormat.containsKey(MediaFormat.KEY_MIME)
+                ? audioFormat.getString(MediaFormat.KEY_MIME) : null;
+        if (mime == null || !mime.contains("aac")) return 0L;
+        long sampleRate = intOrZero(audioFormat, MediaFormat.KEY_SAMPLE_RATE);
+        if (sampleRate <= 0) return 0L;
+        return 1024L * 1_000_000L / sampleRate;
+    }
+
+    /**
+     * P0-1：时间轴自检（在写出产物之后、删除输入之前）。
+     *
+     * 判据全部来自拷贝过程中已经数出来的量，不额外读文件：
+     * - 棘轮占比：视频样本被压成 1µs 间距的比例（真机坏件 46%，阈值 5%）；
+     * - 音轨跨度：音频时间跨度显著短于视频（真机坏件 0.60，阈值 0.90）；
+     * - 音频粒度：每样本平均跨度远超一帧 AAC（真机坏件 6.9×，阈值 1.5×）。
+     *
+     * 任一命中都说明这份 MP4 的结构虽然完整、时间轴却不可信：ExoPlayer 会
+     * READY + 出首帧然后永不推进（华为视频这类宽容播放器却能播）。此时宁可
+     * 交回 .ts 让原生引擎自己解封装，也绝不交付一份"点了没反应"的文件。
+     */
+    private static String inspectTimeline(CopyStats stats) {
+        if (stats.videoSamples >= VERIFY_MIN_SAMPLES) {
+            double ratio = (double) stats.videoRatchets / (double) stats.videoSamples;
+            if (ratio > VERIFY_MAX_RATCHET_RATIO) {
+                return REASON_VIDEO_TIMELINE + ":ratchet=" + Math.round(ratio * 100) + "%";
+            }
+        }
+        if (stats.audioSamples >= VERIFY_MIN_SAMPLES && stats.videoSpanUs > 0
+                && stats.audioSpanUs < stats.videoSpanUs * VERIFY_MIN_AUDIO_DURATION_RATIO) {
+            return REASON_AUDIO_TIMELINE + ":audioUs=" + stats.audioSpanUs
+                    + "/videoUs=" + stats.videoSpanUs;
+        }
+        long expectedAudioUs = stats.audioFrameUs > 0 ? stats.audioFrameUs * stats.audioSamples : 0L;
+        if (expectedAudioUs > 0 && stats.audioSpanUs > expectedAudioUs * VERIFY_MAX_AUDIO_SPAN_FACTOR) {
+            return REASON_AUDIO_GRANULARITY + ":span=" + stats.audioSpanUs
+                    + "/expected=" + expectedAudioUs;
+        }
+        return null;
     }
 
     // ========== 轨道选择 / 格式读取 ==========

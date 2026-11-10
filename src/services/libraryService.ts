@@ -33,6 +33,7 @@ import { resolveSearchTimeoutMs } from '@/shared/searchBudget';
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { classifySourceFailure, isTransientFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { isKeywordIgnored } from '@/services/searchAggregate';
+import { isLocalArtifactUrl, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
 import type {
@@ -110,7 +111,19 @@ export interface LibraryService {
   listRecent(limit?: number): Promise<MediaItem[]>;
   /** 该源缓存中出现过的地区（筛选面板地区选项推导用） */
   listAreas(sourceId: string): Promise<string[]>;
-  resolvePlay(params: { mediaId: string; episodeId: string; lineId?: string | null }): Promise<PlaybackSource>;
+  /**
+   * 解析播放地址。
+   *
+   * `prefer`（P0-1）：`'local'`（默认）本地已完成任务优先，离线可播；
+   * `'network'` 跳过本地命中，只要可从网络拉取的直链——下载输入必须走这条，
+   * 否则拿到的是 `https://localhost/_capacitor_file_/…` 文件桥地址，任务必然失败。
+   */
+  resolvePlay(params: {
+    mediaId: string;
+    episodeId: string;
+    lineId?: string | null;
+    prefer?: 'local' | 'network';
+  }): Promise<PlaybackSource>;
   ensureEpisodes(mediaId: string, lineId?: string | null): Promise<Episode[]>;
   toDownloadInputs(params: {
     mediaId: string;
@@ -930,29 +943,43 @@ export const libraryService: LibraryService = {
     const episode = await episodeRepo.get(params.episodeId);
     const episodeNumber = episode?.number;
 
+    // 下载输入（prefer='network'）不做本地命中，也不发「本地文件缺失」提示：
+    // 它要的是能把字节拉回来的网络直链。
+    const preferNetwork = params.prefer === 'network';
+
     // REV-24 + 离线播放：跨线路本地查找（线路不同 episodeId 不同，按 episodeNumber 回退）
-    const local = await downloadService.findLocalForMedia(params.mediaId, {
-      episodeId: params.episodeId,
-      episodeNumber,
-    });
-    if (local) return local;
+    if (!preferNetwork) {
+      const local = await downloadService.findLocalForMedia(params.mediaId, {
+        episodeId: params.episodeId,
+        episodeNumber,
+      });
+      if (local) return local;
+    }
 
     const item = await mediaRepo.get(params.mediaId);
     if (!item) throw new AppError('E_NOT_FOUND');
 
+    // P1-6：离线不再尝试网络解析（本地命中已在上面处理完）。jar/drpy 解析在断网时
+    // 会一路等到超时，用户看到的是"点了没反应"；这里给一句明确结论。
+    if (!isOnline()) {
+      throw new AppError('E_NETWORK', '当前无网络，本机也没有这一集的离线文件');
+    }
+
     // 任务已完成但本地文件/Blob 丢失 → 回退网络源时**明确告知**（AC-78 / REV-23）。
-    const missingTask = await downloadService.localMissingForMedia(params.mediaId, {
-      episodeId: params.episodeId,
-      episodeNumber,
-    });
-    if (missingTask) {
-      logger.warn('本地文件缺失，回退网络源', { taskId: missingTask.id, mediaId: params.mediaId });
-      appEvents.emit('local:missing', {
-        taskId: missingTask.id,
-        mediaId: params.mediaId,
+    if (!preferNetwork) {
+      const missingTask = await downloadService.localMissingForMedia(params.mediaId, {
         episodeId: params.episodeId,
-        text: '本地文件不可用，已切换网络源',
+        episodeNumber,
       });
+      if (missingTask) {
+        logger.warn('本地文件缺失，回退网络源', { taskId: missingTask.id, mediaId: params.mediaId });
+        appEvents.emit('local:missing', {
+          taskId: missingTask.id,
+          mediaId: params.mediaId,
+          episodeId: params.episodeId,
+          text: '本地文件不可用，已切换网络源',
+        });
+      }
     }
 
     const source = await sourceRepo.get(item.sourceId);
@@ -1059,7 +1086,17 @@ export const libraryService: LibraryService = {
 
     for (const episodeId of params.episodeIds) {
       try {
-        const play = await libraryService.resolvePlay({ mediaId: params.mediaId, episodeId, lineId: params.lineId });
+        const play = await libraryService.resolvePlay({
+          mediaId: params.mediaId,
+          episodeId,
+          lineId: params.lineId,
+          prefer: 'network',
+        });
+        // 兜底：适配器万一回吐本地桥地址，宁可让这一集进 failed 清单，
+        // 也不要创建出一个"进度永远 0"的死任务（P0-1 / AC-70）。
+        if (isLocalArtifactUrl(play.url)) {
+          throw new AppError('E_INVALID_INPUT', LOCAL_ARTIFACT_MESSAGE, { detail: play.url });
+        }
         const episode = episodes.find((entry) => entry.id === episodeId) ?? null;
         const subtitleUrls = pickSubtitleUrls(play.subtitles ?? [], subtitlePolicy, preferredLang);
         const isHls = play.format === 'hls' || /\.m3u8(\?|$)/i.test(play.url);

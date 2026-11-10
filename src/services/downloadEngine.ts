@@ -11,7 +11,7 @@
 import { AppError, toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { DOWNLOAD_PROGRESS_PERSIST_MS, DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/shared/constants';
-import { isM3u8Url } from '@/player/sourceGuard';
+import { isLocalArtifactUrl, isM3u8Url, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import { createSink, nativeFilePathOf, type DownloadSink } from '@/services/downloadSink';
 import { createHlsDownloader } from '@/services/hlsDownloader';
 import { appEvents } from '@/services/events';
@@ -75,6 +75,12 @@ export class DownloadEngine {
    * `signal` 来自队列，暂停/取消时会 abort。
    */
   async run(task: DownloadTask, signal: AbortSignal): Promise<void> {
+    // P0-1 兜底闸：老版本遗留 / 外部直接写库的任务可能带着本地文件桥地址，
+    // 这里快速失败（E_INVALID_INPUT 不可重试），不再让原生与 JS 各跑一轮 0 字节。
+    if (isLocalArtifactUrl(task.url)) {
+      throw new AppError('E_INVALID_INPUT', LOCAL_ARTIFACT_MESSAGE, { detail: task.url });
+    }
+
     // HLS 分片下载：委托给 HlsDownloader（暂不支持 Native）
     if (task.format === 'hls') {
       await this.runHls(task, signal);

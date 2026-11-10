@@ -50,6 +50,7 @@ import {
 } from '@/services/downloadBatch';
 import { downloadPreflight, type PreflightOptions, type PreflightResult } from '@/services/downloadPreflight';
 import { markOfflineFileInUse } from '@/services/offlineRemuxMigration';
+import { isLocalArtifactUrl, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import type {
   CreateDownloadInput,
   DownloadSpeedLimit,
@@ -119,6 +120,31 @@ let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 const WATCHDOG_STALE_MS = 90_000;
 /** FIX-D3：watchdog 检查周期 */
 const WATCHDOG_INTERVAL_MS = 30_000;
+/** P0-3：存量「地址指向本地文件」任务清洗后的失败文案（告诉用户下一步动作） */
+const LOCAL_TASK_REPAIRED_MESSAGE = '任务链接已失效，请从详情页重新下载';
+/**
+ * P1-4：本地文件解析超时。
+ * `stat` / `convertFileSrc` / IndexedDB 读都是异步桥调用，一旦挂住，播放页会一直
+ * 停在"加载中"——下载列表点进来的本地视频因此"卡住无法播放"。给一个上限，
+ * 超时报明确错误让用户重试，而不是无限等。
+ */
+const LOCAL_RESOLVE_TIMEOUT_MS = 8000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new AppError('E_TIMEOUT', message)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 function sinkKindFor(): DownloadTask['sink'] {
   return isNative() ? 'filesystem' : 'idb-blob';
@@ -130,6 +156,11 @@ function validateInput(input: CreateDownloadInput): void {
   }
   if (!input.url || !/^https?:\/\//i.test(input.url)) {
     throw new AppError('E_INVALID_INPUT', '下载地址必须是 http(s) 直链');
+  }
+  // P0-1：本地产物地址（Capacitor 文件桥）通过了上一条的 http(s) 校验，却永远下载
+  // 不到字节——必须在创建口拦掉，否则任务一进队列就开始"进度 0 的重试循环"。
+  if (isLocalArtifactUrl(input.url)) {
+    throw new AppError('E_INVALID_INPUT', LOCAL_ARTIFACT_MESSAGE, { detail: input.url });
   }
 }
 
@@ -365,6 +396,38 @@ async function localSubtitlesOf(task: DownloadTask): Promise<SubtitleTrack[]> {
 /** 任务最终产物路径（优先实际 filePath，转封装后 basename 才是 .mp4） */
 function finalFilePathOf(task: DownloadTask): string {
   return task.filePath ?? nativeFilePathOf(task);
+}
+
+/**
+ * 从已完成任务里挑出「就是这一集」的那条（P0-2）。
+ *
+ * 顺序：episodeId 精确 → episodeNumber 同集号（跨线路同集）→ 唯一 completed 兜底。
+ * 兜底**只在调用方两个身份都没给时**生效：旧版无条件兜底会让"只下过第 1 集"的剧集
+ * 在第 5 集上命中——播放页播出第 1 集的画面，下载入口更会把
+ * `https://localhost/_capacitor_file_/…` 的本地地址当成下载源写进新任务。
+ */
+export function selectCompletedTask(
+  completed: DownloadTask[],
+  opts: { episodeId?: string | null; episodeNumber?: number | null },
+): DownloadTask | null {
+  if (completed.length === 0) return null;
+
+  if (opts.episodeId) {
+    const exact = completed.find((t) => t.episodeId === opts.episodeId);
+    if (exact) return exact;
+  }
+  if (opts.episodeNumber != null) {
+    const byNumber = completed.find((t) => t.episodeNumber === opts.episodeNumber);
+    if (byNumber) return byNumber;
+  }
+  if (!opts.episodeId && opts.episodeNumber == null && completed.length === 1) {
+    logger.warn('本地命中未提供剧集身份，回退唯一已完成任务', {
+      episodeId: completed[0]!.episodeId,
+      taskId: completed[0]!.id,
+    });
+    return completed[0]!;
+  }
+  return null;
 }
 
 export const downloadService = {
@@ -729,6 +792,11 @@ export const downloadService = {
   async redownload(id: string): Promise<DownloadTask> {
     const task = await downloadRepo.get(id);
     if (!task) throw new AppError('E_NOT_FOUND');
+    // P1-6：老数据的 `url` 可能指向本地文件桥（P0-1 之前的缺陷产物）。复用它会再得到
+    // 一个 0 字节任务，这里明确拒绝——请从详情页重新发起下载。
+    if (isLocalArtifactUrl(task.url)) {
+      throw new AppError('E_INVALID_INPUT', LOCAL_TASK_REPAIRED_MESSAGE);
+    }
     const now = Date.now();
     const next: DownloadTask = {
       ...task,
@@ -867,7 +935,7 @@ export const downloadService = {
     return { totalBytes, fileCount };
   },
 
-  /** 本地播放地址（文件缺失 → E_FILE_MISSING，AC-78） */
+  /** 本地播放地址（文件缺失 → E_FILE_MISSING，AC-78；桥调用挂死 → E_TIMEOUT，P1-4） */
   async getLocalPlayUrl(id: string): Promise<LocalPlayResult> {
     const task = await downloadRepo.get(id);
     if (!task) throw new AppError('E_NOT_FOUND');
@@ -875,16 +943,20 @@ export const downloadService = {
 
     if (task.sink === 'filesystem') {
       const path = task.filePath ?? nativeFilePathOf(task);
-      const info = await stat(path);
+      const info = await withTimeout(stat(path), LOCAL_RESOLVE_TIMEOUT_MS, '本地文件读取超时，请重试');
       if (!info.exists || info.size === 0) {
         throw new AppError('E_FILE_MISSING');
       }
-      const url = await toPlayableUrl(path);
+      const url = await withTimeout(
+        toPlayableUrl(path),
+        LOCAL_RESOLVE_TIMEOUT_MS,
+        '本地文件读取超时，请重试',
+      );
       return { url, kind: 'capacitor', revoke: () => undefined };
     }
 
     const key = task.blobKey ?? task.id;
-    const blob = await readBlob(key);
+    const blob = await withTimeout(readBlob(key), LOCAL_RESOLVE_TIMEOUT_MS, '本地文件读取超时，请重试');
     if (!blob || blob.size === 0) throw new AppError('E_FILE_MISSING');
     const url = URL.createObjectURL(blob);
     return {
@@ -1014,10 +1086,8 @@ export const downloadService = {
    * 跨线路本地查找：按 mediaId 搜索所有已完成任务，再用 episodeId / episodeNumber 匹配。
    *
    * 离线场景核心：用户从线路 A 下载了第 3 集，播放页可能落在线路 B（episodeId 不同），
-   * 精确匹配 `findLocalPlay` 会 miss。此方法三级回退：
-   *   1. episodeId 精确命中
-   *   2. episodeNumber 命中（跨线路同集号）
-   *   3. 该 mediaId 下只有一个 completed 任务时直接返回（单集影片/只下一集）
+   * 精确匹配 `findLocalPlay` 会 miss。匹配口径见 `selectCompletedTask`（P0-2 收紧：
+   * 不再无条件用"唯一 completed 任务"兜底，避免多集影片跨集错播）。
    */
   async findLocalForMedia(
     mediaId: string,
@@ -1025,26 +1095,20 @@ export const downloadService = {
   ): Promise<PlaybackSource | null> {
     const allTasks = await downloadRepo.listByMedia(mediaId);
     const completed = allTasks.filter((t) => t.status === 'completed');
-    if (completed.length === 0) return null;
-
-    // 1. episodeId 精确匹配
-    if (opts.episodeId) {
-      const exact = completed.find((t) => t.episodeId === opts.episodeId);
-      if (exact) return this.taskToPlayback(exact);
+    const task = selectCompletedTask(completed, opts);
+    if (!task) {
+      // 请求集与已下载集不一致时留一行线索：这类 miss 会静默转网络源，离线时表现为"加载失败"
+      if (completed.length > 0 && (opts.episodeId || opts.episodeNumber != null)) {
+        logger.debug('本地已完成任务不覆盖该集，回退网络源', {
+          mediaId,
+          episodeId: opts.episodeId ?? null,
+          episodeNumber: opts.episodeNumber ?? null,
+          downloaded: completed.map((t) => t.episodeNumber ?? t.episodeId),
+        });
+      }
+      return null;
     }
-
-    // 2. episodeNumber 跨线路匹配
-    if (opts.episodeNumber != null) {
-      const byNumber = completed.find((t) => t.episodeNumber === opts.episodeNumber);
-      if (byNumber) return this.taskToPlayback(byNumber);
-    }
-
-    // 3. 唯一 completed 任务兜底
-    if (completed.length === 1) {
-      return this.taskToPlayback(completed[0]);
-    }
-
-    return null;
+    return this.taskToPlayback(task);
   },
 
   /** 把已完成任务转为本地 PlaybackSource（内部复用） */
@@ -1094,7 +1158,8 @@ export const downloadService = {
 
   /**
    * 跨线路版本：查找 mediaId 下"已完成但本地文件丢失"的任务。
-   * 回退策略与 `findLocalForMedia` 一致（episodeId → episodeNumber → 唯一任务）。
+   * 匹配口径与 `findLocalForMedia` 完全一致（同一个 `selectCompletedTask`），
+   * 播放页的「本地文件不可用 → 重新下载」提示条直接复用本方法（P0-2）。
    */
   async localMissingForMedia(
     mediaId: string,
@@ -1102,18 +1167,7 @@ export const downloadService = {
   ): Promise<DownloadTask | null> {
     const allTasks = await downloadRepo.listByMedia(mediaId);
     const completed = allTasks.filter((t) => t.status === 'completed');
-    if (completed.length === 0) return null;
-
-    let candidate: DownloadTask | null = null;
-    if (opts.episodeId) {
-      candidate = completed.find((t) => t.episodeId === opts.episodeId) ?? null;
-    }
-    if (!candidate && opts.episodeNumber != null) {
-      candidate = completed.find((t) => t.episodeNumber === opts.episodeNumber) ?? null;
-    }
-    if (!candidate && completed.length === 1) {
-      candidate = completed[0];
-    }
+    const candidate = selectCompletedTask(completed, opts);
     if (!candidate) return null;
 
     try {
@@ -1156,6 +1210,52 @@ export const downloadService = {
   /** EXT-04/FR-64：释放已下载字幕的 ObjectURL（Web；离开播放页/卸载时调用） */
   releaseLocalSubtitles(taskId?: string): void {
     revokeLocalSubtitleUrls(taskId);
+  },
+
+  /**
+   * P0-3：清洗存量「地址指向本地文件」的下载任务。
+   *
+   * 旧版 `resolvePlay` 的唯一 completed 兜底会把播放用的
+   * `https://localhost/_capacitor_file_/…` 写进新建任务的 `url`：原生与 JS 都取不到
+   * 字节，于是自动重试 + 重启僵尸恢复反复入队，用户看到的就是"下载启动慢、进度一直 0"。
+   * P0-1 的创建口/引擎口只管新任务，这里负责把库里已有的判成失败——必须早于
+   * `checkZombieTasks()` 与 `bootstrap()` 跑，否则会被自动恢复再次入队。
+   *
+   * 直接写库（completed 之外的 queued/paused 都没有到 failed 的合法转移）：
+   * 这属于坏数据修复，不是用户操作。
+   */
+  async repairLocalArtifactTasks(): Promise<number> {
+    const all = await downloadRepo.listAll();
+    const bad = all.filter(
+      (t) =>
+        (t.status === 'queued' || t.status === 'paused' || t.status === 'downloading') &&
+        isLocalArtifactUrl(t.url),
+    );
+    if (bad.length === 0) return 0;
+
+    const now = Date.now();
+    for (const task of bad) {
+      try {
+        const fresh = await downloadRepo.get(task.id);
+        if (!fresh || fresh.status !== task.status) continue;
+        const next: DownloadTask = {
+          ...fresh,
+          status: 'failed',
+          speedBps: 0,
+          errorCode: 'E_INVALID_INPUT',
+          errorMessage: LOCAL_TASK_REPAIRED_MESSAGE,
+          updatedAt: now,
+        };
+        await persist(next);
+        queue?.dequeue(next.id);
+        emitDownload({ type: 'status', task: next, previous: task.status });
+        logger.warn('存量本地地址任务已判失败', { taskId: next.id, url: next.url });
+      } catch (e) {
+        logger.warn('存量本地地址任务清洗跳过', { taskId: task.id, error: toAppError(e).message });
+      }
+    }
+    await emitQueueSummary();
+    return bad.length;
   },
 
   /**

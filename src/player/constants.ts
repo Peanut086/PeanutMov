@@ -93,3 +93,15 @@ export const SEEK_SETTLE_TIMEOUT_MS = 8000;
  * 把旧位置写回历史（进度倒退）并让"正在定位"提示一闪而过。
  */
 export const SEEK_SETTLE_TOLERANCE_SEC = 3;
+
+/**
+ * P0-2：本地播放停滞自愈窗口。
+ *
+ * 转封装产物时间轴被写坏时，ExoPlayer 会 READY + 出首帧、但位置永远不动
+ * （真机实证：解码器只剩预滚帧，`in=0`）。8s 无任何推进即认定停滞，
+ * 复位重备一次；再停滞就报错收口，不再让用户对着转圈干等。
+ */
+export const STALL_CHECK_INTERVAL_MS = 1000;
+export const STALL_STUCK_MS = 8000;
+/** 推进下限：小于引擎轮询粒度（1s）与 seek 落关键帧误差的合理解释范围 */
+export const STALL_MIN_ADVANCE_SEC = 0.5;

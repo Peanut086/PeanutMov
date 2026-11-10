@@ -37,6 +37,7 @@ const ALL_ERROR_CODES = [
   'E_UNSUPPORTED_FORMAT',
   'E_DRM_PROTECTED',
   'E_DECODE',
+  'E_LOCAL_STALL',
   'E_INVALID_STATE',
   'E_STORAGE_QUOTA',
   'E_FILE_MISSING',
@@ -48,7 +49,7 @@ const ALL_ERROR_CODES = [
 
 describe('AC-60 错误码 → 用户文案映射', () => {
   it('遍历 ErrorCode 全枚举：每项都有映射且非空', () => {
-    expect(ALL_ERROR_CODES).toHaveLength(29);
+    expect(ALL_ERROR_CODES).toHaveLength(30);
     for (const code of ALL_ERROR_CODES) {
       const text = ERROR_MESSAGES[code];
       expect(text, `${code} 缺少映射`).toBeTypeOf('string');

@@ -37,6 +37,9 @@ import {
   RESUME_MIN_RATIO,
   SEEK_SETTLE_TIMEOUT_MS,
   SEEK_SETTLE_TOLERANCE_SEC,
+  STALL_CHECK_INTERVAL_MS,
+  STALL_MIN_ADVANCE_SEC,
+  STALL_STUCK_MS,
 } from '@/player/constants';
 import { clampBrightness } from '@/player/brightness';
 import { canPlayNativeHls, VideoEngine } from '@/player/VideoEngine';
@@ -104,6 +107,16 @@ export interface PlayerControllerDeps {
   setImmersive?: (on: boolean) => void | Promise<void>;
 }
 
+/**
+ * P0-2 停滞判定（纯函数，便于单测）：
+ * 相对锚点没有实质推进（< {@link STALL_MIN_ADVANCE_SEC}）且已经持续
+ * {@link STALL_STUCK_MS} 以上 → 判定卡住。
+ */
+export function isPlaybackStalled(anchorSec: number, positionSec: number, elapsedMs: number): boolean {
+  if (positionSec - anchorSec >= STALL_MIN_ADVANCE_SEC) return false;
+  return elapsedMs >= STALL_STUCK_MS;
+}
+
 export class PlayerController {
   private container: HTMLElement | null = null;
   private engine: PlayableEngine | null = null;
@@ -147,6 +160,18 @@ export class PlayerController {
    */
   private seekSettleTarget: number | null = null;
   private seekSettleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * P0-2：本地播放停滞自愈状态。
+   *
+   * 只在 `playback.isLocal` 且状态为 playing 时运行：坏转封装产物的典型形态是
+   * READY + 首帧已出、位置却永远不动，引擎自身不会报错，必须靠位置推进来判断。
+   */
+  private stallTimer: ReturnType<typeof setInterval> | null = null;
+  private stallAnchorSec = 0;
+  private stallAnchorAt = 0;
+  /** 本轮加载是否已经用过"复位重备"这一次机会（每次 load 重置） */
+  private stallRecovered = false;
 
   /** m3u8 DRM 预检的取消句柄（AC-40）：切集/重试/销毁时中止上一轮预检 */
   private preflightAbort: AbortController | null = null;
@@ -242,6 +267,9 @@ export class PlayerController {
     this.clearPreload();
     // 黑屏检测按「每次加载」重置
     this.clearNoVideoCheck();
+    // P0-2：停滞自愈按「每次加载」重置（复位机会不得跨集复用）
+    this.stopStallWatchdog();
+    this.stallRecovered = false;
     this.setState('loading');
     this.options = opts;
     this.networkRetries = 0;
@@ -316,6 +344,12 @@ export class PlayerController {
     const useNativeEngine = (this.options?.preferNativeEngine === true || preferNativeForLocal)
       && await isExoPlayerAvailable();
 
+    // P1-5：离线裸 .ts 只有原生引擎能解。原生不可用（安全模式 / 插件缺失 / 非 Android）
+    // 时直接报错，不要让 WebView 的 <video> 对着必然失败的文件等满元数据超时。
+    if (playback.isLocal && format === 'ts' && !useNativeEngine) {
+      throw new AppError('E_UNSUPPORTED_FORMAT', '该离线文件需要原生播放器，当前不可用');
+    }
+
     // AC-40：WebView 路径在创建任何引擎前完成两级前置检查，命中即拒绝——
     // 1) URL 级：DASH(.mpd) / 地址内嵌的 SAMPLE-AES 标记，不发请求；
     // 2) 清单级：拉取 m3u8 文本识别 `#EXT-X-KEY:METHOD=SAMPLE-AES`（预检失败一律放行，
@@ -362,11 +396,19 @@ export class PlayerController {
         this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
         this.progress.update(0, nativeEngine.getDuration());
         return;
-      } catch {
+      } catch (nativeError) {
         try {
           nativeEngine.destroy();
         } catch {
           /* 回退路径上的清理失败可忽略 */
+        }
+        // P1-5：离线裸 .ts 只有原生引擎能解（WebView 的 <video> 不认 MPEG-TS）。
+        // 静默回退等于让 <video> 对着必然失败的文件白等 20s 元数据超时，
+        // 用户看到的就是"点了播放一直卡住"——这里直接给明确结论。
+        if (playback.isLocal && format === 'ts') {
+          throw new AppError('E_UNSUPPORTED_FORMAT', '该离线文件需要原生播放器，当前不可用', {
+            detail: toErrorShape(nativeError, 'E_DECODE').message,
+          });
         }
         this.emit('notice', { message: '原生引擎不可用，已切回内置引擎' });
         // 落入下方 WebView 分支继续加载
@@ -687,6 +729,7 @@ export class PlayerController {
       }
       this.setState('playing');
       this.progress.start();
+      this.startStallWatchdog();
     } catch (e) {
       this.emit('error', toErrorShape(e, 'E_DECODE'));
     }
@@ -694,9 +737,88 @@ export class PlayerController {
   }
 
   pause(): void {
+    this.stopStallWatchdog();
     this.engine?.pause();
     this.setState('paused');
     void this.progress.flush();
+  }
+
+  /* ---------- P0-2：本地播放停滞自愈 ---------- */
+
+  /**
+   * 登记停滞窗口：位置连续 {@link STALL_STUCK_MS} 不推进即视为卡死。
+   *
+   * 只对本地产物启用——网络源的卡顿是缓冲，本引擎已有 waiting/重试链路，
+   * 这里插一脚只会把慢网速误报成"文件坏了"。
+   */
+  private startStallWatchdog(): void {
+    this.stopStallWatchdog();
+    const engine = this.engine;
+    if (!engine || !this.options?.playback.isLocal) return;
+    this.stallAnchorSec = engine.getCurrentTime();
+    this.stallAnchorAt = Date.now();
+    this.stallTimer = setInterval(() => this.tickStallWatchdog(), STALL_CHECK_INTERVAL_MS);
+  }
+
+  private stopStallWatchdog(): void {
+    if (this.stallTimer !== null) {
+      clearInterval(this.stallTimer);
+      this.stallTimer = null;
+    }
+  }
+
+  private tickStallWatchdog(): void {
+    if (this.destroyed || this.state !== 'playing') return;
+    const engine = this.engine;
+    if (!engine) return;
+    const now = Date.now();
+    // 定位在飞：原生 seek 本身要秒级（扫容器 + 重启硬解），此时不能算停滞
+    if (this.seekSettleTarget !== null) {
+      this.stallAnchorAt = now;
+      this.stallAnchorSec = engine.getCurrentTime();
+      return;
+    }
+    const position = engine.getCurrentTime();
+    if (position - this.stallAnchorSec >= STALL_MIN_ADVANCE_SEC) {
+      this.stallAnchorSec = position;
+      this.stallAnchorAt = now;
+    }
+    if (!isPlaybackStalled(this.stallAnchorSec, position, now - this.stallAnchorAt)) return;
+    this.stopStallWatchdog();
+    if (!this.stallRecovered) {
+      this.stallRecovered = true;
+      void this.restartLocalPlayback(position);
+      return;
+    }
+    this.setState('error');
+    this.emit('error', toErrorShape(new AppError('E_LOCAL_STALL', undefined, {
+      detail: `position=${position.toFixed(1)}s 内无推进`,
+    })));
+  }
+
+  /**
+   * 停滞后的唯一一次复位：重新 prepare（等价于用户退出重进），从头起播。
+   *
+   * 复位能救的是"引擎侧一次性状态错乱"；时间轴本身坏掉的产物复位后仍会停滞，
+   * 由第二次 tick 收口成 E_LOCAL_STALL。
+   */
+  private async restartLocalPlayback(stalledAtSec: number): Promise<void> {
+    const opts = this.options;
+    if (!opts || this.destroyed) return;
+    this.emit('notice', { message: '离线起播异常，正在重试' });
+    try {
+      await this.attachEngine(opts.playback);
+    } catch (e) {
+      if (!this.destroyed) {
+        this.setState('error');
+        this.emit('error', toErrorShape(e, 'E_DECODE'));
+      }
+      return;
+    }
+    if (this.destroyed) return;
+    this.setState('ready');
+    logger.warn('本地播放停滞，已复位重备', { stalledAtSec, url: opts.playback.url });
+    await this.play();
   }
 
   async toggle(): Promise<void> {
@@ -1098,6 +1220,7 @@ export class PlayerController {
     this.hideTimer = null;
     this.clearRetryTimer();
     this.clearNoVideoCheck();
+    this.stopStallWatchdog();
     this.progress.stop();
     // 引擎先拆：原生引擎出声不归页面 DOM 管，进度落盘卡住/失败不得拖住销毁
     // （真机实证：flush 抛错中断 destroy → 离开播放页后声音不停）
