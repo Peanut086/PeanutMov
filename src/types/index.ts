@@ -499,6 +499,8 @@ export interface DownloadTask {
   errorCode: ErrorCode | null;
   /** P0-3: HLS 下载已完成的分片序号列表（用于暂停续传） */
   completedSegments?: number[];
+  /** FIX-D8: HLS 总分片数（用于启动自检，检测假完成记录） */
+  hlsTotalSegments?: number;
   errorMessage: string | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
@@ -569,6 +571,13 @@ export interface PlayerSettings {
   seekStepSec: number;
   longPressRate: number;
   subtitle: SubtitleSettings;
+  /**
+   * 记忆音量/亮度（P1-4）。
+   *
+   * 原生下只有亮度会回填：音量落在系统媒体音量档位上，系统自己就记住了，
+   * 回填 `lastVolume` 反而会覆盖用户在其它 App 或实体按键上的调整。
+   * `lastVolume` 仅在退回「播放器倍率」的路径（Web / 原生能力缺失）使用。
+   */
   rememberVolumeBrightness: boolean;
   lastVolume: number;
   lastBrightness: number;

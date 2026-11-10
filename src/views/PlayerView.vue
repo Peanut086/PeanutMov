@@ -68,8 +68,8 @@ import DanmakuSettingsSheet from '@/components/player/DanmakuSettingsSheet.vue';
 import DanmakuStylePanel from '@/components/player/DanmakuStylePanel.vue';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
-import { QUALITY_AUTO } from '@/player/constants';
-import { brightnessToDimOpacity, dimOpacityToBrightness } from '@/player/brightness';
+import { QUALITY_AUTO, VOLUME_STEP } from '@/player/constants';
+import { clampBrightness } from '@/player/brightness';
 import { PLAYER_FAILOVER_WINDOW_MS } from '@/shared/constants';
 import { localProxyUrl } from '@/native/localProxy';
 import { pipService } from '@/native/pipService';
@@ -160,7 +160,21 @@ const episodes = computed<Episode[]>(() => {
 
 const currentEpisode = computed<Episode | null>(() => {
   const list = episodes.value;
-  if (episodeIdParam.value) return list.find((ep) => ep.id === episodeIdParam.value) ?? list[0] ?? null;
+  if (list.length === 0) return null;
+  if (!episodeIdParam.value) return list[0] ?? null;
+  // 精确匹配当前线路
+  const byId = list.find((ep) => ep.id === episodeIdParam.value);
+  if (byId) return byId;
+  // 跨线路回退：用历史记录的 episodeNumber 匹配（不同线路同集号）
+  const rec = history.items.find((r) => r.mediaId === mediaId.value);
+  if (rec?.episodeNumber != null) {
+    const resolved = resolveTargetEpisode({
+      recordedEpisodeId: episodeIdParam.value,
+      recordedNumber: rec.episodeNumber,
+      episodes: list,
+    });
+    if (resolved.episode) return resolved.episode;
+  }
   return list[0] ?? null;
 });
 
@@ -289,6 +303,26 @@ const playerCtl = usePlayerController({
     import('@/services/deviceService')
       .then((m) => m.deviceService.keepAwake(on))
       .catch(() => undefined),
+  // API-12 二期：亮度写窗口背光、音量写媒体流档位。
+  // 原生能力缺失时这些方法返回 false/null，播放器整体退回「遮罩 + 播放器倍率」。
+  levels: {
+    setBrightness: (percent) =>
+      import('@/services/deviceService')
+        .then((m) => m.deviceService.setBrightness(percent))
+        .catch(() => false),
+    releaseBrightness: () =>
+      import('@/services/deviceService')
+        .then((m) => m.deviceService.releaseBrightness())
+        .catch(() => undefined),
+    setVolume: (percent) =>
+      import('@/services/deviceService')
+        .then((m) => m.deviceService.setVolume(percent))
+        .catch(() => null),
+    readVolume: () =>
+      import('@/services/deviceService')
+        .then((m) => m.deviceService.readVolume())
+        .catch(() => null),
+  },
   subtitle: subtitleSettings.value,
   defaultRate: defaultRate.value,
   autoPlayNext: autoPlayNext.value,
@@ -351,6 +385,7 @@ const {
   toggleFullscreen,
   exitFullscreen,
   onGesture,
+  onGesturePointerDown,
   cancelAutoNext,
   resumeFromBackground,
   pauseAutoHide,
@@ -460,9 +495,11 @@ function detectLocalMissing(): void {
     localMissingTaskId.value = null;
     return;
   }
-  const task = downloads.tasks.find(
-    (t) => t.mediaId === it.id && t.episodeId === ep.id && t.status === 'completed',
-  );
+  // 跨线路查找：先精确匹配 episodeId，再按 episodeNumber 回退
+  const completed = downloads.tasks.filter((t) => t.mediaId === it.id && t.status === 'completed');
+  const task = completed.find((t) => t.episodeId === ep.id)
+    ?? completed.find((t) => t.episodeNumber === ep.number)
+    ?? (completed.length === 1 ? completed[0] : null);
   localMissingTaskId.value = task?.id ?? null;
 }
 
@@ -772,35 +809,76 @@ async function resolveAndLoad(): Promise<boolean> {
   }
 }
 
+/**
+ * deviceService 延迟加载：与状态栏/常亮同一处理方式，避免把 Capacitor 插件拉进首屏模块图
+ * （会让路由级测试的模块加载变慢）。
+ */
+function deviceApi(): Promise<typeof import('@/services/deviceService').deviceService> {
+  return import('@/services/deviceService').then((m) => m.deviceService);
+}
+
+/**
+ * 进入播放页：确定亮度/音量的落点与起点（API-12 二期 + P1-4 记忆）。
+ *
+ * - 原生可用：音量取系统当前档位（系统本身就记忆音量，回填 `lastVolume` 反而会覆盖
+ *   用户在其它 App 里的调整）；亮度默认取系统背光，开启记忆后改用上次退出时的背光值。
+ * - 原生不可用（Web / 旧包 / 插件缺失）：落点退回「黑色遮罩 + 播放器倍率」，
+ *   亮度与音量都按记忆值恢复。
+ */
+async function initPlaybackLevels(): Promise<void> {
+  const remember = settings.player?.rememberVolumeBrightness === true;
+  const remembered = remember ? clampBrightness(settings.player?.lastBrightness ?? 100) : null;
+  const levels = await deviceApi()
+    .then((d) => d.readSystemLevels())
+    .catch(() => null);
+
+  if (!levels) {
+    player.patch({
+      levelSource: 'app',
+      brightness: remembered ?? 100,
+      volume: remember ? (settings.player?.lastVolume ?? 100) : 100,
+    });
+    return;
+  }
+
+  player.patch({
+    levelSource: 'system',
+    volume: levels.volume,
+    brightness: remembered ?? levels.brightness,
+  });
+  if (remembered !== null) {
+    // 记忆值与系统背光不同就得真的落一次，否则第一次滑动会让亮度跳回记忆值
+    const ok = await deviceApi()
+      .then((d) => d.setBrightness(remembered))
+      .catch(() => false);
+    if (!ok) player.patch({ levelSource: 'app' });
+  }
+}
+
 onMounted(async () => {
   void detectCastSupport();
   // REV-24：sources 用于详情失败时判断源是否存在
   await Promise.all([settings.load(), history.load(), favorites.load(), downloads.load(), sources.load()]);
-  // P1-4：记忆音量/亮度
-  if (settings.player?.rememberVolumeBrightness) {
-    player.patch({
-      volume: settings.player.lastVolume ?? 100,
-      dim: brightnessToDimOpacity(settings.player.lastBrightness ?? 100),
-    });
-  }
+  // P1-4 + API-12：亮度/音量起点（必须在 createController 之前，决定引擎倍率的初值）
+  await initPlaybackLevels();
   await library.loadDetail(mediaId.value);
   detailReady.value = true;
   if (library.detailState === 'error') {
     // REV-24：详情失败但本地有下载完成的任务时，允许直接本地播放
     const episodeId = route.params.episodeId as string | undefined;
     if (episodeId) {
-      const localPlay = await downloadService.findLocalPlay(mediaId.value, episodeId);
+      // 离线播放：跨线路查找（history record 提供 episodeNumber 用于回退）
+      const record = history.items.find((r) => r.mediaId === mediaId.value);
+      const localPlay = await downloadService.findLocalForMedia(mediaId.value, {
+        episodeId,
+        episodeNumber: record?.episodeNumber ?? null,
+      });
       if (localPlay) {
         // 本地播放可用，跳过详情加载错误，直接进入播放
         if (stageRef.value) createController(stageRef.value);
-        // 构造一个最小化的 item 描述用于进度写回
-        const record = history.items.find((r) => r.mediaId === mediaId.value);
         if (record) {
-          // 直接调用 resolveAndLoad 会失败（因为 item 为 null），
-          // 所以这里手动构造播放参数
           pageLoading.value = false;
           loadError.value = null;
-          // 直接加载本地播放地址
           await loadLocalPlay(localPlay, record.title, record.posterUrl, episodeId);
           return;
         }
@@ -819,20 +897,38 @@ onMounted(async () => {
 });
 
 /* ---------- 关闭时写回进度 ---------- */
+
+/**
+ * P1-4 写回值。
+ *
+ * `usePlayerController` 的卸载钩子先跑（`player.reset()` 把亮度/音量打回 100），
+ * 本钩子后跑，直接读 store 拿到的永远是默认值——这正是旧版「记忆音量/亮度」
+ * 存下 100/100 的原因。这里同步留一份最后一次生效的值。
+ */
+let lastBrightnessForMemory = 100;
+let lastVolumeForMemory = 100;
+watch(
+  () => [player.brightness, player.volume] as const,
+  ([brightness, volume]) => {
+    lastBrightnessForMemory = Math.round(brightness);
+    lastVolumeForMemory = Math.round(volume);
+  },
+  { flush: 'sync' },
+);
+
 onBeforeUnmount(() => {
   cancelAutoNext();
   // 页面存活守卫：卸载后作废所有在飞异步链，防止后台链路劫持路由/覆盖全局状态
   pageAlive = false;
   ++loadEpoch;
   pageAbort.abort();
-  // P1-4：记忆音量/亮度写回
+  // P1-4：记忆写回。音量在原生下由系统自己记住，这里存的值只在退回遮罩路径时使用。
   if (settings.player?.rememberVolumeBrightness) {
-    const brightness = Math.round(dimOpacityToBrightness(player.dim));
     void settings.update({
       player: {
         ...settings.player,
-        lastVolume: Math.round(player.volume),
-        lastBrightness: brightness,
+        lastVolume: lastVolumeForMemory,
+        lastBrightness: lastBrightnessForMemory,
       },
     });
   }
@@ -1143,10 +1239,21 @@ function isOnlineNow(): boolean {
 }
 
 /** 起播窗口内失败：自动换线（最多3条按评分排序）→ 自动换源（一次）→ 才落到错误面板。
- * 引擎错误与解析错误共用同一条链（解析失败过去只落错误面板，不自动兜底）。 */
+ * 引擎错误与解析错误共用同一条链（解析失败过去只落错误面板，不自动兜底）。
+ * 离线时直接落错误面板——换线/换源都要网络，徒增等待。 */
 async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): Promise<void> {
   if (failoverRunning.value) return;
   if (!FAILOVER_ERROR_CODES.has(error.code) || !withinFailoverWindow()) return;
+  // 离线短路：换线/换源均需网络，直接落错误面板
+  if (!isOnlineNow()) {
+    if (!pageAlive) return;
+    if (origin === 'player') player.patch({ error });
+    else {
+      loadErrorShape.value = error;
+      loadError.value = error.message;
+    }
+    return;
+  }
   failoverRunning.value = true;
   try {
     // ① 换线路（批次1：按评分排序，最多试3条）
@@ -1777,14 +1884,15 @@ function onKeydown(ev: KeyboardEvent): void {
     case 'ArrowRight':
       seek(player.currentTime + step);
       break;
-    case 'ArrowUp':
-      playerCtl.controller.value?.setVolume(Math.min(100, player.volume + 5));
-      player.patch({ volume: Math.min(100, player.volume + 5) });
+    case 'ArrowUp': {
+      // 与手势同一条落点：原生下这是系统音量档位，Web 下是播放器倍率
+      const next = Math.min(100, player.volume + VOLUME_STEP);
+      onGesture({ type: 'volume', value: next, delta: next - player.volume });
       break;
+    }
     case 'ArrowDown': {
-      const next = Math.max(0, player.volume - 5);
-      playerCtl.controller.value?.setVolume(next);
-      player.patch({ volume: next });
+      const next = Math.max(0, player.volume - VOLUME_STEP);
+      onGesture({ type: 'volume', value: next, delta: next - player.volume });
       break;
     }
     case 'f':
@@ -1815,9 +1923,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown);
   document.documentElement.classList.remove('native-underlay');
 });
-
-/* ---------- 亮度显示值 ---------- */
-const brightnessPercent = computed(() => dimOpacityToBrightness(player.dim));
 
 /* ---------- OPT-06 / EXT-07：画中画（PiP） ---------- */
 const pipSupported = ref(false);
@@ -2022,7 +2127,8 @@ onBeforeUnmount(() => {
         <PlayerSurface
           :subtitle-text="player.subtitleText"
           :subtitle="localSubtitles"
-          :dim="brightnessPercent"
+          :brightness="player.brightness"
+          :mask="player.levelSource === 'app'"
           :immersive="immersive"
         >
           <GestureLayer
@@ -2030,6 +2136,7 @@ onBeforeUnmount(() => {
             :seek-max-sec="gestureSettings.seekMaxSec"
             :sensitivity="gestureSettings.sensitivity"
             @intent="onGesture"
+            @pointer-down="onGesturePointerDown"
             @long-press-help="showGestureHelp"
           />
 

@@ -246,8 +246,8 @@ describe('REV-23 本地文件丢失时给出可识别标记（AC-78）', () => {
       expiresAt: null,
       isLocal: true,
     };
-    const findSpy = vi.spyOn(downloadService, 'findLocalPlay').mockResolvedValue(localPlay);
-    const missingSpy = vi.spyOn(downloadService, 'localMissingTaskOf');
+    const findSpy = vi.spyOn(downloadService, 'findLocalForMedia').mockResolvedValue(localPlay);
+    const missingSpy = vi.spyOn(downloadService, 'localMissingForMedia');
 
     const listener = vi.fn();
     appEvents.on('local:missing', listener);

@@ -20,6 +20,20 @@ import { ExoPlayer, exoHeadersOf, type ExoQuality } from '@/native/exoPlayerPlug
 const PROGRESS_POLL_MS = 1000;
 const RECT_SYNC_DEBOUNCE_MS = 150;
 
+/**
+ * 把 Capacitor localhost URL 转成原生 file:// URI（ExoPlayer 需要）。
+ * `https://localhost/_capacitor_file_/data/user/0/...` → `file:///data/user/0/...`
+ * 非本地 URL 原样返回。
+ */
+function toNativeFileUri(url: string): string {
+  const prefix = 'https://localhost/_capacitor_file_';
+  if (url.startsWith(prefix)) {
+    const path = url.slice(prefix.length);
+    return `file://${path.startsWith('/') ? '' : '/'}${path}`;
+  }
+  return url;
+}
+
 export interface NativeEngineEvents {
   onLoadedMetadata: (duration: number) => void;
   onTimeUpdate: (currentTime: number, duration: number, buffered: number) => void;
@@ -30,6 +44,8 @@ export interface NativeEngineEvents {
   onQualitiesChange?: (qualities: string[]) => void;
   /** EXT-07：内嵌字幕/音轨列表与选中项更新 */
   onEmbeddedTracksChange?: (state: EmbeddedTrackState) => void;
+  /** P1-a：seek 后画面真正渲染出第一帧（Java onRenderedFirstFrame 上报） */
+  onSeekSettled?: (info: { targetMs: number; latencyMs: number }) => void;
 }
 
 /* ---------- EXT-07：内嵌字幕 / 音轨 ---------- */
@@ -94,6 +110,8 @@ type ExoStateData = {
   audioTracks?: RawEmbeddedTrack[];
   activeTextId?: number;
   activeAudioId?: number;
+  targetMs?: number;
+  latencyMs?: number;
 };
 
 /**
@@ -162,8 +180,11 @@ export class NativeEngine implements PlayableEngine {
       this.pending = { resolve, reject };
     });
     try {
+      // 本地文件用 file:// URI（ExoPlayer 无法访问 Capacitor https://localhost 桥）
+      const nativeUrl = source.isLocal ? toNativeFileUri(source.url) : source.url;
+      logger.debug('NativeEngine.prepare', { url: nativeUrl, isLocal: source.isLocal, format: source.format });
       await ExoPlayer.prepare({
-        url: source.url,
+        url: nativeUrl,
         headers: exoHeadersOf(source.headers ?? {}),
         // format 由 URL 路径推不出来的（中转/代理地址）必须显式带过去，否则 ExoPlayer
         // 按 progressive 嗅探 m3u8 → UnrecognizedInputFormatException（真机实证）
@@ -368,6 +389,13 @@ export class NativeEngine implements PlayableEngine {
       }
       case 'buffering':
         if (this.ready) this.events.onWaiting();
+        break;
+      case 'seeksettled':
+        // P1-a：seek 后画面真的落地（Java 侧首帧渲染/重新 READY 上报）
+        this.events.onSeekSettled?.({
+          targetMs: data.targetMs ?? 0,
+          latencyMs: data.latencyMs ?? 0,
+        });
         break;
       case 'ended':
         this.ready = false;

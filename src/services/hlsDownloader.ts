@@ -13,6 +13,7 @@ import { AppError, toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
 import { LocalProxy } from '@/native/localProxy';
+import { MediaTool, isMediaToolAvailable } from '@/native/mediaToolPlugin';
 import { findProtectedKeyEvidence } from '@/player/sourceGuard';
 import { createSink, type DownloadSink } from '@/services/downloadSink';
 import type { DownloadTask } from '@/types';
@@ -333,7 +334,7 @@ export function manifestBaseUrl(reportedUrl: string | undefined, requestedUrl: s
  *
  * LocalProxy 转发 m3u8 时会把清单内的 URL 改写成 `/p/{token}/{urlencoded}`，
  * 而分片请求用的 token 只登记了清单地址，改写后的 token 不可复用。因此解析清单后
- * 先把这些回环地址还原成上游原始地址，再统一经 `resourceUrl()` 用当前任务的代理
+ * 先把这些回环地址还原成上游原始地址，再统一经 `fetchResourceWithFallback()` 用当前任务的代理
  * 基址重新编码，避免「分片请求落到未登记的 token」而 404。
  */
 function unwrapProxiedUrl(url: string, proxyBase: string | null): string {
@@ -456,8 +457,6 @@ export class HlsDownloader {
      * 代理不可用或单次清单请求失败时回退直连，保证非原生环境与老旧链路可用。
      */
     const proxyBase = await this.resolveProxyBase(task);
-    const resourceUrl = (url: string): string =>
-      proxyBase && !isLocalhostUrl(url) ? `${proxyBase}/${encodeURIComponent(url)}` : url;
     const resourceHeaders = (extra?: Record<string, string>): Record<string, string> => ({
       ...(proxyBase ? {} : task.headers),
       ...(extra ?? {}),
@@ -515,12 +514,14 @@ export class HlsDownloader {
         signal.addEventListener('abort', onAbort, { once: true });
         const initTimer = setTimeout(() => initController.abort(new AppError('E_NETWORK', '获取初始化分片超时')), MANIFEST_KEY_TIMEOUT_MS);
         try {
-          const response = await fetchImpl(resourceUrl(playlist.initSegment.url), {
-            method: 'GET',
-            headers: resourceHeaders(),
-            signal: initController.signal,
-            cache: 'no-store',
-          });
+          const response = await this.fetchResourceWithFallback(
+            playlist.initSegment.url,
+            proxyBase,
+            resourceHeaders(),
+            task.headers,
+            fetchImpl,
+            initController.signal,
+          );
           if (!response.ok) {
             throw this.mapHttpError(response.status, '获取初始化分片失败');
           }
@@ -548,12 +549,14 @@ export class HlsDownloader {
         signal.addEventListener('abort', onKeyAbort, { once: true });
         const keyTimer = setTimeout(() => keyController.abort(new AppError('E_NETWORK', `获取密钥超时: ${keyUri}`)), MANIFEST_KEY_TIMEOUT_MS);
         try {
-          const response = await fetchImpl(resourceUrl(keyUri), {
-            method: 'GET',
-            headers: resourceHeaders(),
-            signal: keyController.signal,
-            cache: 'no-store',
-          });
+          const response = await this.fetchResourceWithFallback(
+            keyUri,
+            proxyBase,
+            resourceHeaders(),
+            task.headers,
+            fetchImpl,
+            keyController.signal,
+          );
           if (!response.ok) {
             throw this.mapHttpError(response.status, `获取密钥失败: ${keyUri}`);
           }
@@ -576,18 +579,28 @@ export class HlsDownloader {
     // 5. 初始化 sink
     const sink = sinkFactory(task.sink);
     // P0-3: 检查是否有已完成的分片（暂停续传）
-    const completedSegments = task.completedSegments ?? [];
+    let completedSegments = task.completedSegments ?? [];
     const startBytes = completedSegments.length > 0 ? task.downloadedBytes : 0;
-    await sink.begin({ task: { ...task, resumable: true }, startBytes });
+    // P1-2: 以 .part 实际大小为准，与 DB 不一致时从头下载避免错位
+    const beginResult = await sink.begin({ task: { ...task, resumable: true }, startBytes });
+    if (beginResult.actualStartBytes !== startBytes && startBytes > 0) {
+      logger.warn('续传状态与 .part 不一致，从头下载', {
+        taskId: task.id,
+        dbBytes: startBytes,
+        fileBytes: beginResult.actualStartBytes,
+      });
+      completedSegments = [];
+      await sink.begin({ task: { ...task, resumable: false }, startBytes: 0 });
+    }
 
-    let downloaded = startBytes;
+    let downloaded = beginResult.actualStartBytes;
     let lastPersist = now();
     let lastSampleAt = now();
-    let lastSampleBytes = startBytes;
+    let lastSampleBytes = downloaded;
 
     await this.deps.saveProgress(task.id, {
       status: 'downloading',
-      downloadedBytes: startBytes,
+      downloadedBytes: downloaded,
       totalBytes: null,
       resumable: true,
       speedBps: 0,
@@ -618,17 +631,23 @@ export class HlsDownloader {
       // HLS 清单不带总大小，用「已完成分片平均体积 × 总分片数」估算总字节数，
       // 让进度条/剩余时间随下载推进收敛，下载完成后由实际大小覆盖。
       const totalSegments = playlist.segments.length;
-      // FIX-D5：completedCount 只计媒体分片（排除旧数据中的 -1 init 标记）
-      let completedCount = completedSegments.filter((i) => i >= 0).length;
+      // FIX-D8: completedCount 与 nextWriteIndex 用真实连续前缀，避免续传错位
+      const doneSet = new Set(completedSegments.filter((i) => i >= 0));
+      let completedCount = 0;
+      while (doneSet.has(completedCount)) completedCount += 1;
       let segmentBytes = completedCount > 0 ? downloaded - initSegmentSize : 0;
 
-      // 7. 滑动窗口并行下载分片（完成一个立即补一个，避免批间等待）
-      // FIX-D5：过滤时排除 -1（旧数据兼容），只检查媒体分片索引
-      const pendingSegments = segmentsWithIndex.filter(({ index }) => index >= 0 && !completedSegments.includes(index));
+      // 7. 滑动窗口并行下载分片（FIX-D8：用结果队列替代 Set<Promise>+Promise.race，
+      //    避免 settle 结果被静默丢弃导致分片丢失、文件截断）
+      // FIX-D5：过滤时排除 -1（旧数据兼容），只检查媒体分片
+      const pendingSegments = segmentsWithIndex.filter(({ index }) => index >= 0 && !doneSet.has(index));
       const writeBuffer = new Map<number, Uint8Array>();
-      let nextWriteIndex = completedSegments.filter((i) => i >= 0).length;
+      let nextWriteIndex = completedCount;
       let queueIdx = 0;
-      const activePromises = new Set<Promise<{ data: Uint8Array; index: number }>>();
+      let inflight = 0;
+      let firstError: unknown = null;
+      let wake: (() => void) | null = null;
+      const settled: Array<{ data: Uint8Array; index: number }> = [];
 
       const downloadSegment = async (seg: { segment: typeof playlist.segments[0]; index: number }) => {
         let lastError: unknown;
@@ -641,16 +660,17 @@ export class HlsDownloader {
             const timeoutId = setTimeout(() => segController.abort(new AppError('E_NETWORK', `分片下载超时 (${SEGMENT_FETCH_TIMEOUT_MS}ms)`)), SEGMENT_FETCH_TIMEOUT_MS);
 
             try {
-              const response = await fetchImpl(resourceUrl(seg.segment.url), {
-                method: 'GET',
-                headers: resourceHeaders(
-                  seg.segment.byteRange
-                    ? { Range: `bytes=${seg.segment.byteRange.offset}-${seg.segment.byteRange.offset + seg.segment.byteRange.length - 1}` }
-                    : undefined,
-                ),
-                signal: segController.signal,
-                cache: 'no-store',
-              });
+              const rangeHeader = seg.segment.byteRange
+                ? `bytes=${seg.segment.byteRange.offset}-${seg.segment.byteRange.offset + seg.segment.byteRange.length - 1}`
+                : undefined;
+              const response = await this.fetchResourceWithFallback(
+                seg.segment.url,
+                proxyBase,
+                resourceHeaders(rangeHeader ? { Range: rangeHeader } : undefined),
+                { ...(task.headers ?? {}), ...(rangeHeader ? { Range: rangeHeader } : {}) },
+                fetchImpl,
+                segController.signal,
+              );
 
               if (!response.ok) {
                 throw this.mapHttpError(response.status, `下载分片失败: ${seg.segment.url}`);
@@ -688,11 +708,21 @@ export class HlsDownloader {
 
       const launchNext = () => {
         if (queueIdx >= pendingSegments.length) return;
-        const seg = pendingSegments[queueIdx]!;
-        queueIdx++;
-        const p = downloadSegment(seg);
-        activePromises.add(p);
-        p.finally(() => activePromises.delete(p));
+        const seg = pendingSegments[queueIdx++]!;
+        inflight += 1;
+        downloadSegment(seg)
+          .then((r) => {
+            settled.push(r);
+          })
+          .catch((e) => {
+            firstError ??= e;
+          })
+          .finally(() => {
+            inflight -= 1;
+            const w = wake;
+            wake = null;
+            w?.();
+          });
       };
 
       const writeCompleted = async () => {
@@ -724,49 +754,135 @@ export class HlsDownloader {
               speedBps,
               updatedAt: currentTime,
               completedSegments,
+              hlsTotalSegments: totalSegments,
             });
           }
         }
       };
 
+      const waitForActivity = (timeoutMs: number) =>
+        new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            wake = null;
+            reject(new AppError('E_NETWORK', `下载停滞超过 ${Math.round(timeoutMs / 1000)}s，自动中断`));
+          }, Math.max(timeoutMs, 1));
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+
       // 初始填充窗口
-      for (let i = 0; i < Math.min(parallelSegments, pendingSegments.length); i++) {
+      while (inflight < parallelSegments && queueIdx < pendingSegments.length) {
         launchNext();
       }
 
-      // 滑动窗口主循环（FIX-D1：停滞检测 watchdog）
-      let lastSettledAt = now();
-      while (activePromises.size > 0) {
+      // 滑动窗口主循环（FIX-D8：结果队列全量消费，绝不丢弃）
+      let lastActivityAt = now();
+      while (true) {
         if (signal.aborted) throw new AppError('E_ABORTED');
-        const elapsed = now() - lastSettledAt;
-        if (elapsed > STALL_TIMEOUT_MS) {
-          throw new AppError('E_NETWORK', `下载停滞超过 ${Math.round(elapsed / 1000)}s，自动中断`);
+
+        // 补满窗口
+        while (inflight < parallelSegments && queueIdx < pendingSegments.length) {
+          launchNext();
         }
-        const result = await Promise.race([
-          ...activePromises,
-          new Promise<never>((_, reject) => {
-            setTimeout(() => reject(new AppError('E_NETWORK', '下载停滞')), STALL_TIMEOUT_MS - elapsed);
-          }),
-        ]);
-        lastSettledAt = now();
-        writeBuffer.set(result.index, result.data);
-        await writeCompleted();
-        launchNext();
+
+        // 消费所有已完成的（关键修复：一次全部取走）
+        if (settled.length > 0) {
+          for (const r of settled) writeBuffer.set(r.index, r.data);
+          settled.length = 0;
+          lastActivityAt = now();
+          await writeCompleted();
+          continue;
+        }
+
+        if (firstError) throw firstError;
+        if (inflight === 0 && queueIdx >= pendingSegments.length) break;
+
+        // 等待至少一个分片完成或超时
+        await waitForActivity(STALL_TIMEOUT_MS - (now() - lastActivityAt));
       }
 
-      // 8. 完成
+      // 8. 完成前硬校验（FIX-D8：防止假完成）
+      if (completedCount !== totalSegments || writeBuffer.size > 0 || nextWriteIndex !== totalSegments) {
+        await this.deps.saveProgress(task.id, {
+          downloadedBytes: downloaded,
+          resumable: true,
+          updatedAt: now(),
+          completedSegments,
+          hlsTotalSegments: totalSegments,
+        });
+        throw new AppError(
+          'E_NETWORK',
+          `HLS 分片不完整（已写 ${completedCount}/${totalSegments}），已保留断点等待续传`,
+        );
+      }
+
       const result = await sink.finish();
+      // FIX-D8: 用 sink 实际写入大小回写，保证 DB 与磁盘一致
+      if (result.size !== downloaded) {
+        logger.error('HLS 产物大小与写入计数不一致', {
+          taskId: task.id,
+          sinkSize: result.size,
+          downloaded,
+        });
+      }
       await this.deps.saveProgress(task.id, {
-        downloadedBytes: downloaded,
-        totalBytes: downloaded,
+        downloadedBytes: result.size,
+        totalBytes: result.size,
         filePath: result.filePath,
         blobKey: result.blobKey,
         speedBps: 0,
         updatedAt: now(),
         completedAt: now(),
+        // FIX-D8：进度写入有 1s 节流，收尾这一段若不带索引，索引就永远少于
+        // hlsTotalSegments，被 checkCorruptedHlsTasks 误判成"假完成"。
+        completedSegments,
+        hlsTotalSegments: totalSegments,
       });
 
-      logger.debug('HLS 下载完成', { taskId: task.id, size: downloaded });
+      logger.debug('HLS 下载完成', { taskId: task.id, size: result.size, segments: completedCount });
+
+      // D-06: HLS 下载完成后转封装 TS → MP4（无损，不重编码），让 WebView 原生播放器可播。
+      // 转封装失败不阻断下载——保留 .ts 文件，播放时由 PlayerController 走原生引擎。
+      if (isNative() && isMediaToolAvailable() && result.filePath && task.format === 'hls') {
+        const inputPath = result.filePath;
+        const outputPath = inputPath.replace(/\.ts$/, '.mp4');
+        if (outputPath !== inputPath) {
+          try {
+            logger.debug('开始转封装 TS → MP4', { taskId: task.id, inputPath, outputPath });
+            const remuxResult = await MediaTool.remuxMp4({
+              inputPath,
+              outputPath,
+              taskId: task.id,
+              container: 'ts',
+              deleteInput: true,
+              timeoutMs: 300_000,
+            });
+            if (remuxResult.ok && !remuxResult.skipped) {
+              // P0-2: 转封装后体积会变（MP4 容器开销小于 TS 包头），
+              // 一并回写字节数，否则「本地存储」与任务详情会一直显示旧的 TS 体积。
+              const outputBytes = remuxResult.outputBytes ?? result.size;
+              await this.deps.saveProgress(task.id, {
+                filePath: outputPath,
+                format: 'mp4',
+                container: 'mp4',
+                downloadedBytes: outputBytes,
+                totalBytes: outputBytes,
+                remux: { status: 'done', durationMs: remuxResult.durationMs },
+                updatedAt: now(),
+              });
+              logger.info('转封装完成', { taskId: task.id, outputBytes });
+            } else if (remuxResult.skipped) {
+              logger.debug('转封装跳过', { taskId: task.id, reason: remuxResult.reason });
+            } else {
+              logger.warn('转封装失败，保留 .ts', { taskId: task.id, code: remuxResult.code, reason: remuxResult.reason });
+            }
+          } catch (remuxErr) {
+            logger.warn('转封装异常，保留 .ts', { taskId: task.id, error: toAppError(remuxErr).message });
+          }
+        }
+      }
     } catch (e) {
       // 错误处理
       const appError = e instanceof AppError ? e : toAppError(e, 'E_UNKNOWN');
@@ -847,6 +963,42 @@ export class HlsDownloader {
     }
     if (!response.ok) throw this.mapHttpError(response.status, label);
     return { text: await response.text(), baseUrl: manifestBaseUrl(response.url, url) };
+  }
+
+  /**
+   * FIX-CORS: 资源请求（init/key/segment）代理失败时降级直连。
+   *
+   * 与 `fetchManifestText` 的兜底模式一致：代理路径抛 TypeError（CORS/连接失败）
+   * 时回退直连；HTTP 状态码错误与 AppError 不降级，保持原有语义。
+   */
+  private async fetchResourceWithFallback(
+    originalUrl: string,
+    proxyBase: string | null,
+    proxyHeaders: Record<string, string>,
+    directHeaders: Record<string, string> | undefined,
+    fetchImpl: typeof fetch,
+    signal: AbortSignal,
+  ): Promise<Response> {
+    if (proxyBase && !isLocalhostUrl(originalUrl)) {
+      try {
+        return await fetchImpl(`${proxyBase}/${encodeURIComponent(originalUrl)}`, {
+          method: 'GET',
+          headers: proxyHeaders,
+          signal,
+          cache: 'no-store',
+        });
+      } catch (e) {
+        if (signal.aborted) throw new AppError('E_ABORTED');
+        if (e instanceof AppError) throw e;
+        logger.warn('资源代理请求失败，回退直连', { url: originalUrl, error: (e as Error)?.message ?? String(e) });
+      }
+    }
+    return fetchImpl(originalUrl, {
+      method: 'GET',
+      headers: directHeaders && Object.keys(directHeaders).length > 0 ? directHeaders : undefined,
+      signal,
+      cache: 'no-store',
+    });
   }
 
   /**

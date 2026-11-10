@@ -24,9 +24,21 @@ export type AppEventMap = {
   'toast': { text: string; type: 'info' | 'success' | 'error' };
   /** 播放链路阶段上报（问题一/问题二：进度条 + 重试提示） */
   'play:stage': { stage: 'resolving' | 'preparing' | 'connecting' | 'buffering' | 'retrying' | 'done'; detail?: string };
+  /** P0-1：离线 `.ts` → `.mp4` 后台优化进度（仅优化期出现，结束后 active=false） */
+  'offline:optimize': OfflineOptimizeSnapshot;
 };
 
 export type AppEventName = keyof AppEventMap;
+
+/** P0-1 离线文件优化的对外状态（定义在此以避免 `events ↔ offlineRemuxMigration` 循环引用） */
+export interface OfflineOptimizeSnapshot {
+  active: boolean;
+  done: number;
+  total: number;
+  /** 当前文件进度 0~1（拿不到原生进度事件时为 0） */
+  percent: number;
+  title: string | null;
+}
 type Handler<K extends AppEventName> = (payload: AppEventMap[K]) => void;
 
 class EventBus {

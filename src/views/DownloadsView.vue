@@ -5,7 +5,7 @@
  * 汇总卡 + 状态筛选（Segmented）+ 任务列表 + 全部暂停/继续。
  * 四态：loading 骨架 / empty 引导 / error 汇总区错误卡（列表仍可操作）/ offline 横幅。
  */
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import type { DownloadTask } from '@/types';
@@ -29,6 +29,8 @@ import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
 import type { BatchProgress } from '@/services/downloadBatch';
 import { downloadService } from '@/services/downloadService';
+import { appEvents, type OfflineOptimizeSnapshot } from '@/services/events';
+import { getOfflineOptimizeState } from '@/services/offlineRemuxMigration';
 
 const router = useRouter();
 const downloads = useDownloadStore();
@@ -178,6 +180,24 @@ const storageText = computed(() => {
   const sizeText = gb >= 1 ? `${gb.toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
   return `${sizeText}（${fileCount} 个文件）`;
 });
+
+/** P0-1：离线文件后台优化（.ts → .mp4）状态 */
+const optimizing = ref<OfflineOptimizeSnapshot>(getOfflineOptimizeState());
+const optimizingText = computed(() => {
+  const s = optimizing.value;
+  const base = `正在优化离线文件 ${s.done + 1}/${s.total}`;
+  return s.percent > 0 ? `${base} · ${Math.round(s.percent * 100)}%` : base;
+});
+const offOptimize = appEvents.on('offline:optimize', (state) => {
+  const wasActive = optimizing.value.active;
+  optimizing.value = state;
+  // 优化结束：文件路径与体积都变了，刷新列表与占用统计
+  if (wasActive && !state.active) {
+    void downloads.load().catch(() => undefined);
+    void loadStorageUsage();
+  }
+});
+onBeforeUnmount(offOptimize);
 
 onMounted(async () => {
   try {
@@ -414,6 +434,7 @@ function onPlay(task: DownloadTask): void {
   void router.push({
     name: 'player',
     params: { mediaId: task.mediaId, episodeId: task.episodeId },
+    query: { local: '1' },
   });
 }
 
@@ -499,6 +520,12 @@ function goLibrary(): void {
         <div class="storage-info">
           <span class="storage-info__label">本地存储</span>
           <span class="storage-info__value">{{ storageText }}</span>
+        </div>
+
+        <!-- P0-1：离线文件后台优化提示（转封装完成后自动消失） -->
+        <div v-if="optimizing.active" class="optimizing-hint" role="status">
+          <span class="optimizing-hint__spinner" aria-hidden="true" />
+          <span class="optimizing-hint__text">{{ optimizingText }}</span>
         </div>
 
         <div class="downloads-filter">
@@ -805,6 +832,44 @@ function goLibrary(): void {
   font: var(--text-body);
   color: var(--color-text-primary);
   font-weight: 500;
+}
+
+/* P0-1：离线文件优化提示 */
+.optimizing-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  margin-top: var(--space-2);
+  border-radius: var(--radius-md);
+  background-color: var(--color-brand-soft);
+}
+
+.optimizing-hint__text {
+  font: var(--text-label);
+  color: var(--color-brand-text);
+}
+
+.optimizing-hint__spinner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--color-brand-soft);
+  border-top-color: var(--color-brand-text);
+  animation: optimizing-spin 0.9s linear infinite;
+}
+
+@keyframes optimizing-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .optimizing-hint__spinner {
+    animation: none;
+  }
 }
 
 /* 功能扩展-10：批量操作栏 */

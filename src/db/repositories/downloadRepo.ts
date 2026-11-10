@@ -36,6 +36,22 @@ export const downloadRepo = {
     });
   },
 
+  /**
+   * 某媒体下的全部任务（跨线路/跨集）。
+   * 利用复合索引 `by-media: [mediaId, episodeId]` 的范围查询：
+   * `bound([mediaId], [mediaId, '\uffff'])` 命中所有 episodeId。
+   * 用于离线播放时按 episodeNumber 回退查找（线路不同 episodeId 不同）。
+   */
+  async listByMedia(mediaId: string): Promise<DownloadTask[]> {
+    return withTx(['downloads'], 'readonly', async (tx) => {
+      const rows = await tx
+        .objectStore(STORE_NAMES.downloads)
+        .index('by-media')
+        .getAll(IDBKeyRange.bound([mediaId], [mediaId, '\uffff']));
+      return rows.sort((a, b) => STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status]);
+    });
+  },
+
   /** 全部任务：priority 升序（值小优先），同 priority 按 createdAt 升序 */
   async listAll(): Promise<DownloadTask[]> {
     return withTx(['downloads'], 'readonly', async (tx) => {

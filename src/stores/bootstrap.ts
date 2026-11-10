@@ -15,6 +15,7 @@ import type { ComplianceGateLike } from '@/router';
 import { settingsService } from '@/services/settingsService';
 import { seedService } from '@/services/seedService';
 import { downloadService } from '@/services/downloadService';
+import { runOfflineRemuxMigration } from '@/services/offlineRemuxMigration';
 import { subscriptionLifecycleService } from '@/services/subscriptionLifecycleService';
 import { appEvents } from '@/services/events';
 import { lineHealthService } from '@/services/lineHealthService';
@@ -73,7 +74,10 @@ export async function ensureDemoData(): Promise<void> {
 export async function initDownloads(): Promise<void> {
   try {
     await downloadService.checkZombieTasks();
+    await downloadService.checkCorruptedHlsTasks();
     await downloadService.bootstrap();
+    // P0-1：存量 .ts 离线文件的后台转封装（内部延迟 + 等队列空闲，不阻塞启动）
+    void runOfflineRemuxMigration();
   } catch (e) {
     logger.error('下载队列初始化失败（不阻塞启动）', toAppError(e, 'E_DB'));
   }

@@ -4,6 +4,9 @@
  *
  * 结构：黑底画布 + 视频容器（由 PlayerController 注入）+ 亮度遮罩 + 字幕叠加层。
  * 字幕由 SubtitleManager 计算文本后传入，**不使用浏览器原生字幕渲染**。
+ *
+ * 遮罩只是亮度的其中一种落点：原生直接调窗口背光时，遮罩必须保持全透明，
+ * 否则两层一起压，HUD 上的百分比就和眼睛看到的对不上了。
  */
 import { computed } from 'vue';
 
@@ -17,8 +20,10 @@ const props = withDefaults(
     /** 字幕文本（含换行） */
     subtitleText: string;
     subtitle: SubtitleSettings;
-    /** 亮度 0~100（100 = 无遮罩） */
-    dim: number;
+    /** 画面亮度 0~100 */
+    brightness: number;
+    /** 是否用遮罩表达亮度（Web / 原生能力缺失）；false 时遮罩恒透明 */
+    mask: boolean;
     /** 是否横屏/全屏布局 */
     immersive?: boolean;
   }>(),
@@ -34,8 +39,8 @@ const subtitleClasses = computed(() => [
   },
 ]);
 
-/** 遮罩不透明度：0~0.8（设计规范 2.7：最多压到 80%，保留 20% 亮度） */
-const dimOpacity = computed(() => brightnessToDimOpacity(props.dim));
+/** 遮罩不透明度：0~0.8（设计规范 2.7：最多压到 80%，保留 20% 亮度）；背光模式下恒为 0 */
+const dimOpacity = computed(() => (props.mask ? brightnessToDimOpacity(props.brightness) : 0));
 </script>
 
 <template>

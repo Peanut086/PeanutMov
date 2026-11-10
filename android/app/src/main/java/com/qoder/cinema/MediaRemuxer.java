@@ -77,6 +77,8 @@ public final class MediaRemuxer {
     private static final int CANCELLATION_CHECK_INTERVAL = 64;
     /** 预留空间下限：小于此值即使输入很小也判定写不下 */
     private static final long MIN_FREE_SPACE_MARGIN = 8L * 1024 * 1024;
+    /** 失败归因日志开关：产物只在 media-remux 线程写几行，不需要独立设置项 */
+    private static final boolean VERBOSE = true;
 
     private MediaRemuxer() {}
 
@@ -173,7 +175,8 @@ public final class MediaRemuxer {
             } catch (IOException e) {
                 throw new RemuxFailure(codeForIo(e), "extractor-open");
             }
-
+            // MPEG2TS 嗅探完成后游标并不落在首个样本上，需显式定位；放在 selectTrack
+            // 之后（官方要求选择轨道先于 seek）。
             TrackSelection selection = selectTracks(extractor);
             if (selection.videoFormat == null) {
                 // 无视频轨不是错误：按 skipped 交回调用方（API-17「响应（跳过）」）
@@ -181,6 +184,15 @@ public final class MediaRemuxer {
                 result.reason = REASON_NO_VIDEO;
                 return result;
             }
+            if (VERBOSE) {
+                AppLog.i(TAG, "tracks=" + extractor.getTrackCount() + " video=" + describe(selection.videoFormat)
+                        + " audio=" + describe(selection.audioFormat));
+            }
+            // 真机现象：一条轨都不 select 时，tracks / duration 全读得到，但
+            // readSampleData 立刻返回 -1（等于空文件）。MPEG2TS 源只对已选择轨道吐样本。
+            extractor.selectTrack(selection.videoTrack);
+            if (selection.audioTrack >= 0) extractor.selectTrack(selection.audioTrack);
+            extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
 
             result.tracks.add(toTrack("video", selection.videoFormat));
             if (selection.audioFormat != null) {
@@ -214,6 +226,12 @@ public final class MediaRemuxer {
 
             if (stats.writtenSamples == 0 || stats.videoSamples == 0) {
                 // 没有任何视频样本（含"始终找不到关键帧"）视为不可封装
+                if (VERBOSE) {
+                    AppLog.i(TAG, "no-samples detail: written=" + stats.writtenSamples
+                            + " video=" + stats.videoSamples + " audio=" + stats.audioSamples
+                            + " preSyncDropped=" + stats.preSyncDropped + " sawSync=" + stats.sawSync
+                            + " lastVideoUs=" + stats.durationUs);
+                }
                 throw new RemuxFailure(CODE_UNSUPPORTED, REASON_NO_SAMPLES);
             }
 
@@ -286,6 +304,9 @@ public final class MediaRemuxer {
     private static final class CopyStats {
         long writtenSamples;
         long videoSamples;
+        long audioSamples;
+        long preSyncDropped;
+        boolean sawSync;
         long durationUs;
     }
 
@@ -322,8 +343,26 @@ public final class MediaRemuxer {
                 }
             }
 
+            // 先读样本、再问归属：MediaExtractor 在第一次 readSampleData 之前不会填充
+            // 当前样本，直接 getSampleTrackIndex() 只会拿到 -1，于是整条流被当成空
+            // （Google 官方转封装示例同样以 readSampleData 作为循环驱动条件）。
+            int size;
+            while (true) {
+                try {
+                    size = extractor.readSampleData(buffer, 0);
+                    break;
+                } catch (IllegalArgumentException tooSmall) {
+                    int nextCapacity = buffer.capacity() * 2;
+                    if (nextCapacity > MAX_SAMPLE_BUFFER) {
+                        throw new RemuxFailure(CODE_UNSUPPORTED, REASON_SAMPLE_TOO_LARGE);
+                    }
+                    buffer = ByteBuffer.allocateDirect(nextCapacity);
+                }
+            }
+            if (size < 0) break;
+
             int sampleTrack = extractor.getSampleTrackIndex();
-            if (sampleTrack < 0) break; // 读到文件尾
+            if (sampleTrack < 0) break; // 未选择任何有效轨
 
             int outTrack = sampleTrack == selection.videoTrack
                     ? videoOut
@@ -340,26 +379,13 @@ public final class MediaRemuxer {
                 if ((flags & MediaExtractor.SAMPLE_FLAG_SYNC) == 0) {
                     // 丢掉首个关键帧之前的视频样本：HLS 拼接流通常从关键帧开始，
                     // 例外情况直接封装会让产物开头花屏（音频样本不受影响）
+                    stats.preSyncDropped++;
                     if (!extractor.advance()) break;
                     continue;
                 }
                 videoSyncSeen = true;
+                stats.sawSync = true;
             }
-
-            int size;
-            while (true) {
-                try {
-                    size = extractor.readSampleData(buffer, 0);
-                    break;
-                } catch (IllegalArgumentException tooSmall) {
-                    int nextCapacity = buffer.capacity() * 2;
-                    if (nextCapacity > MAX_SAMPLE_BUFFER) {
-                        throw new RemuxFailure(CODE_UNSUPPORTED, REASON_SAMPLE_TOO_LARGE);
-                    }
-                    buffer = ByteBuffer.allocateDirect(nextCapacity);
-                }
-            }
-            if (size < 0) break;
 
             long sampleTimeUs = extractor.getSampleTime();
             if (sampleTimeUs < 0) sampleTimeUs = 0;
@@ -384,7 +410,7 @@ public final class MediaRemuxer {
             info.set(0, size, candidate, extractor.getSampleFlags());
             muxer.writeSampleData(outTrack, buffer, info);
             stats.writtenSamples++;
-            if (isVideo) stats.videoSamples++;
+            if (isVideo) stats.videoSamples++; else stats.audioSamples++;
 
             long processedUs = Math.max(lastVideoUs, lastAudioUs);
             long now = SystemClock.elapsedRealtime();
@@ -451,6 +477,26 @@ public final class MediaRemuxer {
                 intOrZero(format, MediaFormat.KEY_HEIGHT),
                 intOrZero(format, MediaFormat.KEY_CHANNEL_COUNT),
                 intOrZero(format, MediaFormat.KEY_SAMPLE_RATE));
+    }
+
+    /** 归因日志用的一行格式摘要：mime + 尺寸/采样率 + 时长，取不到的键留空 */
+    private static String describe(MediaFormat format) {
+        if (format == null) return "none";
+        StringBuilder sb = new StringBuilder();
+        sb.append(format.containsKey(MediaFormat.KEY_MIME) ? format.getString(MediaFormat.KEY_MIME) : "?");
+        sb.append(' ').append(intOrZero(format, MediaFormat.KEY_WIDTH)).append('x')
+                .append(intOrZero(format, MediaFormat.KEY_HEIGHT));
+        sb.append(" sr=").append(intOrZero(format, MediaFormat.KEY_SAMPLE_RATE));
+        sb.append(" durUs=").append(longOrZero(format, MediaFormat.KEY_DURATION));
+        return sb.toString();
+    }
+
+    private static long longOrZero(MediaFormat format, String key) {
+        try {
+            return format != null && format.containsKey(key) ? format.getLong(key) : 0L;
+        } catch (RuntimeException ignored) {
+            return 0L;
+        }
     }
 
     private static int intOrZero(MediaFormat format, String key) {

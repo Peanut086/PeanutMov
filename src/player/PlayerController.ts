@@ -35,6 +35,8 @@ import {
   QUALITY_AUTO,
   RESUME_MAX_RATIO,
   RESUME_MIN_RATIO,
+  SEEK_SETTLE_TIMEOUT_MS,
+  SEEK_SETTLE_TOLERANCE_SEC,
 } from '@/player/constants';
 import { clampBrightness } from '@/player/brightness';
 import { canPlayNativeHls, VideoEngine } from '@/player/VideoEngine';
@@ -136,6 +138,15 @@ export class PlayerController {
   /** 网络错误自动重试定时器（REV-06）：必须可取消，避免页面销毁/切集后仍触发 */
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private networkRetries = 0;
+
+  /**
+   * P1-a：待落地的 seek 目标（秒）。
+   *
+   * `null` = 没有等待落地的定位。落地的判定取三者最早：原生 `seeksettled` 事件、
+   * 引擎回报已接近目标的时间、或 `SEEK_SETTLE_TIMEOUT_MS` 超时兜底。
+   */
+  private seekSettleTarget: number | null = null;
+  private seekSettleTimer: ReturnType<typeof setTimeout> | null = null;
 
   /** m3u8 DRM 预检的取消句柄（AC-40）：切集/重试/销毁时中止上一轮预检 */
   private preflightAbort: AbortController | null = null;
@@ -253,7 +264,13 @@ export class PlayerController {
         throw new AppError('E_ABORTED', '播放已切换，本次加载作废');
       }
       const start = this.resolveStartPosition(opts);
-      if (start > 0) this.engine?.seek(start);
+      // P0-3：原生引擎把续播位置随 prepare 一起下发了（NativeEngine.load → startPositionMs），
+      // 这里再 seek 一次等于二次定位——本地大文件上每次定位都要重扫容器并重启硬解，
+      // 起播因此多卡 1~3 秒。位置已由引擎预置时跳过补 seek。
+      const prepositionedByEngine = (opts.playback.startPositionMs ?? 0) > 0;
+      if (start > 0 && !(this.engineKind === 'native' && prepositionedByEngine)) {
+        this.engine?.seek(start);
+      }
       this.engine?.setRate(this.rate);
       this.engine?.setVolume(this.volume);
       this.engine?.setResizeMode(this.resizeMode);
@@ -292,7 +309,12 @@ export class PlayerController {
     if (!host) throw new AppError('E_INVALID_STATE', '播放器容器未挂载');
 
     // v1.8 优化：原生引擎支持 DASH/DRM，只在 WebView 引擎路径上做前置检查
-    const useNativeEngine = this.options?.preferNativeEngine === true && await isExoPlayerAvailable();
+    // P0-4：本地文件一律优先原生引擎。WebView 的 <video> 对 `file://` 大文件支持参差
+    // （`.ts` 直接解不了封装，`.mp4` 的 seek 与硬件解码也不受控），ExoPlayer 走
+    // FileDataSource + 硬解， seek 精确、后台可续播。
+    const preferNativeForLocal = playback.isLocal;
+    const useNativeEngine = (this.options?.preferNativeEngine === true || preferNativeForLocal)
+      && await isExoPlayerAvailable();
 
     // AC-40：WebView 路径在创建任何引擎前完成两级前置检查，命中即拒绝——
     // 1) URL 级：DASH(.mpd) / 地址内嵌的 SAMPLE-AES 标记，不发请求；
@@ -323,6 +345,8 @@ export class PlayerController {
         onQualitiesChange: (qualities) => this.emit('qualitychange', { quality: this.quality, levels: qualities }),
         // EXT-07：内嵌字幕/音轨状态（两个原生引擎构造点都要接）
         onEmbeddedTracksChange: (state) => this.setEmbeddedTracks(state),
+        // P1-a：原生侧回报"seek 后画面落地"，立即收口等待态并写历史
+        onSeekSettled: () => this.settleSeek(),
       });
       nativeEngine.attach(host);
       try {
@@ -444,6 +468,7 @@ export class PlayerController {
         onError: (error) => this.handleEngineError(error),
         // EXT-07：WebView 失败降级到原生时同样要接轨道状态
         onEmbeddedTracksChange: (state) => this.setEmbeddedTracks(state),
+        onSeekSettled: () => this.settleSeek(),
       });
       nativeEngine.attach(host);
       try {
@@ -540,6 +565,11 @@ export class PlayerController {
 
   private handleTimeUpdate(currentTime: number, duration: number, buffered: number): void {
     this.progress.update(currentTime, duration);
+    // P1-a：引擎回报已经跑到目标附近 = 定位真的落了地
+    if (this.seekSettleTarget !== null
+      && Math.abs(currentTime - this.seekSettleTarget) <= SEEK_SETTLE_TOLERANCE_SEC) {
+      this.settleSeek();
+    }
     this.emit('timeupdate', { currentTime, duration, buffered });
     // 黑屏检测：起播后 5s 仍一帧未出 → 上报一次（每次加载最多一次）
     if (currentTime > 0) this.scheduleNoVideoCheck();
@@ -683,7 +713,40 @@ export class PlayerController {
       duration,
       buffered: this.engine?.getBuffered() ?? 0,
     });
+    // P1-a：不在这里写历史。定位未完成时引擎仍停在旧位置，此刻落库写的既不是目标
+    // 也不是真实位置；等引擎回报落地再写（见 settleSeek）。
+    this.armSeekSettle(target);
+  }
+
+  /** 登记一次待落地的 seek；裸 TS 额外给一句"正在定位"提示（转封装失败时的兜底路径） */
+  private armSeekSettle(target: number): void {
+    const isRawTs = this.options?.playback.isLocal === true && this.options.playback.format === 'ts';
+    const shouldHint = isRawTs && this.seekSettleTarget === null;
+    this.seekSettleTarget = target;
+    if (this.seekSettleTimer !== null) clearTimeout(this.seekSettleTimer);
+    this.seekSettleTimer = setTimeout(() => this.settleSeek(), SEEK_SETTLE_TIMEOUT_MS);
+    if (shouldHint) this.emit('notice', { message: '正在定位画面…' });
+  }
+
+  /** seek 落地：收口等待态并把真实位置写进历史 */
+  private settleSeek(): void {
+    if (this.seekSettleTarget === null) return;
+    this.seekSettleTarget = null;
+    if (this.seekSettleTimer !== null) {
+      clearTimeout(this.seekSettleTimer);
+      this.seekSettleTimer = null;
+    }
+    this.emit('statechange', { playing: this.state === 'playing', waiting: false });
     void this.progress.flush();
+  }
+
+  /** 换引擎/切集/销毁：作废待落地的 seek，不让旧定位把新位置写进历史 */
+  private clearSeekSettle(): void {
+    this.seekSettleTarget = null;
+    if (this.seekSettleTimer !== null) {
+      clearTimeout(this.seekSettleTimer);
+      this.seekSettleTimer = null;
+    }
   }
 
   seekBy(deltaSec: number): void {
@@ -1016,6 +1079,7 @@ export class PlayerController {
   }
 
   private destroyEngine(): void {
+    this.clearSeekSettle();
     if (!this.engine) return;
     try {
       this.engine.destroy();

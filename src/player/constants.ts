@@ -78,3 +78,18 @@ export const NO_VIDEO_CHECK_DELAY_MS = 5000;
 
 /** 清晰度自动档标签 */
 export const QUALITY_AUTO = 'auto';
+
+/**
+ * seek 落位判定（P1-a）。
+ *
+ * 原生引擎在 `.ts` 上定位要秒级（无样本索引 → 按 PCR 二分 + 回退关键帧 + 重启硬解），
+ * 此时引擎上报的时间仍是旧位置。历史写库因此要等引擎报回接近目标的时间再触发，
+ * 超时兜底保证"定位失败也不会丢掉进度"。
+ */
+export const SEEK_SETTLE_TIMEOUT_MS = 8000;
+/**
+ * 落位容差取 3s：大于原生 1s 轮询粒度 + seek 落关键帧的误差，
+ * 又小于双击 ±10s 的步长——容差再大就会在引擎仍停在起点时误判落位，
+ * 把旧位置写回历史（进度倒退）并让"正在定位"提示一闪而过。
+ */
+export const SEEK_SETTLE_TOLERANCE_SEC = 3;

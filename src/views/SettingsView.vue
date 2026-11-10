@@ -600,8 +600,8 @@ async function exportLogs(): Promise<void> {
           <SettingsRow label="快进退秒数" :value="`${seekStepSecLabel}s`" chevron @click="seekStepOpen = true" />
           <SettingsRow label="长按倍速" :value="`${longPressRateLabel}x`" chevron @click="longPressRateOpen = true" />
           <SettingsRow
-            label="记忆音量/亮度"
-            description="退出播放时保存，下次进入自动恢复"
+            label="记忆亮度"
+            description="退出播放时保存屏幕亮度，下次进入自动恢复（音量跟随系统设置）"
             :switch-value="rememberVolumeBrightness"
             @update:switch-value="setRememberVolumeBrightness"
           />

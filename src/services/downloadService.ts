@@ -49,6 +49,7 @@ import {
   tasksOfBatch,
 } from '@/services/downloadBatch';
 import { downloadPreflight, type PreflightOptions, type PreflightResult } from '@/services/downloadPreflight';
+import { markOfflineFileInUse } from '@/services/offlineRemuxMigration';
 import type {
   CreateDownloadInput,
   DownloadSpeedLimit,
@@ -989,11 +990,71 @@ export const downloadService = {
     try {
       const local = await this.getLocalPlayUrl(task.id);
       const subtitles = await localSubtitlesOf(task);
+      markOfflineFileInUse(task.id);
       return {
         url: local.url,
         // HLS 下载已把分片合并为单一 MPEG-TS 文件，按渐进式 ts 播放即可；
         // 若仍报 'hls' 会被播放器当成清单去做 m3u8 预检而失败。
         // 转封装成功后由后端把 task.format 回写为 'mp4'，此处自然呈现 mp4。
+        format: task.format === 'hls' ? 'ts' : task.format,
+        headers: {},
+        subtitles,
+        lineId: `local:${task.id}`,
+        quality: task.quality,
+        expiresAt: null,
+        isLocal: true,
+      };
+    } catch (e) {
+      logger.warn('本地文件不可用', { taskId: task.id, error: toAppError(e).message });
+      return null;
+    }
+  },
+
+  /**
+   * 跨线路本地查找：按 mediaId 搜索所有已完成任务，再用 episodeId / episodeNumber 匹配。
+   *
+   * 离线场景核心：用户从线路 A 下载了第 3 集，播放页可能落在线路 B（episodeId 不同），
+   * 精确匹配 `findLocalPlay` 会 miss。此方法三级回退：
+   *   1. episodeId 精确命中
+   *   2. episodeNumber 命中（跨线路同集号）
+   *   3. 该 mediaId 下只有一个 completed 任务时直接返回（单集影片/只下一集）
+   */
+  async findLocalForMedia(
+    mediaId: string,
+    opts: { episodeId?: string | null; episodeNumber?: number | null },
+  ): Promise<PlaybackSource | null> {
+    const allTasks = await downloadRepo.listByMedia(mediaId);
+    const completed = allTasks.filter((t) => t.status === 'completed');
+    if (completed.length === 0) return null;
+
+    // 1. episodeId 精确匹配
+    if (opts.episodeId) {
+      const exact = completed.find((t) => t.episodeId === opts.episodeId);
+      if (exact) return this.taskToPlayback(exact);
+    }
+
+    // 2. episodeNumber 跨线路匹配
+    if (opts.episodeNumber != null) {
+      const byNumber = completed.find((t) => t.episodeNumber === opts.episodeNumber);
+      if (byNumber) return this.taskToPlayback(byNumber);
+    }
+
+    // 3. 唯一 completed 任务兜底
+    if (completed.length === 1) {
+      return this.taskToPlayback(completed[0]);
+    }
+
+    return null;
+  },
+
+  /** 把已完成任务转为本地 PlaybackSource（内部复用） */
+  async taskToPlayback(task: DownloadTask): Promise<PlaybackSource | null> {
+    try {
+      const local = await this.getLocalPlayUrl(task.id);
+      const subtitles = await localSubtitlesOf(task);
+      markOfflineFileInUse(task.id);
+      return {
+        url: local.url,
         format: task.format === 'hls' ? 'ts' : task.format,
         headers: {},
         subtitles,
@@ -1028,6 +1089,38 @@ export const downloadService = {
       return null;
     } catch {
       return task;
+    }
+  },
+
+  /**
+   * 跨线路版本：查找 mediaId 下"已完成但本地文件丢失"的任务。
+   * 回退策略与 `findLocalForMedia` 一致（episodeId → episodeNumber → 唯一任务）。
+   */
+  async localMissingForMedia(
+    mediaId: string,
+    opts: { episodeId?: string | null; episodeNumber?: number | null },
+  ): Promise<DownloadTask | null> {
+    const allTasks = await downloadRepo.listByMedia(mediaId);
+    const completed = allTasks.filter((t) => t.status === 'completed');
+    if (completed.length === 0) return null;
+
+    let candidate: DownloadTask | null = null;
+    if (opts.episodeId) {
+      candidate = completed.find((t) => t.episodeId === opts.episodeId) ?? null;
+    }
+    if (!candidate && opts.episodeNumber != null) {
+      candidate = completed.find((t) => t.episodeNumber === opts.episodeNumber) ?? null;
+    }
+    if (!candidate && completed.length === 1) {
+      candidate = completed[0];
+    }
+    if (!candidate) return null;
+
+    try {
+      await this.getLocalPlayUrl(candidate.id);
+      return null;
+    } catch {
+      return candidate;
     }
   },
 
@@ -1104,6 +1197,72 @@ export const downloadService = {
       } catch (e) {
         logger.warn('自动恢复僵尸任务失败', toAppError(e).message);
       }
+    }
+  },
+
+  /**
+   * FIX-D8：检测被旧版 bug 标记为「已完成」但分片不完整的 HLS 任务。
+   *
+   * 旧版滑动窗口会静默丢弃分片结果，导致文件只有前几十个分片却标记为 completed。
+   * 这里扫描 format='hls' && status='completed' 且 hlsTotalSegments 已记录的任务，
+   * 索引数量不足时以磁盘产物为准分流处理：
+   * - 产物体积对得上记录字节 → 只是进度写入的 1s 节流没把最后一段索引落库
+   *   （D8 的完成前硬校验已保证全部写入），补全索引即可，任务保持 completed；
+   * - 产物缺失或短于记录字节 → 才是真正的假完成，降级为 paused 让续传补齐。
+   * 对于没有 hlsTotalSegments 的旧记录（本次修复前已完成的），无法自动检测，需用户手动重下。
+   *
+   * 逐任务 try/catch：这条自检跑在 `initDownloads()` 里，任何一条记录抛错都会
+   * 连带跳过后续启动步骤（队列 bootstrap、离线文件优化），所以坏数据只能跳过。
+   */
+  async checkCorruptedHlsTasks(): Promise<void> {
+    const completedHls = (await downloadRepo.listByStatus(['completed'])).filter(
+      (t) => t.format === 'hls' && t.hlsTotalSegments != null,
+    );
+    let repaired = 0;
+    for (const task of completedHls) {
+      try {
+        const total = task.hlsTotalSegments!;
+        const doneCount = (task.completedSegments ?? []).filter((i) => i >= 0).length;
+        if (doneCount >= total) continue;
+
+        // 产物是权威：文件存在且不小于已记录字节，说明分片其实齐了，索引只是落后
+        const recordedBytes = task.downloadedBytes ?? 0;
+        const info = task.filePath ? await stat(task.filePath) : null;
+        const artifactOk = Boolean(info?.exists) && recordedBytes > 0 && info!.size >= recordedBytes;
+        if (artifactOk) {
+          const fresh = await downloadRepo.get(task.id);
+          if (!fresh) continue;
+          await persist({
+            ...fresh,
+            completedSegments: Array.from({ length: total }, (_, i) => i),
+            updatedAt: Date.now(),
+          });
+          logger.debug(`HLS 索引补齐: ${task.id}（${doneCount}/${total}，产物完整）`);
+          continue;
+        }
+
+        // 产物确实缺斤短两 → 降级续传。completed 是终态，transition 表按设计
+        // 拒绝 paused，这里属于数据修复而非用户操作，直接写库。
+        const fresh = await downloadRepo.get(task.id);
+        if (!fresh) continue;
+        const next: DownloadTask = {
+          ...fresh,
+          status: 'paused',
+          speedBps: 0,
+          errorCode: null,
+          errorMessage: `分片不完整（${doneCount}/${total}），请重新继续下载`,
+          updatedAt: Date.now(),
+        };
+        await persist(next);
+        emitDownload({ type: 'status', task: next, previous: 'completed' });
+        repaired += 1;
+        logger.warn(`修复假完成 HLS 任务: ${task.id}（${doneCount}/${total}）`);
+      } catch (e) {
+        logger.warn(`HLS 完整性自检跳过任务 ${task.id}`, toAppError(e).message);
+      }
+    }
+    if (repaired > 0) {
+      logger.info(`共修复 ${repaired} 个假完成 HLS 任务`);
     }
   },
 

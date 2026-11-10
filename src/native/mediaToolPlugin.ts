@@ -8,7 +8,7 @@
  *
  * 注意：本文件不得推断落地 URL、不得记录路径以外的敏感信息（§6.4）。
  */
-import { Capacitor, registerPlugin } from '@capacitor/core';
+import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core';
 
 import { isNative } from '@/shared/platform';
 import { logger } from '@/shared/logger';
@@ -44,6 +44,11 @@ export interface MediaToolPlugin {
   }>;
   /** 取消进行中的转封装并清理 `.mp4.part` */
   cancelRemux(options: { taskId?: string; inputPath?: string }): Promise<{ canceled: boolean }>;
+  /** 转封装进度（≤2 次/秒，按 `inputPath` 归属） */
+  addListener(
+    eventName: 'remuxProgress',
+    listenerFunc: (info: { taskId?: string; inputPath?: string; outputPath?: string; processedUs: number; durationUs: number }) => void,
+  ): Promise<PluginListenerHandle>;
 }
 
 export const MediaTool = registerPlugin<MediaToolPlugin>('MediaTool');

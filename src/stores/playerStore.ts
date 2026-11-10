@@ -22,9 +22,21 @@ export const usePlayerStore = defineStore('player', () => {
   const duration = ref(0);
   const buffered = ref(0);
   const rate = ref<PlaybackRate>(DEFAULT_PLAYBACK_RATE);
+  /**
+   * 音量 0~100。
+   *
+   * `levelSource === 'system'` 时是系统媒体音量档位百分比（引擎倍率恒为满量），
+   * `'app'` 时是播放器倍率（Web / 原生能力缺失）。
+   */
   const volume = ref(100);
-  /** 亮度遮罩不透明度 0~DIM_MAX_OPACITY（不是亮度 0~100，换算见 player/brightness） */
-  const dim = ref(0);
+  /** 画面亮度 0~100（唯一真相；落到背光还是遮罩由 levelSource 决定，换算见 player/brightness） */
+  const brightness = ref(100);
+  /**
+   * 亮度/音量的落点：
+   * - `'system'`：原生窗口背光 + 系统媒体音量档位（播放页探测成功后置位）；
+   * - `'app'`：黑色遮罩 + 播放器倍率（Web、或原生插件缺失时的回退，默认值）。
+   */
+  const levelSource = ref<'app' | 'system'>('app');
   const fullscreen = ref(false);
   const controlsVisible = ref(true);
 
@@ -54,7 +66,8 @@ export const usePlayerStore = defineStore('player', () => {
     buffered.value = 0;
     rate.value = DEFAULT_PLAYBACK_RATE;
     volume.value = 100;
-    dim.value = 0;
+    brightness.value = 100;
+    levelSource.value = 'app';
     fullscreen.value = false;
     controlsVisible.value = true;
     subtitles.value = [];
@@ -80,7 +93,8 @@ export const usePlayerStore = defineStore('player', () => {
     buffered: number;
     rate: PlaybackRate;
     volume: number;
-    dim: number;
+    brightness: number;
+    levelSource: 'app' | 'system';
     fullscreen: boolean;
     controlsVisible: boolean;
     subtitles: SubtitleTrack[];
@@ -103,7 +117,8 @@ export const usePlayerStore = defineStore('player', () => {
     if (p.buffered !== undefined) buffered.value = p.buffered;
     if (p.rate !== undefined) rate.value = p.rate;
     if (p.volume !== undefined) volume.value = p.volume;
-    if (p.dim !== undefined) dim.value = p.dim;
+    if (p.brightness !== undefined) brightness.value = p.brightness;
+    if (p.levelSource !== undefined) levelSource.value = p.levelSource;
     if (p.fullscreen !== undefined) fullscreen.value = p.fullscreen;
     if (p.controlsVisible !== undefined) controlsVisible.value = p.controlsVisible;
     if (p.subtitles !== undefined) subtitles.value = p.subtitles;
@@ -128,7 +143,8 @@ export const usePlayerStore = defineStore('player', () => {
     buffered,
     rate,
     volume,
-    dim,
+    brightness,
+    levelSource,
     fullscreen,
     controlsVisible,
     subtitles,

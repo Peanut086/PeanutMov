@@ -13,12 +13,14 @@ import { ref, onBeforeUnmount } from 'vue';
 
 import { usePlayerStore } from '@/stores/playerStore';
 import { GestureRecognizer, type GestureIntent, type GestureContext } from '@/player/GestureRecognizer';
-import { dimOpacityToBrightness } from '@/player/brightness';
+import { clampBrightness } from '@/player/brightness';
 
 const emit = defineEmits<{
   (e: 'intent', intent: GestureIntent): void;
   /** OPT-10：长按 2 秒触发帮助 */
   (e: 'long-press-help'): void;
+  /** 按下瞬间：父级用它刷新可能已被实体音量键改动的基准值 */
+  (e: 'pointer-down'): void;
 }>();
 
 const props = withDefaults(
@@ -58,7 +60,7 @@ function ctx(): GestureContext {
     currentTime: player.currentTime,
     duration: player.duration,
     volume: Math.min(100, Math.max(0, player.volume)),
-    brightness: dimOpacityToBrightness(player.dim),
+    brightness: clampBrightness(player.brightness),
     seekMaxSec: props.seekMaxSec,
     sensitivity: props.sensitivity,
   };
@@ -78,6 +80,8 @@ function ensureRecognizer(): GestureRecognizer {
 function onPointerDown(ev: PointerEvent): void {
   // 显式捕获：保证滑出层/跨到控制条时仍能收到 move/up，避免 sample 残留
   (ev.currentTarget as HTMLElement | null)?.setPointerCapture?.(ev.pointerId);
+  // 先通知父级校准基准：系统音量在按下前一刻仍可能被实体按键改动
+  emit('pointer-down');
   ensureRecognizer().pointerDown({ pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY }, ctx());
 
   // OPT-10：启动长按检测

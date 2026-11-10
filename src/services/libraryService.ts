@@ -926,17 +926,25 @@ export const libraryService: LibraryService = {
   },
 
   async resolvePlay(params): Promise<PlaybackSource> {
-    // REV-24：本地优先，避免清缓存后已下载内容无法播放
-    const local = await downloadService.findLocalPlay(params.mediaId, params.episodeId);
+    // 读取剧集序号——本地查找和后续网络查找都需要
+    const episode = await episodeRepo.get(params.episodeId);
+    const episodeNumber = episode?.number;
+
+    // REV-24 + 离线播放：跨线路本地查找（线路不同 episodeId 不同，按 episodeNumber 回退）
+    const local = await downloadService.findLocalForMedia(params.mediaId, {
+      episodeId: params.episodeId,
+      episodeNumber,
+    });
     if (local) return local;
 
     const item = await mediaRepo.get(params.mediaId);
     if (!item) throw new AppError('E_NOT_FOUND');
 
     // 任务已完成但本地文件/Blob 丢失 → 回退网络源时**明确告知**（AC-78 / REV-23）。
-    // `PlaybackSource` 无"本地不可用"字段且类型冻结，故用事件把 taskId 透出：
-    // UI 可提示"本地文件不可用，已切换网络源"，并调用 `downloadService.redownload(taskId)`。
-    const missingTask = await downloadService.localMissingTaskOf(params.mediaId, params.episodeId);
+    const missingTask = await downloadService.localMissingForMedia(params.mediaId, {
+      episodeId: params.episodeId,
+      episodeNumber,
+    });
     if (missingTask) {
       logger.warn('本地文件缺失，回退网络源', { taskId: missingTask.id, mediaId: params.mediaId });
       appEvents.emit('local:missing', {
@@ -954,10 +962,6 @@ export const libraryService: LibraryService = {
     const lines = await lineRepo.listByMedia(item.id);
     const lineId = params.lineId ?? lines[0]?.id;
     if (!lineId) throw new AppError('E_NO_PLAY_URL');
-
-    // P0-4: 读取剧集序号，用于 id 匹配失败时的兜底定位
-    const episode = await episodeRepo.get(params.episodeId);
-    const episodeNumber = episode?.number;
 
     // P0-1: 播放地址内存缓存，避免每次播放都重跑 detailContent + playerContent
     const cacheKey = resolvedPlayCacheKey(item.id, lineId, params.episodeId);

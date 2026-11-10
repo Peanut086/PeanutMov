@@ -321,6 +321,8 @@ public class LocalProxyPlugin extends Plugin {
             if (name == null) continue;
             String lower = name.toLowerCase();
             if (lower.equals("transfer-encoding") || lower.equals("connection")) continue;
+            // FIX-CORS: 跳过上游 CORS 头，避免与代理自己追加的 ACAO 合并成 "*, *" 被 WebView 拒绝
+            if (lower.startsWith("access-control-")) continue;
             // P0-8: m3u8 重写时删 Content-Length
             if (isM3u8 && lower.equals("content-length")) continue;
             for (String value : response.headers(name)) {
@@ -328,7 +330,7 @@ public class LocalProxyPlugin extends Plugin {
                 if (lower.equals("content-length")) hasLength = true;
             }
         }
-        // v1.8 优化：所有代理响应补 ACAO 头
+        // FIX-CORS: 代理统一发一份 ACAO，确保 WebView 能读到响应（上游已回则被上面的过滤跳过）
         head.append("Access-Control-Allow-Origin: *\r\n");
         head.append("Access-Control-Allow-Methods: GET, HEAD, Range\r\n");
         head.append("Access-Control-Allow-Headers: *\r\n");
@@ -371,8 +373,12 @@ public class LocalProxyPlugin extends Plugin {
     private static void writeSimple(Socket client, int status, String message) throws Exception {
         String body = message;
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        // FIX-CORS: 错误响应也补 ACAO，避免浏览器把非 2xx 吞成 CORS 失败
         String head = "HTTP/1.1 " + status + " " + message + "\r\n"
                 + "Content-Type: text/plain\r\n"
+                + "Access-Control-Allow-Origin: *\r\n"
+                + "Access-Control-Allow-Methods: GET, HEAD, Range\r\n"
+                + "Access-Control-Allow-Headers: *\r\n"
                 + "Content-Length: " + bytes.length + "\r\n"
                 + "Connection: close\r\n\r\n";
         OutputStream out = client.getOutputStream();

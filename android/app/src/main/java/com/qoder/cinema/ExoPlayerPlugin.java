@@ -80,6 +80,14 @@ public class ExoPlayerPlugin extends Plugin {
     private FrameLayout overlay;
     /** v1.8/CHG-25：本次会话累计丢帧（AnalyticsListener 累加，progress() 上报 AC-125 采样） */
     private long droppedFrames = 0;
+    /**
+     * P1-b：最近一次 seek 的发起时刻（elapsedRealtime）与目标位置。
+     *
+     * 只有 seek 置位、首帧渲染后清零，所以初起播的第一帧不会被误记成 seek 耗时。
+     * 这个耗时就是用户看到的"时间跳了、画面还没动"的长度。
+     */
+    private long seekRequestedAtMs = 0L;
+    private long seekTargetMs = -1L;
     /** v1.8 优化：视频轨列表（清晰度切换） */
     private java.util.List<JSObject> videoTracks = new java.util.ArrayList<>();
     /** v1.8 优化：字幕轨列表 */
@@ -184,6 +192,11 @@ public class ExoPlayerPlugin extends Plugin {
                     httpFactory.setDefaultRequestProperties(headers);
                 }
 
+                // DefaultDataSource.Factory 同时支持 http/https（走 OkHttp）和 file://（本地文件），
+                // 直接用 OkHttpDataSource.Factory 会导致本地文件无法打开（DEMUXER_ERROR_COULD_NOT_OPEN）
+                androidx.media3.datasource.DefaultDataSource.Factory dataSourceFactory =
+                        new androidx.media3.datasource.DefaultDataSource.Factory(getContext(), httpFactory);
+
                 // 内容类型必须显式标注：DefaultMediaSourceFactory 只按 URI 路径推断，
                 // 中转地址（.m3u8 在 query）与本地代理 hash 地址都会被误判成 progressive，
                 // 把 m3u8 当渐进流嗅探 → UnrecognizedInputFormatException（真机实证）。
@@ -211,7 +224,7 @@ public class ExoPlayerPlugin extends Plugin {
                 // P0-4: 短退避重试策略（2 次，500ms/1500ms）
                 LoadErrorHandlingPolicy errorPolicy = new DefaultLoadErrorHandlingPolicy(2);
 
-                DefaultMediaSourceFactory mediaSourceFactory = new DefaultMediaSourceFactory(httpFactory);
+                DefaultMediaSourceFactory mediaSourceFactory = new DefaultMediaSourceFactory(dataSourceFactory);
                 mediaSourceFactory.setLoadErrorHandlingPolicy(errorPolicy);
 
                 player = new ExoPlayer.Builder(getContext())
@@ -227,6 +240,9 @@ public class ExoPlayerPlugin extends Plugin {
                             data.put("state", "ready");
                             data.put("duration", player.getDuration());
                             notifyListeners("exostate", data);
+                            // P1-b：定位后重新 READY 也算"画面落地"。某些 seek 不触发渲染器重启，
+                            // onRenderedFirstFrame 不会再来一次，这里兜底，两者谁先到算谁。
+                            reportSeekSettled("ready");
                         } else if (playbackState == Player.STATE_BUFFERING) {
                             // v1.8/CHG-25：等待态（JS 侧 HUD loading）
                             data.put("state", "buffering");
@@ -338,6 +354,13 @@ public class ExoPlayerPlugin extends Plugin {
                     public void onDroppedVideoFrames(AnalyticsListener.EventTime eventTime, int droppedFrames, long droppedToKeyframes) {
                         ExoPlayerPlugin.this.droppedFrames += droppedFrames;
                     }
+
+                    @Override
+                    public void onRenderedFirstFrame(AnalyticsListener.EventTime eventTime, Object renderingId,
+                                                     long elapsedRealtimeEpochMs) {
+                        // P1-b：seek → 画面真正落地。JS 侧靠这个事件收口"正在定位"等待态并写历史。
+                        reportSeekSettled("first-frame");
+                    }
                 });
 
                 playerView.setPlayer(player);
@@ -396,9 +419,36 @@ public class ExoPlayerPlugin extends Plugin {
     public void seek(PluginCall call) {
         Double positionMs = call.getDouble("positionMs");
         getBridge().executeOnMainThread(() -> {
-            if (player != null && positionMs != null) player.seekTo(positionMs.longValue());
+            if (player != null && positionMs != null) {
+                // P1-b：登记请求时刻，首帧渲染时换算真实定位耗时（见 onRenderedFirstFrame）
+                seekRequestedAtMs = SystemClock.elapsedRealtime();
+                seekTargetMs = positionMs.longValue();
+                AppLog.i("ExoPlayerPlugin", "seek request target=" + seekTargetMs + "ms");
+                player.seekTo(positionMs.longValue());
+            }
             call.resolve();
         });
+    }
+
+    /**
+     * P1-b：结算一次 seek —— 打印"请求 → 画面落地"的耗时并通知 JS。
+     *
+     * 只有 seek 置位、这里清零，所以初起播不会误报。耗时就是用户看到的
+     * "进度条跳了、画面卡住"的长度：MP4 一般几十到几百毫秒，裸 TS 要秒级。
+     *
+     * @param via 结算来源（first-frame = 渲染出帧，ready = 播放器重新进入 READY）
+     */
+    private void reportSeekSettled(String via) {
+        if (seekRequestedAtMs <= 0) return;
+        long latencyMs = SystemClock.elapsedRealtime() - seekRequestedAtMs;
+        long targetMs = seekTargetMs;
+        seekRequestedAtMs = 0L;
+        AppLog.i("ExoPlayerPlugin", "seek settled via=" + via + " in " + latencyMs + "ms (target=" + targetMs + "ms)");
+        JSObject data = new JSObject();
+        data.put("state", "seeksettled");
+        data.put("targetMs", targetMs);
+        data.put("latencyMs", latencyMs);
+        notifyListeners("exostate", data);
     }
 
     @PluginMethod
@@ -685,6 +735,8 @@ public class ExoPlayerPlugin extends Plugin {
 
     private void releasePlayerQuietly() {
         cancelWatchdog();
+        seekRequestedAtMs = 0L;
+        seekTargetMs = -1L;
         // EXT-07：轨道引用指向已释放播放器的 TrackGroup，必须一起清掉
         textTracks.clear();
         audioTracks.clear();

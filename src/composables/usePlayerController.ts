@@ -15,11 +15,28 @@ import { PlayerController } from '@/player/PlayerController';
 import type { GestureIntent } from '@/player/GestureRecognizer';
 import { ProgressReporter } from '@/player/ProgressReporter';
 import { AUTO_NEXT_COUNTDOWN_SEC, CONTROLS_HIDE_DELAY_MS } from '@/player/constants';
-import { brightnessToDimOpacity, clampBrightness } from '@/player/brightness';
+import { clampBrightness } from '@/player/brightness';
 import { isCanceled, toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { usePlayerStore } from '@/stores/playerStore';
 import { useUiStore } from '@/stores/uiStore';
+
+/**
+ * 亮度/音量的系统落点（由 View 注入 `deviceService` 能力——播放器层不直接 import Service，
+ * 见 `PlayerController` 头部约定）。
+ *
+ * 整组可选：Web、测试、原生插件缺失时不注入，播放器退回「黑色遮罩 + 播放器倍率」。
+ */
+export interface PlayerLevelsPort {
+  /** 写本窗口背光 0~100；false = 原生没接住 */
+  setBrightness: (percent: number) => Promise<boolean>;
+  /** 离开播放页交还背光 */
+  releaseBrightness: () => Promise<void>;
+  /** 写系统媒体音量 0~100，返回离散档位量化后的实际百分比；null = 没接住 */
+  setVolume: (percent: number) => Promise<number | null>;
+  /** 读系统媒体音量，用于手势按下时校准基准 */
+  readVolume: () => Promise<number | null>;
+}
 
 export interface UsePlayerControllerOptions {
   /** 进度写回（由 View 注入历史 Store） */
@@ -39,6 +56,8 @@ export interface UsePlayerControllerOptions {
    * 不传时 no-op（Web/测试环境）。
    */
   setKeepAwake?: (on: boolean) => void | Promise<void>;
+  /** 亮度/音量落到系统能力；不传（Web/测试/插件缺失）时用遮罩与播放器倍率 */
+  levels?: PlayerLevelsPort;
   /** 初始字幕设置 */
   subtitle: SubtitleSettings;
   /** 默认倍速 */
@@ -285,6 +304,9 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     c.mount(container);
     controller.value = c;
     c.setRate(options.defaultRate);
+    // app 模式：引擎倍率跟随记忆值；system 模式音量归系统，倍率必须留在满量，
+    // 否则两层衰减叠加（HUD 显示 60%，实际听到的是「系统 60% × 0.6」）。
+    c.setVolume(player.levelSource === 'system' ? 100 : player.volume);
     c.setResizeMode(options.resizeMode);
     c.setSubtitleOffset(options.subtitle.offsetSec);
     return c;
@@ -510,6 +532,30 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
 
   /* ---------- 手势 ---------- */
 
+  /** 原生落点写不进去（旧包/ROM 拒绝）：整体退回遮罩 + 倍率，手势不能变成「拖了没反应」 */
+  function degradeToAppLevels(): void {
+    if (player.levelSource !== 'system') return;
+    logger.warn('系统亮度/音量写入失败，退回画面遮罩与播放器倍率');
+    player.patch({ levelSource: 'app' });
+    // 系统模式下引擎倍率钉在 100；不补这一刀，本次手势会出现 HUD 显示小、实际听着响
+    controller.value?.setVolume(player.volume);
+  }
+
+  /**
+   * 手指按下：校准音量基准。
+   *
+   * 实体音量键改的是系统档位，本页无从感知；识别器要到第一次能判定方向的
+   * move 才取基准，所以这里异步刷一次，通常赶在那之前落地。刷晚了只是这一次
+   * 滑动沿用旧基准，下一次按下即自愈——不值得为它挂一个 ContentObserver。
+   */
+  function onGesturePointerDown(): void {
+    const levels = options.levels;
+    if (player.levelSource !== 'system' || !levels) return;
+    void levels.readVolume().then((percent) => {
+      if (percent !== null && player.levelSource === 'system') player.patch({ volume: percent });
+    });
+  }
+
   function onGesture(intent: GestureIntent): void {
     const c = controller.value;
     if (!c) return;
@@ -530,16 +576,36 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       case 'seek-cancel':
         clearHud();
         break;
-      case 'volume':
-        c.setVolume(intent.value);
-        player.patch({ volume: intent.value });
-        showHud({ kind: 'volume', value: intent.value, deltaSec: 0 });
+      case 'volume': {
+        const value = Math.min(100, Math.max(0, Math.round(intent.value)));
+        player.patch({ volume: value });
+        showHud({ kind: 'volume', value, deltaSec: 0 });
+        const levels = options.levels;
+        if (player.levelSource === 'system' && levels) {
+          void levels.setVolume(value).then((applied) => {
+            if (applied === null) {
+              degradeToAppLevels();
+              return;
+            }
+            // 档位是离散的（常见 25 档，一档 4%）：以真实生效值当下一次滑动的基准
+            if (player.levelSource === 'system') player.patch({ volume: applied });
+          });
+        } else {
+          c.setVolume(value);
+        }
         break;
+      }
       case 'brightness': {
         const value = clampBrightness(intent.value);
         c.setBrightness(value);
-        player.patch({ dim: brightnessToDimOpacity(value) });
+        player.patch({ brightness: value });
         showHud({ kind: 'brightness', value, deltaSec: 0 });
+        const levels = options.levels;
+        if (player.levelSource === 'system' && levels) {
+          void levels.setBrightness(value).then((ok) => {
+            if (!ok) degradeToAppLevels();
+          });
+        }
         break;
       }
       case 'long-press-start':
@@ -632,6 +698,9 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     cancelAutoNext();
     void controller.value?.destroy();
     controller.value = null;
+    // 窗口背光覆盖只该在播放页生效：离开即交还系统（须在 reset 把 levelSource 改回 'app' 前判）
+    // 音量不恢复——它是全局状态，按产品决策保留。
+    if (player.levelSource === 'system') void options.levels?.releaseBrightness();
     player.reset();
     // AC-53：离开播放页释放屏幕常亮
     if (awakeActive) {
@@ -700,6 +769,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     nudgeControls,
     pauseAutoHide,
     onGesture,
+    onGesturePointerDown,
     cancelAutoNext,
     resumeFromBackground,
     showHud,

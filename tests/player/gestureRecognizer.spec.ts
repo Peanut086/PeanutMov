@@ -216,7 +216,7 @@ describe('GestureRecognizer', () => {
 
   it('回归：亮度已为 0 时再次上滑可回升（不再卡在 0%）', () => {
     const { recognizer, intents } = makeRecognizer();
-    // 上游 store dim=0.8 经 dimOpacityToBrightness 反算得到 0
+    // store 里的亮度就是 0（不再是遮罩不透明度反算）
     const ctx = makeCtx({ brightness: 0 });
     recognizer.pointerDown({ pointerId: 1, clientX: 60, clientY: 480 }, ctx);
     recognizer.pointerMove({ pointerId: 1, clientX: 60, clientY: 400 }, ctx);
