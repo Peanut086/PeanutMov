@@ -2642,6 +2642,7 @@ onBeforeUnmount(() => {
 
 .player-info__actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: var(--space-4);
 }
@@ -2649,9 +2650,11 @@ onBeforeUnmount(() => {
 .player-info__action {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   gap: var(--space-1);
   min-height: 40px;
   padding: 0 var(--space-4);
+  white-space: nowrap;
   border-radius: var(--radius-full);
   background-color: var(--color-bg-surface);
   border: var(--border-strong);

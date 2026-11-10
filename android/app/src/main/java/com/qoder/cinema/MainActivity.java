@@ -54,6 +54,10 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(PlayerUiPlugin.class);
         super.onCreate(savedInstanceState);
 
+        // 默认 WebView 会按系统「字体大小」缩放文字，而设计 tokens 的 padding / 图标 / 高度是
+        // 固定 px，放大后胶囊按钮里图标和文字会挤成一团，故锁定为 100%。
+        getBridge().getWebView().getSettings().setTextZoom(100);
+
         // 华为 WebView 132 在特定场景（冷启动 + 程序化 focus）下渲染进程会 SIGSEGV，
         // Capacitor BridgeWebViewClient.onRenderProcessGone 默认返回 false → Activity 被
         // crashpad 以 SIGTRAP 终止（闪退）。注册 listener 返回 true 拦截默认行为，
