@@ -3,13 +3,16 @@
  *
  * `<canvas>` 覆盖层 + rAF 驱动，不依赖播放器引擎：
  * - `tick(currentTimeSec)` 由外部在 timeupdate 事件注入（倍速/暂停天然对齐）；
- * - 原生引擎 1s 才轮询一次进度，帧内用 rAF 时钟在 anchor 上插值，避免弹幕每秒跳一次；
+ * - 原生引擎 1s 才轮询一次进度，帧内用 rAF 时钟在 anchor 上插值；轮询迟到的漂移
+ *   按 0.8s 窗口斜率消化（`driftDebt`），不再"冻结-猛窜"；
+ * - 默认跟随 rAF 逐帧重绘（~60fps），单帧成本超限自动降回 30fps；
  * - 滚动 / 顶部 / 底部三模式；同屏密度上限 `DANMAKU_MAX_ONSCREEN`；
  * - 底部安全区（字幕区）禁显；文字入场时栅格化成位图，每帧只贴图（描边文字逐帧重绘极慢）。
  *
  * 设计取舍：不用 DOM 弹幕（数百节点调度易掉帧），canvas 绘制成本恒定。
  */
 import { DANMAKU_MAX_ONSCREEN } from '@/shared/constants';
+import { danmakuPerf } from '@/shared/danmakuPerf';
 import type { DanmakuComment, DanmakuSettings } from '@/types';
 
 interface Track {
@@ -31,10 +34,18 @@ interface Track {
 }
 
 const SCROLL_LANE_HEIGHT_RATIO = 0.12;
-/** 画面重绘上限 30fps：弹幕不需要 60fps，把 GPU/CPU 留给视频 */
+/** 成本超限时的降帧闸门间隔（30fps 兜底）：实测逐帧重绘单帧均值 ~0.5ms，正常不触发 */
 const FRAME_INTERVAL_MS = 33;
-/** 进度轮询间隔 1s，帧内插值最多向前补 1.2s，避免轮询迟到后弹幕跑飞 */
-const MAX_EXTRAPOLATE_SEC = 1.2;
+const COST_DEGRADE_MS = 8;
+const COST_RECOVER_MS = 4;
+/** 进度轮询间隔 1s，帧内插值最多向前补 2.5s（1.2s 时桥接迟到 3s 会造成 1.4s+ 的弹幕冻结） */
+const MAX_EXTRAPOLATE_SEC = 2.5;
+/** 漂移斜率消化的时间窗 */
+const DRIFT_SLEW_WINDOW_MS = 800;
+/** 小于该漂移直接硬对齐（肉眼不可见，不值得引入变速） */
+const DRIFT_TOLERANCE_SEC = 0.05;
+/** 超过该漂移视为 seek/换集（含前跳），清轨道重定位游标 */
+const BIG_JUMP_SEC = 2;
 
 
 export class DanmakuOverlay {
@@ -52,12 +63,23 @@ export class DanmakuOverlay {
   /** 最近一次 timeupdate 的媒体时间与到达时刻（帧内插值的锚点） */
   private anchorTime = 0;
   private anchorStamp = 0;
+  /** 待消化的锚点漂移（秒），在 `DRIFT_SLEW_WINDOW_MS` 内线性衰减到 0 */
+  private driftDebt = 0;
+  private debtStamp = 0;
+  /** 成本超限时的降帧闸门（0 = 跟随 rAF 逐帧重绘） */
+  private frameGateMs = 0;
+  private costEma = 0;
   private wasPlaying = false;
   private dpr = 1;
   private lastFrameAt = 0;
   private lastDrawnTime = Number.NaN;
   private canvasWidth = 0;
   private canvasHeight = 0;
+  // 临时性能埋点（danmaku-perf）
+  private perfLastDrawStamp = 0;
+  private perfLastAnchorTickStamp = 0;
+  private perfFrameRasterMs = 0;
+  private perfFrameRasterBuilds = 0;
 
   constructor(options: {
     settings: DanmakuSettings;
@@ -82,6 +104,7 @@ export class DanmakuOverlay {
     this.ctx = canvas.getContext('2d');
     this.resize();
     this.start();
+    danmakuPerf.acquire();
   }
 
   detach(): void {
@@ -90,6 +113,7 @@ export class DanmakuOverlay {
     this.canvas = null;
     this.ctx = null;
     this.tracks = [];
+    danmakuPerf.release();
   }
 
   setSettings(settings: DanmakuSettings): void {
@@ -125,7 +149,9 @@ export class DanmakuOverlay {
 
   /** 全量替换弹幕（已按时间排序；merge 由服务层完成） */
   load(comments: DanmakuComment[]): void {
+    const sortStart = performance.now();
     this.comments = [...comments].sort((a, b) => a.time - b.time);
+    danmakuPerf.recordLoadPhase('overlay.load.sort', performance.now() - sortStart, comments.length);
     this.cursor = 0;
     this.tracks = [];
   }
@@ -137,25 +163,50 @@ export class DanmakuOverlay {
     this.redraw();
   }
 
-  /** 每帧由 timeupdate 驱动：时间回跳（seek）时重置光标 */
+  /** 每帧由 timeupdate 驱动：seek（含前跳/换集）时清轨道重定位；小漂移斜率消化 */
   tick(currentTimeSec: number): void {
-    if (currentTimeSec < this.lastTime - 1) {
-      // seek 回跳/换集：清空轨道重定位
+    const stamp = performance.now();
+    const predicted = this.anchorStamp === 0 ? currentTimeSec : this.extrapolate(stamp);
+    const drift = currentTimeSec - predicted;
+    const absDrift = Math.abs(drift);
+    const gapMs = this.perfLastAnchorTickStamp === 0 ? 0 : stamp - this.perfLastAnchorTickStamp;
+    this.perfLastAnchorTickStamp = stamp;
+    const seekJump = currentTimeSec < this.lastTime - 1 || absDrift > BIG_JUMP_SEC;
+    if (seekJump) {
+      // seek/换集（前跳与回跳同等处理）：清空轨道，二分重定位游标
       this.tracks = [];
-      this.cursor = this.comments.findIndex((c) => c.time >= currentTimeSec);
-      if (this.cursor < 0) this.cursor = this.comments.length;
+      this.driftDebt = 0;
+      this.cursor = this.lowerBound(currentTimeSec);
+    } else if (absDrift > DRIFT_TOLERANCE_SEC) {
+      // 轮询迟到的中等漂移：不硬拽锚点，把差值摊到接下来 0.8s 内平滑消化
+      this.driftDebt = -drift;
+      this.debtStamp = stamp;
     }
+    danmakuPerf.recordAnchorTick(gapMs, drift, seekJump);
     this.lastTime = currentTimeSec;
     this.anchorTime = currentTimeSec;
-    this.anchorStamp = performance.now();
+    this.anchorStamp = stamp;
   }
 
-  /** 帧内时间：暂停时停在锚点，播放中按真实时钟在锚点上补间 */
+  /** 有序数组上第一个 time >= target 的下标（游标重定位用，替代 O(n) findIndex） */
+  private lowerBound(target: number): number {
+    let lo = 0;
+    let hi = this.comments.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if ((this.comments[mid] as DanmakuComment).time >= target) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  }
+
+  /** 帧内时间：暂停时停在锚点，播放中按真实时钟在锚点上补间（含漂移斜率校正） */
   private currentTime(): number {
     if (!this.isPlaying()) {
       // 暂停/缓冲：媒体时间不前进，直接以播放器时间为准
       this.anchorTime = this.getTime();
       this.anchorStamp = performance.now();
+      this.driftDebt = 0;
       this.wasPlaying = false;
       return this.anchorTime;
     }
@@ -165,8 +216,20 @@ export class DanmakuOverlay {
       this.anchorStamp = performance.now();
       this.wasPlaying = true;
     }
-    const elapsed = ((performance.now() - this.anchorStamp) / 1000) * this.getRate();
-    return this.anchorTime + Math.max(0, Math.min(elapsed, MAX_EXTRAPOLATE_SEC));
+    return this.extrapolate(performance.now());
+  }
+
+  /** 在锚点上外推媒体时间，并把 `driftDebt` 线性衰减地叠加进去 */
+  private extrapolate(stamp: number): number {
+    const elapsedSec = ((stamp - this.anchorStamp) / 1000) * this.getRate();
+    if (elapsedSec > MAX_EXTRAPOLATE_SEC) danmakuPerf.recordExtrapolationClamp(elapsedSec - MAX_EXTRAPOLATE_SEC);
+    let t = this.anchorTime + Math.max(0, Math.min(elapsedSec, MAX_EXTRAPOLATE_SEC));
+    if (this.driftDebt !== 0) {
+      const k = (stamp - this.debtStamp) / DRIFT_SLEW_WINDOW_MS;
+      if (k >= 1) this.driftDebt = 0;
+      else t += this.driftDebt * (1 - k);
+    }
+    return t;
   }
 
   private resize(): void {
@@ -202,13 +265,30 @@ export class DanmakuOverlay {
   private frame(): void {
     if (!this.ctx) return;
     const stamp = performance.now();
-    if (stamp - this.lastFrameAt < FRAME_INTERVAL_MS) return;
+    if (stamp - this.lastFrameAt < this.frameGateMs) return;
     this.lastFrameAt = stamp;
+    this.perfFrameRasterMs = 0;
+    this.perfFrameRasterBuilds = 0;
     const now = this.currentTime();
     if (now === this.lastDrawnTime) return; // 暂停/缓冲画面不变：跳过重绘
+    const intervalMs = this.perfLastDrawStamp === 0 ? 0 : stamp - this.perfLastDrawStamp;
+    this.perfLastDrawStamp = stamp;
     this.lastDrawnTime = now;
+    const drawStart = performance.now();
     this.spawn(now);
     this.redraw(now);
+    const costMs = performance.now() - drawStart;
+    danmakuPerf.recordFrame({
+      intervalMs,
+      costMs,
+      rasterBuilds: this.perfFrameRasterBuilds,
+      rasterMs: this.perfFrameRasterMs,
+      onScreen: this.tracks.length,
+    });
+    // 成本兜底：逐帧重绘持续超过 8ms 降回 30fps，回落到 4ms 以下再恢复
+    this.costEma += (costMs - this.costEma) * 0.1;
+    if (this.costEma > COST_DEGRADE_MS && this.frameGateMs === 0) this.frameGateMs = FRAME_INTERVAL_MS;
+    else if (this.frameGateMs > 0 && this.costEma < COST_RECOVER_MS) this.frameGateMs = 0;
   }
 
   /** 把进入时间窗的弹幕铺进轨道 */
@@ -348,6 +428,7 @@ export class DanmakuOverlay {
     const pad = strokeMode === 'none' ? 2 : Math.ceil(lineWidth / 2) + 2;
     const height = Math.ceil(fontSize * 1.5);
     const width = Math.max(1, Math.ceil(track.width + pad * 2));
+    const rasterStart = performance.now();
     const bitmap = document.createElement('canvas');
     bitmap.width = Math.max(1, Math.round(width * dpr));
     bitmap.height = Math.max(1, Math.round(height * dpr));
@@ -379,6 +460,8 @@ export class DanmakuOverlay {
         bctx.fillText(track.comment.text, pad, baseline);
       }
     }
+    this.perfFrameRasterMs += performance.now() - rasterStart;
+    this.perfFrameRasterBuilds += 1;
     track.bitmap = bitmap;
     track.bitmapFontSize = fontSize;
     track.bitmapDpr = dpr;

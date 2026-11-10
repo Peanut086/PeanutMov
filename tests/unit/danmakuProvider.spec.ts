@@ -22,6 +22,25 @@ const BILI_XML = [
   '</i>',
 ].join('\n');
 
+/** 各源「搜不到」的最小响应：结构缺失即自然返回 null，不会抛错打断回退链 */
+const NO_MATCH: Record<string, unknown> = {
+  'api.bilibili.com': { code: -404 },
+  'pbaccess.video.qq.com': { ret: 20607 },
+  'mobileso.bz.mgtv.com': { code: 0, data: { contents: [] } },
+  'mesh.if.iqiyi.com': { code: '0', data: { templates: [] } },
+  'search.youku.com': { pageComponentList: [] },
+  'so.le.com': '',
+  'api.dandanplay.net': { matched: false },
+};
+
+function urlHost(url: string): string {
+  return new URL(url).host;
+}
+
+function host(url: string, target: string): boolean {
+  return urlHost(url) === target;
+}
+
 describe('parseBilibiliXml（本地 Provider，AC-126）', () => {
   it('解析时间/模式/颜色/文本，空文本跳过', () => {
     const comments = parseBilibiliXml(BILI_XML);
@@ -40,6 +59,17 @@ describe('parseBilibiliXml（本地 Provider，AC-126）', () => {
 describe('danmakuService 回退链（AC-126）', () => {
   const mockedRequest = vi.mocked(httpClient.request);
 
+  /**
+   * 按源域名分派响应，而不是排队列——回退链里插入新源时不必重算每一跳的位置。
+   * 未在本用例中显式安排的源统一按「搜不到」静默通过。
+   */
+  function route(plan: (url: string) => unknown | Error) {
+    mockedRequest.mockImplementation(((url: string) => {
+      const value = plan(url) ?? NO_MATCH[urlHost(url)] ?? {};
+      return value instanceof Error ? Promise.reject(value) : Promise.resolve(value);
+    }) as never);
+  }
+
   beforeEach(() => {
     mockedRequest.mockReset();
     clearBilibiliCache();
@@ -49,11 +79,15 @@ describe('danmakuService 回退链（AC-126）', () => {
   });
 
   it('B 站无结果时回退 dandanplay；成功结果写入缓存（二次调用不发请求）', async () => {
-    mockedRequest
-      .mockRejectedValueOnce(new Error('bilibili down')) // B 站源失败
-      .mockRejectedValueOnce(new Error('tencent down')) // 腾讯源也失败 → 回退 dandanplay
-      .mockResolvedValueOnce({ matched: true, matches: [{ animeTitle: '庆余年', episodes: [{ episodeId: 42, episodeTitle: '第01集' }] }] })
-      .mockResolvedValueOnce({ count: 1, comments: [[10, 1, 16777215, '前方高能']] });
+    route((url) => {
+      if (host(url, 'api.bilibili.com')) return new Error('bilibili down');
+      if (host(url, 'pbaccess.video.qq.com')) return new Error('tencent down');
+      if (url.includes('/api/v2/match')) {
+        return { matched: true, matches: [{ animeTitle: '庆余年', episodes: [{ episodeId: 42, episodeTitle: '第01集' }] }] };
+      }
+      if (url.includes('/api/v2/comment/')) return { count: 1, comments: [[10, 1, 16777215, '前方高能']] };
+      return undefined;
+    });
 
     const first = await danmakuService.match('庆余年', 2019, 1);
     expect(first).not.toBeNull();
@@ -66,20 +100,19 @@ describe('danmakuService 回退链（AC-126）', () => {
     expect(mockedRequest).not.toHaveBeenCalled();
   });
 
-  it('B 站无结果时先走腾讯源，腾讯命中就不再请求 dandanplay', async () => {
-    mockedRequest
-      .mockRejectedValueOnce(new Error('bilibili down'))
-      .mockResolvedValueOnce({
-        ret: 0,
-        data: {
-          areaBoxList: [
-            { boxId: 'MainNeed', itemList: [{ doc: { id: 'cover1' }, videoInfo: { title: '庆余年', year: 2019 } }] },
-          ],
-        },
-      })
-      .mockResolvedValueOnce({ c: { title: '庆余年', video_ids: ['vidEp1', 'vidEp2'] } })
-      .mockResolvedValueOnce({ segment_index: { '0': { segment_start: '0', segment_name: 't/v1/0/30000' } } })
-      .mockResolvedValueOnce({ barrage_list: [{ content: '腾讯弹幕', time_offset: '5000' }] });
+  it('B 站无结果时先走腾讯源，腾讯命中就不再请求后续源', async () => {
+    const urls: string[] = [];
+    route((url) => {
+      urls.push(url);
+      if (host(url, 'api.bilibili.com')) return new Error('bilibili down');
+      if (host(url, 'pbaccess.video.qq.com')) {
+        return { ret: 0, data: { areaBoxList: [{ boxId: 'MainNeed', itemList: [{ doc: { id: 'cover1' }, videoInfo: { title: '庆余年', year: 2019 } }] }] } };
+      }
+      if (host(url, 'node.video.qq.com')) return { c: { title: '庆余年', video_ids: ['vidEp1', 'vidEp2'] } };
+      if (url.includes('/barrage/base/')) return { segment_index: { '0': { segment_start: '0', segment_name: 't/v1/0/30000' } } };
+      if (url.includes('/barrage/segment/')) return { barrage_list: [{ content: '腾讯弹幕', time_offset: '5000' }] };
+      return undefined;
+    });
 
     // 集号 2：避开上一个用例写入同一缓存键
     const result = await danmakuService.match('庆余年', 2019, 2);
@@ -87,16 +120,23 @@ describe('danmakuService 回退链（AC-126）', () => {
     expect(result).not.toBeNull();
     expect(result!.provider).toBe('tencent');
     expect(result!.comments).toEqual([{ time: 5, mode: 'scroll', color: 0xffffff, text: '腾讯弹幕' }]);
-    expect(mockedRequest).toHaveBeenCalledTimes(5);
+    // B 站 1 跳 + 腾讯 4 跳，命中即停
+    expect(urls).toHaveLength(5);
+    expect(urls.some((url) => url.includes('dandanplay'))).toBe(false);
   });
 
   it('远端题名与查询片名不符时不采用（防串片）', async () => {
-    mockedRequest
-      .mockRejectedValueOnce(new Error('nav down'))
-      .mockRejectedValueOnce(new Error('tencent down'))
-      .mockResolvedValueOnce({ matched: true, matches: [{ animeTitle: '完全无关的片', episodes: [{ episodeId: 1, episodeTitle: '第01集' }] }] })
-      .mockResolvedValueOnce({ count: 1, comments: [[1, 1, 16777215, '弹幕']] });
+    route((url) => {
+      if (host(url, 'api.bilibili.com') || host(url, 'pbaccess.video.qq.com')) return new Error('network down');
+      if (url.includes('/api/v2/match')) {
+        return { matched: true, matches: [{ animeTitle: '完全无关的片', episodes: [{ episodeId: 1, episodeTitle: '第01集' }] }] };
+      }
+      if (url.includes('/api/v2/comment/')) return { count: 1, comments: [[1, 1, 16777215, '弹幕']] };
+      return undefined;
+    });
+
     const result = await danmakuService.match('伪装者', 2015, 1);
+
     expect(result).toBeNull();
   });
 

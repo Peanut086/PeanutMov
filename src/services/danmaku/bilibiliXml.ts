@@ -4,6 +4,7 @@
  * `<d p="time,mode,size,color,timestamp,pool,uid,rowid">文本</d>`；
  * 兼容 CIDATA 包裹与属性引号缺失的宽松形态。
  */
+import { danmakuPerf } from '@/shared/danmakuPerf';
 import type { DanmakuComment } from '@/types';
 
 /** 模式映射（dandanplay/B 站惯例：1~3 滚动、4 底部、5 顶部） */
@@ -24,6 +25,7 @@ function unescapeXmlText(value: string): string {
 }
 
 export function parseBilibiliXml(xml: string): DanmakuComment[] {
+  const perfStart = performance.now();
   const out: DanmakuComment[] = [];
   const pattern = /<d\s+[^>]*p\s*=\s*"([^"]+)"[^>]*>([\s\S]*?)<\/d\s*>/gi;
   for (const match of xml.matchAll(pattern)) {
@@ -35,5 +37,6 @@ export function parseBilibiliXml(xml: string): DanmakuComment[] {
     const color = Number.parseInt(parts[3] ?? '16777215', 10) || 0xffffff;
     out.push({ time, mode: modeOf(rawMode), color, text });
   }
+  danmakuPerf.recordLoadPhase('bilibili.parseXml', performance.now() - perfStart, out.length);
   return out;
 }

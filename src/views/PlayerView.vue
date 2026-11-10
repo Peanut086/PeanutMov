@@ -28,6 +28,7 @@ import { emptyEmbeddedTracks, type EmbeddedTrackState } from '@/player/PlayerCon
 import { shouldIgnoreShortcut } from '@/player/shortcutGuard';
 import { formatClock } from '@/shared/time';
 import { toErrorShape, isCanceled, AppError } from '@/shared/errors';
+import { danmakuPerf } from '@/shared/danmakuPerf';
 import { guidanceOf, magnetUrlOf } from '@/shared/sourceFailure';
 
 import PlayerSurface from '@/components/player/PlayerSurface.vue';
@@ -1560,10 +1561,16 @@ async function loadDanmaku(): Promise<boolean> {
     return false;
   }
   try {
+    const perfTotalStart = performance.now();
+    const matchStart = perfTotalStart;
     const match = await danmakuService.match(it.title, it.year, ep.number);
+    danmakuPerf.recordLoadPhase('total.match', performance.now() - matchStart, match?.comments.length ?? 0);
     if (match === null || match.comments.length === 0) return false;
     const comments = danmakuSettings.value.merge ? danmakuService.dedupe(match.comments) : match.comments;
+    const loadStart = performance.now();
     danmakuOverlay.value?.load(comments);
+    danmakuPerf.recordLoadPhase('total.overlayLoad', performance.now() - loadStart, comments.length);
+    danmakuPerf.recordLoadPhase('total.all', performance.now() - perfTotalStart, comments.length);
     return true;
   } catch {
     /* 弹幕失败静默：不影响播放 */

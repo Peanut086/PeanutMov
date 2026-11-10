@@ -3,13 +3,18 @@
  *
  * `danmakuService.match(title, year, episode, localXml)`：
  *   缓存命中 → 直接返回（离线可用）
- *   未命中   → bilibili（无凭证主力）→ tencent（国产剧兜底）→ dandanplay（凭据就绪后自动生效）→ local-xml
+ *   未命中   → 按「版权覆盖 + 接口稳定性」串行回退（见 `./danmaku/provider` 文件头），
+ *              最后落到 dandanplay（需凭据）与 local-xml
  *
  * 结果（含偏移）写 `danmakuCache`；总开关关闭时调用方不得调用本服务（零第三方请求，AC-126）。
  */
 import { cacheRepo } from '@/db/repositories/cacheRepo';
 import { bilibiliProvider } from '@/services/danmaku/bilibili';
 import { tencentProvider } from '@/services/danmaku/tencent';
+import { mgtvProvider } from '@/services/danmaku/mgtv';
+import { iqiyiProvider } from '@/services/danmaku/iqiyi';
+import { youkuProvider } from '@/services/danmaku/youku';
+import { leshiProvider } from '@/services/danmaku/leshi';
 import { dandanplayProvider, localXmlProvider, type DanmakuQuery } from '@/services/danmaku/provider';
 import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
 import { logger } from '@/shared/logger';
@@ -55,7 +60,15 @@ export const danmakuService = {
     if (cached) return cached;
 
     // ② 网络源按序回退（远端题名与查询片名归一化相等才采用，防串片）
-    const providers = [bilibiliProvider, tencentProvider, dandanplayProvider];
+    const providers = [
+      bilibiliProvider,
+      tencentProvider,
+      mgtvProvider,
+      iqiyiProvider,
+      youkuProvider,
+      leshiProvider,
+      dandanplayProvider,
+    ];
     for (const provider of providers) {
       if (!provider.available()) continue;
       try {

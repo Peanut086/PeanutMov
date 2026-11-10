@@ -753,7 +753,16 @@ export interface SubscriptionSummary {
 
 /* ---------- 弹幕（CHG-22，只读不发） ---------- */
 
-export type DanmakuProviderId = 'bilibili' | 'tencent' | 'dandanplay' | 'local-xml';
+/** 网络源按「版权覆盖 + 接口稳定性」排序：B 站/腾讯之后是芒果、爱奇艺、优酷、乐视 */
+export type DanmakuProviderId =
+  | 'bilibili'
+  | 'tencent'
+  | 'mgtv'
+  | 'iqiyi'
+  | 'youku'
+  | 'leshi'
+  | 'dandanplay'
+  | 'local-xml';
 
 export interface DanmakuComment {
   /** 相对视频起点的秒数 */

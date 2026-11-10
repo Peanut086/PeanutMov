@@ -4,18 +4,25 @@
  * 回退顺序（`danmakuService.match` 按序尝试）：
  * 1. `bilibili` —— B 站直连（见 `./bilibili`），无凭据主力源；
  * 2. `tencent` —— 腾讯视频直连（见 `./tencent`），国产剧/独播剧兜底；
- * 3. `dandanplay` —— 官方匹配 API，需要 appId/secret（用户在设置里配置前**不启用**，
+ * 3. `mgtv` —— 芒果TV 直连（见 `./mgtv`），芒果独播剧/综艺；
+ * 4. `iqiyi` —— 爱奇艺直连（见 `./iqiyi`），爱系独播（Brotli + protobuf 分片）；
+ * 5. `youku` —— 优酷直连（见 `./youku`），优系独播（mtop 匿名 token 签名）；
+ * 6. `leshi` —— 乐视直连（见 `./leshi`），长尾版权兜底；
+ * 7. `dandanplay` —— 官方匹配 API，需要 appId/secret（用户在设置里配置前**不启用**，
  *    避免无凭据请求打官方接口）；
- * 4. `local-xml` —— 用户本地 B 站格式 xml（下载目录/手动粘贴），纯解析不发请求。
+ * 8. `local-xml` —— 用户本地 B 站格式 xml（下载目录/手动粘贴），纯解析不发请求。
  *
  * 匹配口径与豆瓣借播一致（`stripTitleNoise`）：片名归一化相等 + 集号由调用方传入。
  * 隐私约束：请求只携带片名/年份/集号，绝不携带用户标识。
  */
 import { DANMAKU_DANDANPLAY_BASE } from '@/shared/constants';
 import { stripTitleNoise } from '@/sources/douban/playMatch';
-import type { DanmakuComment } from '@/types';
+import type { DanmakuComment, DanmakuProviderId } from '@/types';
 import { httpClient } from '@/sources/base/httpClient';
 import { modeOf, parseBilibiliXml } from './bilibiliXml';
+
+/** 网络弹幕源标识（本地 xml 兜底不参与回退链枚举） */
+type NetworkProviderId = Exclude<DanmakuProviderId, 'local-xml'>;
 
 /** 匹配查询：片名归一化由 provider 内部完成 */
 export interface DanmakuQuery {
@@ -90,7 +97,7 @@ function pickEpisodeId(
 /* ---------- Provider 实现 ---------- */
 
 export interface DanmakuProvider {
-  readonly id: 'bilibili' | 'tencent' | 'dandanplay';
+  readonly id: NetworkProviderId;
   /** 该 Provider 当前是否可用（凭据缺失等） */
   available(): boolean;
   /** 匹配成功返回弹幕与远端回传的题名（供阈值校验）；无匹配返回 null */

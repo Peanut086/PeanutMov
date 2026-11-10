@@ -7,6 +7,7 @@
  */
 import { requestWithHeaders } from './nativeHttp';
 import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
+import { danmakuPerf } from '@/shared/danmakuPerf';
 import type { DanmakuComment } from '@/types';
 import type { DanmakuProvider, DanmakuQuery } from './provider';
 
@@ -249,6 +250,7 @@ function parseStyle(raw: string | undefined): { color: number; mode: DanmakuComm
 
 /** `time_offset` 是视频起点起的毫秒数（跨分片连续，不要再加分片偏移） */
 function toComments(items: TenBarrageItem[]): DanmakuComment[] {
+  const perfStart = performance.now();
   const out: DanmakuComment[] = [];
   for (const item of items) {
     const text = (item.content ?? '').trim();
@@ -258,6 +260,7 @@ function toComments(items: TenBarrageItem[]): DanmakuComment[] {
     const { color, mode } = parseStyle(item.content_style);
     out.push({ time, mode, color, text });
   }
+  danmakuPerf.recordLoadPhase('tencent.toComments(parseStyle)', performance.now() - perfStart, items.length);
   return out;
 }
 
