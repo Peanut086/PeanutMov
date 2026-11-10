@@ -69,7 +69,7 @@ import DanmakuStylePanel from '@/components/player/DanmakuStylePanel.vue';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
 import { QUALITY_AUTO, VOLUME_STEP } from '@/player/constants';
-import { clampBrightness } from '@/player/brightness';
+import { BRIGHTNESS_MAX } from '@/player/brightness';
 import { PLAYER_FAILOVER_WINDOW_MS } from '@/shared/constants';
 import { localProxyUrl } from '@/native/localProxy';
 import { pipService } from '@/native/pipService';
@@ -255,9 +255,7 @@ const PLAYER_FALLBACK: PlayerSettings = {
     offsetSec: 0,
     preferredLang: null,
   },
-  rememberVolumeBrightness: true,
   lastVolume: 100,
-  lastBrightness: 100,
   resizeMode: 'contain',
 };
 const GESTURE_FALLBACK: GestureSettings = { sensitivity: 'medium', seekMaxSec: 90 };
@@ -818,16 +816,15 @@ function deviceApi(): Promise<typeof import('@/services/deviceService').deviceSe
 }
 
 /**
- * 进入播放页：确定亮度/音量的落点与起点（API-12 二期 + P1-4 记忆）。
+ * 进入播放页：确定亮度/音量的落点与起点（API-12 二期 + P1-4 音量记忆）。
  *
- * - 原生可用：音量取系统当前档位（系统本身就记忆音量，回填 `lastVolume` 反而会覆盖
- *   用户在其它 App 里的调整）；亮度默认取系统背光，开启记忆后改用上次退出时的背光值。
+ * - 原生可用：亮度起点取系统当前背光（不写窗口覆盖，画面本来就停在系统亮度上），
+ *   音量取系统当前档位（系统本身就记忆音量，回填 `lastVolume` 反而会覆盖
+ *   用户在其它 App 里的调整）。
  * - 原生不可用（Web / 旧包 / 插件缺失）：落点退回「黑色遮罩 + 播放器倍率」，
- *   亮度与音量都按记忆值恢复。
+ *   亮度满档即遮罩不生效（视觉上仍等同于系统亮度），音量按记忆值恢复。
  */
 async function initPlaybackLevels(): Promise<void> {
-  const remember = settings.player?.rememberVolumeBrightness === true;
-  const remembered = remember ? clampBrightness(settings.player?.lastBrightness ?? 100) : null;
   const levels = await deviceApi()
     .then((d) => d.readSystemLevels())
     .catch(() => null);
@@ -835,24 +832,17 @@ async function initPlaybackLevels(): Promise<void> {
   if (!levels) {
     player.patch({
       levelSource: 'app',
-      brightness: remembered ?? 100,
-      volume: remember ? (settings.player?.lastVolume ?? 100) : 100,
+      brightness: BRIGHTNESS_MAX,
+      volume: settings.player?.lastVolume ?? 100,
     });
     return;
   }
 
   player.patch({
     levelSource: 'system',
+    brightness: levels.brightness,
     volume: levels.volume,
-    brightness: remembered ?? levels.brightness,
   });
-  if (remembered !== null) {
-    // 记忆值与系统背光不同就得真的落一次，否则第一次滑动会让亮度跳回记忆值
-    const ok = await deviceApi()
-      .then((d) => d.setBrightness(remembered))
-      .catch(() => false);
-    if (!ok) player.patch({ levelSource: 'app' });
-  }
 }
 
 onMounted(async () => {
@@ -899,18 +889,16 @@ onMounted(async () => {
 /* ---------- 关闭时写回进度 ---------- */
 
 /**
- * P1-4 写回值。
+ * P1-4 音量写回值。
  *
- * `usePlayerController` 的卸载钩子先跑（`player.reset()` 把亮度/音量打回 100），
+ * `usePlayerController` 的卸载钩子先跑（`player.reset()` 把音量打回 100），
  * 本钩子后跑，直接读 store 拿到的永远是默认值——这正是旧版「记忆音量/亮度」
  * 存下 100/100 的原因。这里同步留一份最后一次生效的值。
  */
-let lastBrightnessForMemory = 100;
 let lastVolumeForMemory = 100;
 watch(
-  () => [player.brightness, player.volume] as const,
-  ([brightness, volume]) => {
-    lastBrightnessForMemory = Math.round(brightness);
+  () => player.volume,
+  (volume) => {
     lastVolumeForMemory = Math.round(volume);
   },
   { flush: 'sync' },
@@ -922,16 +910,13 @@ onBeforeUnmount(() => {
   pageAlive = false;
   ++loadEpoch;
   pageAbort.abort();
-  // P1-4：记忆写回。音量在原生下由系统自己记住，这里存的值只在退回遮罩路径时使用。
-  if (settings.player?.rememberVolumeBrightness) {
-    void settings.update({
-      player: {
-        ...settings.player,
-        lastVolume: lastVolumeForMemory,
-        lastBrightness: lastBrightnessForMemory,
-      },
-    });
-  }
+  // P1-4：音量记忆写回。音量在原生下由系统自己记住，这里存的值只在退回倍率路径时使用。
+  void settings.update({
+    player: {
+      ...settings.player,
+      lastVolume: lastVolumeForMemory,
+    },
+  });
 });
 
 /* ---------- 标题/集标签 ---------- */

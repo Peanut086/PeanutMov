@@ -110,9 +110,7 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
         offsetSec: 0,
         preferredLang: null,
       },
-      rememberVolumeBrightness: true,
       lastVolume: 100,
-      lastBrightness: 100,
       resizeMode: 'contain',
     },
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
@@ -208,7 +206,6 @@ function sanitize(input: AppSettings): AppSettings {
     subtitle: { ...defaults.player.subtitle, ...(playerPatch?.subtitle ?? {}) },
   };
   player.lastVolume = Math.max(0, Math.min(100, Number(player.lastVolume) || 0));
-  player.lastBrightness = Math.max(0, Math.min(100, Number(player.lastBrightness) || 0));
   player.subtitle.offsetSec = Math.max(-5, Math.min(5, Number(player.subtitle.offsetSec) || 0));
   // 画面比例模式：非法值回落默认
   const VALID_RESIZE_MODES = ['contain', 'cover', 'fill'] as const;

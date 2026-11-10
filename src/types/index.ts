@@ -572,15 +572,13 @@ export interface PlayerSettings {
   longPressRate: number;
   subtitle: SubtitleSettings;
   /**
-   * 记忆音量/亮度（P1-4）。
+   * 记忆音量（P1-4）：仅退出播放页时写回，且只在退回「播放器倍率」的路径
+   * （Web / 原生能力缺失）使用。原生下音量落在系统媒体音量档位上，系统自己就
+   * 记住了，回填反而会覆盖用户在其它 App 或实体按键上的调整。
    *
-   * 原生下只有亮度会回填：音量落在系统媒体音量档位上，系统自己就记住了，
-   * 回填 `lastVolume` 反而会覆盖用户在其它 App 或实体按键上的调整。
-   * `lastVolume` 仅在退回「播放器倍率」的路径（Web / 原生能力缺失）使用。
+   * 亮度不做记忆：每次进入播放页都以系统当前背光为起点。
    */
-  rememberVolumeBrightness: boolean;
   lastVolume: number;
-  lastBrightness: number;
   /** 画面比例模式（P1 新增） */
   resizeMode: ResizeMode;
 }

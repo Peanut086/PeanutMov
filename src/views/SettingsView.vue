@@ -103,9 +103,7 @@ const PLAYER_FALLBACK: PlayerSettings = {
     offsetSec: 0,
     preferredLang: null,
   },
-  rememberVolumeBrightness: true,
   lastVolume: 100,
-  lastBrightness: 100,
   resizeMode: 'contain',
 };
 const GESTURE_FALLBACK: GestureSettings = { sensitivity: 'medium', seekMaxSec: 90 };
@@ -152,7 +150,6 @@ const displayModeLabel = computed(() => {
 
 const seekStepSecLabel = computed(() => String(settings.settings?.player.seekStepSec ?? 10));
 const longPressRateLabel = computed(() => String(settings.settings?.player.longPressRate ?? 2));
-const rememberVolumeBrightness = computed(() => settings.settings?.player.rememberVolumeBrightness ?? true);
 const hapticEnabled = computed(() => settings.settings?.hapticEnabled ?? true);
 const pipAutoEnter = computed(() => settings.settings?.pipAutoEnter ?? false);
 
@@ -272,10 +269,6 @@ async function setSeekStepSec(value: number): Promise<void> {
 async function setLongPressRate(value: number): Promise<void> {
   longPressRateOpen.value = false;
   await update({ player: { ...playerSettings.value, longPressRate: value } }, `长按倍速已设为 ${value}x`);
-}
-
-async function setRememberVolumeBrightness(value: boolean): Promise<void> {
-  await update({ player: { ...playerSettings.value, rememberVolumeBrightness: value } });
 }
 
 async function setHapticEnabled(value: boolean): Promise<void> {
@@ -599,12 +592,6 @@ async function exportLogs(): Promise<void> {
           <SettingsRow label="手势说明" description="查看播放页手势操作指引" chevron @click="showGestureGuide" />
           <SettingsRow label="快进退秒数" :value="`${seekStepSecLabel}s`" chevron @click="seekStepOpen = true" />
           <SettingsRow label="长按倍速" :value="`${longPressRateLabel}x`" chevron @click="longPressRateOpen = true" />
-          <SettingsRow
-            label="记忆亮度"
-            description="退出播放时保存屏幕亮度，下次进入自动恢复（音量跟随系统设置）"
-            :switch-value="rememberVolumeBrightness"
-            @update:switch-value="setRememberVolumeBrightness"
-          />
           <SettingsRow
             label="触觉反馈"
             description="操作时振动确认（播放/长按/Tab 切换/错误提示）"
