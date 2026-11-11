@@ -91,6 +91,11 @@ function engineEvents(): VideoEngineEvents {
   };
 }
 
+// 与点播 AC-53 同口径：连接中/播放中保屏，暂停、失败、未选台交还系统超时
+watch(state, (s) => {
+  void deviceService.keepAwake(s === 'loading' || s === 'playing');
+});
+
 function destroyEngine(): void {
   engine?.destroy();
   engine = null;
@@ -183,6 +188,8 @@ onBeforeUnmount(() => {
   if (channelTimer !== null) clearTimeout(channelTimer);
   channelTimer = null;
   destroyEngine();
+  // 卸载时 state 仍可能是 playing（watcher 不会再跑），显式释放避免常亮泄漏到其它页面
+  void deviceService.keepAwake(false);
   fullscreenController.destroy();
   void orientationController.lock('portrait');
 });

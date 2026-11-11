@@ -216,6 +216,8 @@ watch(
 /** 一旦离开 loading（playing/paused/ended/error）即撤掉看门狗 */
 watch(state, (value) => {
   if (value !== 'loading') clearStartTimer();
+  // 与点播 AC-53 同口径：连接中/播放中保屏，暂停、播完、失败交还系统超时
+  void deviceService.keepAwake(value === 'loading' || value === 'playing');
 });
 
 onMounted(() => {
@@ -241,6 +243,8 @@ async function toggleFullscreen(): Promise<void> {
 
 onBeforeUnmount(() => {
   destroyEngine();
+  // 卸载时 state 可能仍是 playing（watcher 不会再跑），显式释放避免常亮泄漏到其它页面
+  void deviceService.keepAwake(false);
   fullscreenController.destroy();
   void orientationController.lock('portrait');
 });
