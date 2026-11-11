@@ -18,7 +18,8 @@ withDefaults(defineProps<{ items: HistoryRecord[]; compact?: boolean }>(), {
 });
 
 const emit = defineEmits<{
-  (e: 'select', record: HistoryRecord): void;
+  /** `origin` 供父级做封面共享元素转场（点击的整卡按钮） */
+  (e: 'select', record: HistoryRecord, origin?: HTMLElement): void;
   (e: 'remove', record: HistoryRecord): void;
 }>();
 </script>
@@ -37,7 +38,7 @@ const emit = defineEmits<{
         class="continue-compact__main"
         type="button"
         :aria-label="`继续观看 ${rec.title}${rec.episodeNumber ? ` 第 ${rec.episodeNumber} 集` : ''}`"
-        @click="emit('select', rec)"
+        @click="emit('select', rec, $event.currentTarget as HTMLElement)"
       >
         <div class="continue-compact__thumb">
           <PosterImage :src="rec.posterUrl" :alt="rec.title" />
@@ -87,7 +88,7 @@ const emit = defineEmits<{
         class="continue-card__main"
         type="button"
         :aria-label="`继续观看 ${rec.title}${rec.episodeNumber ? ` 第 ${rec.episodeNumber} 集` : ''}`"
-        @click="emit('select', rec)"
+        @click="emit('select', rec, $event.currentTarget as HTMLElement)"
       >
         <div class="continue-card__poster">
           <PosterImage :src="rec.posterUrl" :alt="rec.title" />

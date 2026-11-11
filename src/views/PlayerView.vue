@@ -10,7 +10,7 @@
  * 进度：ProgressReporter 每 5s / 暂停 / 切页 / 结束写回 historyStore
  * 自动连播：ended + autoPlayNext → 3s 倒计时 → nextEpisode
  */
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type {
@@ -68,6 +68,8 @@ import { danmakuService } from '@/services/danmakuService';
 import DanmakuSettingsSheet from '@/components/player/DanmakuSettingsSheet.vue';
 import DanmakuStylePanel from '@/components/player/DanmakuStylePanel.vue';
 import { useToast } from '@/composables/useToast';
+import { useScopedPalette } from '@/composables/useScopedPalette';
+import { finishSharedCover } from '@/composables/useSharedElement';
 import { useUiStore } from '@/stores/uiStore';
 import { QUALITY_AUTO, VOLUME_STEP } from '@/player/constants';
 import { BRIGHTNESS_MAX } from '@/player/brightness';
@@ -146,6 +148,9 @@ const fallbackTitle = computed(() => {
 });
 
 const item = computed(() => library.detail?.item ?? null);
+/** 染色作用域根节点：与详情页共用同一份取色缓存 */
+const rootRef = ref<HTMLElement | null>(null);
+useScopedPalette(rootRef, computed(() => item.value?.posterUrl ?? null));
 const lines = computed(() => library.detail?.lines ?? []);
 const lineId = ref<string | null>(null);
 const currentLineId = computed(() => lineId.value ?? lineIdParam.value ?? lines.value[0]?.id ?? null);
@@ -280,6 +285,12 @@ const subtitleSettings = computed<SubtitleSettings>(
 const currentResizeMode = computed(() => playerSettings.value.resizeMode ?? 'contain');
 
 const stageRef = ref<HTMLElement | null>(null);
+
+/** 封面共享元素转场：把入口页带来的浮层封面形变到舞台，再淡出交回真实画面 */
+onMounted(() => {
+  // 不用 rAF：页面被节流时 rAF 不回调，浮层会一直盖在播放页上
+  void nextTick(() => finishSharedCover(stageRef.value));
+});
 
 const playerCtl = usePlayerController({
   saveProgress: async (input) => {
@@ -2164,6 +2175,7 @@ onBeforeUnmount(() => {
 
 <template>
   <main
+    ref="rootRef"
     class="player-root"
     :class="{
       'player-root--landscape': immersive,

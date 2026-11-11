@@ -30,6 +30,7 @@ import { useSourceStore } from '@/stores/sourceStore';
 import { useToast } from '@/composables/useToast';
 import { appEvents } from '@/services/events';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
+import { beginSharedCover } from '@/composables/useSharedElement';
 import { toErrorShape } from '@/shared/errors';
 
 defineOptions({ name: 'HomeView' });
@@ -118,7 +119,7 @@ function isSourceRemoved(rec: HistoryRecord): boolean {
   return !sources.sources.some((s) => s.id === rec.sourceId);
 }
 
-function continuePlay(rec: HistoryRecord): void {
+function continuePlay(rec: HistoryRecord, origin?: HTMLElement): void {
   // REV-24：源已移除时拦截，避免跳到播放页才发现 404
   if (isSourceRemoved(rec)) {
     toast.error('无法播放，源已移除');
@@ -126,6 +127,7 @@ function continuePlay(rec: HistoryRecord): void {
   }
   const query: Record<string, string> = {};
   if (rec.episodeId) query.episodeId = rec.episodeId;
+  beginSharedCover(origin);
   void router.push({ name: 'player', params: { mediaId: rec.mediaId, episodeId: rec.episodeId ?? undefined }, query });
 }
 

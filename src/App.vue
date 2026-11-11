@@ -9,6 +9,7 @@ import SafeModeBanner from '@/components/common/SafeModeBanner.vue';
 import { useTheme } from '@/composables/useTheme';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
+import { sharedCoverActive } from '@/composables/useSharedElement';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { setBackFallback } from '@/native/appLifecycle';
 import { hasAllFilesAccess, readCookieFile } from '@/native/netdiskPlugin';
@@ -51,6 +52,8 @@ router.beforeEach((from) => {
 const transitionName = computed(() => {
   const from = prevDepth.value;
   const toDepth = (route.meta.depth ?? 0) as number;
+  // 封面共享元素转场进行中：页面位移会带着浮层封面一起跑，改用淡入
+  if (sharedCoverActive.value) return 'fade';
   if (toDepth > from) return 'slide-left';
   if (toDepth < from) return 'slide-right';
   return 'fade';

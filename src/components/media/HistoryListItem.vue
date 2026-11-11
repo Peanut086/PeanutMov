@@ -20,14 +20,15 @@ withDefaults(
 );
 
 const emit = defineEmits<{
-  (e: 'select', record: HistoryRecord): void;
+  /** `origin` 供父级做封面共享元素转场（点击的整行按钮） */
+  (e: 'select', record: HistoryRecord, origin?: HTMLElement): void;
   (e: 'menu', record: HistoryRecord): void;
 }>();
 </script>
 
 <template>
   <div class="history-row">
-    <button class="history-row__main" type="button" @click="emit('select', record)">
+    <button class="history-row__main" type="button" @click="emit('select', record, $event.currentTarget as HTMLElement)">
       <span class="history-row__poster">
         <PosterImage :src="record.posterUrl" :alt="record.title" />
       </span>

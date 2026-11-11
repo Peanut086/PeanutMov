@@ -45,6 +45,8 @@ import { probeLines } from '@/services/lineProbeService';
 import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useSmartPreload } from '@/composables/useSmartPreload';
+import { useScopedPalette } from '@/composables/useScopedPalette';
+import { beginSharedCover } from '@/composables/useSharedElement';
 import { toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { hasAllFilesAccess, readCookieFile } from '@/native/netdiskPlugin';
@@ -76,6 +78,12 @@ const preloading = ref(false);
 const mediaId = computed(() => (typeof route.params.mediaId === 'string' ? route.params.mediaId : ''));
 const detail = computed(() => library.detail);
 const item = computed<MediaItem | null>(() => detail.value?.item ?? null);
+
+/** 染色作用域根节点（只染本页子树，TabBar 与首页保持默认品牌色） */
+const rootRef = ref<HTMLElement | null>(null);
+/** 共享元素转场的封面源 */
+const posterRef = ref<HTMLElement | null>(null);
+useScopedPalette(rootRef, computed(() => item.value?.posterUrl ?? null));
 
 const descExpanded = ref(false);
 const pickerOpen = ref(false);
@@ -656,6 +664,7 @@ async function playEpisode(ep: Episode | null, restart = false): Promise<void> {
   }
   // AC-33① / REV-20：解析不到可播放地址时不跳转，就地 Toast
   if (!(await ensurePlayable(ep))) return;
+  beginSharedCover(posterRef.value);
   void router.push({
     name: 'player',
     params: { mediaId: it.id, episodeId: ep.id },
@@ -885,7 +894,7 @@ function openCompliance(): void {
 </script>
 
 <template>
-  <main class="detail" data-route="detail">
+  <main ref="rootRef" class="detail" data-route="detail">
     <!-- 顶部背景 -->
     <div class="detail__backdrop" aria-hidden="true">
       <img v-if="item?.posterUrl" class="detail__backdrop-img" :src="item.posterUrl" alt="" />
@@ -961,7 +970,7 @@ function openCompliance(): void {
       <!-- success -->
       <template v-else-if="item">
         <section class="detail-hero">
-          <div class="detail-hero__poster">
+          <div ref="posterRef" class="detail-hero__poster">
             <PosterImage :src="item.posterUrl" :alt="item.title" />
           </div>
           <div class="detail-hero__meta">

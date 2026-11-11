@@ -20,6 +20,7 @@ import HistoryListItem from '@/components/media/HistoryListItem.vue';
 import { useHistoryStore } from '@/stores/historyStore';
 import { useSourceStore } from '@/stores/sourceStore';
 import { useToast } from '@/composables/useToast';
+import { beginSharedCover } from '@/composables/useSharedElement';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
 
@@ -54,11 +55,12 @@ function isSourceRemoved(rec: HistoryRecord): boolean {
   return !sources.sources.some((s) => s.id === rec.sourceId);
 }
 
-function play(rec: HistoryRecord): void {
+function play(rec: HistoryRecord, origin?: HTMLElement): void {
   if (isSourceRemoved(rec)) {
     toast.error('无法播放，源已移除');
     return;
   }
+  beginSharedCover(origin);
   void router.push({
     name: 'player',
     params: { mediaId: rec.mediaId, ...(rec.episodeId ? { episodeId: rec.episodeId } : {}) },
