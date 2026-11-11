@@ -33,7 +33,8 @@ export type GestureIntent =
   | { type: 'brightness'; value: number; delta: number }
   | { type: 'long-press-start' }
   | { type: 'long-press-end' }
-  | { type: 'single-tap'; side: 'left' | 'right' };
+  /** x/y 为按下点视口坐标（CSS px）：B-04 用它做弹幕命中测试，其余消费方只关心 side */
+  | { type: 'single-tap'; side: 'left' | 'right'; x: number; y: number };
 
 export interface GestureContext {
   /** 视口宽高（px） */
@@ -186,6 +187,8 @@ export class GestureRecognizer {
     const moved = distance(sample);
     const mode = this.mode;
     const side = sample.side;
+    const tapX = sample.startX;
+    const tapY = sample.startY;
 
     this.sample = null;
     this.mode = 'none';
@@ -213,7 +216,7 @@ export class GestureRecognizer {
 
     // 未发生有效拖动：按 tap 处理
     if (moved <= GESTURE_TAP_MAX_MOVE_PX && elapsed <= GESTURE_TAP_MAX_DURATION_MS) {
-      this.handleTap(side);
+      this.handleTap(side, tapX, tapY);
       return;
     }
 
@@ -269,7 +272,7 @@ export class GestureRecognizer {
 
   /* ---------- 内部 ---------- */
 
-  private handleTap(side: 'left' | 'right'): void {
+  private handleTap(side: 'left' | 'right', x: number, y: number): void {
     const now = Date.now();
     // 双击不再限定左右半屏：暂停/播放是全局动作，左右先后点也算双击
     const isDouble = now - this.lastTapAt <= GESTURE_DOUBLE_TAP_INTERVAL_MS;
@@ -291,7 +294,7 @@ export class GestureRecognizer {
     this.pendingTapTimer = setTimeout(() => {
       this.pendingTapTimer = null;
       if (this.lastTapAt === now) this.lastTapAt = 0;
-      this.callbacks.onIntent({ type: 'single-tap', side });
+      this.callbacks.onIntent({ type: 'single-tap', side, x, y });
     }, GESTURE_DOUBLE_TAP_INTERVAL_MS);
   }
 

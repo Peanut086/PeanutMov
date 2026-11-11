@@ -4,11 +4,16 @@
  *
  * 行高 88+：海报 48×72 + 片名/集号 + 进度条 + 状态文案 + 行内操作按钮。
  * 操作按状态切换：下载中→暂停；已暂停→继续；失败→重试；已完成→播放；均可删除。
+ *
+ * C-11 收尾仪式：`celebrate` 为真时播一遍 580ms 的编舞（勾描绘 → 冲击波 → 徽章弹入 →
+ * 行体落定）+ 一簇共享火花。勾与徽章本身是常驻的静态终态，动画只是"怎么到达终态"，
+ * 所以 reduced-motion 下什么都不用改——全局规则把时长压到 0，直接就是完成态。
  */
-import { computed } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 
 import type { DownloadTask } from '@/types';
 
+import { burstSparks } from '@/services/sparkField';
 import PosterImage from '@/components/common/PosterImage.vue';
 import { formatBytes, formatEta, formatSpeed, toPercent } from '@/components/common/format';
 import IconPlay from '@/components/icons/IconPlay.vue';
@@ -21,6 +26,8 @@ const props = defineProps<{
   offline?: boolean;
   batchMode?: boolean;
   selected?: boolean;
+  /** 刚刚完成（由下载页编排，批量完成时恒为假） */
+  celebrate?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -61,7 +68,7 @@ const statusText = computed(() => {
     case 'paused':
       return props.offline ? '已暂停 · 等待网络' : '已暂停';
     case 'completed':
-      return `已完成 · ${formatBytes(props.task.totalBytes ?? props.task.downloadedBytes)} · 可离线观看`;
+      return `已完成 · ${formatBytes(props.task.totalBytes ?? props.task.downloadedBytes)}`;
     case 'failed':
       return props.task.errorMessage ?? '下载失败';
     case 'canceled':
@@ -78,6 +85,24 @@ const barTone = computed(() => {
 });
 
 const canPlay = computed(() => props.task.status === 'completed');
+
+const checkEl = ref<HTMLElement | null>(null);
+/** 换行 / 卸载后到达的旧回调不能再往屏幕上撒粒子 */
+let burstToken = 0;
+
+watch(
+  () => props.celebrate,
+  async (on) => {
+    if (!on) return;
+    const current = ++burstToken;
+    await nextTick();
+    const el = checkEl.value;
+    if (current !== burstToken || !el) return;
+    const rect = el.getBoundingClientRect();
+    burstSparks(rect.left + rect.width / 2, rect.top + rect.height / 2);
+  },
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -87,6 +112,7 @@ const canPlay = computed(() => props.task.status === 'completed');
       'download-item--batch': batchMode,
       'download-item--selected': selected,
       'download-item--downloading': task.status === 'downloading',
+      'download-item--celebrate': celebrate,
     }"
     :data-status="task.status"
   >
@@ -107,8 +133,17 @@ const canPlay = computed(() => props.task.status === 'completed');
     </button>
 
     <button class="download-item__main" type="button" @click="emit('select', task)">
-      <span class="download-item__poster">
-        <PosterImage :src="task.posterUrl" :alt="task.title" />
+      <span class="download-item__thumb">
+        <span class="download-item__poster">
+          <PosterImage :src="task.posterUrl" :alt="task.title" />
+        </span>
+        <!-- C-11：完成勾是常驻终态，收尾动画只负责"画出来"这一下 -->
+        <span v-if="canPlay" ref="checkEl" class="download-item__check" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16">
+            <circle class="download-item__check-ring" cx="12" cy="12" r="10" />
+            <path class="download-item__check-tick" d="M7.5 12.4 10.8 15.6 16.6 9.3" />
+          </svg>
+        </span>
       </span>
 
       <span class="download-item__body">
@@ -121,6 +156,7 @@ const canPlay = computed(() => props.task.status === 'completed');
         <span class="download-item__size">
           {{ sizeText }}
           <template v-if="task.status === 'downloading' || task.status === 'paused'"> · {{ percent }}%</template>
+          <span v-if="canPlay" class="download-item__badge">可离线观看</span>
         </span>
       </span>
     </button>
@@ -215,9 +251,15 @@ const canPlay = computed(() => props.task.status === 'completed');
   text-align: left;
 }
 
-.download-item__poster {
+.download-item__thumb {
+  position: relative;
   flex: 0 0 auto;
   width: 44px;
+}
+
+.download-item__poster {
+  display: block;
+  width: 100%;
   border-radius: 8px;
   overflow: hidden;
 }
@@ -270,6 +312,119 @@ const canPlay = computed(() => props.task.status === 'completed');
 @keyframes download-breathe {
   0%, 100% { border-color: var(--color-border); }
   50% { border-color: var(--color-brand); }
+}
+
+/* ---------- C-11 完成收尾仪式 ---------- */
+
+.download-item__check {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background-color: var(--color-bg-surface);
+  border: 1px solid var(--color-success);
+  color: var(--color-success);
+}
+
+.download-item__check svg {
+  position: relative;
+  z-index: 1;
+  display: block;
+}
+
+.download-item__check-ring,
+.download-item__check-tick {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 圆环周长 2πr≈63、勾长约 14：常驻态就是"画完了"，动画只补从空到满那一下 */
+.download-item__check-ring {
+  stroke-dasharray: 63;
+}
+
+.download-item__check-tick {
+  stroke-dasharray: 14;
+}
+
+.download-item__check::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  border: 1px solid var(--color-success);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.download-item__badge {
+  display: inline-block;
+  margin-left: var(--space-1);
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-success-soft);
+  border: 1px solid var(--color-success);
+  color: var(--color-success);
+  font: var(--text-caption);
+  font-size: 10.5px;
+  line-height: 1.5;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* 三组动画：勾（含冲击波）+ 徽章 + 行体落定，火花走共享 canvas */
+.download-item--celebrate {
+  animation: item-settle 420ms var(--ease-decelerate);
+}
+
+.download-item--celebrate .download-item__check-ring {
+  animation: check-ring 420ms var(--ease-decelerate) both;
+}
+
+.download-item--celebrate .download-item__check-tick {
+  animation: check-tick 240ms var(--ease-decelerate) 220ms both;
+}
+
+.download-item--celebrate .download-item__check::after {
+  animation: check-wave 520ms var(--ease-decelerate) 120ms both;
+}
+
+.download-item--celebrate .download-item__badge {
+  animation: badge-pop 320ms var(--ease-decelerate) 260ms both;
+}
+
+@keyframes item-settle {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.014); }
+  100% { transform: scale(1); }
+}
+
+@keyframes check-ring {
+  from { stroke-dashoffset: 63; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes check-tick {
+  from { stroke-dashoffset: 14; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes check-wave {
+  from { opacity: 0.7; transform: scale(1); }
+  to { opacity: 0; transform: scale(3.4); }
+}
+
+@keyframes badge-pop {
+  0% { opacity: 0; transform: scale(0.82); }
+  70% { opacity: 1; transform: scale(1.06); }
+  100% { opacity: 1; transform: scale(1); }
 }
 
 .download-item__status {

@@ -30,7 +30,7 @@ const emit = defineEmits<{
   <div class="history-row">
     <button class="history-row__main" type="button" @click="emit('select', record, $event.currentTarget as HTMLElement)">
       <span class="history-row__poster">
-        <PosterImage :src="record.posterUrl" :alt="record.title" />
+        <PosterImage :src="record.posterUrl" :alt="record.title" :cover-key="record.mediaId" />
       </span>
 
       <span class="history-row__body">

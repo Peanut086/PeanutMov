@@ -1,8 +1,15 @@
 import { mount } from '@vue/test-utils';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { DownloadTask } from '@/types';
+import { burstSparks } from '@/services/sparkField';
 import DownloadItem from '@/components/download/DownloadItem.vue';
+
+vi.mock('@/services/sparkField', () => ({
+  burstSparks: vi.fn(() => 16),
+}));
+
+const burstMock = vi.mocked(burstSparks);
 
 /**
  * DownloadItem 测试（页面蓝图 §7 / AC-69、AC-70、AC-73、AC-79）
@@ -118,5 +125,61 @@ describe('DownloadItem', () => {
     const wrapper = mount(DownloadItem, { props: { task: makeTask({ status: 'paused' }) } });
     await wrapper.find('.download-item__main').trigger('click');
     expect(wrapper.emitted('select')).toHaveLength(1);
+  });
+});
+
+describe('DownloadItem · C-11 完成收尾仪式', () => {
+  const completed = () =>
+    makeTask({ status: 'completed', downloadedBytes: 285 * 1024 * 1024, speedBps: 0 });
+
+  function rect(left: number, top: number, size: number): DOMRect {
+    return {
+      left,
+      top,
+      right: left + size,
+      bottom: top + size,
+      x: left,
+      y: top,
+      width: size,
+      height: size,
+      toJSON: () => ({}),
+    } as DOMRect;
+  }
+
+  it('已完成：勾与「可离线观看」徽章是常驻终态（reduced-motion 下就是它自己）', () => {
+    const wrapper = mount(DownloadItem, { props: { task: completed() } });
+    expect(wrapper.find('.download-item__check').exists()).toBe(true);
+    expect(wrapper.text()).toContain('可离线观看');
+    expect(wrapper.classes()).not.toContain('download-item--celebrate');
+  });
+
+  it('未完成：不放勾，也不撒火花', () => {
+    const wrapper = mount(DownloadItem, { props: { task: makeTask(), celebrate: true } });
+    expect(wrapper.find('.download-item__check').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('可离线观看');
+  });
+
+  it('celebrate：加收尾 class，并从勾的圆心撒一簇共享火花', async () => {
+    burstMock.mockClear();
+    const wrapper = mount(DownloadItem, { props: { task: completed(), celebrate: true } });
+    const check = wrapper.find('.download-item__check').element;
+    check.getBoundingClientRect = () => rect(100, 200, 22);
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.classes()).toContain('download-item--celebrate');
+    expect(burstMock).toHaveBeenCalledTimes(1);
+    expect(burstMock).toHaveBeenCalledWith(111, 211);
+  });
+
+  it('状态从下载中翻到完成的那一刻才庆祝；批量完成时（celebrate 为假）静默变勾', async () => {
+    burstMock.mockClear();
+    const wrapper = mount(DownloadItem, { props: { task: makeTask(), celebrate: false } });
+    expect(wrapper.find('.download-item__check').exists()).toBe(false);
+
+    await wrapper.setProps({ task: completed(), celebrate: false });
+    expect(wrapper.find('.download-item__check').exists()).toBe(true);
+    expect(wrapper.classes()).not.toContain('download-item--celebrate');
+    await wrapper.vm.$nextTick();
+    expect(burstMock).not.toHaveBeenCalled();
   });
 });

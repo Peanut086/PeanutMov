@@ -25,6 +25,8 @@ import { useDownloadStore } from '@/stores/downloadStore';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { useHaptic } from '@/composables/useHaptic';
+import { useCompletionCeremony } from '@/composables/useCompletionCeremony';
+import { attachSparkCanvas } from '@/services/sparkField';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
 import type { BatchProgress } from '@/services/downloadBatch';
@@ -61,28 +63,22 @@ const FILTER_OPTIONS = [
 const loading = computed(() => downloads.state === 'idle');
 const isEmpty = computed(() => downloads.state === 'empty' || downloads.tasks.length === 0);
 
-/** OPT-13: 追踪已完成通知，避免重复 Toast */
-const notifiedCompletedIds = new Set<string>();
+/**
+ * C-11 完成收尾仪式：一次只完成一项 → 那一行放收尾动画；一次完成一批 → 只有汇总卡庆祝，
+ * 各行静默变勾。触觉与 Toast 也收在这里一起发（原先逐项各震一次，缓存 12 集会连震 12 下）。
+ */
+const { celebrateId, celebrateSummary, observe: observeCompletions } = useCompletionCeremony();
+const sparkCanvas = ref<HTMLCanvasElement | null>(null);
 
-/** OPT-13: 监听下载完成事件，触发触觉反馈 + Toast */
 /** OPT-16: 去掉 deep:true（store 每次不可变替换数组，浅 watch 已能触发） */
 watch(
   () => downloads.tasks,
   (tasks) => {
-    // REV-19: 清理已删除任务的 ID，防止 Set 无限增长
-    const taskIds = new Set(tasks.map((t) => t.id));
-    for (const id of notifiedCompletedIds) {
-      if (!taskIds.has(id)) {
-        notifiedCompletedIds.delete(id);
-      }
-    }
-           for (const task of tasks) {
-      if (task.status === 'completed' && !notifiedCompletedIds.has(task.id)) {
-        notifiedCompletedIds.add(task.id);
-        haptic('medium');
-        toast.success(`「${task.title}」下载完成`);
-      }
-    }
+    const { fresh, bulk } = observeCompletions(tasks);
+    if (fresh.length === 0) return;
+    haptic('medium');
+    if (bulk) toast.success(`${fresh.length} 个下载完成`);
+    else toast.success(`「${fresh[0]?.title ?? ''}」下载完成`);
   },
 );
 
@@ -197,9 +193,14 @@ const offOptimize = appEvents.on('offline:optimize', (state) => {
     void loadStorageUsage();
   }
 });
-onBeforeUnmount(offOptimize);
+onBeforeUnmount(() => {
+  offOptimize();
+  // 火花画布是模块级单例：切走页面必须交还，否则 rAF 循环会留在后台空转
+  attachSparkCanvas(null);
+});
 
 onMounted(async () => {
+  attachSparkCanvas(sparkCanvas.value);
   try {
     await downloads.load();
     await loadStorageUsage();
@@ -514,7 +515,7 @@ function goLibrary(): void {
           <button class="btn btn--secondary btn--sm" type="button" @click="refresh">重试</button>
         </div>
 
-        <DownloadSummary :summary="downloads.summary" />
+        <DownloadSummary :summary="downloads.summary" :celebrate="celebrateSummary" />
 
         <!-- 功能扩展-10：存储占用展示 -->
         <div class="storage-info">
@@ -556,6 +557,7 @@ function goLibrary(): void {
                   :offline="isOffline"
                   :batch-mode="batchMode"
                   :selected="selectedIds.has(task.id)"
+                  :celebrate="task.id === celebrateId"
                   @play="onPlay"
                   @pause="onPause"
                   @resume="onResume"
@@ -662,6 +664,9 @@ function goLibrary(): void {
         </div>
       </div>
     </Transition>
+
+    <!-- C-11：全页共享的火花画布（各任务行只往它撒粒子，自己不建 canvas） -->
+    <canvas ref="sparkCanvas" class="downloads-sparks" aria-hidden="true" />
   </SafeArea>
 </template>
 
@@ -679,6 +684,16 @@ function goLibrary(): void {
 .header-menu svg {
   width: 20px;
   height: 20px;
+}
+
+/* C-11 火花层：盖在内容之上、页面框架之下，不吃事件 */
+.downloads-sparks {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: calc(var(--z-content) + 1);
+  pointer-events: none;
 }
 
 .downloads-body {

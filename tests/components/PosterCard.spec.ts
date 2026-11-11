@@ -1,6 +1,6 @@
 import { createPinia } from 'pinia';
 import { config, mount } from '@vue/test-utils';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { MediaItem } from '@/types';
 import PosterCard from '@/components/media/PosterCard.vue';
@@ -142,5 +142,219 @@ describe('PosterCard', () => {
     await btn.trigger('click');
     expect(wrapper.emitted('select')).toBeUndefined();
     wrapper.unmount();
+  });
+});
+
+/**
+ * C-08 · 海报卡 3D 倾斜与光泽
+ *
+ * 四条验收都落在"什么时候动、什么时候必须不动"：
+ * - 鼠标：跟指针倾斜 + 高光；离开清空内联样式，把 transform 交回 CSS。
+ * - 触屏 / 低端机 / 减动效：倾斜这条关掉，长按菜单的功能一条不许少。
+ * - 高频路径：同帧多次 move 只算一次；滚动、松手、卸载都要复位。
+ *
+ * happy-dom 没有布局，卡片矩形必须显式 stub，否则宽高为 0 时被守卫直接跳过。
+ */
+describe('PosterCard 倾斜与抬升（C-08）', () => {
+  const RECT = { x: 0, y: 0, top: 0, left: 0, right: 120, bottom: 180, width: 120, height: 180 };
+  const cores = Object.getOwnPropertyDescriptor(navigator, 'hardwareConcurrency');
+
+  beforeEach(() => {
+    config.global.plugins = [createPinia()];
+    // 档位是本机事实，测试里锁成高档；只有"低端机关闭倾斜"那条显式改成 4
+    Object.defineProperty(navigator, 'hardwareConcurrency', { configurable: true, value: 8 });
+  });
+  afterEach(() => {
+    config.global.plugins = [];
+    if (cores) Object.defineProperty(navigator, 'hardwareConcurrency', cores);
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function mountCard() {
+    const wrapper = mount(PosterCard, { props: { item: makeItem() }, attachTo: document.body });
+    const card = wrapper.find('button.poster-card').element as HTMLElement;
+    vi.spyOn(card, 'getBoundingClientRect').mockReturnValue({ ...RECT, toJSON: () => RECT } as DOMRect);
+    const sheen = card.querySelector('.poster-card__sheen') as HTMLElement;
+    return { wrapper, card, sheen };
+  }
+
+  function fire(el: Element, type: string, init: Record<string, unknown> = {}): void {
+    const ev = new Event(type);
+    Object.assign(ev, { pointerId: 1, pointerType: 'mouse', clientX: 0, clientY: 0 }, init);
+    el.dispatchEvent(ev);
+  }
+
+  /** 手动跑帧：让"一帧只算一次"变成可断言的事实，而不是碰运气 */
+  function manualFrames(): { pump: () => void; executed: () => number } {
+    let queue: FrameRequestCallback[] = [];
+    let done = 0;
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      queue.push(cb);
+      return queue.length;
+    });
+    vi.stubGlobal('cancelAnimationFrame', () => {
+      queue = [];
+    });
+    return {
+      pump: () => {
+        const pending = queue;
+        queue = [];
+        pending.forEach((cb) => {
+          done += 1;
+          cb(0);
+        });
+      },
+      executed: () => done,
+    };
+  }
+
+  it('鼠标划过：倾斜与高光实时跟随，will-change 只在交互期间挂着', () => {
+    const frames = manualFrames();
+    const { wrapper, card, sheen } = mountCard();
+
+    fire(card, 'pointerenter', { pointerType: 'mouse' });
+    fire(card, 'pointermove', { clientX: 108, clientY: 36 });
+    frames.pump();
+
+    // 指针在右上区（90% / 20%）：上沿后仰 7.2°、右沿外翻 9.6°
+    expect(card.style.transform).toMatch(/rotateX\(7\.200deg\)/);
+    expect(card.style.transform).toMatch(/rotateY\(9\.600deg\)/);
+    expect(sheen.style.opacity).toBe('1');
+    expect(sheen.style.getPropertyValue('--sheen-x')).toBe('90.0%');
+    expect(sheen.style.getPropertyValue('--sheen-y')).toBe('20.0%');
+    expect(card.style.willChange).toBe('transform');
+    expect(card.classList.contains('is-tilting')).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('同一帧内连续多次 move 只重算一次，且用最后一个坐标', () => {
+    const frames = manualFrames();
+    const { wrapper, card, sheen } = mountCard();
+    const measured = vi.mocked(card.getBoundingClientRect);
+
+    fire(card, 'pointerenter', { pointerType: 'mouse' });
+    fire(card, 'pointermove', { clientX: 10, clientY: 10 });
+    fire(card, 'pointermove', { clientX: 60, clientY: 90 });
+    expect(frames.executed()).toBe(0);
+    frames.pump();
+
+    expect(frames.executed()).toBe(1);
+    expect(measured).toHaveBeenCalledTimes(1);
+    expect(sheen.style.getPropertyValue('--sheen-x')).toBe('50.0%');
+    expect(sheen.style.getPropertyValue('--sheen-y')).toBe('50.0%');
+    wrapper.unmount();
+  });
+
+  it('指针离开：内联样式全部交回 CSS，:active 按压反馈恢复', () => {
+    const frames = manualFrames();
+    const { wrapper, card } = mountCard();
+
+    fire(card, 'pointerenter', { pointerType: 'mouse' });
+    fire(card, 'pointermove', { clientX: 100, clientY: 40 });
+    frames.pump();
+    fire(card, 'pointerleave');
+
+    expect(card.style.transform).toBe('');
+    expect(card.style.boxShadow).toBe('');
+    expect(card.style.willChange).toBe('');
+    expect(card.style.transition).toBe('');
+    expect(card.classList.contains('is-tilting')).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('触屏不做倾斜（没有 hover，主反馈交给长按抬升）', () => {
+    const frames = manualFrames();
+    const { wrapper, card } = mountCard();
+
+    fire(card, 'pointerenter', { pointerType: 'touch' });
+    fire(card, 'pointermove', { pointerType: 'touch', clientX: 100, clientY: 40 });
+    frames.pump();
+
+    expect(card.style.transform).toBe('');
+    expect(card.classList.contains('is-tilting')).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('低端机（≤4 核）关闭倾斜，但长按抬升与菜单照常', async () => {
+    Object.defineProperty(navigator, 'hardwareConcurrency', { configurable: true, value: 4 });
+    const frames = manualFrames();
+    const { wrapper, card } = mountCard();
+
+    fire(card, 'pointerenter', { pointerType: 'mouse' });
+    fire(card, 'pointermove', { clientX: 100, clientY: 40 });
+    frames.pump();
+    expect(card.style.transform).toBe('');
+
+    fire(card, 'pointerdown', { pointerType: 'touch' });
+    await new Promise((resolve) => setTimeout(resolve, 520));
+    expect(wrapper.emitted('longpress')).toHaveLength(1);
+    expect(card.style.transform).toContain('translateZ(34px)');
+    expect(card.classList.contains('is-lifted')).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('系统减动效：倾斜与抬升都不动，长按菜单功能不受影响', async () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) => ({ matches: query.includes('reduced-motion'), media: query } as MediaQueryList),
+    );
+    const frames = manualFrames();
+    const { wrapper, card } = mountCard();
+
+    fire(card, 'pointerenter', { pointerType: 'mouse' });
+    fire(card, 'pointermove', { clientX: 100, clientY: 40 });
+    frames.pump();
+    expect(card.style.transform).toBe('');
+
+    fire(card, 'pointerdown', { pointerType: 'touch' });
+    await new Promise((resolve) => setTimeout(resolve, 520));
+    expect(wrapper.emitted('longpress')).toHaveLength(1);
+    expect(card.style.transform).toBe('');
+    wrapper.unmount();
+  });
+
+  it('长按松手立即复位', async () => {
+    const { wrapper, card } = mountCard();
+    fire(card, 'pointerdown', { pointerType: 'touch' });
+    await new Promise((resolve) => setTimeout(resolve, 520));
+    expect(card.style.transform).toContain('translateZ');
+    fire(card, 'pointerup', { pointerType: 'touch' });
+    expect(card.style.transform).toBe('');
+    expect(card.classList.contains('is-lifted')).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('滚动一下整墙立刻复位（虚拟网格换数据时不留歪卡片）', () => {
+    const frames = manualFrames();
+    const { wrapper, card } = mountCard();
+
+    fire(card, 'pointerenter', { pointerType: 'mouse' });
+    fire(card, 'pointermove', { clientX: 100, clientY: 40 });
+    frames.pump();
+    expect(card.style.transform).toContain('rotateY');
+
+    window.dispatchEvent(new Event('scroll'));
+    expect(card.style.transform).toBe('');
+
+    // 复位后不该继续挂着 window 上的滚动监听
+    frames.pump();
+    fire(card, 'pointermove', { clientX: 20, clientY: 20 });
+    frames.pump();
+    expect(card.style.transform).toBe('');
+    wrapper.unmount();
+  });
+
+  it('卸载时复位：切走页面不留内联 transform', () => {
+    const frames = manualFrames();
+    const { wrapper, card } = mountCard();
+
+    fire(card, 'pointerenter', { pointerType: 'mouse' });
+    fire(card, 'pointermove', { clientX: 100, clientY: 40 });
+    frames.pump();
+    expect(card.style.transform).toContain('rotateX');
+
+    wrapper.unmount();
+    expect(card.style.transform).toBe('');
+    expect(card.style.willChange).toBe('');
   });
 });

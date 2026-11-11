@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { groupSearchResults, isKeywordIgnored, normalizeSearchKeyword, scoreRelevance, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
+import { buildTailSuggestions, groupSearchResults, isKeywordIgnored, normalizeSearchKeyword, scoreRelevance, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
 import type { MediaItem } from '@/types';
 
 function makeItem(overrides: Partial<MediaItem> & { sourceId: string; title: string }): MediaItem {
@@ -180,6 +180,19 @@ describe('groupSearchResults 组间排序（v1.8 修订：相关度第一优先�
     // 关键词都不命中（同 0 分）→ 不并组（年份不同）→ 健康与延迟决定顺序
     expect(groups.map((g) => g.year)).toEqual([2019, 2020]);
   });
+
+  it('四档都命中时组顺序即徽章顺序：精确 → 前缀 → 包含 → 分词（C-12）', () => {
+    const keyword = '太阳雨 上海';
+    // 到达顺序故意从最差档开始，证明是排序而不是输入顺序
+    const items = [
+      makeItem({ sourceId: 'd', title: '上海的太阳雨', year: 2022 }),
+      makeItem({ sourceId: 'c', title: '纪录片太阳雨上海滩', year: 2023 }),
+      makeItem({ sourceId: 'b', title: '太阳雨上海滩', year: 2024 }),
+      makeItem({ sourceId: 'a', title: '太阳雨 上海', year: 2025 }),
+    ];
+    const groups = groupSearchResults(items, keyword);
+    expect(groups.map((g) => scoreRelevance(g.title, keyword))).toEqual([4, 3, 2, 1]);
+  });
 });
 
 describe('titleDedupKey（CHG-28：平铺去重含年份）', () => {
@@ -238,5 +251,37 @@ describe('normalizeSearchKeyword（P0-2：关键词规范化）', () => {
   it('空字符串返回空', () => {
     expect(normalizeSearchKeyword('')).toBe('');
     expect(normalizeSearchKeyword('《》')).toBe('');
+  });
+});
+
+describe('buildTailSuggestions（C-12：尾词建议芯片）', () => {
+  it('去掉尾字排第一，其余缩短建议补足，最多 3 个', () => {
+    expect(buildTailSuggestions('今天是太阳雨')).toEqual(['今天是太阳', '今天', '太阳雨']);
+  });
+
+  it('先按关键词规范化再切词，书名号不会带进建议', () => {
+    expect(buildTailSuggestions('《庆余年》')).toEqual(['庆余']);
+  });
+
+  it('2 字及以下没有可缩短的空间，返回空而不是硬凑', () => {
+    expect(buildTailSuggestions('三体')).toEqual([]);
+    expect(buildTailSuggestions('')).toEqual([]);
+    expect(buildTailSuggestions('《》')).toEqual([]);
+  });
+
+  it('4 字能凑满 3 个且不重复', () => {
+    const result = buildTailSuggestions('流浪地球');
+    expect(result).toHaveLength(3);
+    expect(new Set(result).size).toBe(3);
+    expect(result).not.toContain('流浪地球');
+  });
+
+  it('建议里每个词都短于原词，绝不会把原词再推一遍', () => {
+    for (const kw of ['庆余年', '流浪地球', '今天是太阳雨', '  《漫长的季节》  ']) {
+      const base = normalizeSearchKeyword(kw);
+      for (const tail of buildTailSuggestions(kw)) {
+        expect(tail.length).toBeLessThan(base.length);
+      }
+    }
   });
 });

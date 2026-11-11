@@ -112,6 +112,9 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       },
       lastVolume: 100,
       resizeMode: 'contain',
+      autoSkipIntro: true,
+      ambilight: true,
+      ambilightIntensity: 85,
     },
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
     download: {
@@ -143,6 +146,7 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       density: 'normal',
       filterTop: false,
       filterBottom: false,
+      interactive: true,
     },
     /* v1.8/P4：网盘画质与线程配置 */
     netdisk: {
@@ -212,6 +216,13 @@ function sanitize(input: AppSettings): AppSettings {
   player.resizeMode = VALID_RESIZE_MODES.includes(player.resizeMode as typeof player.resizeMode)
     ? player.resizeMode
     : 'contain';
+  // 只有显式 false 才算关掉：旧设置库里没有这个字段，回落默认（开）
+  player.autoSkipIntro = player.autoSkipIntro !== false;
+  player.ambilight = player.ambilight !== false;
+  const ambilightLevel = Number(player.ambilightIntensity);
+  player.ambilightIntensity = Number.isFinite(ambilightLevel)
+    ? Math.max(0, Math.min(100, ambilightLevel))
+    : 85;
 
   const gesture: GestureSettings = { ...defaults.gesture, ...(gesturePatch ?? {}) };
   gesture.seekMaxSec = Math.max(30, Math.min(180, Number(gesture.seekMaxSec) || defaults.gesture.seekMaxSec));
@@ -259,6 +270,7 @@ function sanitize(input: AppSettings): AppSettings {
   if (!['sparse', 'normal', 'dense'].includes(danmaku.density)) danmaku.density = 'normal';
   danmaku.filterTop = Boolean(danmaku.filterTop);
   danmaku.filterBottom = Boolean(danmaku.filterBottom);
+  danmaku.interactive = danmaku.interactive !== false;
 
   return {
     ...defaults,

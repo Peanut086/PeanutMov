@@ -1329,13 +1329,18 @@ public class SpiderPlugin extends Plugin {
             }
             initMethod.setAccessible(true);
 
+            // 初始化前快照现有窗口/视图树，之后只处理 init 期间新增的悬浮窗。
+            // 不能全量扫描：guard jar 的进度条可能挂在 Activity 的 DecorView 里，
+            // 误删 DecorView 会把整个 Activity 窗口摘掉（黑屏 + 下次 resume 崩溃）。
+            GuardUiBaseline baseline = captureGuardUiBaseline();
+
             // 首次尝试
             Throwable firstError = null;
             try {
                 initMethod.invoke(null, app);
                 verifyGuardLoader(initClass, api);
                 guardInitDone.put(lockKey, Boolean.TRUE);
-                suppressGuardJarFloatingUi(context);
+                suppressGuardJarFloatingUi(context, baseline);
                 Log.i(TAG, "guard jar initialized: " + api);
                 d("guard jar initialized successfully: %s", api);
                 return;
@@ -1360,7 +1365,7 @@ public class SpiderPlugin extends Plugin {
                 initMethod.invoke(null, app);
                 verifyGuardLoader(initClass, api);
                 guardInitDone.put(lockKey, Boolean.TRUE);
-                suppressGuardJarFloatingUi(context);
+                suppressGuardJarFloatingUi(context, baseline);
                 Log.i(TAG, "guard jar initialized (retry): " + api);
                 return;
             } catch (Throwable e) {
@@ -1373,68 +1378,244 @@ public class SpiderPlugin extends Plugin {
     }
 
     /**
-     * 清理 guard jar 在 Init.init() 后残留的悬浮窗 UI（进度条/悬浮球/本地代理入口）。
+     * guard 悬浮窗清理基线：Init.init() 之前已存在的顶层窗口与视图树节点。
      *
-     * guard jar（AiWex/MyCrypto 系）初始化时会通过 WindowManager 添加自己的悬浮窗，
-     * 包括 MyCrypto .so 下载进度条和后续常驻的悬浮球。这些 UI 不属于宿主 App，
-     * 且样式固定（绿色进度条）不跟随主题。这里在 init 成功后遍历 WindowManager
-     * 的视图树，移除疑似 guard jar 添加的悬浮窗。
+     * 只清理 init 期间新增的窗口，避免把 Activity 的 DecorView 当成 guard 悬浮窗。
      */
-    private static void suppressGuardJarFloatingUi(Context context) {
-        try {
-            Log.d(TAG, "suppressGuardJarFloatingUi called");
-            WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
-            if (wm == null) {
-                Log.w(TAG, "suppressGuardJarFloatingUi: WindowManager is null");
-                return;
+    private static final class GuardUiBaseline {
+        final java.util.Set<View> windows =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<View, Boolean>());
+        final java.util.Set<View> views =
+                java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<View, Boolean>());
+        boolean valid;
+    }
+
+    /** init 前快照当前所有顶层窗口及其视图树（必须在主线程读 WindowManagerGlobal） */
+    private static GuardUiBaseline captureGuardUiBaseline() {
+        GuardUiBaseline baseline = new GuardUiBaseline();
+        Boolean ok = runOnMainThreadAndWait(() -> {
+            Object wmGlobal = getWindowManagerGlobal();
+            if (wmGlobal == null) return Boolean.FALSE;
+            List<View> roots = readWindowViews(wmGlobal);
+            if (roots == null) return Boolean.FALSE;
+            for (View root : roots) {
+                if (root == null) continue;
+                baseline.windows.add(root);
+                collectViewTree(root, baseline.views);
             }
-            // 通过反射获取 WindowManagerImpl 的 mViews 列表（不同 Android 版本字段名可能不同）
-            Object globalWM = wm;
-            // WindowManager 实际实现是 WindowManagerImpl，其父类 WindowManagerGlobal 持有 mViews
-            Class<?> wmGlobalClass = Class.forName("android.view.WindowManagerGlobal");
-            Method getInstanceMethod = wmGlobalClass.getMethod("getInstance");
-            Object wmGlobal = getInstanceMethod.invoke(null);
-            if (wmGlobal == null) {
-                Log.w(TAG, "suppressGuardJarFloatingUi: WindowManagerGlobal instance is null");
-                return;
-            }
-            Field mViewsField = wmGlobalClass.getDeclaredField("mViews");
-            mViewsField.setAccessible(true);
-            @SuppressWarnings("unchecked")
-            java.util.ArrayList<View> views = (java.util.ArrayList<View>) mViewsField.get(wmGlobal);
-            if (views == null) {
-                Log.w(TAG, "suppressGuardJarFloatingUi: mViews is null");
-                return;
-            }
-            Log.d(TAG, "suppressGuardJarFloatingUi: found " + views.size() + " views in WindowManager");
-            // 倒序遍历避免删除时索引错位
+            return Boolean.TRUE;
+        }, 1500);
+        baseline.valid = Boolean.TRUE.equals(ok);
+        Log.i(TAG, "guard ui baseline: valid=" + baseline.valid
+                + " windows=" + baseline.windows.size() + " views=" + baseline.views.size());
+        return baseline;
+    }
+
+    /**
+     * 清理 guard jar 在 Init.init() 后新增的悬浮窗 UI（进度条/悬浮球/本地代理入口）。
+     *
+     * 判定规则（全部满足才移除）：
+     * 1. 不在 init 前基线里（新增）；
+     * 2. 窗口类型是悬浮窗（TYPE_APPLICATION_OVERLAY/TYPE_PHONE/...），
+     *    绝不动 TYPE_BASE_APPLICATION/TYPE_APPLICATION 等 Activity 窗口；
+     * 3. 类名带 guard 特征，或窗口内含 ProgressBar。
+     *
+     * 对 Activity 窗口本身只做“隐藏新增的 guard 子控件”，绝不 removeView——
+     * 把 DecorView 摘掉会导致黑屏，且下次 resume 时
+     * WindowManagerGlobal.updateViewLayout 找不到 view 直接崩溃。
+     */
+    private static void suppressGuardJarFloatingUi(Context context, GuardUiBaseline baseline) {
+        if (baseline == null || !baseline.valid) {
+            Log.w(TAG, "suppressGuardJarFloatingUi skipped: baseline unavailable");
+            return;
+        }
+        WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+        if (wm == null) {
+            Log.w(TAG, "suppressGuardJarFloatingUi skipped: WindowManager is null");
+            return;
+        }
+        Boolean ok = runOnMainThreadAndWait(() -> {
+            Object wmGlobal = getWindowManagerGlobal();
+            if (wmGlobal == null) return Boolean.FALSE;
+            List<View> views = readWindowViews(wmGlobal);
+            List<WindowManager.LayoutParams> params = readWindowParams(wmGlobal);
+            if (views == null) return Boolean.FALSE;
+            Log.i(TAG, "suppress guard ui: scanning " + views.size()
+                    + " windows, baseline " + baseline.windows.size());
             for (int i = views.size() - 1; i >= 0; i--) {
                 View v = views.get(i);
                 if (v == null) continue;
-                // 判定条件：非 Activity 装饰视图、且包含 ProgressBar 或类名含 guard/AiWex/MyCrypto
-                String viewClassName = v.getClass().getName();
-                boolean isGuardView = viewClassName.contains("AiWex")
-                        || viewClassName.contains("MyCrypto")
-                        || viewClassName.contains("guard")
-                        || viewClassName.contains("Catvod")
-                        || viewClassName.contains("Floating");
+                WindowManager.LayoutParams lp =
+                        (params != null && i < params.size()) ? params.get(i) : null;
+                String className = v.getClass().getName();
+                boolean newSinceInit = !baseline.windows.contains(v);
+                boolean activityWindow = isActivityWindow(lp) || isDecorClass(className);
+                boolean overlayWindow = isOverlayWindow(lp);
+                boolean guardClass = isGuardViewClass(className);
                 boolean hasProgressBar = findChildOfType(v, ProgressBar.class) != null;
-                Log.d(TAG, "suppressGuardJarFloatingUi: checking view " + viewClassName
-                        + " isGuard=" + isGuardView + " hasProgressBar=" + hasProgressBar
-                        + " isHost=" + isHostView(v));
-                // 移除：guard jar 特征类名，或含 ProgressBar 且非宿主自身添加的视图
-                if (isGuardView || (hasProgressBar && !isHostView(v))) {
+                Log.i(TAG, "guard ui window: cls=" + className
+                        + " type=" + (lp == null ? "?" : String.valueOf(lp.type))
+                        + " new=" + newSinceInit + " overlay=" + overlayWindow
+                        + " activity=" + activityWindow + " guardCls=" + guardClass
+                        + " progress=" + hasProgressBar + " host=" + isHostView(v));
+                if (activityWindow) {
+                    hideNewGuardChildren(v, baseline.views);
+                    continue;
+                }
+                if (!newSinceInit || !overlayWindow) continue;
+                if (isHostView(v) && !guardClass) continue;
+                if (!guardClass && !hasProgressBar) continue;
+                try {
+                    wm.removeView(v);
+                    Log.i(TAG, "suppressed guard jar floating view: " + className
+                            + " type=" + (lp == null ? "?" : String.valueOf(lp.type)));
+                } catch (Exception e) {
+                    // 移除失败时退化为隐藏，至少不遮挡播放页
                     try {
-                        wm.removeView(v);
-                        Log.i(TAG, "suppressed guard jar floating view: " + viewClassName);
+                        v.setVisibility(View.GONE);
+                    } catch (Exception ignored) {
+                    }
+                    Log.w(TAG, "failed to remove guard jar view: " + className
+                            + " -> " + e.getMessage());
+                }
+            }
+            return Boolean.TRUE;
+        }, 2500);
+        if (!Boolean.TRUE.equals(ok)) {
+            Log.w(TAG, "suppressGuardJarFloatingUi did not run on main thread");
+        }
+    }
+
+    /** 在宿主窗口中隐藏 init 期间新增的 guard 子控件（进度条/guard 类），不删宿主窗口 */
+    private static void hideNewGuardChildren(View root, java.util.Set<View> baselineViews) {
+        java.util.ArrayDeque<View> stack = new java.util.ArrayDeque<>();
+        stack.push(root);
+        int visited = 0;
+        int hidden = 0;
+        while (!stack.isEmpty() && visited++ < 5000) {
+            View node = stack.pop();
+            if (node != root && !baselineViews.contains(node)) {
+                boolean guardNode = isGuardViewClass(node.getClass().getName());
+                boolean progressNode = node instanceof ProgressBar;
+                if (guardNode || progressNode) {
+                    try {
+                        if (node.getVisibility() != View.GONE) {
+                            node.setVisibility(View.GONE);
+                            hidden++;
+                            Log.i(TAG, "hid guard child in host window: "
+                                    + node.getClass().getName());
+                        }
                     } catch (Exception e) {
-                        Log.w(TAG, "failed to remove guard jar view: " + viewClassName + " -> " + e.getMessage());
+                        Log.w(TAG, "failed to hide guard child: " + e.getMessage());
                     }
                 }
             }
-        } catch (Exception e) {
-            Log.w(TAG, "suppressGuardJarFloatingUi failed: " + e.getMessage(), e);
+            if (node instanceof android.view.ViewGroup) {
+                android.view.ViewGroup group = (android.view.ViewGroup) node;
+                for (int i = 0; i < group.getChildCount(); i++) {
+                    View child = group.getChildAt(i);
+                    if (child != null) stack.push(child);
+                }
+            }
         }
+        if (hidden > 0) {
+            Log.i(TAG, "hid " + hidden + " new guard child view(s) in host window");
+        }
+    }
+
+    private static void collectViewTree(View root, java.util.Set<View> out) {
+        java.util.ArrayDeque<View> stack = new java.util.ArrayDeque<>();
+        stack.push(root);
+        int visited = 0;
+        while (!stack.isEmpty() && visited++ < 5000) {
+            View node = stack.pop();
+            out.add(node);
+            if (node instanceof android.view.ViewGroup) {
+                android.view.ViewGroup group = (android.view.ViewGroup) node;
+                for (int i = 0; i < group.getChildCount(); i++) {
+                    View child = group.getChildAt(i);
+                    if (child != null) stack.push(child);
+                }
+            }
+        }
+    }
+
+    private static Object getWindowManagerGlobal() {
+        try {
+            Class<?> cls = Class.forName("android.view.WindowManagerGlobal");
+            Method getInstance = cls.getMethod("getInstance");
+            return getInstance.invoke(null);
+        } catch (Throwable e) {
+            Log.w(TAG, "WindowManagerGlobal unavailable: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /** 读取顶层窗口列表副本；必须复制，否则边遍历边 removeView 会索引错位 */
+    @SuppressWarnings("unchecked")
+    private static List<View> readWindowViews(Object wmGlobal) {
+        try {
+            Field field = Class.forName("android.view.WindowManagerGlobal").getDeclaredField("mViews");
+            field.setAccessible(true);
+            Object value = field.get(wmGlobal);
+            if (value instanceof List) return new ArrayList<>((List<View>) value);
+        } catch (Throwable e) {
+            Log.w(TAG, "read WindowManagerGlobal.mViews failed: " + e.getMessage());
+        }
+        return null;
+    }
+
+    /** 读取窗口参数列表副本，与 mViews 顺序一一对应 */
+    @SuppressWarnings("unchecked")
+    private static List<WindowManager.LayoutParams> readWindowParams(Object wmGlobal) {
+        try {
+            Field field = Class.forName("android.view.WindowManagerGlobal").getDeclaredField("mParams");
+            field.setAccessible(true);
+            Object value = field.get(wmGlobal);
+            if (value instanceof List) {
+                return new ArrayList<>((List<WindowManager.LayoutParams>) value);
+            }
+        } catch (Throwable e) {
+            Log.d(TAG, "read WindowManagerGlobal.mParams failed: " + e.getMessage());
+        }
+        return null;
+    }
+
+    private static boolean isGuardViewClass(String className) {
+        return className.contains("AiWex")
+                || className.contains("MyCrypto")
+                || className.contains("guard")
+                || className.contains("Guard")
+                || className.contains("Catvod")
+                || className.contains("Floating");
+    }
+
+    /** Activity 自身窗口类型：绝不允许移除 */
+    private static boolean isActivityWindow(WindowManager.LayoutParams lp) {
+        if (lp == null) return true;
+        return lp.type == WindowManager.LayoutParams.TYPE_BASE_APPLICATION
+                || lp.type == WindowManager.LayoutParams.TYPE_APPLICATION
+                || lp.type == WindowManager.LayoutParams.TYPE_APPLICATION_STARTING
+                || lp.type == WindowManager.LayoutParams.TYPE_APPLICATION_PANEL
+                || lp.type == WindowManager.LayoutParams.TYPE_APPLICATION_ATTACHED_DIALOG
+                || lp.type == WindowManager.LayoutParams.TYPE_APPLICATION_SUB_PANEL;
+    }
+
+    /** 只有真正的悬浮窗类型才可能属于 guard jar（白名单） */
+    private static boolean isOverlayWindow(WindowManager.LayoutParams lp) {
+        if (lp == null) return false;
+        return lp.type == WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY   // 2038
+                || lp.type == WindowManager.LayoutParams.TYPE_PHONE             // 2002
+                || lp.type == WindowManager.LayoutParams.TYPE_SYSTEM_ALERT      // 2003
+                || lp.type == WindowManager.LayoutParams.TYPE_TOAST             // 2005
+                || lp.type == WindowManager.LayoutParams.TYPE_SYSTEM_OVERLAY    // 2006
+                || lp.type == WindowManager.LayoutParams.TYPE_PRIORITY_PHONE    // 2007
+                || lp.type == WindowManager.LayoutParams.TYPE_SYSTEM_ERROR;     // 2010
+    }
+
+    private static boolean isDecorClass(String className) {
+        return className.contains("DecorView")
+                || className.startsWith("com.android.internal.policy.");
     }
 
     /** 递归查找子视图中的指定类型 */
@@ -1450,14 +1631,48 @@ public class SpiderPlugin extends Plugin {
         return null;
     }
 
-    /** 判断视图是否属于宿主 App 自身（非 guard jar 添加） */
+    /** 判断视图是否属于宿主 App 自身（Activity 装饰视图/WebView 宿主/带 tag 的视图） */
     private static boolean isHostView(View v) {
-        // 宿主自身添加的视图通常有 tag 或特定的类名前缀
         String className = v.getClass().getName();
         return className.startsWith("com.qoder.cinema.")
-                || className.startsWith("android.widget.")
-                || className.startsWith("androidx.")
+                || className.startsWith("com.android.internal.policy.")
+                || className.contains("DecorView")
                 || v.getTag() != null;
+    }
+
+    /** 主线程同步执行；spider-worker 上读 WindowManagerGlobal/removeView 都不安全 */
+    private static <T> T runOnMainThreadAndWait(java.util.concurrent.Callable<T> task, long timeoutMs) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            try {
+                return task.call();
+            } catch (Exception e) {
+                Log.w(TAG, "main thread task failed: " + e.getMessage(), e);
+                return null;
+            }
+        }
+        final Object[] result = new Object[1];
+        final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        new Handler(Looper.getMainLooper()).post(() -> {
+            try {
+                result[0] = task.call();
+            } catch (Exception e) {
+                Log.w(TAG, "main thread task failed: " + e.getMessage(), e);
+            } finally {
+                latch.countDown();
+            }
+        });
+        try {
+            if (!latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "main thread task timeout after " + timeoutMs + "ms");
+                return null;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+        @SuppressWarnings("unchecked")
+        T typed = (T) result[0];
+        return typed;
     }
 
     /** 解包 InvocationTargetException / ExceptionInInitializerError 的 cause */

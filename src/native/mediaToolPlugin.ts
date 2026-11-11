@@ -44,6 +44,16 @@ export interface MediaToolPlugin {
   }>;
   /** 取消进行中的转封装并清理 `.mp4.part` */
   cancelRemux(options: { taskId?: string; inputPath?: string }): Promise<{ canceled: boolean }>;
+  /**
+   * A-03：从本地文件抽进度条预览帧。
+   * `path` 是相对 `Directory.Data` 的路径（与 `remuxMp4` 同一口径，不接受绝对路径）。
+   */
+  extractFrames(options: {
+    path: string;
+    timesMs: number[];
+    maxEdge?: number;
+    quality?: number;
+  }): Promise<{ frames: Array<{ index: number; timeMs: number; dataUrl: string }> }>;
   /** 转封装进度（≤2 次/秒，按 `inputPath` 归属） */
   addListener(
     eventName: 'remuxProgress',
@@ -113,5 +123,37 @@ export async function applyNativeSpeedLimit(bytesPerSec: number): Promise<boolea
   } catch (e) {
     logger.debug('MediaTool.setSpeedLimit 不可用（忽略）', { error: (e as Error)?.message ?? String(e) });
     return false;
+  }
+}
+
+/**
+ * A-03：抽一批进度条预览帧。
+ *
+ * 返回 `null` 表示"这条源没有预览帧"（Web / 旧 APK / 插件报错 / 一帧都没取到），
+ * 调用方据此退回纯时间气泡；返回数组时下标与 `timesMs` 对齐，缺帧为 `null`。
+ *
+ * 这里不排队：同一时刻只允许一路抽帧在跑，由调用方（`useSeekThumbnails`）负责合并请求。
+ */
+export async function extractSeekFrames(
+  path: string,
+  timesMs: number[],
+  maxEdge = 128,
+  quality = 60,
+): Promise<(string | null)[] | null> {
+  if (!isMediaToolAvailable() || timesMs.length === 0) return null;
+  try {
+    const result = await MediaTool.extractFrames({ path, timesMs, maxEdge, quality });
+    const slots: (string | null)[] = new Array(timesMs.length).fill(null);
+    let hit = 0;
+    for (const frame of result.frames ?? []) {
+      if (!frame || typeof frame.dataUrl !== 'string') continue;
+      if (frame.index < 0 || frame.index >= slots.length) continue;
+      slots[frame.index] = frame.dataUrl;
+      hit += 1;
+    }
+    return hit === 0 ? null : slots;
+  } catch (e) {
+    logger.debug('MediaTool.extractFrames 不可用（忽略）', { error: (e as Error)?.message ?? String(e) });
+    return null;
   }
 }

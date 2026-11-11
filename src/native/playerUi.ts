@@ -1,5 +1,5 @@
 /**
- * 播放器窗口 UI 插件代理（沉浸式全屏 + 系统亮度/音量原始读写）
+ * 播放器窗口 UI 插件代理（沉浸式全屏 + 系统亮度/音量原始读写 + 原生触觉）
  *
  * 横屏全屏时 Android 会为刘海/挖孔预留安全边（华为真机左侧 104px），
  * WebView 被内缩后露出的窗口背景就是那条白色竖条。进入全屏时切 edge-to-edge
@@ -27,6 +27,7 @@ interface PlayerUiPlugin {
   setWindowBrightness(options: { ratio: number }): Promise<void>;
   clearWindowBrightness(): Promise<void>;
   setSystemVolume(options: { percent: number }): Promise<{ volumePercent: number }>;
+  haptic(options: { mode: string }): Promise<void>;
 }
 
 const PlayerUi = registerPlugin<PlayerUiPlugin>('PlayerUi');
@@ -34,6 +35,23 @@ const PlayerUi = registerPlugin<PlayerUiPlugin>('PlayerUi');
 export async function setPlayerImmersive(immersive: boolean): Promise<void> {
   if (!isNative()) return;
   await PlayerUi.setImmersive({ immersive });
+}
+
+/**
+ * 触发原生触觉反馈；mode 取 light / medium / heavy，未知档位由原生侧退回 light。
+ *
+ * 返回是否真的交给了原生桥——Web 预览和桥调用失败时返回 false，
+ * 由 `useHaptic` 决定是否退回 `navigator.vibrate`。
+ */
+export async function fireNativeHaptic(mode: string): Promise<boolean> {
+  if (!isNative()) return false;
+  try {
+    await PlayerUi.haptic({ mode });
+    return true;
+  } catch (e) {
+    logger.debug('原生触觉反馈不可用', e);
+    return false;
+  }
 }
 
 /** 进入播放页时一次性取系统亮度和音量；Web / 插件缺失返回 null */

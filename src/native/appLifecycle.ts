@@ -121,6 +121,23 @@ export function setBackFallback(cb: BackListener | null): void {
   backFallback = cb;
 }
 
+/**
+ * 主动走一次「返回」（B-07 边缘滑动用）。
+ *
+ * 与系统返回键共用同一条链路：先让页面监听器消费（弹层 / 播放器全屏），
+ * 再交给 App.vue 的路由兜底。区别只有一个——这里**永不退出 App**：
+ * 手势没有"再滑一次就退出"的语义，栈到底时返回 false，由调用方回弹。
+ */
+export function pressBackButton(): boolean {
+  if (emitBack()) return true;
+  try {
+    return backFallback?.() === true;
+  } catch (e) {
+    logger.warn('返回键兜底处理异常', e);
+    return false;
+  }
+}
+
 /** 退出 App（Web 下 no-op） */
 export async function exitApp(): Promise<void> {
   if (!isNative()) return;

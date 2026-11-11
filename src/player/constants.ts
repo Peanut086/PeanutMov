@@ -53,6 +53,12 @@ export const RATE_OPTIONS: readonly PlaybackRate[] = [0.5, 0.75, 1, 1.25, 1.5, 2
 /** 自动连播倒计时（秒） */
 export const AUTO_NEXT_COUNTDOWN_SEC = 3;
 
+/** 跳过片头/片尾胶囊的倒计时（秒） */
+export const SKIP_INTRO_COUNTDOWN_SEC = 3;
+
+/** B-04：点中弹幕后它最多停这么久就自动放行，不能让一条弹幕长期挂在画面上 */
+export const DANMAKU_PICK_MAX_MS = 4000;
+
 /** 字幕字号 → CSS 类 */
 export const SUBTITLE_SIZE_CLASS = {
   small: 'subtitle-overlay--small',

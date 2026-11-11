@@ -1,16 +1,25 @@
 <script setup lang="ts">
-/** 画面比例选择（P1 画面比例配置） */
+/**
+ * 画面设置（P1 画面比例配置 + C-09 氛围光）
+ *
+ * 氛围光的开关与强度写回 `player` 设置；关闭后播放层不再挂光晕 canvas，取样定时器一并停止。
+ */
 import BottomSheet from '@/components/common/BottomSheet.vue';
+import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
 import type { ResizeMode } from '@/types';
 
-defineProps<{
+const props = defineProps<{
   modelValue: boolean;
   mode: ResizeMode;
+  ambilight: boolean;
+  ambilightIntensity: number;
 }>();
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void;
   (e: 'select', mode: ResizeMode): void;
+  (e: 'set-ambilight', value: boolean): void;
+  (e: 'set-ambilight-intensity', value: number): void;
 }>();
 
 const MODES: Array<{ value: ResizeMode; label: string; hint: string }> = [
@@ -28,9 +37,10 @@ function choose(mode: ResizeMode): void {
 <template>
   <BottomSheet
     :model-value="modelValue"
-    title="画面比例"
+    title="画面"
     @update:model-value="emit('update:modelValue', $event)"
   >
+    <p class="sheet-section">画面比例</p>
     <ul class="mode-list">
       <li v-for="item in MODES" :key="item.value">
         <button
@@ -45,10 +55,42 @@ function choose(mode: ResizeMode): void {
         </button>
       </li>
     </ul>
+
+    <p class="sheet-section">氛围光</p>
+    <div class="ambilight-row">
+      <span>画面氛围光</span>
+      <ToggleSwitch
+        :model-value="props.ambilight"
+        @update:model-value="emit('set-ambilight', $event)"
+      />
+    </div>
+    <label v-if="props.ambilight" class="ambilight-field">
+      <span>强度 {{ props.ambilightIntensity }}%</span>
+      <input
+        type="range"
+        min="0"
+        max="100"
+        step="5"
+        :value="props.ambilightIntensity"
+        @change="emit('set-ambilight-intensity', Number(($event.target as HTMLInputElement).value))"
+      />
+    </label>
+    <p class="sheet-hint">取当前画面边缘主色为黑边补光；Web 引擎实时取样，原生引擎（ExoPlayer）拿不到画面时会自动关闭。</p>
   </BottomSheet>
 </template>
 
 <style scoped>
+.sheet-section {
+  margin-bottom: var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--color-text-tertiary);
+  font: var(--text-label-strong);
+}
+
+.sheet-section:not(:first-child) {
+  margin-top: var(--space-4);
+}
+
 .mode-list {
   display: flex;
   flex-direction: column;
@@ -80,5 +122,30 @@ function choose(mode: ResizeMode): void {
   margin-left: auto;
   font: var(--text-caption);
   color: var(--color-brand-text);
+}
+
+.ambilight-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 var(--space-2);
+  color: var(--color-text-primary);
+  font: var(--text-body);
+}
+
+.ambilight-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--color-text-secondary);
+  font: var(--text-caption);
+}
+
+.sheet-hint {
+  padding: var(--space-2) var(--space-2) var(--space-4);
+  color: var(--color-text-tertiary);
+  font: var(--text-caption);
 }
 </style>

@@ -9,13 +9,30 @@
  * Respects prefers-reduced-motion via tokens.css variable override.
  */
 
+/*
+ * 转场期间新旧页面必须重叠。两者都是 `.app-content`（flex 列）的直接子元素，
+ * 不给离场页脱流就会上下堆叠：新页跑到折叠线以下，动画看起来是
+ * 「旧页淡掉 → 一片背景 → 新页出现」，slide 的视差也就无从谈起。
+ * 只钉 top/left/right，高度保持内容自适应，免得长页被压成容器高。
+ *
+ * `!important` 不是偷懒：各页根节点（如 `.detail { position: relative }`）
+ * 编译后带 scoped 属性，特异性天然高过这里的一类一 class，
+ * 不强制脱流的话离场页会留在文档流里，把目标页整页顶下去（返程还会弹回）。
+ */
+.slide-left-leave-active,
+.slide-right-leave-active,
+.fade-leave-active {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
 /* ---------- Slide Left (forward) ---------- */
 .slide-left-enter-active,
 .slide-left-leave-active {
   transition: transform 0.3s var(--ease-standard);
-}
-
-.slide-left-enter-from {
+}.slide-left-enter-from {
   transform: translateX(100%);
 }
 
@@ -34,11 +51,20 @@
 /* ---------- Slide Right (backward) ---------- */
 .slide-right-enter-active,
 .slide-right-leave-active {
-  transition: transform 0.3s var(--ease-standard);
+  transition: transform 0.26s var(--ease-standard);
+}
+
+/*
+ * 返程是「上面一页退下去」，不是两张整页对拉：
+ * 离场页压到上层整屏右移退出，目标页只从 -30% 补位回正（视差）。
+ * 离场页必须走满 100%，否则它在动画结束时被移除的那一下会露出错位的目标页。
+ */
+.slide-right-leave-active {
+  z-index: 1;
 }
 
 .slide-right-enter-from {
-  transform: translateX(-100%);
+  transform: translateX(-30%);
 }
 
 .slide-right-enter-to {
@@ -50,7 +76,7 @@
 }
 
 .slide-right-leave-to {
-  transform: translateX(30%);
+  transform: translateX(100%);
 }
 
 /* ---------- Fade (tab switch) ---------- */

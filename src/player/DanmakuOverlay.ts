@@ -7,7 +7,8 @@
  *   按 0.8s 窗口斜率消化（`driftDebt`），不再"冻结-猛窜"；
  * - 默认跟随 rAF 逐帧重绘（~60fps），单帧成本超限自动降回 30fps；
  * - 滚动 / 顶部 / 底部三模式；同屏密度上限 `DANMAKU_MAX_ONSCREEN`；
- * - 底部安全区（字幕区）禁显；文字入场时栅格化成位图，每帧只贴图（描边文字逐帧重绘极慢）。
+ * - 底部安全区（字幕区）禁显；文字入场时栅格化成位图，每帧只贴图（描边文字逐帧重绘极慢）；
+ * - B-04 互动：`pick()` 按点击坐标命中单条并冻结它（其余照常滚动），canvas 全程不吃指针事件。
  *
  * 设计取舍：不用 DOM 弹幕（数百节点调度易掉帧），canvas 绘制成本恒定。
  */
@@ -33,7 +34,28 @@ interface Track {
   bitmapHeight: number;
 }
 
+/** 被点中的弹幕：钉在点中瞬间的坐标上，其余条目照常滚动 */
+interface Pick {
+  track: Track;
+  x: number;
+  y: number;
+  /** 冻结时已走完的比例，解冻后按它续接，不回头也不瞬移 */
+  progress: number;
+  lifespan: number;
+}
+
+export interface DanmakuPick {
+  comment: DanmakuComment;
+  /** 条目在弹幕容器内的 CSS px 矩形（含位图留白），操作条按它定位 */
+  rect: { left: number; top: number; width: number; height: number };
+}
+
 const SCROLL_LANE_HEIGHT_RATIO = 0.12;
+/** 顶/底固定条目的驻留时长（秒） */
+const FIXED_LIFESPAN_SEC = 4;
+/** 命中框在文字矩形外放大的触控余量：弹幕才十几个像素高，按字面框点几乎点不中 */
+const HIT_PAD_X = 4;
+const HIT_MIN_HEIGHT = 32;
 /** 成本超限时的降帧闸门间隔（30fps 兜底）：实测逐帧重绘单帧均值 ~0.5ms，正常不触发 */
 const FRAME_INTERVAL_MS = 33;
 const COST_DEGRADE_MS = 8;
@@ -47,7 +69,6 @@ const DRIFT_TOLERANCE_SEC = 0.05;
 /** 超过该漂移视为 seek/换集（含前跳），清轨道重定位游标 */
 const BIG_JUMP_SEC = 2;
 
-
 export class DanmakuOverlay {
   private canvas: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
@@ -55,6 +76,7 @@ export class DanmakuOverlay {
   private comments: DanmakuComment[] = [];
   private cursor = 0;
   private tracks: Track[] = [];
+  private picked: Pick | null = null;
   private settings: DanmakuSettings;
   private getTime: () => number;
   private isPlaying: () => boolean;
@@ -113,6 +135,7 @@ export class DanmakuOverlay {
     this.canvas = null;
     this.ctx = null;
     this.tracks = [];
+    this.picked = null;
     danmakuPerf.release();
   }
 
@@ -142,6 +165,8 @@ export class DanmakuOverlay {
     if (settings.areaPercent !== prev.areaPercent || settings.safeBottomPercent !== prev.safeBottomPercent) {
       const newLanes = this.laneCount('scroll');
       this.tracks = this.tracks.filter((t) => t.comment.mode !== 'scroll' || t.lane < newLanes);
+      // 区域一改，原坐标就不可信了；冻结的条目直接放行
+      this.picked = null;
     }
     this.resize();
     this.lastDrawnTime = Number.NaN;
@@ -154,12 +179,14 @@ export class DanmakuOverlay {
     danmakuPerf.recordLoadPhase('overlay.load.sort', performance.now() - sortStart, comments.length);
     this.cursor = 0;
     this.tracks = [];
+    this.picked = null;
   }
 
   clear(): void {
     this.comments = [];
     this.cursor = 0;
     this.tracks = [];
+    this.picked = null;
     this.redraw();
   }
 
@@ -175,6 +202,7 @@ export class DanmakuOverlay {
     if (seekJump) {
       // seek/换集（前跳与回跳同等处理）：清空轨道，二分重定位游标
       this.tracks = [];
+      this.picked = null;
       this.driftDebt = 0;
       this.cursor = this.lowerBound(currentTimeSec);
     } else if (absDrift > DRIFT_TOLERANCE_SEC) {
@@ -363,39 +391,114 @@ export class DanmakuOverlay {
     return (this.canvasHeight * this.settings.safeBottomPercent) / 100;
   }
 
+  /** 滚动条目基线 y（绘制与命中框共用，避免两处公式漂移） */
+  private scrollBaselineY(lane: number): number {
+    return 20 + lane * this.canvasHeight * SCROLL_LANE_HEIGHT_RATIO + this.settings.fontSize / 2;
+  }
+
+  private fixedBaselineY(mode: 'top' | 'bottom', lane: number): number {
+    const usableH = this.canvasHeight * (this.settings.areaPercent / 100);
+    const slots = Math.max(1, Math.floor(usableH / (this.settings.fontSize + 8)));
+    const slotH = usableH / slots;
+    const center = slotH * lane + slotH / 2;
+    return mode === 'top' ? center : this.canvasHeight - this.safeBottomPx() - center;
+  }
+
+  /** 条目在媒体时间 `now` 下的绘制坐标（滚动顺带写回 `track.x`，供左缘离屏判定） */
+  private positionOf(track: Track, now: number): { x: number; y: number } {
+    if (track.comment.mode !== 'scroll') {
+      return { x: (this.canvasWidth - track.width) / 2, y: this.fixedBaselineY(track.comment.mode, track.lane) };
+    }
+    const x = this.canvasWidth - ((now - track.bornAt) / track.duration) * (this.canvasWidth + track.width);
+    track.x = x;
+    return { x, y: this.scrollBaselineY(track.lane) };
+  }
+
+  /** 驻留时长：滚动看路程，顶/底固定 4s */
+  private lifespanOf(track: Track): number {
+    return track.comment.mode === 'scroll' ? track.duration : FIXED_LIFESPAN_SEC;
+  }
+
+  /**
+   * 单击命中（B-04）：命中则把该条冻结在原地，返回原文与矩形；没命中返回 null。
+   *
+   * canvas 始终是 `pointer-events:none`——点击由手势层递进来，所以互动开关关掉时
+   * 手势链路一行都不用改。调用方（识别器）已保证只在「单击且位移 < 8px」时走到这里。
+   */
+  pick(clientX: number, clientY: number): DanmakuPick | null {
+    const canvas = this.canvas;
+    if (!canvas) return null;
+    const box = canvas.getBoundingClientRect();
+    const track = this.hitTrack(clientX - box.left, clientY - box.top);
+    if (!track) return null;
+    const now = this.currentTime();
+    const lifespan = this.lifespanOf(track);
+    // 重罚同一条：接着冻在原地，别把位置瞬移到它「本该走到」的地方
+    const same = this.picked?.track === track ? this.picked : null;
+    if (this.picked && !same) this.releasePick();
+    const pos = same ? { x: same.x, y: same.y } : this.positionOf(track, now);
+    const progress = same ? same.progress : Math.min(1, Math.max(0, (now - track.bornAt) / lifespan));
+    const pad = track.bitmapPad || HIT_PAD_X;
+    const height = track.bitmapHeight || Math.ceil(this.settings.fontSize * 1.5);
+    this.picked = { track, x: pos.x, y: pos.y, progress, lifespan };
+    return {
+      comment: track.comment,
+      rect: { left: pos.x - pad, top: pos.y - height / 2, width: track.width + pad * 2, height },
+    };
+  }
+
+  /** 解除冻结：按冻结时的比例续接时间轴，从原地继续走完剩下的路 */
+  releasePick(): void {
+    const pick = this.picked;
+    if (!pick) return;
+    this.picked = null;
+    pick.track.bornAt = this.currentTime() - pick.progress * pick.lifespan;
+  }
+
+  /** 当前被冻结的弹幕（未命中/已放行时为 null） */
+  get pickedComment(): DanmakuComment | null {
+    return this.picked?.track.comment ?? null;
+  }
+
+  /** 容器内 CSS px 坐标 → 命中的条目（后画的在上面，从尾部往前找） */
+  private hitTrack(x: number, y: number): Track | null {
+    if (x < 0 || y < 0 || x > this.canvasWidth || y > this.canvasHeight) return null;
+    const now = this.currentTime();
+    const half = Math.max(Math.ceil(this.settings.fontSize * 1.5), HIT_MIN_HEIGHT) / 2;
+    for (let i = this.tracks.length - 1; i >= 0; i -= 1) {
+      const track = this.tracks[i]!;
+      const pick = this.picked;
+      const pos = pick && pick.track === track ? { x: pick.x, y: pick.y } : this.positionOf(track, now);
+      if (x >= pos.x - HIT_PAD_X && x <= pos.x + track.width + HIT_PAD_X && y >= pos.y - half && y <= pos.y + half) {
+        return track;
+      }
+    }
+    return null;
+  }
+
   private redraw(now: number = this.getTime()): void {
     const ctx = this.ctx;
     const canvas = this.canvas;
     if (!ctx || !canvas) return;
     ctx.clearRect(0, 0, this.canvasWidth, this.canvasHeight);
-    const w = this.canvasWidth;
-    const h = this.canvasHeight;
-    const fontSize = this.settings.fontSize;
     // 同屏透明度统一设置一次，避免每条弹幕都改状态
     ctx.globalAlpha = this.settings.opacity;
 
-    const usableH = h * (this.settings.areaPercent / 100);
-    const fixedSlots = Math.max(1, Math.floor(usableH / (fontSize + 8)));
-    const slotH = usableH / fixedSlots;
-    const bottomEdge = h - this.safeBottomPx();
-
+    const pick = this.picked;
     const still: Track[] = [];
     for (const track of this.tracks) {
-      const age = now - track.bornAt;
-      if (track.comment.mode === 'scroll') {
-        if (age > track.duration || track.x + track.width < 0) continue;
-        const progress = age / track.duration;
-        const x = w - progress * (w + track.width);
-        track.x = x;
-        const y = 20 + track.lane * h * SCROLL_LANE_HEIGHT_RATIO + fontSize / 2;
-        this.drawTrack(ctx, track, x, y);
+      if (pick && pick.track === track) {
+        // 冻结期间不推进也不淘汰：点中的那一条停在原处等用户操作
+        this.drawTrack(ctx, track, pick.x, pick.y);
         still.push(track);
-      } else {
-        if (age > 4) continue;
-        const y = track.comment.mode === 'top' ? slotH * track.lane + slotH / 2 : bottomEdge - slotH * track.lane - slotH / 2;
-        this.drawTrack(ctx, track, (w - track.width) / 2, y);
-        still.push(track);
+        continue;
       }
+      const age = now - track.bornAt;
+      const scrolledOff = track.comment.mode === 'scroll' && track.x + track.width < 0;
+      if (age > this.lifespanOf(track) || scrolledOff) continue;
+      const pos = this.positionOf(track, now);
+      this.drawTrack(ctx, track, pos.x, pos.y);
+      still.push(track);
     }
     ctx.globalAlpha = 1;
     this.tracks = still;

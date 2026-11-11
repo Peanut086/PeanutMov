@@ -9,7 +9,8 @@ import SafeModeBanner from '@/components/common/SafeModeBanner.vue';
 import { useTheme } from '@/composables/useTheme';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
-import { sharedCoverActive } from '@/composables/useSharedElement';
+import { useEdgeBackSwipe } from '@/composables/useEdgeBackSwipe';
+import { finishSharedCoverRewind, sharedCoverActive } from '@/composables/useSharedElement';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { setBackFallback } from '@/native/appLifecycle';
 import { hasAllFilesAccess, readCookieFile } from '@/native/netdiskPlugin';
@@ -41,10 +42,13 @@ const showTabBar = computed(() => route.meta.requiresLayout === true);
  * 记录上一次路由的 depth，用于判断过渡方向。
  * 通过 beforeEach 在路由更新前快照来源 depth，
  * 避免 currentRoute 与 useRoute() 指向同一响应式引用导致方向判断失效（REV-01）。
+ *
+ * 注意守卫签名是 `(to, from)`：这里只取第二个参数，写成第一个就把目标深度
+ * 当成了来源深度，toDepth 与 prevDepth 恒等 → 所有导航都退化成 fade（OPT-02 失效）。
  */
 const prevDepth = ref(0);
 
-router.beforeEach((from) => {
+router.beforeEach((_to, from) => {
   prevDepth.value = (from.meta.depth ?? 0) as number;
 });
 
@@ -58,6 +62,27 @@ const transitionName = computed(() => {
   if (toDepth < from) return 'slide-right';
   return 'fade';
 });
+
+/** 目标页进场完成：返程封面此刻才真正有地方可落（未进场时是空操作） */
+function onRouteEnter(): void {
+  void finishSharedCoverRewind();
+}
+
+/*
+ * B-07：左边缘右滑返回。可拖的条件是「有上一页可回」——和返回键兜底用的是
+ * 同一个判断（history.state.back），两者不会出现一个能回一个不能回的分歧。
+ * 播放器等沉浸式页面（meta.immersive）关掉：那里的手势属于播放控制，且全屏态
+ * 下横向拖动另有含义。
+ */
+const contentRef = ref<HTMLElement | null>(null);
+
+const edgeBackEnabled = computed(() => {
+  if (route.meta.immersive === true) return false;
+  const back = router.options.history.state.back;
+  return typeof back === 'string' && back.length > 0;
+});
+
+useEdgeBackSwipe({ surface: contentRef, enabled: edgeBackEnabled });
 
 const fatal = ref<Error | null>(null);
 
@@ -186,14 +211,15 @@ function recover(): void {
     <template v-else>
       <SafeModeBanner />
       <!-- 底部 TabBar 为 fixed，由外壳统一预留空间，页面无需各自处理 -->
-      <div class="app-content" :class="{ 'app-content--tabbar': showTabBar }">
+      <div ref="contentRef" class="app-content" :class="{ 'app-content--tabbar': showTabBar }">
         <RouterView v-slot="{ Component, route: current }">
-          <Transition :name="transitionName">
+          <Transition :name="transitionName" @after-enter="onRouteEnter">
             <!-- 首页 KeepAlive（P0-4）：回 tab 不重闪骨架、不重新全量拉取；
                  搜索页 KeepAlive（CHG-28）：从详情/播放返回时保留关键词与结果，
                  不再因组件重建退回历史页（store 数据本身一直在，缺的是视图状态）；
+                 媒体库 KeepAlive：返回时列表与滚动位置原样保留，转场期间不重排、不重解码封面；
                  其余页面进出 Player/Detail 等重资源页，保持即用即毁 -->
-            <KeepAlive :include="['HomeView', 'SearchView']">
+            <KeepAlive :include="['HomeView', 'SearchView', 'LibraryView']">
               <component :is="Component" :key="current.fullPath" class="route-view" />
             </KeepAlive>
           </Transition>
@@ -218,10 +244,18 @@ function recover(): void {
 
 /* 内容容器：为 fixed 的 TabBar 预留高度，避免内容被遮挡 */
 .app-content {
+  /* 转场时旧页要绝对定位叠在新页之上（见 transitions.css），需要这个定位上下文；
+     它同时也是 B-07 边缘拖动的位移载体 */
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
+}
+
+/* 边缘返回拖动中：左缘一道投影，让浮起的那层和底下的背景分得开 */
+.app-content.edge-drag {
+  box-shadow: -14px 0 26px rgba(0, 0, 0, 0.45);
 }
 
 .app-content--tabbar {

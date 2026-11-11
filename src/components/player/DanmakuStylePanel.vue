@@ -30,6 +30,7 @@ const danmaku = computed<DanmakuSettings>(
       density: 'normal',
       filterTop: false,
       filterBottom: false,
+      interactive: true,
     },
 );
 
@@ -156,6 +157,13 @@ function updateField<K extends keyof DanmakuSettings>(key: K, value: DanmakuSett
         <div class="panel-row">
           <span>过滤底部弹幕</span>
           <ToggleSwitch :model-value="local.filterBottom" @update:model-value="updateField('filterBottom', $event)" />
+        </div>
+
+        <div class="panel-divider" />
+
+        <div class="panel-row">
+          <span>点击弹幕互动</span>
+          <ToggleSwitch :model-value="local.interactive" @update:model-value="updateField('interactive', $event)" />
         </div>
       </div>
     </div>

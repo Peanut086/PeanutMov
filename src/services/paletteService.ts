@@ -403,3 +403,14 @@ export function __resetPaletteCache(): void {
   memCache.clear();
   inflight.clear();
 }
+
+/**
+ * 在海报主色上偏移色相，派生一个「文字级可读」的强调色（详情页分段主色切换用）。
+ * 明度沿用 `deriveVars` 里文字色的同一套对比度拟合，所以不会滚到某段就出现看不清的标题。
+ */
+export function accentFor(seed: PaletteSeed, hueShift: number, bg: Rgb): string {
+  const h = (seed.h + hueShift + 360) % 360;
+  const s = Math.max(seed.s, 0.4);
+  const dark = luminance(bg) < 0.35;
+  return toHex(hslToRgb(h, s, fitLightness(h, s, dark ? 0.66 : 0.36, bg, MIN_TEXT_CONTRAST)));
+}

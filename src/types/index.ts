@@ -243,6 +243,11 @@ export interface PlaybackSource {
   expiresAt: Timestamp | null;
   /** url 是否已指向本地文件/Blob URL */
   isLocal: boolean;
+  /**
+   * A-03：本地文件相对 `Directory.Data` 的路径（`downloads/<media>/<ep>.<ext>`）。
+   * 只有 filesystem sink 有值；blob 兜底与在线源为 undefined，进度条预览据此降级。
+   */
+  localPath?: string;
   /** v1.7/CHG-21：直播流（启用 hls.js 低延迟模式与追帧） */
   isLive?: boolean;
   /** P0-7: 续播起始位置（毫秒），0 或 undefined 表示从头播放 */
@@ -564,6 +569,18 @@ export interface SubtitleSettings {
  */
 export type ResizeMode = 'contain' | 'cover' | 'fill';
 
+/**
+ * 片头/片尾区间（B-06）：按剧集（mediaId）记一次，整季复用。
+ * 边界是「秒」而不是比例——同一部剧各集时长可能不同，比例会把片尾算歪。
+ */
+export interface SkipMarks {
+  /** 片头结束时刻（秒）；null 表示未标 */
+  introEndSec: number | null;
+  /** 片尾开始时刻（秒）；null 表示未标 */
+  creditsStartSec: number | null;
+  updatedAt: number;
+}
+
 export interface PlayerSettings {
   defaultRate: PlaybackRate;
   /** 'auto' 或具体档位标签，如 '720p' */
@@ -582,6 +599,15 @@ export interface PlayerSettings {
   lastVolume: number;
   /** 画面比例模式（P1 新增） */
   resizeMode: ResizeMode;
+  /** 片头/片尾胶囊是否倒计时结束自动跳；关掉则只提示，点了才跳 */
+  autoSkipIntro: boolean;
+  /**
+   * C-09 画面氛围光开关（默认开）。
+   * 原生 ExoPlayer 引擎拿不到画面像素时会被播放器自动关掉并写回，不是用户手动关的。
+   */
+  ambilight?: boolean;
+  /** C-09 氛围光强度 0~100（默认 85）；只影响渐变峰值不透明度，不影响取样成本 */
+  ambilightIntensity?: number;
 }
 
 export interface GestureSettings {
@@ -804,6 +830,8 @@ export interface DanmakuSettings {
   filterTop: boolean;
   /** 过滤底部固定弹幕 */
   filterBottom: boolean;
+  /** 单击可命中弹幕（停住该条并出点赞/定位/复制），关闭时点击行为与现状一致 */
+  interactive: boolean;
 }
 
 export type DeepPartial<T> = {

@@ -30,6 +30,11 @@ const props = withDefaults(
     showMeta?: boolean;
     /** 关闭虚拟化（默认开启；测试与降级用） */
     virtual?: boolean;
+    /**
+     * 卡片入场动画（默认开启）。KeepAlive 页面回到前台时子树被重新插回文档，
+     * CSS 动画会整批从头重播，转场里看起来就是「先空一屏再逐张弹出来」。
+     */
+    enterAnimation?: boolean;
   }>(),
   {
     loading: false,
@@ -38,6 +43,7 @@ const props = withDefaults(
     downloadedIds: () => [],
     showMeta: true,
     virtual: true,
+    enterAnimation: true,
   },
 );
 
@@ -62,7 +68,7 @@ function isDownloaded(id: string, list: string[]): boolean {
 </script>
 
 <template>
-  <div ref="grid" class="poster-grid" role="list">
+  <div ref="grid" class="poster-grid" :class="{ 'poster-grid--no-enter': !enterAnimation }" role="list">
     <template v-if="loading && items.length === 0">
       <SkeletonPoster v-for="n in skeletonCount" :key="`sk-${n}`" />
     </template>
@@ -128,8 +134,6 @@ function isDownloaded(id: string, list: string[]): boolean {
 
 .poster-grid__cell {
   min-width: 0;
-  content-visibility: auto;
-  contain-intrinsic-size: 0 260px;
   animation: cell-enter 250ms var(--ease-decelerate) both;
   animation-delay: calc(var(--i, 0) * 40ms);
 }
@@ -143,6 +147,11 @@ function isDownloaded(id: string, list: string[]): boolean {
     opacity: 1;
     transform: none;
   }
+}
+
+/* 从详情/别的 Tab 回来：卡片保持最终态，别让整屏重播入场 */
+.poster-grid--no-enter .poster-grid__cell {
+  animation: none;
 }
 
 /*

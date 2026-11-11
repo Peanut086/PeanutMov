@@ -32,6 +32,7 @@ const danmaku = computed<DanmakuSettings>(
       density: 'normal',
       filterTop: false,
       filterBottom: false,
+      interactive: true,
     },
 );
 

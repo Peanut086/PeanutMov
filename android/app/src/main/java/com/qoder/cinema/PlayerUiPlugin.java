@@ -4,6 +4,8 @@ import android.content.Context;
 import android.media.AudioManager;
 import android.os.Build;
 import android.provider.Settings;
+import android.view.HapticFeedbackConstants;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
@@ -190,6 +192,41 @@ public class PlayerUiPlugin extends Plugin {
             ret.put("volumePercent", readVolumePercent());
             call.resolve(ret);
         });
+    }
+
+    /**
+     * 触觉反馈（A 批次·原生触觉重建）。
+     *
+     * 走 {@link View#performHapticFeedback(int, int)}：由系统按机型选马达波形，拿到的是
+     * 系统级质感，且**不需要 VIBRATE 权限**。此前前端只有 navigator.vibrate，
+     * manifest 未声明 VIBRATE、WebView 里又受 ROM 限制，11 处调用基本空转。
+     *
+     * 带 {@code FLAG_IGNORE_GLOBAL_SETTING}：本 App 有自己的「触觉反馈」开关
+     * （settingsStore.hapticEnabled），应由它做主；华为等 ROM 默认关掉系统「触摸振动」时，
+     * 不带这个标志会再次退化成静默无效。
+     */
+    @PluginMethod
+    public void haptic(PluginCall call) {
+        String mode = call.getString("mode", "light");
+        getBridge().executeOnMainThread(() -> {
+            getBridge().getWebView()
+                    .performHapticFeedback(feedbackFor(mode), HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+            call.resolve();
+        });
+    }
+
+    /**
+     * 档位 → 系统语义常量。light/medium 用 API 1 就有的常量；
+     * heavy 的 {@code CONTEXT_CLICK} 要 API 31，minSdk 29 的设备退回 LONG_PRESS。
+     */
+    private static int feedbackFor(String mode) {
+        if ("heavy".equals(mode)) {
+            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                    ? HapticFeedbackConstants.CONTEXT_CLICK
+                    : HapticFeedbackConstants.LONG_PRESS;
+        }
+        if ("medium".equals(mode)) return HapticFeedbackConstants.LONG_PRESS;
+        return HapticFeedbackConstants.VIRTUAL_KEY;
     }
 
     /**

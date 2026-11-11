@@ -264,13 +264,27 @@ async function forceSearch(): Promise<void> {
   }
 }
 
-/** P0-2：用尾词建议重新搜索（关键词过长无结果时缩短搜索） */
-function searchWithTailSuggestion(): void {
-  const tail = library.searchTailSuggestion;
-  if (!tail) return;
+/** C-12：用尾词建议立即重搜（点芯片后不该再停在空态） */
+function searchWithTail(tail: string): void {
   keyword.value = tail;
   void runSearch(tail, false);
 }
+
+/**
+ * C-12：相关度徽章。分数口径与组间排序同一个函数（4 精确 > 3 前缀 > 2 包含 > 1 分词），
+ * 所以徽章序列必然与列表顺序一致。
+ */
+const RELEVANCE_LABELS: Record<number, string> = { 4: '精确', 3: '前缀', 2: '包含', 1: '分词' };
+function relevanceScore(title: string): number {
+  return scoreRelevance(title, library.searchKeyword);
+}
+
+/** C-12：空态标题带上用户原词，让"没找到什么"没有歧义 */
+const emptyTitle = computed(() => {
+  if (zeroCandidates.value) return '没有源参与搜索';
+  const kw = library.searchKeyword.trim();
+  return kw.length > 0 ? `没找到「${kw}」` : '没有找到相关内容';
+});
 
 /* ---------- v1.7/CHG-20：范围筛选与视图切换 ---------- */
 
@@ -518,24 +532,29 @@ function openSourceManage(): void {
       <!-- 空结果 -->
       <template v-else-if="showEmpty">
         <EmptyState
-          variant="search"
-          :title="zeroCandidates ? '没有源参与搜索' : '没有找到相关内容'"
+          :variant="zeroCandidates ? 'search' : 'aperture'"
+          :title="emptyTitle"
           :description="emptyDescription"
           :action-text="zeroCandidates ? '仍要搜索全部源' : '返回'"
           @action="zeroCandidates ? forceSearch() : goBack()"
-        />
-        <!-- P0-2：尾词建议（关键词过长且无结果时，建议缩短搜索） -->
-        <button
-          v-if="library.searchTailSuggestion"
-          class="search-tail-suggestion"
-          type="button"
-          @click="searchWithTailSuggestion"
         >
-          <svg class="search-tail-suggestion__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-            <path d="M9 18l6-6-6-6" />
-          </svg>
-          试试搜索「<span class="search-tail-suggestion__keyword">{{ library.searchTailSuggestion }}</span>」
-        </button>
+          <!-- C-12：尾词建议芯片（最多 3 个；算不出就不显示） -->
+          <div v-if="library.searchTailSuggestions.length > 0" class="search-tail-chips">
+            <p class="search-tail-chips__label">换个说法试试</p>
+            <div class="search-tail-chips__row">
+              <button
+                v-for="tail in library.searchTailSuggestions"
+                :key="tail"
+                class="suggest-chip"
+                type="button"
+                @click="searchWithTail(tail)"
+              >
+                {{ tail }}
+              </button>
+            </div>
+            <p class="search-tail-chips__hint">建议来自「去掉尾字重试」——中文搜索最后一字打错概率最高</p>
+          </div>
+        </EmptyState>
         <!-- CHG-15：0 源参与时给出诊断与去路；失败明细在空结果下也要可查 -->
         <button
           v-if="zeroCandidates"
@@ -643,6 +662,7 @@ function openSourceManage(): void {
                       />
                     </span>
                     <span class="result-row__meta">
+                      <span class="relevance-tag" :data-score="relevanceScore(group.title)" aria-hidden="true">{{ RELEVANCE_LABELS[relevanceScore(group.title)] }}</span>
                       {{ groupMeta(group) }}
                       <span v-if="group.items[0]!.tags.length > 0" class="item-tags">
                         <span v-for="tag in group.items[0]!.tags.slice(0, 3)" :key="tag" class="item-tag">{{ tag }}</span>
@@ -736,6 +756,7 @@ function openSourceManage(): void {
                       />
                     </span>
                     <span class="result-row__meta">
+                      <span class="relevance-tag" :data-score="relevanceScore(item.title)" aria-hidden="true">{{ RELEVANCE_LABELS[relevanceScore(item.title)] }}</span>
                       {{ itemMeta(item) }}
                       <span v-if="item.tags.length > 0" class="item-tags">
                         <span v-for="tag in item.tags.slice(0, 3)" :key="tag" class="item-tag">{{ tag }}</span>
@@ -1354,37 +1375,59 @@ function openSourceManage(): void {
   background-color: rgba(251, 191, 36, 0.22);
 }
 
-/* P0-2：尾词建议按钮 */
-.search-tail-suggestion {
+/* C-12：空态尾词建议芯片（复用 .suggest-chip，40px + ::after 补足 44px 命中区） */
+.search-tail-chips {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
   gap: var(--space-2);
   width: 100%;
-  min-height: 44px;
-  margin-top: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  border: 1px solid rgba(59, 130, 246, 0.22);
-  background-color: rgba(59, 130, 246, 0.08);
-  color: var(--color-info);
+  margin-top: var(--space-4);
+}
+
+.search-tail-chips__label {
+  font: var(--text-label);
+  color: var(--color-text-tertiary);
+}
+
+.search-tail-chips__row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+.search-tail-chips__hint {
   font: var(--text-caption);
-  transition: var(--transition-color);
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--color-text-disabled);
 }
 
-.search-tail-suggestion__icon {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
+/* C-12：相关度徽章——档位来自 scoreRelevance，与列表排序同一个口径 */
+.relevance-tag {
+  display: inline-block;
+  margin-right: var(--space-1);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font: var(--font-weight-medium) 10px / 1.4 var(--font-family-base);
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-tertiary);
 }
 
-.search-tail-suggestion__keyword {
-  font-weight: var(--font-weight-semibold);
+.relevance-tag[data-score='4'] {
+  background-color: var(--color-success-soft);
+  color: var(--color-success);
+}
+
+.relevance-tag[data-score='3'] {
+  background-color: var(--color-info-soft);
   color: var(--color-info);
 }
 
-.search-tail-suggestion:active {
-  background-color: rgba(59, 130, 246, 0.16);
+.relevance-tag[data-score='2'] {
+  background-color: var(--color-brand-soft);
+  color: var(--color-brand-text);
 }
 
 /* OPT-04：失败源面板与上下内容的间距（面板自身样式在组件内） */

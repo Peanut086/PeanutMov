@@ -198,53 +198,67 @@ const routes: RouteRecordRaw[] = [
   },
 ];
 
+/**
+ * `[data-scroll="page"]` 是不是真正的滚动者：列表页没给它的高度设上限，内容把整页撑高，
+ * 容器自身不溢出（scrollTop 恒为 0），此时滚动发生在文档上。
+ */
+function isInnerScroller(el: HTMLElement | null): el is HTMLElement {
+  return el !== null && el.scrollHeight > el.clientHeight + 1;
+}
+
 const router = createRouter({
   // Capacitor 下 file:///本地服务用 hash 模式更稳（技术方案 2 章）
   history: createWebHashHistory(),
   routes,
   scrollBehavior(to, _from, savedPosition) {
-    // 浏览器前进/后退：savedPosition 是 window 的，对内层容器无效
-    // 尝试从 history.state 恢复（由 beforeEach leave 钩子保存）
+    // 内层容器只记录自身溢出的位置（由 beforeEach leave 钩子保存）
     const savedScrollTop = (to.meta as { scrollTop?: number })?.scrollTop
-      ?? (history.state as { scrollTop?: number })?.scrollTop;
+      ?? (history.state as { scrollTop?: number } | null)?.scrollTop;
+    const innerTop = typeof savedScrollTop === 'number' && savedScrollTop > 0 ? savedScrollTop : 0;
+    // 整页滚动位置优先用离开前自己存的，savedPosition 只作兜底
+    const savedScrollY = (history.state as { scrollY?: number } | null)?.scrollY;
+    const pageTop = Math.max(
+      typeof savedScrollY === 'number' && savedScrollY > 0 ? savedScrollY : 0,
+      typeof savedPosition?.top === 'number' && savedPosition.top > 0 ? savedPosition.top : 0,
+    );
 
-    // 使用 nextTick 等待 DOM 更新后再滚动
+    // 前进到新页：此刻旧页还没被替换，同步回顶，新页不会先停在上页的滚动位置上
+    if (innerTop === 0 && pageTop === 0) {
+      document.querySelector<HTMLElement>('[data-scroll="page"]')?.scrollTo(0, 0);
+      window.scrollTo(0, 0);
+      return false;
+    }
+
+    // 返回：等目标页（含 KeepAlive 回插）挂进文档、内容高度恢复后再定位
     return new Promise((resolve) => {
       setTimeout(() => {
         const container = document.querySelector<HTMLElement>('[data-scroll="page"]');
-        if (container) {
-          // 有内层滚动容器：优先恢复保存的位置，否则回顶
-          if (savedPosition && typeof savedPosition.top === 'number') {
-            // savedPosition 来自浏览器，但 window 不滚动，忽略
-            container.scrollTop = 0;
-          } else if (typeof savedScrollTop === 'number' && savedScrollTop > 0) {
-            container.scrollTop = savedScrollTop;
-          } else {
-            container.scrollTop = 0;
-          }
-        } else {
-          // 无内层容器（如全屏页面）：使用 window 滚动
-          if (savedPosition) {
-            resolve(savedPosition);
-            return;
-          }
+        if (isInnerScroller(container) && innerTop > 0) {
+          container.scrollTop = innerTop;
+        } else if (pageTop > 0) {
+          window.scrollTo(0, pageTop);
         }
-        resolve({ top: 0 });
-      }, 100); // 等待路由组件挂载完成
+        resolve(false);
+      }, 100);
     });
   },
 });
 
 /**
- * 保存滚动位置守卫：在路由离开前，将当前页面的 scrollTop 存入 history.state，
- * 以便返回时恢复（非 KeepAlive 页面会重新挂载，scrollTop 会归零）。
- * 只对有内层滚动容器的页面生效。
+ * 保存滚动位置守卫：在路由离开前，把当前页的滚动位置存进 history.state，
+ * 返回时恢复。这里必须存两个值：
+ * - `scrollTop`：`data-scroll="page"` 内层容器自己的溢出（真的可滚时才有）；
+ * - `scrollY`：整页滚动的位置。vue-router 自带的 savedPosition 是在 DOM 换页之后
+ *   才取的，那会儿离场页已经压进文档流把位置钳掉了，所以不信它，自己存一份。
  */
 router.beforeEach((_to) => {
-  // 只处理有 data-scroll="page" 的页面（即列表页）
   const container = document.querySelector<HTMLElement>('[data-scroll="page"]');
   if (container) {
-    const state = { ...(history.state as Record<string, unknown>), scrollTop: container.scrollTop };
+    const state = {
+      ...(history.state as Record<string, unknown>),
+      scrollTop: container.scrollTop,
+      scrollY: window.scrollY,
+    };
     try {
       history.replaceState(state, '');
     } catch {

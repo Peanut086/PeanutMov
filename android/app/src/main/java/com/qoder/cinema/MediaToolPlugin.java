@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * MediaTool 原生插件（API-17：`remuxMp4` / `cancelRemux`）
+ * MediaTool 原生插件（API-17：`remuxMp4` / `cancelRemux`；A-03：`extractFrames`）
  *
  * 定位：**薄适配层**。参数校验、路径安全、串行调度、取消注册、事件推送都在这里；
  * 真正的转封装在 {@link MediaRemuxer}（解复用 + 复用，不转码）。
@@ -53,11 +53,18 @@ public class MediaToolPlugin extends Plugin {
     private static final long DEFAULT_TIMEOUT_MS = MediaRemuxer.DEFAULT_TIMEOUT_MS;
     private static final long MAX_TIMEOUT_MS = 600_000L;
 
+    /** A-03 抽帧上限：一次拖动最多要 24 格，再多就只会让工作线程排队 */
+    private static final int MAX_FRAMES = 24;
+    private static final int MIN_FRAME_EDGE = 32;
+    private static final int MAX_FRAME_EDGE = 256;
+
     /** 进行中 + 排队中的转封装任务，key 为输入文件规范化路径 */
     private final Map<String, Job> jobs = new ConcurrentHashMap<>();
     /** 已 begin 但尚未 end 的后处理计数；插件销毁时按它把前台服务计数补齐，避免泄漏 */
     private final AtomicInteger openPostprocess = new AtomicInteger(0);
     private ExecutorService worker;
+    /** 抽帧独立线程：与转封装分离，避免后处理跑长任务时进度条预览排在其后 */
+    private ExecutorService frameWorker;
 
     // ========== 生命周期 ==========
 
@@ -68,6 +75,12 @@ public class MediaToolPlugin extends Plugin {
         worker = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "media-remux");
             thread.setPriority(Thread.NORM_PRIORITY - 1);
+            return thread;
+        });
+        // A-03：抽帧是"越小越快越好"的辅助能力，线程优先级压到最低，抢不过播放与下载
+        frameWorker = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "seek-frames");
+            thread.setPriority(Thread.MIN_PRIORITY);
             return thread;
         });
         // AC-143 / NFR 可靠性：上次进程被杀留下的 *.mp4.part 一律视为残留，启动即清理
@@ -87,6 +100,11 @@ public class MediaToolPlugin extends Plugin {
         if (worker != null) {
             worker.shutdownNow();
             worker = null;
+        }
+        if (frameWorker != null) {
+            // 中断即让 SeekFrameExtractor 在下一帧检查点退出；未 resolve 的调用由 WebView 回收
+            frameWorker.shutdownNow();
+            frameWorker = null;
         }
         // shutdownNow 会丢弃尚未开始的任务，它们的 runRemux 不会执行，
         // 因此这里兜底把后处理计数归零，避免前台服务永远停在"转封装中"
@@ -240,6 +258,83 @@ public class MediaToolPlugin extends Plugin {
             AppLog.i(TAG, "remux cancel requested task=" + safe(target.taskId) + " input=" + target.inputPath);
         }
         call.resolve(result);
+    }
+
+    // ========== A-03 进度条抽帧 ==========
+
+    /**
+     * 抽取进度条预览帧。
+     *
+     * 入参：`path`（相对 Directory.Data，必填）、`timesMs`（时间点数组，最多 24 个）、
+     * `maxEdge`（默认 128，限 32~256）、`quality`（JPEG 质量，默认 60，限 20~95）。
+     * 出参：`{ frames: [{index, timeMs, dataUrl}] }`，取不到的帧直接缺席。
+     *
+     * 只服务本地文件：远端流没有可读的容器，前端会先判断再调用；这里对在线源
+     * 一律返回空数组，让预览退回"只有时间"的气泡而不是报错。
+     */
+    @PluginMethod
+    public void extractFrames(PluginCall call) {
+        String path = trimToNull(call.getString("path"));
+        JSArray timesArg = call.getArray("timesMs");
+        if (path == null || timesArg == null || timesArg.length() == 0) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "path and timesMs required");
+            return;
+        }
+        if (timesArg.length() > MAX_FRAMES) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "timesMs exceeds " + MAX_FRAMES);
+            return;
+        }
+
+        File file;
+        try {
+            file = resolveInData(getContext().getFilesDir(), path);
+        } catch (IllegalArgumentException e) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, e.getMessage());
+            return;
+        }
+
+        final long[] timesMs = new long[timesArg.length()];
+        for (int i = 0; i < timesArg.length(); i++) {
+            timesMs[i] = Math.max(0L, timesArg.optLong(i));
+        }
+        final int maxEdge = clamp(call.getInt("maxEdge"), SeekFrameExtractor.DEFAULT_MAX_EDGE, MIN_FRAME_EDGE, MAX_FRAME_EDGE);
+        final int quality = clamp(call.getInt("quality"), SeekFrameExtractor.DEFAULT_QUALITY, 20, 95);
+
+        ExecutorService executor = frameWorker;
+        if (executor == null || executor.isShutdown()) {
+            resolveFrames(call, new SeekFrameExtractor.Frame[0]);
+            return;
+        }
+        if (!file.isFile() || file.length() <= 0) {
+            resolveFrames(call, new SeekFrameExtractor.Frame[0]);
+            return;
+        }
+
+        final File target = file;
+        try {
+            executor.execute(() -> resolveFrames(call, SeekFrameExtractor.extract(target, timesMs, maxEdge, quality)));
+        } catch (RejectedExecutionException e) {
+            resolveFrames(call, new SeekFrameExtractor.Frame[0]);
+        }
+    }
+
+    /** 抽帧回包：缺帧不报错，前端按"没有预览"降级 */
+    private void resolveFrames(PluginCall call, SeekFrameExtractor.Frame[] frames) {
+        JSObject result = new JSObject();
+        JSArray items = new JSArray();
+        for (SeekFrameExtractor.Frame frame : frames) {
+            JSObject item = new JSObject();
+            item.put("index", frame.index);
+            item.put("timeMs", frame.timeMs);
+            item.put("dataUrl", frame.dataUrl);
+            items.put(item);
+        }
+        result.put("frames", items);
+        try {
+            call.resolve(result);
+        } catch (Exception ignored) {
+            // WebView 已销毁时 resolve 会失败，忽略即可
+        }
     }
 
     // ========== 工作线程 ==========
@@ -455,6 +550,12 @@ public class MediaToolPlugin extends Plugin {
 
     private static String safe(String value) {
         return value != null ? value : "-";
+    }
+
+    /** 可选整数参数：缺失取默认，越界钳到端点（抽帧的尺寸/质量不必因为传错就失败） */
+    private static int clamp(Integer value, int fallback, int min, int max) {
+        if (value == null) return fallback;
+        return Math.min(max, Math.max(min, value));
     }
 
     /** 一次转封装的登记项（含取消位）；只在 plugin 内部流转 */

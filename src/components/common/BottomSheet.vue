@@ -6,8 +6,10 @@
  * - 遮罩点击关闭；Esc 关闭；向下拖拽 > 96px 关闭
  * - role="dialog" aria-modal，打开时焦点移入、Tab 循环困在弹层内，关闭后还原焦点（REV-10）
  *
- * 拖拽手感优化：
- * - 松手未达阈值时平滑回弹（240ms 带微过冲）
+ * 拖拽手感：
+ * - 松手未达阈值时由弹簧积分接管回弹（A-02），并把释放瞬间的速度一起带进去：
+ *   快甩先顺着一沉再收回，慢放直接贴合停靠位——不再"跟手完之后断开"
+ * - 过冲只做在下方：弹层贴着屏幕底边，往上越过停靠位会露出底部缝隙
  * - 遮罩透明度跟手（随拖拽距离渐隐）
  * - 拖拽关闭时从当前位置平滑下滑，不跳回 0
  */
@@ -15,6 +17,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import IconClose from '@/components/icons/IconClose.vue';
 import { useHaptic } from '@/composables/useHaptic';
+import { animateSpring, prefersReducedMotion } from '@/composables/useSpring';
 
 const props = withDefaults(
   defineProps<{
@@ -32,13 +35,13 @@ const { haptic } = useHaptic();
 
 const panelRef = ref<HTMLElement | null>(null);
 const dragOffset = ref(0);
-/** 是否正在回弹动画中（松手未达阈值） */
-const snapping = ref(false);
 /** 是否正在拖拽关闭动画中（达到阈值后） */
 const dragClosing = ref(false);
 let startY = 0;
 let startAt = 0;
 let dragging = false;
+/** 进行中弹簧的停止函数；再次按下或弹层卸载时必须掐掉，否则两条曲线抢同一个位移 */
+let stopSpring: (() => void) | null = null;
 /** 打开前持有焦点的元素，关闭时还原 */
 let lastFocused: HTMLElement | null = null;
 
@@ -55,13 +58,11 @@ const sheetTransform = computed(() => {
   return undefined;
 });
 
-/** 弹层 transition 样式：拖拽中无过渡，回弹/关闭时有过渡 */
-const sheetTransition = computed(() => {
-  if (dragging) return 'none';
-  if (snapping.value) return 'transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1)';
-  if (dragClosing.value) return 'transform 200ms ease-in';
-  return 'none';
-});
+/**
+ * 弹层 transition 样式：只有"甩手关闭"交给 CSS。
+ * 回弹期间 transform 由弹簧逐帧写，这里必须是 none，否则 CSS 和积分器一起抢同一条曲线。
+ */
+const sheetTransition = computed(() => (dragClosing.value ? 'transform 200ms ease-in' : 'none'));
 
 function close(): void {
   emit('update:modelValue', false);
@@ -111,8 +112,9 @@ function onKeydown(ev: KeyboardEvent): void {
 
 function onPointerDown(ev: PointerEvent): void {
   // 只从把手/标题区开始拖拽，避免与内容滚动冲突
+  stopSpring?.();
+  stopSpring = null;
   dragging = true;
-  snapping.value = false;
   dragClosing.value = false;
   startY = ev.clientY;
   startAt = Date.now();
@@ -126,6 +128,31 @@ function onPointerMove(ev: PointerEvent): void {
   dragOffset.value = Math.max(0, dy);
 }
 
+/**
+ * 未达阈值时的回弹：位移交给弹簧逐帧积分，初速度继承手指的释放速度（px/s）。
+ *
+ * clamp 卡在 0——弹层贴着屏幕底边，往上越过停靠位会在下方撕出一条缝，
+ * 所以过冲只做在下沉方向：快甩先顺着走一小段再收回来，慢放则是一次带减速的贴合。
+ */
+function springBack(from: number, velocityPxPerSec: number): void {
+  if (from < 1 || prefersReducedMotion()) {
+    dragOffset.value = 0;
+    return;
+  }
+  stopSpring = animateSpring({
+    from,
+    target: 0,
+    velocity: velocityPxPerSec,
+    clamp: (v) => Math.max(0, v),
+    onFrame: (v) => {
+      dragOffset.value = v;
+    },
+    onSettle: () => {
+      stopSpring = null;
+    },
+  });
+}
+
 function onPointerUp(ev: PointerEvent): void {
   if (!dragging) return;
   dragging = false;
@@ -134,7 +161,7 @@ function onPointerUp(ev: PointerEvent): void {
   const velocity = Math.max(0, dy) / elapsed;
 
   if (dragOffset.value > 96 || velocity > 0.5) {
-    // 达到关闭阈值：从当前位置平滑下滑关闭
+    // 达到关闭阈值：从当前位置平滑下滑
     dragClosing.value = true;
     dragOffset.value = window.innerHeight; // 滑出屏幕
     setTimeout(() => {
@@ -143,12 +170,8 @@ function onPointerUp(ev: PointerEvent): void {
       dragOffset.value = 0;
     }, 200); // 与 sheetTransition 的关闭动画时长一致
   } else if (dragOffset.value > 0) {
-    // 未达阈值：平滑回弹
-    snapping.value = true;
-    dragOffset.value = 0;
-    setTimeout(() => {
-      snapping.value = false;
-    }, 240); // 与 sheetTransition 的回弹时长一致
+    // 未达阈值：弹簧接管，阈值判定与原来完全一致
+    springBack(dragOffset.value, velocity * 1000);
   }
 }
 
@@ -165,15 +188,18 @@ watch(
       document.removeEventListener('keydown', onKeydown, true);
       lastFocused?.focus();
       lastFocused = null;
-      // 重置拖拽状态
+      // 重置拖拽状态：弹簧也一起掐掉，不让它继续往已收起的弹层上写位移
+      stopSpring?.();
+      stopSpring = null;
       dragOffset.value = 0;
-      snapping.value = false;
       dragClosing.value = false;
     }
   },
 );
 
 onBeforeUnmount(() => {
+  stopSpring?.();
+  stopSpring = null;
   document.removeEventListener('keydown', onKeydown, true);
   lastFocused?.focus();
   lastFocused = null;

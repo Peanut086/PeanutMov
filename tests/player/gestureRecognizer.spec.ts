@@ -67,7 +67,8 @@ describe('GestureRecognizer', () => {
     expect(intents).toHaveLength(0);
     vi.advanceTimersByTime(250);
     expect(intents).toHaveLength(1);
-    expect(intents[0]).toEqual({ type: 'single-tap', side: 'left' });
+    // B-04：单击要带按下点坐标（弹幕命中用它），不是松手点——手指抖动几 px 不该改变命中
+    expect(intents[0]).toEqual({ type: 'single-tap', side: 'left', x: 100, y: 300 });
   });
 
   it('250ms 内任意侧两次点击判定为双击（不要求同侧）', () => {

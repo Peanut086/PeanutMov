@@ -10,7 +10,12 @@ import type { DownloadSummary } from '@/types';
 
 import { formatBytes, formatEta, toPercent } from '@/components/common/format';
 
-const props = defineProps<{ summary: DownloadSummary; speedBps?: number }>();
+const props = defineProps<{
+  summary: DownloadSummary;
+  speedBps?: number;
+  /** C-11：一次完成一批时，只有这里庆祝一次（各任务行静默变勾） */
+  celebrate?: boolean;
+}>();
 
 const percent = computed(() => {
   if (props.summary.totalBytes <= 0) {
@@ -44,7 +49,11 @@ watch(percent, () => {
 </script>
 
 <template>
-  <section class="download-summary" aria-label="下载概览">
+  <section
+    class="download-summary"
+    :class="{ 'download-summary--celebrate': celebrate }"
+    aria-label="下载概览"
+  >
     <div class="download-summary__head">
       <span class="download-summary__count">共 {{ summary.total }} 个任务</span>
       <span class="download-summary__bytes">
@@ -90,6 +99,38 @@ watch(percent, () => {
   border-radius: var(--radius-lg);
   background-color: var(--color-bg-surface);
   border: var(--border-default);
+}
+
+/* ---------- C-11 批量完成：整批只在这里庆祝一次 ---------- */
+.download-summary--celebrate {
+  animation: summary-lift 560ms var(--ease-decelerate);
+}
+
+.download-summary--celebrate .download-summary__percent {
+  animation: summary-percent 380ms var(--ease-decelerate) 110ms both;
+}
+
+@keyframes summary-lift {
+  0% {
+    transform: scale(1);
+    border-color: var(--color-border);
+  }
+  35% {
+    transform: scale(1.006);
+    border-color: var(--color-success);
+    box-shadow: 0 4px 22px var(--color-success-soft);
+  }
+  100% {
+    transform: scale(1);
+    border-color: var(--color-border);
+  }
+}
+
+@keyframes summary-percent {
+  45% {
+    transform: scale(1.16);
+    color: var(--color-success);
+  }
 }
 
 .download-summary__head {

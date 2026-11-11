@@ -356,3 +356,25 @@ export function normalizeSearchKeyword(raw: string): string {
     .replace(/[《》「」【】\[\]（）()〈〉〝〞〟‟‟″＂]/g, '')
     .trim();
 }
+
+/**
+ * C-12：搜不到时的尾词建议（最多 3 条）。
+ *
+ * 「去掉尾字」排第一——中文搜索最后一字打错的概率最高；其余是缩短兜底。
+ * 算不出就返回空数组，不用无意义的短词硬凑到 3 个。
+ */
+export function buildTailSuggestions(rawKeyword: string): string[] {
+  const keyword = normalizeSearchKeyword(rawKeyword);
+  if (keyword.length < 3) return [];
+  const candidates = [keyword.slice(0, -1), keyword.slice(0, 2)];
+  if (keyword.length >= 5) candidates.push(keyword.slice(-3));
+  if (keyword.length >= 4) candidates.push(keyword.slice(-2));
+  const out: string[] = [];
+  for (const candidate of candidates) {
+    if (candidate.length < 2 || candidate === keyword) continue;
+    if (out.includes(candidate)) continue;
+    out.push(candidate);
+    if (out.length >= 3) break;
+  }
+  return out;
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { deriveVars, paletteForPoster, rgbToHsl, type PaletteSeed } from '@/services/paletteService';
+import { accentFor, deriveVars, paletteForPoster, rgbToHsl, type PaletteSeed } from '@/services/paletteService';
 
 /**
  * 动态取色的对比度护栏（设计规范 §9 / AC-87 同一口径）：
@@ -103,5 +103,23 @@ describe('paletteService · 角色色派生', () => {
     await expect(paletteForPoster('')).resolves.toBeNull();
     await expect(paletteForPoster('magnet:?xt=urn:btih:abc')).resolves.toBeNull();
     await expect(paletteForPoster('ftp://example.com/a.jpg')).resolves.toBeNull();
+  });
+
+  it('分段强调色偏移色相后仍是文字级可读色（C-10）', () => {
+    for (const seed of SEEDS) {
+      for (const bg of [DARK_BG, LIGHT_BG]) {
+        for (const shift of [0, 26, -22]) {
+          const hex = accentFor(seed, shift, bg);
+          expect(hex, `h=${seed.h} shift=${shift}`).toMatch(/^#[0-9a-f]{6}$/);
+          expect(contrast(hexToRgb(hex), bg), `h=${seed.h} shift=${shift} ${hex}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+  });
+
+  it('强调色真的换了色相，而不是把主色原样返回', () => {
+    const seed: PaletteSeed = { h: 200, s: 0.6, l: 0.5 };
+    const shifted = rgbToHsl(...hexToRgb(accentFor(seed, 90, DARK_BG)));
+    expect(Math.abs(shifted.h - 290)).toBeLessThan(12);
   });
 });

@@ -284,6 +284,7 @@ function defaultSettings(): AppSettings {
       },
       lastVolume: 100,
       resizeMode: 'contain',
+      autoSkipIntro: true,
     },
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
     download: { concurrency: 2, wifiOnly: false, autoResume: true, speedLimit: 'unlimited' },

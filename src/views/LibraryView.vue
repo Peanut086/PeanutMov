@@ -6,8 +6,8 @@
  * 四态：loading 骨架（Tab/工具行保持真实渲染）/ empty（三种原因分别给行动）/
  * error（已有数据保留）/ offline（缓存 + hasMore=false）。
  */
-import { computed, onMounted, ref, watch, nextTick } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { computed, onActivated, onMounted, ref, watch, nextTick } from 'vue';
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 
 import type { LibraryFilters, MediaItem } from '@/types';
 
@@ -34,6 +34,9 @@ import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { toErrorShape } from '@/shared/errors';
 
+/* 详情页返回要缓存实例（App.vue 的 KeepAlive include），名字必须显式声明 */
+defineOptions({ name: 'LibraryView' });
+
 const router = useRouter();
 const route = useRoute();
 const library = useLibraryStore();
@@ -49,6 +52,47 @@ const sourceSearchKeyword = ref('');
 const quickSheetOpen = ref(false);
 const quickItem = ref<MediaItem | null>(null);
 const refreshing = ref(false);
+
+/**
+ * 从详情页返回不能跳回顶部：`.library-body` 没有固定高度，内容把整页撑高，
+ * 真正在滚的是文档（同 useVirtualGrid 的「两种滚动来源」）。KeepAlive 只保住 DOM，
+ * 文档滚动位置离开时照样归零——所以在路由离开前记下 window.scrollY，
+ * 激活时（首帧绘制前）写回，返程转场里不会先闪一帧顶部。
+ */
+let savedScrollY = 0;
+
+/**
+ * 卡片入场动画只在「新列表」上播：KeepAlive 回插会让已有卡片整批重播
+ * （转场里看着像先空一屏再逐张弹出来），所以离开页面就关掉，
+ * 换分类（列表整体换掉）时再打开。
+ */
+const cellsEnter = ref(true);
+
+onBeforeRouteLeave(() => {
+  savedScrollY = window.scrollY;
+  cellsEnter.value = false;
+});
+
+watch(
+  () => library.currentCategoryId,
+  () => {
+    cellsEnter.value = true;
+  },
+);
+
+onActivated(() => {
+  if (savedScrollY <= 0) return;
+  applyScroll();
+  // 转场类下一帧才生效（离场页这时才真正脱流），万一这次被文档高度钳位了就再贴一次
+  requestAnimationFrame(applyScroll);
+});
+
+function applyScroll(): void {
+  window.scrollTo(0, savedScrollY);
+  // 海报墙是虚拟列表，只按上次算出的偏移渲染：位置贴回去后同步通知它重算，
+  // 不然返程第一帧只画得出占位空白（滚动事件本身是异步派发的，来不及）。
+  document.dispatchEvent(new Event('scroll'));
+}
 
 const filters = computed<LibraryFilters>(() => library.filters);
 const activeFilterCount = computed(() => {
@@ -444,6 +488,7 @@ function openSettings(): void {
         <PosterGrid
           :items="library.items"
           :downloaded-ids="downloadedIds"
+          :enter-animation="cellsEnter"
           @select="openDetail"
           @longpress="openLongPress"
         />

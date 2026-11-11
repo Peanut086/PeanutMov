@@ -7,7 +7,7 @@
  * 主按钮文案随进度变化：播放 / 继续观看 · 第 N 集 / 重新播放（AC-36/37）。
  * 记录集号已超出当前源范围时显示「看到第 N 集（已下线）」并从第 1 集开始（AC-68）。
  */
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type { Episode, MediaItem, PlayLine } from '@/types';
@@ -46,6 +46,8 @@ import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useSmartPreload } from '@/composables/useSmartPreload';
 import { useScopedPalette } from '@/composables/useScopedPalette';
+import { useScrollNarrative } from '@/composables/useScrollNarrative';
+import { accentFor, pageBackground } from '@/services/paletteService';
 import { beginSharedCover } from '@/composables/useSharedElement';
 import { toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
@@ -83,7 +85,33 @@ const item = computed<MediaItem | null>(() => detail.value?.item ?? null);
 const rootRef = ref<HTMLElement | null>(null);
 /** 共享元素转场的封面源 */
 const posterRef = ref<HTMLElement | null>(null);
-useScopedPalette(rootRef, computed(() => item.value?.posterUrl ?? null));
+const { seed: paletteSeed } = useScopedPalette(rootRef, computed(() => item.value?.posterUrl ?? null));
+
+/** C-10 滚动叙事：真正的滚动容器与头部区块 */
+const scrollEl = ref<HTMLElement | null>(null);
+const heroEl = ref<HTMLElement | null>(null);
+const { activeSection, refresh: refreshNarrative } = useScrollNarrative({
+  root: rootRef,
+  scroller: scrollEl,
+  hero: heroEl,
+});
+/**
+ * 分段主色：在海报主色上按段偏一点色相（简介→原色、选集→偏暖、声明→偏冷）。
+ * 取不到海报主色就不切换——硬凑一个 hue 会把品牌色染成和影片无关的颜色。
+ */
+const SECTION_HUE_SHIFTS = [0, 26, -22] as const;
+watch([activeSection, paletteSeed], () => {
+  const el = rootRef.value;
+  if (!el) return;
+  const seed = paletteSeed.value;
+  const shift = SECTION_HUE_SHIFTS[activeSection.value];
+  if (!seed || shift === undefined) {
+    el.style.removeProperty('--dn-accent');
+    return;
+  }
+  el.style.setProperty('--dn-accent', accentFor(seed, shift, pageBackground(el)));
+});
+watch(item, () => void nextTick(refreshNarrative));
 
 const descExpanded = ref(false);
 const pickerOpen = ref(false);
@@ -905,6 +933,11 @@ function openCompliance(): void {
       <button class="detail__nav-btn" type="button" aria-label="返回" @click="goBack">
         <IconBack :size="24" />
       </button>
+      <!-- C-10：大标题滚过头部后收进顶栏，横坐标由 --dn-nav-x 对齐到大标题 -->
+      <p class="detail__nav-title" data-narrative-nav-title aria-hidden="true">
+        {{ item?.title ?? '' }}
+      </p>
+      <span class="detail__nav-spacer" aria-hidden="true" />
       <button
         class="detail__nav-btn"
         type="button"
@@ -921,7 +954,7 @@ function openCompliance(): void {
 
     <OfflineBanner v-if="isOffline" />
 
-    <div class="detail__scroll">
+    <div ref="scrollEl" class="detail__scroll">
       <!-- loading -->
       <template v-if="loading">
         <div class="detail-skeleton">
@@ -969,12 +1002,12 @@ function openCompliance(): void {
 
       <!-- success -->
       <template v-else-if="item">
-        <section class="detail-hero">
+        <section ref="heroEl" class="detail-hero">
           <div ref="posterRef" class="detail-hero__poster">
-            <PosterImage :src="item.posterUrl" :alt="item.title" />
+            <PosterImage :src="item.posterUrl" :alt="item.title" :cover-key="item.id" />
           </div>
           <div class="detail-hero__meta">
-            <h1 class="detail-hero__title">{{ item.title }}</h1>
+            <h1 class="detail-hero__title" data-narrative-title>{{ item.title }}</h1>
             <p v-if="item.originalTitle" class="detail-hero__original">{{ item.originalTitle }}</p>
             <MediaMeta :item="item" />
             <p v-if="progressRecord" class="detail-hero__progress">
@@ -986,7 +1019,7 @@ function openCompliance(): void {
           </div>
         </section>
 
-        <section class="detail-section">
+        <section data-narrative class="detail-section">
           <h2 class="section-title">简介</h2>
           <p
             class="detail-desc prose"
@@ -1004,7 +1037,7 @@ function openCompliance(): void {
           </button>
         </section>
 
-        <section class="detail-section">
+        <section data-narrative class="detail-section">
           <div class="detail-section__head">
             <h2 class="section-title">
               选集
@@ -1073,7 +1106,7 @@ function openCompliance(): void {
           </div>
         </section>
 
-        <section class="detail-section">
+        <section data-narrative class="detail-section">
           <div class="compliance-note">
             本 App 不提供任何影视片源。你添加的源与播放内容由你自行负责，仅可用于播放你拥有版权或已获授权的内容。
             <button class="detail-compliance-link" type="button" @click="openCompliance">查看声明</button>
@@ -1210,26 +1243,57 @@ function openCompliance(): void {
      否则绝对定位的背景（含不透明的 gradient-hero 下缘）会盖住静态定位的操作按钮，
      表现为「详情页找不到下载/收藏/投屏按钮」（BUG-04 根因）。 */
   z-index: 0;
+  transform: translate3d(0, var(--dn-shift, 0px), 0);
 }
 
 .detail__backdrop-img {
-  width: 100%;
-  height: 100%;
+  /* 上下各留出 120px 余量：视差把整张图往下推时顶部不能露白 */
+  position: absolute;
+  top: -120px;
+  left: 0;
+  right: 0;
+  height: calc(100% + 120px);
   object-fit: cover;
-  filter: blur(22px) brightness(0.46) saturate(1.15);
-  transform: scale(1.12);
+  transform: scale(calc(1.08 + var(--dn-p, 0) * 0.06));
+  filter: blur(14px) brightness(0.5) saturate(1.15);
+  /* 模糊按 5 档离散切换（见 data-blur 规则），这条过渡负责把台阶抹平成"渐渐虚掉" */
+  transition: filter var(--duration-slow) var(--ease-standard);
   animation: backdrop-focus 500ms var(--ease-decelerate) both;
 }
 
+.detail[data-blur='1'] .detail__backdrop-img {
+  filter: blur(17px) brightness(0.46) saturate(1.15);
+}
+
+.detail[data-blur='2'] .detail__backdrop-img {
+  filter: blur(20px) brightness(0.42) saturate(1.15);
+}
+
+.detail[data-blur='3'] .detail__backdrop-img {
+  filter: blur(23px) brightness(0.38) saturate(1.15);
+}
+
+.detail[data-blur='4'] .detail__backdrop-img {
+  filter: blur(26px) brightness(0.34) saturate(1.15);
+}
+
+/* 入场只淡入：transform / filter 归滚动驱动管，动画再抢同一属性就会跳 */
 @keyframes backdrop-focus {
   from {
-    transform: scale(1.08);
-    filter: blur(26px) brightness(0.4) saturate(1.15);
+    opacity: 0.35;
   }
   to {
-    transform: scale(1.12);
-    filter: blur(22px) brightness(0.46) saturate(1.15);
+    opacity: 1;
   }
+}
+
+/* will-change 只在滚动进行中挂上，停下来立刻还给主线程 */
+.detail[data-narrative-live] .detail__backdrop {
+  will-change: transform;
+}
+
+.detail[data-narrative-live] .detail__backdrop-img {
+  will-change: transform, filter;
 }
 
 .detail__backdrop-fade {
@@ -1244,9 +1308,49 @@ function openCompliance(): void {
   z-index: var(--z-header);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--space-2);
   min-height: calc(var(--layout-header-height) + var(--safe-top));
   padding: var(--safe-top) var(--space-2) 0;
+}
+
+/* 玻璃底随标题一起浮现，否则滚到叙事段时顶栏还是全透的 */
+.detail__nav::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-color: var(--color-bg-base);
+  opacity: calc(var(--dn-nav, 0) * 0.86);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--color-divider);
+  pointer-events: none;
+}
+
+.detail__nav-btn {
+  flex: 0 0 auto;
+}
+
+.detail__nav-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  /* 与大标题同一根竖线落位（--dn-nav-x 由滚动叙事量出来），收进去时不横跳 */
+  margin-left: var(--dn-nav-x, 0px);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: var(--font-weight-bold) 21px / 1.25 var(--font-family-base);
+  letter-spacing: var(--letter-spacing-tight);
+  color: var(--dn-accent, var(--color-text-primary));
+  opacity: var(--dn-nav, 0);
+  transform: translateY(calc((1 - var(--dn-nav, 0)) * -6px));
+  transition: color var(--duration-slow) var(--ease-standard);
+  pointer-events: none;
+}
+
+.detail__nav-spacer {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .detail__nav-btn {
@@ -1281,6 +1385,14 @@ function openCompliance(): void {
   display: flex;
   gap: var(--space-4);
   padding-top: var(--space-2);
+  /* 标题收进顶栏：整块轻微上浮 + 缩小 + 淡出，与顶栏标题互补（不闪双标题） */
+  opacity: var(--dn-hero, 1);
+  transform: translate3d(0, calc(var(--dn-p, 0) * -18px), 0)
+    scale(calc(1 - var(--dn-p, 0) * 0.05));
+}
+
+.detail[data-narrative-live] .detail-hero {
+  will-change: transform, opacity;
 }
 
 .detail-hero__poster {
@@ -1403,6 +1515,16 @@ function openCompliance(): void {
 
 .detail-section {
   margin-top: var(--space-6);
+}
+
+/* 分段主色：当前段落标题随滚动换色。300ms 过渡是硬要求——
+   没有它，滚过段落边界的那一帧会整排标题"啪"地跳色。 */
+.detail-section .section-title {
+  transition: color var(--duration-slow) var(--ease-standard);
+}
+
+.detail-section[data-narrative-active] .section-title {
+  color: var(--dn-accent, var(--color-text-primary));
 }
 
 .detail-section__head {

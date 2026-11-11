@@ -8,7 +8,13 @@ import { computed, ref, watch } from 'vue';
 
 import { libraryService } from '@/services/libraryService';
 import { EMPTY_LIBRARY_FILTERS, markSourceFailedByError } from '@/services/libraryService';
-import { failedSourceIds, groupSearchResults, normalizeSearchKeyword, selectRepresentative } from '@/services/searchAggregate';
+import {
+  buildTailSuggestions,
+  failedSourceIds,
+  groupSearchResults,
+  normalizeSearchKeyword,
+  selectRepresentative,
+} from '@/services/searchAggregate';
 import { playabilityService } from '@/services/playabilityService';
 import { lineHealthService } from '@/services/lineHealthService';
 import { appEvents } from '@/services/events';
@@ -55,8 +61,8 @@ export const useLibraryStore = defineStore('library', () => {
   const searchFilteredOut = ref(0);
   /** SO-02：全局截止（28s）后因超时未启动搜索的源 ID */
   const searchSkippedIds = ref<string[]>([]);
-  /** P0-2：搜不到时自动建议的尾词（如"今天也是太阳雨"→"太阳雨"） */
-  const searchTailSuggestion = ref<string | null>(null);
+  /** C-12：搜不到时的尾词建议芯片（如"今天也是太阳雨"→"今天也是太阳"/"今天"/"太阳雨"） */
+  const searchTailSuggestions = ref<string[]>([]);
   /* ---------- v2.0/P0-P1：聚合检索重构 ---------- */
   /** 未去重的完整结果（分组视图的数据源） */
   const searchResultsAll = ref<MediaItem[]>([]);
@@ -422,7 +428,7 @@ export const useLibraryStore = defineStore('library', () => {
       searchResultsAll.value = [];
       searchFailed.value = [];
       searchState.value = 'idle';
-      searchTailSuggestion.value = null;
+      searchTailSuggestions.value = [];
       return;
     }
     searchState.value = 'loading';
@@ -431,7 +437,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchResultsAll.value = [];
     searchFailed.value = [];
     searchSkippedIds.value = [];
-    searchTailSuggestion.value = null;
+    searchTailSuggestions.value = [];
     try {
       const result = await libraryService.search({
         keyword: trimmed,
@@ -476,14 +482,8 @@ export const useLibraryStore = defineStore('library', () => {
 
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
 
-      // P0-2：搜不到时自动建议尾词（关键词 ≥ 5 字时取后 3 字）
-      if (searchState.value === 'empty' && trimmed.length >= 5) {
-        const tail = trimmed.slice(-3);
-        // 只有当尾词与关键词不同时才建议
-        if (tail !== trimmed) {
-          searchTailSuggestion.value = tail;
-        }
-      }
+      // C-12：搜不到时给尾词建议芯片（去掉尾字优先，最多 3 条，算不出则不显示）
+      searchTailSuggestions.value = searchState.value === 'empty' ? buildTailSuggestions(trimmed) : [];
     } catch (e) {
       if (isCanceled(e) || controller.signal.aborted) return;
       searchResultsAll.value = [];
@@ -754,7 +754,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchFilteredOut,
     searchSkippedIds,
     continueSearchSkipped,
-    searchTailSuggestion,
+    searchTailSuggestions,
     searchViewMode,
     searchScope,
     searchSelectedSourceIds,

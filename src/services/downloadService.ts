@@ -1063,8 +1063,11 @@ export const downloadService = {
       const local = await this.getLocalPlayUrl(task.id);
       const subtitles = await localSubtitlesOf(task);
       markOfflineFileInUse(task.id);
+      // A-03：抽帧只认相对 Directory.Data 的路径，blob 兜底没有文件可抽
+      const localPath = task.sink === 'filesystem' ? finalFilePathOf(task) : undefined;
       return {
         url: local.url,
+        localPath,
         // HLS 下载已把分片合并为单一 MPEG-TS 文件，按渐进式 ts 播放即可；
         // 若仍报 'hls' 会被播放器当成清单去做 m3u8 预检而失败。
         // 转封装成功后由后端把 task.format 回写为 'mp4'，此处自然呈现 mp4。
@@ -1117,8 +1120,11 @@ export const downloadService = {
       const local = await this.getLocalPlayUrl(task.id);
       const subtitles = await localSubtitlesOf(task);
       markOfflineFileInUse(task.id);
+      // A-03：抽帧只认相对 Directory.Data 的路径，blob 兜底没有文件可抽
+      const localPath = task.sink === 'filesystem' ? finalFilePathOf(task) : undefined;
       return {
         url: local.url,
+        localPath,
         format: task.format === 'hls' ? 'ts' : task.format,
         headers: {},
         subtitles,

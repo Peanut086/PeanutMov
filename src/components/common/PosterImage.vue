@@ -5,6 +5,8 @@
  * - `loading="lazy"` + `decoding="async"`，首屏外不请求（NFR-P02）
  * - 加载完成前显示骨架；失败切成占位图标（不显示破图）
  * - 容器固定 2:3 比例，CLS = 0
+ * - `coverKey` 把卡片身份写进 DOM：共享元素转场返程时不持有元素引用，
+ *   按媒体 id 重新查询当前 rect（虚拟列表会回收 DOM，引用必然是过期的）
  */
 import { computed, ref, watch } from 'vue';
 
@@ -16,8 +18,10 @@ const props = withDefaults(
     rounded?: boolean;
     /** 骨架/占位时的高宽由父级容器决定 */
     eager?: boolean;
+    /** 转场身份标识，通常是 mediaId */
+    coverKey?: string | null;
   }>(),
-  { rounded: true, eager: false },
+  { rounded: true, eager: false, coverKey: null },
 );
 
 const failed = ref(false);
@@ -36,7 +40,7 @@ const loadingAttr = computed(() => (props.eager ? 'eager' : 'lazy'));
 </script>
 
 <template>
-  <div class="poster-image" :class="{ 'poster-image--rounded': rounded }">
+  <div class="poster-image" :class="{ 'poster-image--rounded': rounded }" :data-cover-key="coverKey || undefined">
     <div v-if="!loaded && !showPlaceholder" class="skeleton poster-image__skeleton" aria-hidden="true" />
 
     <img

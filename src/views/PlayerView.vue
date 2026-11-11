@@ -43,6 +43,8 @@ import SubtitleTrackMenu from '@/components/player/SubtitleTrackMenu.vue';
 import AudioTrackMenu from '@/components/player/AudioTrackMenu.vue';
 import QualitySheet from '@/components/player/QualitySheet.vue';
 import DisplayModeSheet from '@/components/player/DisplayModeSheet.vue';
+import SkipIntroPrompt from '@/components/player/SkipIntroPrompt.vue';
+import SkipMarkSheet from '@/components/player/SkipMarkSheet.vue';
 import PlayerErrorPanel from '@/components/player/PlayerErrorPanel.vue';
 import NextEpisodePrompt from '@/components/player/NextEpisodePrompt.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
@@ -60,16 +62,24 @@ import { useSourceStore } from '@/stores/sourceStore';
 import { castService } from '@/services/castService';
 import { lineHealthService, lineKey } from '@/services/lineHealthService';
 import { rankLines } from '@/services/lineRanking';
+import { skipMarkService } from '@/services/skipMarkService';
 import { useBackButton } from '@/composables/useBackButton';
 import { usePlayerController } from '@/composables/usePlayerController';
+import { useSeekThumbnails } from '@/composables/useSeekThumbnails';
+import { useSkipIntro } from '@/composables/useSkipIntro';
+import { useDanmakuPick } from '@/composables/useDanmakuPick';
+import { prefersReducedMotion } from '@/composables/useSpring';
+import type { AmbilightBlockReason } from '@/composables/useAmbilight';
 import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
 import { DanmakuOverlay } from '@/player/DanmakuOverlay';
+import type { GestureIntent } from '@/player/GestureRecognizer';
 import { danmakuService } from '@/services/danmakuService';
 import DanmakuSettingsSheet from '@/components/player/DanmakuSettingsSheet.vue';
 import DanmakuStylePanel from '@/components/player/DanmakuStylePanel.vue';
+import DanmakuActions from '@/components/player/DanmakuActions.vue';
 import { useToast } from '@/composables/useToast';
 import { useScopedPalette } from '@/composables/useScopedPalette';
-import { finishSharedCover } from '@/composables/useSharedElement';
+import { finishSharedCover, rewindSharedCover } from '@/composables/useSharedElement';
 import { useUiStore } from '@/stores/uiStore';
 import { QUALITY_AUTO, VOLUME_STEP } from '@/player/constants';
 import { BRIGHTNESS_MAX } from '@/player/brightness';
@@ -263,6 +273,9 @@ const PLAYER_FALLBACK: PlayerSettings = {
   },
   lastVolume: 100,
   resizeMode: 'contain',
+  autoSkipIntro: true,
+  ambilight: true,
+  ambilightIntensity: 85,
 };
 const GESTURE_FALLBACK: GestureSettings = { sensitivity: 'medium', seekMaxSec: 90 };
 
@@ -283,6 +296,11 @@ const subtitleSettings = computed<SubtitleSettings>(
   () => playerSettings.value.subtitle ?? PLAYER_FALLBACK.subtitle,
 );
 const currentResizeMode = computed(() => playerSettings.value.resizeMode ?? 'contain');
+/** C-09 氛围光：减少动效下整层不挂载（不是"变慢一点"，是不做持续变化的效果） */
+const ambilightEnabled = computed(
+  () => playerSettings.value.ambilight !== false && !prefersReducedMotion(),
+);
+const ambilightIntensity = computed(() => playerSettings.value.ambilightIntensity ?? 85);
 
 const stageRef = ref<HTMLElement | null>(null);
 
@@ -475,10 +493,120 @@ watch(
 const castSupported = ref<boolean | null>(null);
 /** 最近一次解析出的播放源（投屏/分享用，避免再次解析触发网络请求） */
 const currentPlayback = ref<PlaybackSource | null>(null);
-/** 线路切换进行中（防连点造成两次并发加载，REV-05） */
-const switchingLine = ref(false);
+
+/* ---------- A-03 进度条胶片预览 ---------- */
 
 /**
+ * 松手后主画面预览的最长保持时间。
+ *
+ * 引擎定位通常远快于这个值，到位即撤（见下方 watch）；上限只是兜底——
+ * 万一 seek 失败或被更长的加载挡住，不能让一张静态帧永远盖在画面上。
+ */
+const SEEK_PREVIEW_MAX_HOLD_MS = 1200;
+
+const seekThumbs = useSeekThumbnails(
+  () => currentPlayback.value,
+  () => player.duration,
+);
+
+/** 叠在主画面上的目标画面：拖动中跟随手指，松手后留到引擎真的到位再撤 */
+const seekPreviewUrl = ref<string | null>(null);
+/** 进度条上的胶片（模板里直接用，顶层 ref 会自动解包） */
+const seekFilm = seekThumbs.slots;
+/** 松手后的收口锚点：null 表示当前还在拖，不做到位判断 */
+let previewHoldSec: number | null = null;
+let previewHoldTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearSeekPreview(): void {
+  if (previewHoldTimer !== null) {
+    clearTimeout(previewHoldTimer);
+    previewHoldTimer = null;
+  }
+  previewHoldSec = null;
+  seekPreviewUrl.value = null;
+}
+
+/** 拖动过程中：整条胶片后台补齐，主画面切到手指所在格 */
+function onSeekPreview(sec: number): void {
+  seekThumbs.prepare();
+  player.patch({ currentTime: sec });
+  const url = seekThumbs.frameAt(sec);
+  // 取不到就不动：留旧帧只是稍晚一点，撤掉图层会直接露出正在定位的黑画面
+  if (url !== null) {
+    if (previewHoldTimer !== null) {
+      clearTimeout(previewHoldTimer);
+      previewHoldTimer = null;
+    }
+    previewHoldSec = null;
+    seekPreviewUrl.value = url;
+  }
+}
+
+/** 松手提交：真正 seek，并把预览层多留一会儿，避免"闪一下黑" */
+function onSeekCommit(sec: number): void {
+  void seek(sec);
+  if (seekPreviewUrl.value === null) return;
+  previewHoldSec = sec;
+  if (previewHoldTimer !== null) clearTimeout(previewHoldTimer);
+  previewHoldTimer = setTimeout(clearSeekPreview, SEEK_PREVIEW_MAX_HOLD_MS);
+}
+
+watch(
+  () => player.currentTime,
+  (sec) => {
+    if (previewHoldSec === null) return;
+    // 引擎报回的位置进入目标 ±2s，说明画面已经对了
+    if (Math.abs(sec - previewHoldSec) <= 2) clearSeekPreview();
+  },
+);
+
+/* ---------- 跳过片头 / 片尾（B-06） ---------- */
+
+const skipMarkOpen = ref(false);
+/** 提示记录要按「正在播的这一集」算；换集参数没变时退回当前集对象 */
+const playingEpisodeId = computed(() => currentEpisode.value?.id ?? episodeIdParam.value ?? '');
+
+const skipIntro = useSkipIntro({
+  mediaId,
+  episodeId: playingEpisodeId,
+  currentTime: computed(() => player.currentTime),
+  duration: computed(() => player.duration),
+  autoSkip: computed(() => playerSettings.value.autoSkipIntro),
+  seek: (sec) => void seek(sec),
+});
+// 嵌套 ref 在模板里不会自动解包，摊平成顶层绑定再喂给控件
+const skipMarks = skipIntro.marks;
+const skipZone = skipIntro.zone;
+const skipCountdown = skipIntro.countdown;
+const skipAuto = skipIntro.auto;
+
+/**
+ * 手动标记一次。
+ * 源站返回体里没有章节载体（TVBox/爬虫都没有），所以现阶段只吃手动标记；
+ * 将来有源站数据时在这里合并优先级，手动标记仍然最可信赖。
+ */
+async function onSkipMark(side: 'intro' | 'credits', sec: number): Promise<void> {
+  const label = side === 'intro' ? '片头结束于' : '片尾开始于';
+  const ok =
+    side === 'intro'
+      ? await skipMarkService.markIntroEnd(mediaId.value, sec, player.duration)
+      : await skipMarkService.markCreditsStart(mediaId.value, sec, player.duration);
+  if (ok) toast.success(`${label} ${formatClock(sec)}，整季生效`);
+  else toast.error('这个位置离片头/片尾太近，标了也不会跳');
+}
+
+async function onSkipClear(side: 'intro' | 'credits'): Promise<void> {
+  await skipMarkService.clearSide(mediaId.value, side);
+}
+
+function onAutoSkipChange(value: boolean): void {
+  void settings.update({
+    player: { ...playerSettings.value, autoSkipIntro: value },
+  });
+}
+
+/** 线路切换进行中（防连点造成两次并发加载，REV-05） */
+const switchingLine = ref(false);/**
  * 「本地文件不可用」任务（AC-78 / REV-23）。
  *
  * `resolvePlay` 优先本地播放；若该集已有 `completed` 任务但解析结果仍是网络源，
@@ -968,6 +1096,7 @@ watch(
 
 onBeforeUnmount(() => {
   cancelAutoNext();
+  clearSeekPreview();
   // 页面存活守卫：卸载后作废所有在飞异步链，防止后台链路劫持路由/覆盖全局状态
   pageAlive = false;
   ++loadEpoch;
@@ -980,6 +1109,9 @@ onBeforeUnmount(() => {
     },
   });
 });
+
+/** 换源（切集/切线路）等于换了一部片子：预览层与保持计时都不该留在新画面上 */
+watch(() => currentPlayback.value, clearSeekPreview);
 
 /* ---------- 标题/集标签 ---------- */
 const titleText = computed(() => fallbackTitle.value);
@@ -1007,6 +1139,8 @@ function goBack(): void {
     return;
   }
   void playerCtl.controller.value?.flushProgress();
+  // 封面飞回入口卡片：必须在导航发起前立浮层，App.vue 才会把滑入换成淡入
+  rewindSharedCover(stageRef.value, mediaId.value, item.value?.posterUrl ?? null);
   if (globalThis.history.length > 1) router.back();
   else void router.replace({ name: 'detail', params: { mediaId: mediaId.value } });
 }
@@ -1552,6 +1686,30 @@ function onDisplayModeSelect(mode: ResizeMode): void {
   void settings.update({ player: { ...playerSettings.value, resizeMode: mode } });
 }
 
+function setAmbilight(on: boolean): void {
+  void settings.update({ player: { ...playerSettings.value, ambilight: on } });
+}
+
+function setAmbilightIntensity(value: number): void {
+  void settings.update({ player: { ...playerSettings.value, ambilightIntensity: value } });
+}
+
+/**
+ * 取不到画面帧时把开关落回关闭并说明原因。
+ * 这是**能力**问题（原生引擎没有 DOM 视频元素 / 画布被跨域污染），不是抖动，
+ * 所以直接持久化，避免每次进播放页都白跑一遍取样定时器。
+ */
+function onAmbilightBlocked(reason: AmbilightBlockReason): void {
+  if (reason === 'reduced-motion') return;
+  setAmbilight(false);
+  toast.info(
+    reason === 'no-video'
+      ? '原生引擎取不到画面像素，氛围光已自动关闭'
+      : '画面像素不可读取（源站未开放跨域），氛围光已自动关闭',
+    2600,
+  );
+}
+
 /**
  * 选集：只改路由，加载由 `episodeId` watcher 唯一入口负责（REV-28）。
  * 之前这里与 watcher 各调一次 `resolveAndLoad()`，一次切集会发两遍清单请求，
@@ -1612,6 +1770,7 @@ const danmakuSettings = computed(
       density: 'normal' as const,
       filterTop: false,
       filterBottom: false,
+      interactive: true,
     },
 );
 
@@ -1888,6 +2047,46 @@ watch(
   () => currentEpisode.value?.id,
   () => void loadDanmaku(),
 );
+
+/* ---------- B-04：点中弹幕 → 冻结它 + 头顶出操作条 ---------- */
+
+const danmakuInteractive = computed(() => danmakuSettings.value.enabled && danmakuSettings.value.interactive);
+
+const danmakuPick = useDanmakuPick({
+  overlay: danmakuOverlay,
+  enabled: danmakuInteractive,
+  mediaId,
+  episodeNumber: computed(() => currentEpisode.value?.number ?? null),
+  seek: (sec) => void seek(sec),
+  copy: (text) => void copyDanmakuText(text),
+});
+
+// 模板只自动解包顶层 ref，嵌套在对象里的要摊平出来
+const danmakuPicked = danmakuPick.pick;
+const danmakuLiked = danmakuPick.liked;
+const danmakuLikeCount = danmakuPick.likeCount;
+
+async function copyDanmakuText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard?.writeText(text);
+    toast.success('已复制弹幕');
+  } catch {
+    toast.info(text);
+  }
+}
+
+function onDanmakuLike(): void {
+  void danmakuPick.toggleLike();
+}
+
+/**
+ * 单击先问弹幕：点中了就吞掉这次单击（不再开关控制条，否则 HUD 会盖在操作条上），
+ * 没点中则一切照旧——互动开关关掉时 `tapAt` 直接返回 false，链路与升级前完全一致。
+ */
+function onStageIntent(intent: GestureIntent): void {
+  if (intent.type === 'single-tap' && danmakuPick.tapAt(intent.x, intent.y)) return;
+  onGesture(intent);
+}
 
 onBeforeUnmount(() => {
   if (danmakuRafId) {
@@ -2193,12 +2392,43 @@ onBeforeUnmount(() => {
           :brightness="player.brightness"
           :mask="player.levelSource === 'app'"
           :immersive="immersive"
+          :ambilight-enabled="ambilightEnabled && !engineIsNative && !pipActive"
+          :ambilight-intensity="ambilightIntensity"
+          @ambilight-blocked="onAmbilightBlocked"
         >
+          <!-- A-03：拖动进度时把目标帧垫在主画面位置，引擎到位后撤掉 -->
+          <div v-if="seekPreviewUrl && !pipActive" class="seek-preview" aria-hidden="true">
+            <img :src="seekPreviewUrl" alt="" draggable="false" />
+          </div>
+
+          <!-- B-06：播放头进入片头/片尾区时出胶囊；右下角让给连播提示时不出 -->
+          <SkipIntroPrompt
+            v-if="skipZone && !pipActive && countdown === null"
+            :zone="skipZone"
+            :countdown="skipCountdown"
+            :total="skipIntro.total"
+            :auto="skipAuto"
+            @skip="skipIntro.skip"
+            @dismiss="skipIntro.dismiss"
+          />
+
+          <!-- B-04：点中弹幕后浮在它头顶的操作条（canvas 不吃指针，靠手势层递坐标） -->
+          <DanmakuActions
+            v-if="danmakuPicked"
+            :pick="danmakuPicked"
+            :liked="danmakuLiked"
+            :like-count="danmakuLikeCount"
+            @like="onDanmakuLike"
+            @copy="danmakuPick.copyText"
+            @locate="danmakuPick.locate"
+            @close="danmakuPick.close"
+          />
+
           <GestureLayer
             v-if="!pageLoading && !loadError && !player.error"
             :seek-max-sec="gestureSettings.seekMaxSec"
             :sensitivity="gestureSettings.sensitivity"
-            @intent="onGesture"
+            @intent="onStageIntent"
             @pointer-down="onGesturePointerDown"
             @long-press-help="showGestureHelp"
           />
@@ -2242,12 +2472,14 @@ onBeforeUnmount(() => {
             :seek-step="playerSettings.seekStepSec"
             :pip-supported="pipSupported"
             :pip-active="pipActive"
+            :film="seekFilm"
+            :marks="skipMarks"
             @back="goBack"
             @toggle-play="togglePlay"
             @prev="goToPrevEpisode"
             @next="goToNextEpisode"
-            @seek="seek"
-            @seeking="player.patch({ currentTime: $event })"
+            @seek="onSeekCommit"
+            @seeking="onSeekPreview"
             @open-speed="speedOpen = true"
             @open-subtitle="openSubtitlePanel"
             @open-quality="qualityOpen = true"
@@ -2533,6 +2765,16 @@ onBeforeUnmount(() => {
     <!-- 面板 -->
     <SpeedSheet v-model="speedOpen" :rate="player.rate" @select="setRate" />
     <DanmakuSettingsSheet v-model:open="danmakuOpen" />
+    <SkipMarkSheet
+      v-model="skipMarkOpen"
+      :marks="skipMarks"
+      :current-time="player.currentTime"
+      :duration="player.duration"
+      :auto-skip="skipAuto"
+      @mark="onSkipMark"
+      @clear="onSkipClear"
+      @update:auto-skip="onAutoSkipChange"
+    />
     <SubtitleSheet
       v-model="subtitleOpen"
       :tracks="player.subtitles"
@@ -2553,7 +2795,11 @@ onBeforeUnmount(() => {
     <DisplayModeSheet
       v-model="displayModeOpen"
       :mode="currentResizeMode"
+      :ambilight="playerSettings.ambilight !== false"
+      :ambilight-intensity="ambilightIntensity"
       @select="onDisplayModeSelect"
+      @set-ambilight="setAmbilight"
+      @set-ambilight-intensity="setAmbilightIntensity"
     />
 
     <BottomSheet v-model="episodeOpen" title="选集">
@@ -2568,6 +2814,7 @@ onBeforeUnmount(() => {
       <ul class="sheet-list">
         <li><button class="sheet-list__item" type="button" @click="openDetail">查看详情</button></li>
         <li><button class="sheet-list__item" type="button" @click="pickerOpen = true">下载本集</button></li>
+        <li><button class="sheet-list__item" type="button" @click="skipMarkOpen = true">片头 / 片尾标记</button></li>
       </ul>
     </BottomSheet>
 
@@ -2625,6 +2872,26 @@ onBeforeUnmount(() => {
   aspect-ratio: 16 / 9;
   flex: 0 0 auto;
   background-color: #000;
+}
+
+/*
+ * A-03 拖动预览帧：铺在视频容器的位置上，用同样的 contain 留黑边，
+ * 这样松手撤层时画面尺寸和位置都不变，只有一次内容替换。
+ */
+.seek-preview {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #000;
+  pointer-events: none;
+}
+
+.seek-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 .player-root--landscape {

@@ -66,8 +66,12 @@ const props = withDefaults(
     pipSupported?: boolean;
     /** OPT-06：是否已处于画中画状态 */
     pipActive?: boolean;
+    /** A-03：进度条胶片预览的缩略图（下标即格号，null = 未就绪） */
+    film?: (string | null)[] | null;
+    /** B-06：片头/片尾区间标记（秒），null 时进度条不画分段 */
+    marks?: { introEndSec: number | null; creditsStartSec: number | null } | null;
   }>(),
-  { downloading: false, castDisabled: false, immersive: false, compact: false, danmakuEnabled: false, seekStep: 10, pipSupported: false, pipActive: false },
+  { downloading: false, castDisabled: false, immersive: false, compact: false, danmakuEnabled: false, seekStep: 10, pipSupported: false, pipActive: false, film: null, marks: null },
 );
 
 const emit = defineEmits<{
@@ -184,6 +188,8 @@ const miniBuffered = computed(() =>
         :disabled="waiting && duration === 0"
         :inline="compact || immersive"
         :seek-step="seekStep"
+        :film="film"
+        :marks="marks"
         @seek="emit('seek', $event)"
         @seeking="emit('seeking', $event)"
       />

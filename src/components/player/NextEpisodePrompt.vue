@@ -6,6 +6,9 @@
  * - `mode="auto-next"`：播放结束后的倒计时「即将播放第 N 集」+ 取消
  * - `mode="resume"`：切后台回来后「已暂停」+ 继续播放 / 退出
  */
+import CountdownRing from '@/components/common/CountdownRing.vue';
+import { AUTO_NEXT_COUNTDOWN_SEC } from '@/player/constants';
+
 withDefaults(
   defineProps<{
     mode: 'auto-next' | 'resume';
@@ -32,22 +35,7 @@ const emit = defineEmits<{
           <span class="next-prompt__count">{{ countdown }}</span>
         </p>
         <div class="next-prompt__ring" aria-hidden="true">
-          <svg viewBox="0 0 36 36">
-            <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="3" />
-            <circle
-              cx="18"
-              cy="18"
-              r="15"
-              fill="none"
-              stroke="var(--color-brand)"
-              stroke-width="3"
-              stroke-linecap="round"
-              :stroke-dasharray="94.2"
-              :stroke-dashoffset="94.2 - (94.2 * countdown) / 3"
-              transform="rotate(-90 18 18)"
-              class="next-prompt__ring-fill"
-            />
-          </svg>
+          <CountdownRing :countdown="countdown" :total="AUTO_NEXT_COUNTDOWN_SEC" />
         </div>
         <div class="next-prompt__actions">
           <button class="btn btn--primary btn--sm" type="button" @click="emit('confirm')">
@@ -123,10 +111,6 @@ const emit = defineEmits<{
   right: var(--space-3);
   width: 36px;
   height: 36px;
-}
-
-.next-prompt__ring-fill {
-  transition: stroke-dashoffset 1s linear;
 }
 
 .next-prompt__actions {

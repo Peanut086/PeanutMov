@@ -105,6 +105,7 @@ const PLAYER_FALLBACK: PlayerSettings = {
   },
   lastVolume: 100,
   resizeMode: 'contain',
+  autoSkipIntro: true,
 };
 const GESTURE_FALLBACK: GestureSettings = { sensitivity: 'medium', seekMaxSec: 90 };
 
@@ -135,6 +136,7 @@ const sensitivityLabel = computed(() => {
 
 const rateLabel = computed(() => `${(settings.settings?.player.defaultRate ?? 1).toFixed(2).replace(/0$/, '')}x`);
 const autoPlayNext = computed(() => settings.settings?.player.autoPlayNext ?? true);
+const autoSkipIntro = computed(() => playerSettings.value.autoSkipIntro);
 const displayModeLabel = computed(() => {
   const mode = settings.settings?.player.resizeMode ?? 'contain';
   switch (mode) {
@@ -259,6 +261,10 @@ async function setDisplayMode(mode: ResizeMode): Promise<void> {
 
 async function setAutoPlayNext(value: boolean): Promise<void> {
   await update({ player: { ...playerSettings.value, autoPlayNext: value } });
+}
+
+async function setAutoSkipIntro(value: boolean): Promise<void> {
+  await update({ player: { ...playerSettings.value, autoSkipIntro: value } });
 }
 
 async function setSeekStepSec(value: number): Promise<void> {
@@ -587,6 +593,12 @@ async function exportLogs(): Promise<void> {
             label="自动连播下一集"
             :switch-value="autoPlayNext"
             @update:switch-value="setAutoPlayNext"
+          />
+          <SettingsRow
+            label="自动跳过片头/片尾"
+            description="关掉后只出提示胶囊，点了才跳"
+            :switch-value="autoSkipIntro"
+            @update:switch-value="setAutoSkipIntro"
           />
           <SettingsRow label="手势灵敏度" :value="sensitivityLabel" chevron @click="sensitivityOpen = true" />
           <SettingsRow label="手势说明" description="查看播放页手势操作指引" chevron @click="showGestureGuide" />

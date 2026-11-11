@@ -4,6 +4,8 @@ import {
   beginSharedCover,
   cancelSharedCover,
   finishSharedCover,
+  finishSharedCoverRewind,
+  rewindSharedCover,
   sharedCoverActive,
 } from '@/composables/useSharedElement';
 
@@ -126,5 +128,207 @@ describe('useSharedElement · 封面共享元素转场', () => {
     expect(img.style.visibility).toBe('');
     expect(sharedCoverActive.value).toBe(false);
     vi.useRealTimers();
+  });
+});
+
+/* ---------- 返程：舞台 → 原卡片 ---------- */
+
+function rectBox(top: number, left: number, width: number, height: number): () => DOMRect {
+  return () =>
+    ({
+      top,
+      left,
+      width,
+      height,
+      right: left + width,
+      bottom: top + height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+}
+
+/** 入口卡片：带 data-cover-key，返程时靠它重新定位（不持有元素引用） */
+function mountCard(key: string, top = 300, loaded = true): { host: HTMLElement; img: HTMLImageElement } {
+  const host = document.createElement('div');
+  host.className = 'poster-image';
+  host.setAttribute('data-cover-key', key);
+  host.style.borderRadius = '14px';
+  const img = document.createElement('img');
+  img.src = 'https://cdn.example.com/poster.jpg';
+  Object.defineProperty(img, 'complete', { value: loaded, configurable: true });
+  Object.defineProperty(img, 'naturalWidth', { value: loaded ? 300 : 0, configurable: true });
+  img.getBoundingClientRect = rectBox(top, 24, 96, 144);
+  host.appendChild(img);
+  document.body.appendChild(host);
+  return { host, img };
+}
+
+function mountStage(): HTMLDivElement {
+  const stage = document.createElement('div');
+  stage.getBoundingClientRect = rectBox(60, 0, 360, 202);
+  document.body.appendChild(stage);
+  return stage;
+}
+
+function lastOverlay(): { overlay: HTMLElement; clone: HTMLImageElement } {
+  const overlay = document.body.lastElementChild as HTMLElement;
+  return { overlay, clone: overlay.querySelector('img') as HTMLImageElement };
+}
+
+/** 记录 animate 收到的关键帧，替代 happy-dom 缺失的 WAAPI */
+function spyAnimate(el: HTMLElement): (Keyframe[] | undefined)[] {
+  const calls: (Keyframe[] | undefined)[] = [];
+  el.animate = ((frames: Keyframe[]) => {
+    calls.push(frames);
+    return { finished: Promise.resolve() } as unknown as Animation;
+  }) as HTMLElement['animate'];
+  return calls;
+}
+
+describe('useSharedElement · 返回反向共享元素', () => {
+  beforeEach(() => {
+    // 横向可见性判定要用到 clientWidth，happy-dom 同样恒为 0
+    Object.defineProperty(document.documentElement, 'clientWidth', { value: 360, configurable: true });
+  });
+
+  it('返回前立浮层，进场后收回卡片当前位置并交回真图', async () => {
+    const card = mountCard('src1:item1', 300);
+    const stage = mountStage();
+
+    rewindSharedCover(stage, 'src1:item1', 'https://cdn.example.com/poster.jpg');
+    expect(sharedCoverActive.value).toBe(true);
+    expect(overlayCount()).toBe(1);
+
+    const { overlay, clone } = lastOverlay();
+    const calls = spyAnimate(clone);
+    await finishSharedCoverRewind();
+
+    expect(calls).toHaveLength(1);
+    const frames = calls[0]!;
+    expect(frames[0]).toMatchObject({ top: '60px', width: '360px' });
+    expect(frames[1]).toMatchObject({ top: '300px', left: '24px', width: '96px', height: '144px' });
+    expect(document.body.contains(overlay)).toBe(false);
+    expect(sharedCoverActive.value).toBe(false);
+    // 卡片图只是临时隐身，收尾必须原样还回去
+    expect(card.img.style.visibility).toBe('');
+  });
+
+  it('卡片随列表滚动换位时，落点是当前位置而不是原始位置', async () => {
+    const card = mountCard('m1', 620);
+    const stage = mountStage();
+    rewindSharedCover(stage, 'm1', 'https://cdn.example.com/poster.jpg');
+
+    const { clone } = lastOverlay();
+    const calls = spyAnimate(clone);
+    card.img.getBoundingClientRect = rectBox(620, 24, 96, 144);
+    await finishSharedCoverRewind();
+
+    expect(calls[0]![1]).toMatchObject({ top: '620px' });
+  });
+
+  it('目标页没有出现时原地撤层，不飞错位图', async () => {
+    const stage = mountStage();
+    rewindSharedCover(stage, 'gone', 'https://cdn.example.com/poster.jpg');
+    const { overlay, clone } = lastOverlay();
+    const calls = spyAnimate(clone);
+
+    await finishSharedCoverRewind();
+
+    expect(calls).toHaveLength(0);
+    expect(document.body.contains(overlay)).toBe(false);
+    expect(sharedCoverActive.value).toBe(false);
+  });
+
+  it('卡片被虚拟列表回收（无 data-cover-key）时同样只撤层', async () => {
+    mountCard('other', 300);
+    const stage = mountStage();
+    rewindSharedCover(stage, 'm1', 'https://cdn.example.com/poster.jpg');
+
+    const { clone } = lastOverlay();
+    const calls = spyAnimate(clone);
+    await finishSharedCoverRewind();
+
+    expect(calls).toHaveLength(0);
+    expect(sharedCoverActive.value).toBe(false);
+  });
+
+  it('卡片已滚出视口时不飞过去', async () => {
+    // 视口 800px：top=5200 在屏幕下方，飞行目标无意义
+    mountCard('m1', 5200);
+    const stage = mountStage();
+    rewindSharedCover(stage, 'm1', 'https://cdn.example.com/poster.jpg');
+
+    const { overlay, clone } = lastOverlay();
+    const calls = spyAnimate(clone);
+    await finishSharedCoverRewind();
+
+    expect(calls).toHaveLength(0);
+    expect(document.body.contains(overlay)).toBe(false);
+  });
+
+  it('详情页刚重建、海报还没解码完时等到就绪再飞', async () => {
+    const card = mountCard('m1', 300, false);
+    const stage = mountStage();
+    rewindSharedCover(stage, 'm1', 'https://cdn.example.com/poster.jpg');
+    const { clone } = lastOverlay();
+    const calls = spyAnimate(clone);
+
+    setTimeout(() => {
+      Object.defineProperty(card.img, 'complete', { value: true, configurable: true });
+      Object.defineProperty(card.img, 'naturalWidth', { value: 300, configurable: true });
+    }, 60);
+
+    await finishSharedCoverRewind();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![1]).toMatchObject({ top: '300px' });
+    expect(card.img.style.visibility).toBe('');
+  });
+
+  it('没有海报或没有封面 id 时不建浮层（返回行为与现状一致）', () => {
+    const stage = mountStage();
+    rewindSharedCover(stage, null, 'https://cdn.example.com/poster.jpg');
+    rewindSharedCover(stage, 'm1', null);
+    expect(overlayCount()).toBe(0);
+    expect(sharedCoverActive.value).toBe(false);
+  });
+
+  it('系统关闭动效时返程整体静默', () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) => ({ matches: query.includes('reduced-motion'), media: query } as MediaQueryList),
+    );
+    mountCard('m1');
+    const stage = mountStage();
+    rewindSharedCover(stage, 'm1', 'https://cdn.example.com/poster.jpg');
+
+    expect(overlayCount()).toBe(0);
+    expect(sharedCoverActive.value).toBe(false);
+  });
+
+  it('目标页永不出现时看门狗清场', async () => {
+    vi.useFakeTimers();
+    const stage = mountStage();
+    rewindSharedCover(stage, 'never', 'https://cdn.example.com/poster.jpg');
+    expect(overlayCount()).toBe(1);
+
+    vi.advanceTimersByTime(2600);
+
+    expect(overlayCount()).toBe(0);
+    expect(sharedCoverActive.value).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it('返程浮层未散时再次进入，先撤旧层不允许两张封面叠加', () => {
+    const from = mountCard('m1', 300);
+    const stage = mountStage();
+    rewindSharedCover(stage, 'm1', 'https://cdn.example.com/poster.jpg');
+    expect(overlayCount()).toBe(1);
+
+    beginSharedCover(from.host);
+
+    // 去程浮层接管，返程浮层已被撤掉：仍然只有一层
+    expect(overlayCount()).toBe(1);
+    expect(sharedCoverActive.value).toBe(true);
   });
 });
