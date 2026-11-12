@@ -7,7 +7,7 @@ import { afterEach, vi } from 'vitest';
  *
  * 1. `fake-indexeddb/auto` 注册全局 IndexedDB，使 `idb` 可在 Node 中运行
  * 2. 补齐 happy-dom 缺失的浏览器 API：`matchMedia`、`ResizeObserver`、
- *    `IntersectionObserver`、`scrollTo`、`URL.createObjectURL`
+ *    `IntersectionObserver`、`scrollTo`、`URL.createObjectURL`、`MediaError`
  * 3. 静默 Vue 的 warn（组件测试关注断言，不关注噪音）
  * 4. 每个用例后清理 DOM
  */
@@ -81,6 +81,16 @@ if (typeof URL !== 'undefined' && typeof URL.createObjectURL !== 'function') {
   let counter = 0;
   URL.createObjectURL = (): string => `blob:test/${(counter += 1)}`;
   URL.revokeObjectURL = (): void => {};
+}
+
+/* ---------- MediaError（happy-dom 不提供，VideoEngine 的错误码映射依赖它） ---------- */
+if (typeof globalThis.MediaError === 'undefined') {
+  (globalThis as { MediaError?: unknown }).MediaError = {
+    MEDIA_ERR_ABORTED: 1,
+    MEDIA_ERR_NETWORK: 2,
+    MEDIA_ERR_DECODE: 3,
+    MEDIA_ERR_SRC_NOT_SUPPORTED: 4,
+  };
 }
 
 /* ---------- 静默 Vue 生产提示噪音 ---------- */

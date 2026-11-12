@@ -30,6 +30,7 @@ import { liveService } from '@/services/liveService';
 import { reminderService } from '@/services/reminderService';
 import { replayService } from '@/services/replayService';
 import { channelKeyFromLive } from '@/services/channelIdentity';
+import { appEvents } from '@/services/events';
 import { CATCHUP_MAX_DAYS } from '@/shared/constants';
 import { toErrorShape } from '@/shared/errors';
 import { useToast } from '@/composables/useToast';
@@ -589,6 +590,12 @@ onBeforeUnmount(() => {
     clockTimer = null;
   }
 });
+
+// 备份导入可能整体换掉 EPG 源与提醒，重新对账后刷新本页
+const offLiveChanged = appEvents.on('live:changed', () => {
+  void Promise.all([loadEnabledCount(), loadProgrammes(), loadReminders()]);
+});
+onBeforeUnmount(offLiveChanged);
 
 function goBack(): void {
   if (window.history.length > 1) {

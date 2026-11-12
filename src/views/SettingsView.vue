@@ -70,6 +70,8 @@ const speedLimitOpen = ref(false);
 const attachSubtitlesOpen = ref(false);
 const hlsQualityOpen = ref(false);
 const maxQueueOpen = ref(false);
+const concurrencyOpen = ref(false);
+const segmentConcurrencyOpen = ref(false);
 
 // v1.8: 调试日志管理
 const debugLogEnabled = ref(false);
@@ -136,6 +138,7 @@ const sensitivityLabel = computed(() => {
 
 const rateLabel = computed(() => `${(settings.settings?.player.defaultRate ?? 1).toFixed(2).replace(/0$/, '')}x`);
 const autoPlayNext = computed(() => settings.settings?.player.autoPlayNext ?? true);
+const backgroundPlayback = computed(() => playerSettings.value.backgroundPlayback === true);
 const autoSkipIntro = computed(() => playerSettings.value.autoSkipIntro);
 const displayModeLabel = computed(() => {
   const mode = settings.settings?.player.resizeMode ?? 'contain';
@@ -263,6 +266,10 @@ async function setAutoPlayNext(value: boolean): Promise<void> {
   await update({ player: { ...playerSettings.value, autoPlayNext: value } });
 }
 
+async function setBackgroundPlayback(value: boolean): Promise<void> {
+  await update({ player: { ...playerSettings.value, backgroundPlayback: value } });
+}
+
 async function setAutoSkipIntro(value: boolean): Promise<void> {
   await update({ player: { ...playerSettings.value, autoSkipIntro: value } });
 }
@@ -312,6 +319,26 @@ async function setMaxQueueTasks(max: 50 | 100 | 200 | 500): Promise<void> {
 
 async function setRemuxToMp4(value: boolean): Promise<void> {
   await update({ download: { remuxToMp4: value } }, value ? '已开启转封装为 MP4' : '已关闭转封装');
+}
+
+/** 同时下载的任务数（后端 downloadQueue 已实现，此前无入口） */
+async function setConcurrency(value: 1 | 2 | 3): Promise<void> {
+  concurrencyOpen.value = false;
+  await update({ download: { concurrency: value } }, `同时下载：${value} 个任务`);
+}
+
+/** HLS 分片并发数（downloadEngine 已实现，此前无入口） */
+async function setSegmentConcurrency(value: 3 | 6 | 8): Promise<void> {
+  segmentConcurrencyOpen.value = false;
+  await update({ download: { segmentConcurrency: value } }, `分片并发：${value}`);
+}
+
+async function setWifiOnly(value: boolean): Promise<void> {
+  await update({ download: { wifiOnly: value } }, value ? '移动网络下载将二次确认' : '已允许移动网络直接下载');
+}
+
+async function setAutoResume(value: boolean): Promise<void> {
+  await update({ download: { autoResume: value } }, value ? '已开启启动时自动续传' : '已关闭自动续传');
 }
 
 /* ---------- OPT-04：搜索超时预算（档位缩放单源超时） ---------- */
@@ -575,6 +602,13 @@ async function exportLogs(): Promise<void> {
             <SourceManageSection />
           </div>
           <SettingsRow label="观看历史" :value="`${history.items.length} 条`" chevron @click="go('/history')" />
+          <SettingsRow
+            label="观影报告"
+            description="时长、口味、节奏，全部本地统计"
+            :value="`${history.items.length} 部`"
+            chevron
+            @click="go('/report')"
+          />
           <SettingsRow label="我的收藏" :value="`${favorites.items.length} 个`" chevron @click="go('/favorites')" />
           <SettingsRow label="网盘账号" description="夸克支持账号校验，其余平台 Cookie 直填" chevron @click="go('/settings/netdisk')" />
           <SettingsRow
@@ -611,6 +645,12 @@ async function exportLogs(): Promise<void> {
             @update:switch-value="setHapticEnabled"
           />
           <SettingsRow
+            label="后台播放"
+            description="切到后台或锁屏后继续播放（仅原生播放器）"
+            :switch-value="backgroundPlayback"
+            @update:switch-value="setBackgroundPlayback"
+          />
+          <SettingsRow
             label="自动进入画中画"
             description="切到后台且正在播放时自动悬浮小窗"
             :switch-value="pipAutoEnter"
@@ -623,6 +663,31 @@ async function exportLogs(): Promise<void> {
         <!-- EXT-04：下载设置 -->
         <SettingsGroup title="下载">
           <SettingsRow label="下载限速" :value="speedLimitLabel" chevron @click="speedLimitOpen = true" />
+          <SettingsRow
+            label="仅 Wi-Fi 下载"
+            description="移动网络下新建下载时二次确认，避免误耗流量"
+            :switch-value="settings.settings?.download.wifiOnly ?? false"
+            @update:switch-value="setWifiOnly"
+          />
+          <SettingsRow
+            label="启动时自动续传"
+            description="打开 App 后自动恢复未完成的下载"
+            :switch-value="settings.settings?.download.autoResume ?? true"
+            @update:switch-value="setAutoResume"
+          />
+          <SettingsRow
+            label="同时下载数"
+            :value="`${settings.settings?.download.concurrency ?? 2} 个任务`"
+            chevron
+            @click="concurrencyOpen = true"
+          />
+          <SettingsRow
+            label="分片并发数"
+            :value="`${settings.settings?.download.segmentConcurrency ?? 6} 线程`"
+            description="单个 HLS 任务内部的分片下载并发"
+            chevron
+            @click="segmentConcurrencyOpen = true"
+          />
           <SettingsRow label="字幕随片下载" :value="attachSubtitlesLabel" chevron @click="attachSubtitlesOpen = true" />
           <SettingsRow label="默认清晰度" :value="hlsQualityLabel" chevron @click="hlsQualityOpen = true" />
           <SettingsRow label="队列上限" :value="`${settings.settings?.download.maxQueueTasks ?? 200} 个任务`" chevron @click="maxQueueOpen = true" />
@@ -988,6 +1053,50 @@ async function exportLogs(): Promise<void> {
         </li>
       </ul>
       <p class="sheet-hint">超过上限的新任务将被拒绝，不影响已入队任务。</p>
+    </BottomSheet>
+
+    <BottomSheet v-model="concurrencyOpen" title="同时下载数">
+      <ul class="sheet-list">
+        <li v-for="opt in [
+          { v: 1 as const, l: '1 个任务', d: '最省带宽，单任务最快' },
+          { v: 2 as const, l: '2 个任务', d: '默认，兼顾速度与稳定' },
+          { v: 3 as const, l: '3 个任务', d: '批量下载更快，占用带宽更高' },
+        ]" :key="opt.v">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.download.concurrency ?? 2) === opt.v }"
+            type="button"
+            @click="setConcurrency(opt.v)"
+          >
+            {{ opt.l }}
+            <span class="sheet-list__desc">{{ opt.d }}</span>
+            <span v-if="(settings.settings?.download.concurrency ?? 2) === opt.v" class="sheet-list__check">当前</span>
+          </button>
+        </li>
+      </ul>
+      <p class="sheet-hint">修改后对随后开始的任务生效，已在下载的任务不中断。</p>
+    </BottomSheet>
+
+    <BottomSheet v-model="segmentConcurrencyOpen" title="分片并发数">
+      <ul class="sheet-list">
+        <li v-for="opt in [
+          { v: 3 as const, l: '3 线程', d: '源站限流严格时更稳' },
+          { v: 6 as const, l: '6 线程', d: '默认' },
+          { v: 8 as const, l: '8 线程', d: '源站带宽充足时最快' },
+        ]" :key="opt.v">
+          <button
+            class="sheet-list__item"
+            :class="{ 'sheet-list__item--active': (settings.settings?.download.segmentConcurrency ?? 6) === opt.v }"
+            type="button"
+            @click="setSegmentConcurrency(opt.v)"
+          >
+            {{ opt.l }}
+            <span class="sheet-list__desc">{{ opt.d }}</span>
+            <span v-if="(settings.settings?.download.segmentConcurrency ?? 6) === opt.v" class="sheet-list__check">当前</span>
+          </button>
+        </li>
+      </ul>
+      <p class="sheet-hint">仅对 HLS 分片下载生效。线程过多可能被源站限流，反而更慢。</p>
     </BottomSheet>
   </SafeArea>
 </template>

@@ -7,6 +7,7 @@
       · WAKE_LOCK：播放时保持屏幕常亮（@capacitor-community/keep-awake）；
       · FOREGROUND_SERVICE：下载服务前台运行，切后台不中断；
       · FOREGROUND_SERVICE_DATA_SYNC：Android 14+ 前台服务类型声明；
+      · FOREGROUND_SERVICE_MEDIA_PLAYBACK：Android 14+ 播放前台服务类型（B1/B2）；
       · POST_NOTIFICATIONS：Android 13+ 下载进度通知 + 节目提醒（EXT-06）；
       · ACCESS_NETWORK_STATE：检测网络类型（WiFi/移动数据）决定是否下载；
       · SCHEDULE_EXACT_ALARM：节目提醒需准点触发（Android 12+，EXT-06/AC-168）；
@@ -16,6 +17,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -91,6 +93,17 @@
         <service
             android:name=".download.DownloadService"
             android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+        <!--
+          B1/B2：播放前台服务（媒体通知 + 后台保活）。
+          不声明 ACTION_MEDIA_BUTTON receiver：media3 的 MediaSession 在活跃期由系统
+          直接派发线控按键，receiver 只用于「进程已死时恢复播放」，本工程不支持该场景；
+          且 media3 会在包内查到多个 receiver 时抛 IllegalStateException。
+        -->
+        <service
+            android:name=".PlaybackService"
+            android:foregroundServiceType="mediaPlayback"
             android:exported="false" />
 
         <!-- P1: 网盘登录页 -->

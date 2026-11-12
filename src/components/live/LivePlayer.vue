@@ -23,10 +23,13 @@ import { setPlayerImmersive } from '@/native/playerUi';
 import type { PlaybackSource } from '@/types';
 import { IPTV_USER_AGENT, TIMEOUT_LIVE_CHANNEL_MS } from '@/shared/constants';
 import { logger } from '@/shared/logger';
+import ChannelLogo from '@/components/live/ChannelLogo.vue';
 
 const props = defineProps<{
   url: string | null;
   title: string;
+  /** C1：频道台标（缺失时由 ChannelLogo 退成频道号牌） */
+  logo?: string | null;
   /** OPT-12: 外部控制的加载态（频道切换时淡出/淡入） */
   loading?: boolean;
 }>();
@@ -313,6 +316,7 @@ onBeforeUnmount(() => {
       />
 
       <div class="live-player__bar">
+        <ChannelLogo v-if="title" :src="logo ?? null" :name="title" :size="22" />
         <span class="live-player__title truncate-1">{{ title || '直播' }}</span>
         <button
           class="live-player__btn"

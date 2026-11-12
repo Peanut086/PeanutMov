@@ -78,7 +78,7 @@ export function useVirtualGrid(
     return Number.isFinite(parsed) && parsed > 0 ? parsed : Math.max(1, options.columns());
   }
 
-  /** 计算一行的高度：列宽 * 海报比例 + 标题区 */
+  /** 计算一行的高度：列宽 * 海报比例 + 标题区 + 行间距 */
   function computeRowHeight(): number {
     const el = gridEl();
     if (!el) return 0;
@@ -90,7 +90,9 @@ export function useVirtualGrid(
     const columnWidth = (containerWidth - gap * (columns - 1)) / columns;
     if (columnWidth <= 0) return 0;
     const extra = options.showMeta() ? ROW_EXTRA_META_PX : ROW_EXTRA_BARE_PX;
-    return columnWidth * 1.5 + extra;
+    // 行间距计入行步长：padTop/padBottom 按步长累加，漏算 gap 会逐行累积漂移
+    const rowGap = Number.parseFloat(getComputedStyle(el).rowGap);
+    return columnWidth * 1.5 + extra + (Number.isFinite(rowGap) ? rowGap : 0);
   }
 
   function readPxVar(el: HTMLElement | null, name: string): number | null {

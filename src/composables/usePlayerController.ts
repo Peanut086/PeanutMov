@@ -20,6 +20,7 @@ import { isCanceled, toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { usePlayerStore } from '@/stores/playerStore';
 import { useUiStore } from '@/stores/uiStore';
+import { useSleepTimer } from '@/composables/useSleepTimer';
 
 /**
  * 亮度/音量的系统落点（由 View 注入 `deviceService` 能力——播放器层不直接 import Service，
@@ -64,6 +65,8 @@ export interface UsePlayerControllerOptions {
   defaultRate: PlaybackRate;
   /** 自动连播 */
   autoPlayNext: boolean;
+  /** B2：切后台继续播放（仅原生引擎生效，由 View 从设置注入） */
+  backgroundPlayback: boolean;
   /** 初始画面比例 */
   resizeMode: ResizeMode;
   /** P1-4：长按倍速 */
@@ -97,6 +100,20 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   const controlsVisible = ref(true);
   const countdown = ref<number | null>(null);
   const backgroundPaused = ref(false);
+  /** B2：纯音频模式（本次会话有效，不写设置） */
+  const audioOnly = ref(false);
+  /** B2：后台播放（初值来自设置，播放页内可临时改，由 View 决定是否写回设置） */
+  const backgroundPlayback = ref(options.backgroundPlayback);
+  /** B1：通知栏/锁屏请求切换到的剧集 id（与 autoNextTarget 同一消费方式） */
+  const remoteEpisodeTarget = ref<string | null>(null);
+  /** B3：睡眠定时——到点暂停，或播完本集就停住不连播 */
+  const sleepTimer = useSleepTimer({
+    onExpire: (choice) => {
+      controller.value?.pause();
+      cancelAutoNext();
+      ui.toast(choice === 'episode' ? '本集播完，睡眠定时已停止播放' : '睡眠定时已到，已暂停播放', 'info', 2600);
+    },
+  });
   const localSubtitles = ref(options.subtitle);
   const resolvedQuality = ref<'auto' | string>('auto');
   /** 黑屏检测结果（码流在播但一帧画面都没解出来）；null = 正常 */
@@ -206,6 +223,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     c.on('ended', () => {
       player.patch({ playing: false });
       setControlsVisible(true);
+      if (sleepTimer.consumeEpisodeEnd()) return;
       scheduleAutoNext();
     });
 
@@ -249,6 +267,17 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
 
     c.on('notice', ({ message }) => {
       ui.toast(message, 'info');
+    });
+
+    // B1：通知栏/锁屏/线控指令。切集仍走 View 的路由入口（与自动连播同一条路径），
+    // 这里只把目标集 id 抛出去，避免绕过 describe()/进度写回
+    c.on('remotecommand', ({ command }) => {
+      if (command === 'stop') {
+        controller.value?.pause();
+        return;
+      }
+      const target = command === 'next' ? nextEpisodeId.value : prevEpisodeId.value;
+      if (target) remoteEpisodeTarget.value = target;
     });
   }
 
@@ -309,7 +338,30 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     c.setVolume(player.levelSource === 'system' ? 100 : player.volume);
     c.setResizeMode(options.resizeMode);
     c.setSubtitleOffset(options.subtitle.offsetSec);
+    syncBackgroundPlayback();
     return c;
+  }
+
+  /* ---------- B2：后台播放 / 纯音频 ---------- */
+
+  /**
+   * 纯音频模式隐含后台播放：只藏画面却仍在切后台时暂停，这个开关就等于没用。
+   * 不回写用户的 backgroundPlayback 设置，只在本次会话内叠加。
+   */
+  function syncBackgroundPlayback(): void {
+    controller.value?.setBackgroundPlayback(backgroundPlayback.value || audioOnly.value);
+  }
+
+  function setBackgroundPlayback(enabled: boolean): void {
+    backgroundPlayback.value = enabled;
+    syncBackgroundPlayback();
+  }
+
+  function setAudioOnly(enabled: boolean): void {
+    audioOnly.value = enabled;
+    controller.value?.setAudioOnly(enabled);
+    syncBackgroundPlayback();
+    ui.toast(enabled ? '已切到纯音频，画面已收起' : '已恢复画面', 'info', 1500);
   }
 
   /* ---------- 加载 ---------- */
@@ -664,17 +716,33 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     autoNextTarget.value = null;
   }
 
+  /** PlayerView 处理完远端切集后调用，清除目标（否则同一集连按两次不触发） */
+  function acknowledgeRemoteEpisode(): void {
+    remoteEpisodeTarget.value = null;
+  }
+
   /* ---------- 后台/可见性 ---------- */
 
   function handleVisibility(): void {
     const c = controller.value;
     if (!c) return;
     if (document.visibilityState === 'hidden') {
-      if (player.playing) {
+      // B2：只有原生引擎能真的在后台播——WebView 的 video 会被系统挂起，
+      // 开了开关也播不动，所以这里必须同时判引擎
+      const keepPlaying =
+        (backgroundPlayback.value || audioOnly.value) && player.engineKind === 'native';
+      if (player.playing && !keepPlaying) {
         c.pause();
         backgroundPaused.value = true;
       }
+      // 后台播放时用户没在看画面，继续持常亮锁只会耗电
+      if (awakeActive) {
+        awakeActive = false;
+        options.setKeepAwake?.(false);
+      }
       void c.flushProgress();
+    } else {
+      syncKeepAwake();
     }
   }
 
@@ -737,6 +805,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     controlsVisible,
     countdown,
     backgroundPaused,
+    audioOnly,
+    backgroundPlayback,
+    remoteEpisodeTarget,
+    sleepTimer,
     localSubtitles,
     resolvedQuality,
     noVideo,
@@ -777,6 +849,9 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     scheduleAutoNext,
     autoNextTarget,
     acknowledgeAutoNext,
+    acknowledgeRemoteEpisode,
+    setAudioOnly,
+    setBackgroundPlayback,
   };
 }
 

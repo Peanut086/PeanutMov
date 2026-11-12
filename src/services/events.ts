@@ -15,6 +15,8 @@ export type AppEventMap = {
   /** 批量测速进度（CHG-05 / AC-107）：起点 {0,total}，逐源 +1，终点 {total,total} */
   'sources:healthProgress': { done: number; total: number };
   'library:changed': { sourceId: string };
+  /** 直播域数据变化（直播源 / EPG 源 / 频道偏好 / 提醒），备份导入后广播 */
+  'live:changed': { reason: 'import' | 'restore' };
   'history:changed': { id: string | null };
   'favorites:changed': { id: string | null };
   'downloads:changed': { id: string | null };

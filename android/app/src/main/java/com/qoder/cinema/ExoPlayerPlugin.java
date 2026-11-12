@@ -3,7 +3,9 @@ package com.qoder.cinema;
 import android.app.PictureInPictureParams;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -14,8 +16,10 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import androidx.annotation.OptIn;
+import androidx.media3.common.AudioAttributes;
 import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
+import androidx.media3.common.MediaMetadata;
 import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.TrackGroup;
@@ -34,8 +38,15 @@ import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.LoadControl;
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy;
+import androidx.media3.session.CommandButton;
+import androidx.media3.session.MediaSession;
+import androidx.media3.session.SessionCommand;
+import androidx.media3.session.SessionResult;
 import androidx.media3.ui.AspectRatioFrameLayout;
 import androidx.media3.ui.PlayerView;
+
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
 
 import okhttp3.OkHttpClient;
 
@@ -46,6 +57,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -139,6 +151,29 @@ public class ExoPlayerPlugin extends Plugin {
     private Runnable watchdogRunnable;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
+    /* ---------- B1/B2：MediaSession / 后台播放 ---------- */
+
+    /** 上一集/下一集自定义命令（系统媒体控件与通知都走这里，JS 负责真正的切集） */
+    private static final String CMD_PREVIOUS = "com.qoder.cinema.PREVIOUS_EPISODE";
+    private static final String CMD_NEXT = "com.qoder.cinema.NEXT_EPISODE";
+
+    /**
+     * 媒体会话：锁屏/通知栏/蓝牙 AVRCP 的元数据与按键入口。
+     *
+     * 会话不拥有播放器（`MediaSession.release()` 不会 release player），
+     * 生命周期与 player 严格一致，见 {@link #releasePlayerQuietly()}。
+     */
+    private MediaSession mediaSession;
+    /**
+     * B2：后台继续播放。为真时看门狗不再因 JS 心跳丢失而自动暂停——
+     * WebView 切后台后定时器被系统节流，心跳本来就会断。
+     */
+    private boolean backgroundPlayback = false;
+    /** B2：纯音频模式——收起原生 surface，只留声音（画面交还给 WebView 里的海报/UI） */
+    private boolean audioOnly = false;
+    /** 已上报给 JS 的播放意图，避免重复事件把 UI 状态刷来刷去 */
+    private boolean reportedPlaying = false;
+
     @PluginMethod
     public void isSupported(PluginCall call) {
         JSObject result = new JSObject();
@@ -210,10 +245,28 @@ public class ExoPlayerPlugin extends Plugin {
                 String mime = call.getString("mime");
                 boolean isHls = androidx.media3.common.MimeTypes.APPLICATION_M3U8.equalsIgnoreCase(mime)
                         || url.contains(".m3u8");
-                MediaItem mediaItem = isHls
-                        ? new MediaItem.Builder().setUri(url)
-                                .setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8).build()
-                        : MediaItem.fromUri(url);
+                // B1：锁屏/通知栏/蓝牙的元数据必须随 MediaItem 下发——media3 1.3.1 的
+                // MediaSession 没有 setMediaMetadata，会话元数据只取自播放器当前 MediaItem。
+                MediaMetadata.Builder metadata = new MediaMetadata.Builder();
+                String title = call.getString("title", "");
+                if (!title.isEmpty()) metadata.setTitle(title);
+                String subtitle = call.getString("subtitle", "");
+                if (!subtitle.isEmpty()) metadata.setArtist(subtitle);
+                String artworkUrl = call.getString("artworkUrl");
+                if (artworkUrl != null && !artworkUrl.isEmpty()) {
+                    try {
+                        metadata.setArtworkUri(Uri.parse(artworkUrl));
+                    } catch (Exception e) {
+                        Log.w("ExoPlayerPlugin", "bad artwork uri: " + e.getMessage());
+                    }
+                }
+                MediaItem.Builder itemBuilder = new MediaItem.Builder()
+                        .setUri(url)
+                        .setMediaMetadata(metadata.build());
+                if (isHls) {
+                    itemBuilder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8);
+                }
+                MediaItem mediaItem = itemBuilder.build();
 
                 // P0-7: 续播位置随 prepare 下发（毫秒），0 或负数视为从头播放
                 long startPositionMs = call.getLong("startPositionMs", 0L);
@@ -239,7 +292,28 @@ public class ExoPlayerPlugin extends Plugin {
                         .setLoadControl(loadControl)
                         .build();
                 player.setMediaItem(mediaItem, startPositionMs);
+                // B1：声明媒体音频属性并交给 ExoPlayer 托管焦点。
+                // handleAudioFocus=true 时播放器自动 request/abandon：来电或别的 App
+                // 抢焦点 → playWhenReady 置 false（下面的监听会同步给 JS），恢复后自动续播。
+                player.setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA)
+                        .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                        .build(), /* handleAudioFocus= */ true);
                 player.addListener(new Player.Listener() {
+                    @Override
+                    public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                        // 通知栏/线控/音频焦点都可能改播放意图，JS 必须跟着同步，
+                        // 否则会出现「画面在播、按钮显示暂停」的双状态源
+                        reportPlaying(playWhenReady);
+                        PlaybackService.refresh();
+                    }
+
+                    @Override
+                    public void onIsPlayingChanged(boolean isPlaying) {
+                        // 缓冲结束真正出声时刷新通知图标（意图未变，isPlaying 变了）
+                        PlaybackService.refresh();
+                    }
+
                     @Override
                     public void onPlaybackStateChanged(int playbackState) {
                         JSObject data = new JSObject();
@@ -371,6 +445,9 @@ public class ExoPlayerPlugin extends Plugin {
                 });
 
                 playerView.setPlayer(player);
+                ensureMediaSession();
+                // 纯音频模式跨切集保持：ensureOverlay 会把容器置回 VISIBLE
+                applyAudioOnly();
                 player.prepare();
                 // P0-3：起播意图若在 prepare 之前到达，此刻补上
                 if (pendingPlay) {
@@ -734,6 +811,161 @@ public class ExoPlayerPlugin extends Plugin {
         });
     }
 
+    /* ---------- B1/B2：媒体会话 / 后台播放 / 纯音频 ---------- */
+
+    /** B2：后台继续播放开关（关时看门狗仍会在 JS 心跳丢失后自动暂停） */
+    @PluginMethod
+    public void setBackgroundPlayback(PluginCall call) {
+        Boolean enabled = call.getBoolean("enabled");
+        getBridge().executeOnMainThread(() -> {
+            backgroundPlayback = enabled != null && enabled;
+            AppLog.i("ExoPlayerPlugin", "backgroundPlayback=" + backgroundPlayback);
+            call.resolve();
+        });
+    }
+
+    /**
+     * B2：纯音频模式——禁用视频轨并收起原生 surface。
+     *
+     * 禁轨不只是藏画面：HLS 会因此不再拉视频分片，省电省流量。
+     * 画面位置交还给 WebView（JS 侧显示海报），故 overlay 直接 GONE。
+     */
+    @PluginMethod
+    public void setAudioOnly(PluginCall call) {
+        Boolean enabled = call.getBoolean("enabled");
+        getBridge().executeOnMainThread(() -> {
+            audioOnly = enabled != null && enabled;
+            applyAudioOnly();
+            call.resolve();
+        });
+    }
+
+    private void applyAudioOnly() {
+        if (overlay != null) {
+            overlay.setVisibility(audioOnly ? View.GONE : View.VISIBLE);
+        }
+        if (player == null) return;
+        try {
+            player.setTrackSelectionParameters(player.getTrackSelectionParameters()
+                    .buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, audioOnly)
+                    .build());
+        } catch (Exception e) {
+            Log.w("ExoPlayerPlugin", "applyAudioOnly failed: " + e.getMessage());
+        }
+    }
+
+    /** 通知栏/线控的「上一集/下一集」交给 JS：剧集列表与换线逻辑都在 JS 侧 */
+    private void emitRemote(String command) {
+        JSObject data = new JSObject();
+        data.put("state", "remote");
+        data.put("command", command);
+        notifyListeners("exostate", data);
+    }
+
+    /** 播放意图变化上报（去重），并在起播时拉起前台服务 */
+    private void reportPlaying(boolean playing) {
+        if (reportedPlaying == playing) return;
+        reportedPlaying = playing;
+        JSObject data = new JSObject();
+        data.put("state", playing ? "playing" : "paused");
+        notifyListeners("exostate", data);
+        if (playing && mediaSession != null) {
+            PlaybackService.start(getContext(), mediaSession, commandSink);
+        }
+    }
+
+    private final PlaybackService.CommandSink commandSink = new PlaybackService.CommandSink() {
+        @Override
+        public void onPlayPause() {
+            if (player == null) return;
+            if (player.isPlaying()) {
+                player.pause();
+            } else {
+                player.play();
+            }
+        }
+
+        @Override
+        public void onPrevious() {
+            emitRemote("previous");
+        }
+
+        @Override
+        public void onNext() {
+            emitRemote("next");
+        }
+
+        @Override
+        public void onStop() {
+            if (player != null) player.pause();
+            emitRemote("stop");
+            PlaybackService.stop(getContext());
+        }
+    };
+
+    /**
+     * 建会话（必须在主线程，且 player 已就绪）。
+     *
+     * 会话不拥有播放器：`MediaSession.release()` 只解绑监听与 compat 会话，
+     * 播放器仍由本插件 release，避免两处释放同一实例。
+     */
+    private void ensureMediaSession() {
+        releaseMediaSession();
+        if (player == null) return;
+        try {
+            android.content.Intent open = new android.content.Intent(getContext(), MainActivity.class);
+            open.setFlags(android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    | android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            android.app.PendingIntent sessionActivity = android.app.PendingIntent.getActivity(
+                    getContext(), 0, open, android.app.PendingIntent.FLAG_IMMUTABLE);
+            mediaSession = new MediaSession.Builder(getContext(), player)
+                    .setId("peanutmov-playback")
+                    .setSessionActivity(sessionActivity)
+                    .setCallback(new MediaSession.Callback() {
+                        @Override
+                        public ListenableFuture<SessionResult> onCustomCommand(
+                                MediaSession session, MediaSession.ControllerInfo controller,
+                                SessionCommand customCommand, Bundle args) {
+                            String action = customCommand.customAction;
+                            if (CMD_PREVIOUS.equals(action)) {
+                                emitRemote("previous");
+                            } else if (CMD_NEXT.equals(action)) {
+                                emitRemote("next");
+                            }
+                            return Futures.immediateFuture(new SessionResult(SessionResult.RESULT_SUCCESS));
+                        }
+                    })
+                    .build();
+            // 单 MediaItem 时间轴下播放器不 advertise SEEK_TO_NEXT/PREVIOUS，
+            // 系统媒体控件的上下集按钮只能靠自定义命令补出来
+            mediaSession.setCustomLayout(Arrays.asList(
+                    new CommandButton.Builder()
+                            .setSessionCommand(new SessionCommand(CMD_PREVIOUS, Bundle.EMPTY))
+                            .setIconResId(android.R.drawable.ic_media_previous)
+                            .setDisplayName("上一集")
+                            .build(),
+                    new CommandButton.Builder()
+                            .setSessionCommand(new SessionCommand(CMD_NEXT, Bundle.EMPTY))
+                            .setIconResId(android.R.drawable.ic_media_next)
+                            .setDisplayName("下一集")
+                            .build()));
+        } catch (Exception e) {
+            // 会话失败不能连带播放失败：降级为无锁屏控制
+            Log.w("ExoPlayerPlugin", "ensureMediaSession failed: " + e.getMessage());
+            mediaSession = null;
+        }
+    }
+
+    private void releaseMediaSession() {
+        if (mediaSession == null) return;
+        try {
+            mediaSession.release();
+        } catch (Exception ignored) {
+        }
+        mediaSession = null;
+    }
+
     @PluginMethod
     public void release(PluginCall call) {
         getBridge().executeOnMainThread(() -> {
@@ -756,6 +988,11 @@ public class ExoPlayerPlugin extends Plugin {
         cancelWatchdog();
         seekRequestedAtMs = 0L;
         seekTargetMs = -1L;
+        // B1：会话持有播放器监听，必须先于 player.release() 解绑；
+        // 前台服务随会话一起收，否则离开播放页后通知栏常驻
+        releaseMediaSession();
+        PlaybackService.stop(getContext());
+        reportedPlaying = false;
         // EXT-07：轨道引用指向已释放播放器的 TrackGroup，必须一起清掉
         textTracks.clear();
         audioTracks.clear();
@@ -867,7 +1104,9 @@ public class ExoPlayerPlugin extends Plugin {
             @Override
             public void run() {
                 if (player == null) return;
-                if (player.isPlaying()
+                // B2：后台播放时 JS 定时器被系统节流，心跳丢失是预期行为，不能据此暂停
+                if (!backgroundPlayback
+                        && player.isPlaying()
                         && SystemClock.elapsedRealtime() - lastHeartbeatAt > PROGRESS_WATCHDOG_MS) {
                     com.qoder.cinema.AppLog.w("ExoPlayerPlugin", "progress heartbeat lost > " + PROGRESS_WATCHDOG_MS + "ms, auto pause");
                     player.pause();

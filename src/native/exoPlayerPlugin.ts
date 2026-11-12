@@ -29,6 +29,15 @@ export interface ExoPrepareOptions {
   autoPlay?: boolean;
   /** P0-7: 续播起始位置（毫秒），0 或 undefined 表示从头播放 */
   startPositionMs?: number;
+  /**
+   * B1：锁屏/通知栏/蓝牙元数据。
+   *
+   * 必须随 prepare 下发：media3 1.3.1 的 MediaSession 没有 setMediaMetadata，
+   * 会话元数据只取自播放器当前 MediaItem，事后补设需要 replaceMediaItem（会动进度）。
+   */
+  title?: string;
+  subtitle?: string;
+  artworkUrl?: string;
 }
 
 export interface ExoQuality {
@@ -99,13 +108,24 @@ export interface ExoPlayerPlugin {
   exitPip(): Promise<void>;
   /** P1 画面比例：contain/cover/fill → Media3 resize_mode */
   setResizeMode(options: { mode: string }): Promise<void>;
-  /** 状态监听（ready / buffering / ended / error / qualities / textTracks / audioTracks）；返回解绑 handle */
+  /** B2：后台继续播放（关时原生看门狗仍会在 JS 心跳丢失后自动暂停） */
+  setBackgroundPlayback(options: { enabled: boolean }): Promise<void>;
+  /** B2：纯音频模式（禁用视频轨 + 收起原生 surface） */
+  setAudioOnly(options: { enabled: boolean }): Promise<void>;
+  /**
+   * 状态监听（ready / buffering / ended / error / qualities / textTracks /
+   * audioTracks / playing / paused / remote）；返回解绑 handle。
+   *
+   * `remote` 是通知栏/锁屏/线控发来的指令，`command` 为 previous / next / stop；
+   * `playing` / `paused` 是原生侧播放意图变化（含音频焦点被抢），JS 必须跟着同步。
+   */
   addListener(
     eventName: 'exostate',
     cb: (data: {
       state: string;
       message?: string;
       duration?: number;
+      command?: string;
       qualities?: ExoQuality[];
       textTracks?: ExoTextTrack[];
       audioTracks?: ExoAudioTrack[];

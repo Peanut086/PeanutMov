@@ -21,9 +21,11 @@ import BottomSheet from '@/components/common/BottomSheet.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import SearchBar from '@/components/common/SearchBar.vue';
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
 import LivePlayer from '@/components/live/LivePlayer.vue';
 import ChannelGroupSheet from '@/components/live/ChannelGroupSheet.vue';
+import ChannelLogo from '@/components/live/ChannelLogo.vue';
 import ChannelSortList from '@/components/live/ChannelSortList.vue';
 import { liveService } from '@/services/liveService';
 import { epgService } from '@/services/epgService';
@@ -34,8 +36,10 @@ import {
   extrasOfUrl,
 } from '@/services/channelIdentity';
 import { kvRepo } from '@/db/repositories/kvRepo';
+import { appEvents } from '@/services/events';
 import { LIVE_DEAD_STREAK, LIVE_AUTO_SWITCH_MAX, EPG_PREFETCH_MAX, CATCHUP_MAX_DAYS } from '@/shared/constants';
 import { CATCHUP_TOKENS, validateCatchupTemplate } from '@/shared/catchupTemplate';
+import { filterChannelsByQuery } from '@/shared/channelSearch';
 import { useToast } from '@/composables/useToast';
 import { logger } from '@/shared/logger';
 import { toErrorShape } from '@/shared/errors';
@@ -192,7 +196,14 @@ onMounted(() => {
   window.addEventListener('keydown', onDigitKey);
 });
 
+// 备份导入/恢复后直播源与频道偏好可能整体换掉，重载列表与收藏
+const offLiveChanged = appEvents.on('live:changed', () => {
+  void reload();
+  void loadFavorites();
+});
+
 onBeforeUnmount(() => {
+  offLiveChanged();
   window.removeEventListener('keydown', onDigitKey);
   if (digitTimer !== null) {
     clearTimeout(digitTimer);
@@ -324,14 +335,32 @@ const scopeChannels = computed<LiveChannel[]>(() => {
 
 const currentOrder = computed<string[] | undefined>(() => prefs.value?.orders[activeScope.value]);
 
+/* ---------- C2：频道搜索（跨全部分组） ---------- */
+const channelQuery = ref('');
+const searching = computed(() => channelQuery.value.trim().length > 0);
+
+/** 搜索命中数（不含失效沉底重排，纯过滤结果） */
+const searchHits = computed<LiveChannel[]>(() =>
+  searching.value ? filterChannelsByQuery(allChannels.value, channelQuery.value) : [],
+);
+
 /**
  * AC-166 排序优先级：失效沉底 > 收藏置顶 > 自定义序 > 源顺序。
  * 先按自定义序稳定排序（定义基序），再按 rank 稳定排序（rank 优先，自定义序次之）。
+ * 搜索态例外：相关性优先（否则搜「cctv」时收藏的杂台会压在精确命中前面），只保留失效沉底。
  */
 const visibleChannels = computed<LiveChannel[]>(() => {
+  if (searching.value) {
+    return [...searchHits.value].sort((a, b) => Number(isDead(a.name)) - Number(isDead(b.name)));
+  }
   const ordered = sortByCustomOrder(scopeChannels.value, keyOf, currentOrder.value);
   const rank = (name: string): number => (isDead(name) ? 2 : isFavorite(name) ? 0 : 1);
   return [...ordered].sort((a, b) => rank(a.name) - rank(b.name));
+});
+
+/** 切源等于换了一份频道表，旧关键词不该继续压在新列表上 */
+watch(activeId, () => {
+  channelQuery.value = '';
 });
 
 function pickDefaultScope(): string {
@@ -377,6 +406,8 @@ function clearFocusTimer(): void {
 async function focusChannel(name: string): Promise<void> {
   const token = ++focusToken;
   activeScope.value = 'all';
+  // 搜索态的列表是过滤后的子集，下标对不上要定位的那一行
+  channelQuery.value = '';
   await nextTick();
   if (token !== focusToken) return;
   const list = visibleChannels.value;
@@ -799,6 +830,7 @@ async function clearCatchup(): Promise<void> {
         <LivePlayer
           :url="playing?.url ?? null"
           :title="playing?.title ?? ''"
+          :logo="currentChannel?.logo ?? null"
           :loading="channelSwitching"
           @timeout="onChannelTimeout"
           @canplay="onPlayerCanplay"
@@ -839,9 +871,17 @@ async function clearCatchup(): Promise<void> {
           </button>
         </div>
 
+        <!-- C2：频道搜索——跨全部分组，命名归一化后匹配（cctv 1 / CCTV-1 高清 都能命中） -->
+        <div v-if="allChannels.length > 0" class="live-search">
+          <SearchBar v-model="channelQuery" placeholder="搜索频道，如 cctv1 / 卫视" />
+          <p v-if="searching" class="live-search__summary">
+            跨全部分组找到 <strong>{{ searchHits.length }}</strong> 个频道
+          </p>
+        </div>
+
         <!-- EXT-06：作用域 chips + 分组管理 / 排序入口 -->
         <div class="live-tools">
-          <div v-if="scopeList.length > 1" class="live-groups">
+          <div v-if="scopeList.length > 1 && !searching" class="live-groups">
             <button
               v-for="scope in scopeList"
               :key="scope.key"
@@ -857,7 +897,7 @@ async function clearCatchup(): Promise<void> {
             <button
               class="live-tool"
               type="button"
-              :disabled="visibleChannels.length === 0"
+              :disabled="visibleChannels.length === 0 || searching"
               @click="sortOpen = true"
             >
               排序
@@ -883,6 +923,18 @@ async function clearCatchup(): Promise<void> {
             重试
           </button>
         </p>
+
+        <!-- C2：搜不到时给出可行动出口，而不是复用「该分组暂无频道」 -->
+        <div v-else-if="searching && visibleChannels.length === 0" class="live-empty-scope">
+          <p>没找到「{{ channelQuery.trim() }}」</p>
+          <button
+            class="btn btn--secondary btn--sm live-empty-scope__add"
+            type="button"
+            @click="channelQuery = ''"
+          >
+            清除搜索
+          </button>
+        </div>
 
         <!-- REV-23：空自定义分组给出「从源分组添加频道」入口，而不是一句死胡同文案 -->
         <div v-else-if="visibleChannels.length === 0" class="live-empty-scope">
@@ -910,11 +962,18 @@ async function clearCatchup(): Promise<void> {
                 'live-channel--playing': playing?.url === channel.url,
                 'live-channel--dead': isDead(channel.name),
                 'live-channel--focus': focusUrl === channel.url,
+                'live-channel--dual': searching,
               }"
               type="button"
               @click="playChannel(channel)"
             >
-              <span class="live-channel__name truncate-1">{{ channel.name }}</span>
+              <ChannelLogo :src="channel.logo" :name="channel.name" :size="26" />
+              <span class="live-channel__text">
+                <span class="live-channel__name truncate-1">{{ channel.name }}</span>
+                <span v-if="searching" class="live-channel__group truncate-1">
+                  {{ channel.group || '未分组' }}
+                </span>
+              </span>
               <span v-if="isDead(channel.name)" class="live-channel__dead-badge">失效</span>
             </button>
             <button
@@ -1091,6 +1150,7 @@ async function clearCatchup(): Promise<void> {
         <p v-if="addableChannels.length === 0" class="live-empty-scope">该分组的频道已包含全部频道</p>
         <ul v-else class="live-manage">
           <li v-for="channel in addableChannels" :key="channel.url" class="live-manage__row">
+            <ChannelLogo :src="channel.logo" :name="channel.name" :size="24" />
             <span class="live-manage__name truncate-1">
               {{ channel.name }}
               <span class="live-manage__count">{{ channel.group || '未分组' }}</span>
@@ -1245,6 +1305,23 @@ async function clearCatchup(): Promise<void> {
   box-shadow: var(--shadow-2);
 }
 
+.live-search {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4) 0;
+}
+
+.live-search__summary {
+  color: var(--color-text-secondary);
+  font: var(--text-caption);
+}
+
+.live-search__summary strong {
+  color: var(--color-brand-text);
+  font-variant-numeric: tabular-nums;
+}
+
 .live-channels {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -1275,8 +1352,21 @@ async function clearCatchup(): Promise<void> {
   gap: var(--space-1);
 }
 
+.live-channel__text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .live-channel__name {
   min-width: 0;
+}
+
+/* 搜索态跨分组，必须标出命中的台来自哪个分组 */
+.live-channel__group {
+  color: var(--color-text-tertiary);
+  font: var(--text-caption);
 }
 
 .live-channel--playing {
@@ -1299,6 +1389,10 @@ async function clearCatchup(): Promise<void> {
 
 .live-channel--dead {
   opacity: 0.55;
+}
+
+.live-channel--dual {
+  min-height: 56px;
 }
 
 .live-channel__dead-badge {

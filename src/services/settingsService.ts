@@ -115,6 +115,8 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       autoSkipIntro: true,
       ambilight: true,
       ambilightIntensity: 85,
+      /* B2：后台播放默认关，保持既有「切后台即暂停」行为 */
+      backgroundPlayback: false,
     },
     gesture: { sensitivity: 'medium', seekMaxSec: 90 },
     download: {
@@ -223,6 +225,8 @@ function sanitize(input: AppSettings): AppSettings {
   player.ambilightIntensity = Number.isFinite(ambilightLevel)
     ? Math.max(0, Math.min(100, ambilightLevel))
     : 85;
+  // 只有显式 true 才算开启：旧设置库里没有这个字段
+  player.backgroundPlayback = player.backgroundPlayback === true;
 
   const gesture: GestureSettings = { ...defaults.gesture, ...(gesturePatch ?? {}) };
   gesture.seekMaxSec = Math.max(30, Math.min(180, Number(gesture.seekMaxSec) || defaults.gesture.seekMaxSec));

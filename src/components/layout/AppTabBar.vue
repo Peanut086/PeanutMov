@@ -5,12 +5,13 @@
  * 高度 56 + safe-bottom；5 个 Tab 等分；选中态品牌色；下载 Tab 带未完成数角标。
  * 图标内联 SVG 组件（统一 24 线性风格），不使用图标字体。
  */
-import { computed, onMounted } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useUiStore, type TabKey } from '@/stores/uiStore';
 import { useHaptic } from '@/composables/useHaptic';
+import { animateSpring, prefersReducedMotion } from '@/composables/useSpring';
 import { scrollToTop } from '@/shared/scroll';
 
 interface TabItem {
@@ -66,13 +67,88 @@ function go(tab: TabItem): void {
   }
   void router.push(tab.to);
 }
+
+/* ---------- C4：选中态弹簧滑动指示器 ---------- */
+const navRef = useTemplateRef<HTMLElement>('nav');
+const itemEls: HTMLElement[] = [];
+const pillX = ref(0);
+const pillW = ref(0);
+const pillReady = ref(false);
+let stopSpring: (() => void) | null = null;
+let resizeObserver: ResizeObserver | null = null;
+
+function setItemRef(el: unknown, index: number): void {
+  if (el instanceof HTMLElement) itemEls[index] = el;
+}
+
+/** 量真实按钮矩形，而不是按 1/5 算：安全区/内边距/字号变化都不会让胶囊错位 */
+function measureActive(): { x: number; w: number } | null {
+  const nav = navRef.value;
+  const index = tabs.findIndex((tab) => tab.key === activeTab.value);
+  const el = index >= 0 ? itemEls[index] : undefined;
+  if (!nav || !el) return null;
+  const navRect = nav.getBoundingClientRect();
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0) return null;
+  return { x: rect.left - navRect.left, w: rect.width };
+}
+
+function syncPill(animated: boolean): void {
+  const target = measureActive();
+  if (!target) return;
+  pillW.value = target.w;
+  stopSpring?.();
+  stopSpring = null;
+
+  // 首次定位与系统减动效都直接吸附：进场不该看到胶囊从最左边飞过来
+  if (!animated || !pillReady.value || prefersReducedMotion()) {
+    pillX.value = target.x;
+    pillReady.value = true;
+    return;
+  }
+  stopSpring = animateSpring({
+    from: pillX.value,
+    target: target.x,
+    onFrame: (value) => {
+      pillX.value = value;
+    },
+    onSettle: () => {
+      stopSpring = null;
+    },
+  });
+}
+
+watch(activeTab, () => syncPill(true));
+
+onMounted(() => {
+  void nextTick(() => syncPill(false));
+  if (typeof ResizeObserver === 'function' && navRef.value) {
+    resizeObserver = new ResizeObserver(() => syncPill(false));
+    resizeObserver.observe(navRef.value);
+  }
+});
+
+onBeforeUnmount(() => {
+  stopSpring?.();
+  stopSpring = null;
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+});
 </script>
 
 <template>
-  <nav class="tabbar" aria-label="主导航">
+  <nav ref="nav" class="tabbar" aria-label="主导航">
+    <!-- C4：滑动胶囊。绝对定位不占 grid 格，压在按钮之下 -->
+    <span
+      class="tabbar__pill"
+      :class="{ 'tabbar__pill--ready': pillReady }"
+      :style="{ width: `${pillW}px`, transform: `translate(${pillX}px, -50%)` }"
+      aria-hidden="true"
+    />
     <button
-      v-for="tab in tabs"
+      v-for="(tab, index) in tabs"
       :key="tab.key"
+      :ref="(el) => setItemRef(el, index)"
       class="tabbar__item"
       :class="{ 'tabbar__item--active': activeTab === tab.key }"
       type="button"
@@ -186,7 +262,32 @@ function go(tab: TabItem): void {
   box-shadow: var(--shadow-float);
 }
 
+/*
+ * C4：选中态胶囊。位置由弹簧逐帧写 transform，所以这里**不能**给 transform 加过渡，
+ * 否则 CSS 缓动会和物理积分打架，看起来像拖影。
+ */
+.tabbar__pill {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  z-index: 0;
+  height: 44px;
+  border-radius: var(--radius-md);
+  background-color: var(--color-brand-soft);
+  border: 1px solid var(--color-border-glass);
+  opacity: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.tabbar__pill--ready {
+  opacity: 1;
+  transition: opacity var(--duration-base) var(--ease-standard);
+}
+
 .tabbar__item {
+  position: relative;
+  z-index: 1;
   min-width: 44px;
   min-height: 44px;
   display: flex;
@@ -209,6 +310,10 @@ function go(tab: TabItem): void {
 
 .tabbar__item--active {
   color: var(--color-brand-text);
+}
+
+.tabbar__item--active .tabbar__icon {
+  transform: translateY(-1px);
 }
 
 .tabbar__icon-wrap {

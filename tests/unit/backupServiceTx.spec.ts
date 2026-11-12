@@ -90,6 +90,10 @@ function makeBackup(): BackupFile {
     history: [makeHistory('import-src', 'm1')],
     settings: null,
     downloads: [],
+    lives: [],
+    epgSources: [],
+    channelPrefs: [],
+    reminders: [],
   };
 }
 

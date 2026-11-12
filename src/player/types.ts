@@ -41,6 +41,11 @@ export type PlayerEventMap = {
    * 触发一次/每次加载，由 View 提示「只有声音没有画面」并给换线路/原生引擎入口。
    */
   novideo: { videoWidth: number; videoHeight: number; elapsedSec: number };
+  /**
+   * B1：媒体会话远端指令（通知栏/锁屏/蓝牙线控的上一集、下一集、关闭）。
+   * 原生侧只转发意图，真正的切集由 View 层执行。
+   */
+  remotecommand: { command: 'previous' | 'next' | 'stop' };
 };
 
 export type PlayerEventName = keyof PlayerEventMap;

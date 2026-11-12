@@ -18,7 +18,7 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 
-import type { BackupFile, BackupMode, BackupRecord, BackupSettings } from '@/types';
+import type { BackupFile, BackupImportReport, BackupMode, BackupRecord, BackupSettings } from '@/types';
 import type { WebDAVConfig, WebDAVFileEntry } from '@/services/webdavService';
 import { formatDateStamp, formatRelativeTime } from '@/shared/time';
 
@@ -129,11 +129,30 @@ const previewCounts = computed(() => {
     favorites: b.favorites.length,
     history: b.history.length,
     downloads: b.downloads.length,
+    lives: b.lives.length,
+    epgSources: b.epgSources.length,
+    channelPrefs: b.channelPrefs.length,
+    reminders: b.reminders.length,
     settings: b.settings !== null,
     schemaVersion: b.schemaVersion,
     exportedAt: b.exportedAt,
   };
 });
+
+/** 导入/恢复结果文案：直播域为 0 时不占位，避免旧备份显示一串 0 */
+function reportText(report: BackupImportReport, prefix: string): string {
+  const live = [
+    report.lives > 0 ? `直播源${report.lives}` : '',
+    report.epgSources > 0 ? `EPG源${report.epgSources}` : '',
+    report.channelPrefs > 0 ? `频道分组${report.channelPrefs}` : '',
+    report.reminders > 0 ? `提醒${report.reminders}` : '',
+  ].filter(Boolean);
+  return (
+    `${prefix} 源${report.sources}/收藏${report.favorites}/历史${report.history}` +
+    (live.length > 0 ? `/${live.join('/')}` : '') +
+    (report.settingsRestored ? '（含设置）' : '')
+  );
+}
 
 async function onToggleCredentials(next: boolean): Promise<void> {
   if (!next) {
@@ -268,10 +287,7 @@ async function startImport(): Promise<void> {
     const report = await backupService.importData(parsed.value, importMode.value);
     // 导入后刷新相关 Store（sourceStore/historyStore/favoriteStore 也订阅了事件，这里显式刷新保证 UI 立刻反映）
     await Promise.all([sources.load(), favorites.load(), history.load()]);
-    toast.success(
-      `已导入 源${report.sources}/收藏${report.favorites}/历史${report.history}` +
-        (report.settingsRestored ? '（含设置）' : ''),
-    );
+    toast.success(reportText(report, '已导入'));
     parsed.value = null;
     selectedFile.value = null;
   } catch (e) {
@@ -410,10 +426,7 @@ async function downloadFromWebDAV(file: WebDAVFileEntry): Promise<void> {
     // 复用导入逻辑
     const report = await backupService.importData(backupFile, importMode.value);
     await Promise.all([sources.load(), favorites.load(), history.load()]);
-    toast.success(
-      `已导入 源${report.sources}/收藏${report.favorites}/历史${report.history}` +
-        (report.settingsRestored ? '（含设置）' : ''),
-    );
+    toast.success(reportText(report, '已导入'));
   } catch (e) {
     toast.error(`下载失败：${toErrorShape(e).message}`);
   } finally {
@@ -619,10 +632,7 @@ async function confirmRestore(): Promise<void> {
       mode,
     });
     await Promise.all([sources.load(), favorites.load(), history.load()]);
-    toast.success(
-      `已从 ${record.fileName} 恢复 源${report.sources}/收藏${report.favorites}/历史${report.history}` +
-        (report.settingsRestored ? '（含设置）' : ''),
-    );
+    toast.success(reportText(report, `已从 ${record.fileName} 恢复`));
     cancelRestore();
   } catch (e) {
     // 加密备份密码错误等失败原因留在面板内明确提示，不清空上下文
@@ -747,6 +757,14 @@ onUnmounted(() => {
             源 {{ previewCounts.sources }} · 收藏 {{ previewCounts.favorites }} · 历史
             {{ previewCounts.history }} · 下载 {{ previewCounts.downloads }}
           </p>
+          <p
+            v-if="previewCounts.lives + previewCounts.epgSources + previewCounts.channelPrefs + previewCounts.reminders > 0"
+            class="backup-preview__line"
+          >
+            直播源 {{ previewCounts.lives }} · EPG 源 {{ previewCounts.epgSources }} · 频道分组
+            {{ previewCounts.channelPrefs }} · 节目提醒 {{ previewCounts.reminders }}
+          </p>
+          <p v-else class="backup-preview__sub">该备份不含直播域数据（旧版本导出）</p>
           <p class="backup-preview__sub">
             schemaVersion {{ previewCounts.schemaVersion }} ·
             导出于 {{ previewCounts.exportedAt ? new Date(previewCounts.exportedAt).toLocaleString('zh-CN') : '未知时间' }}

@@ -1,9 +1,15 @@
 /**
  * 备份服务（API-13）
  *
- * - 导出：`schemaVersion = 1`，默认脱敏 `auth.password` / `auth.token`；
+ * - 导出：`schemaVersion = 2`，默认脱敏 `auth.password` / `auth.token`；
  * - 导入：校验 `schemaVersion`（缺失/过高 → `E_VERSION_UNSUPPORTED`），
- *   单事务写 sources/favorites/history（可选 settings），失败全回滚。
+ *   单事务写 sources/favorites/history + 直播域四表（可选 settings），失败全回滚。
+ *
+ * 直播域（v2）：`lives` / `epgSources` / `channelPrefs` / `reminders` 一并备份——
+ * 这四张表是换机后最难手工重建的数据（订阅地址、分组排序、节目提醒）。
+ * v1 备份不含这些字段，归一化为空数组后按"只导入携带的表"处理。
+ * `epgSources` 的内置源在 overwrite 下**不清空**：它由 DB 迁移一次性种入，
+ * 清掉后迁移不会重跑，EPG 会永久失去默认源。
  *
  * `downloads`（FR-40 / CHG-04）：备份**包含下载任务元数据**，但不含视频文件与
  * blob 内容，且剔除 `sink`/`filePath`/`blobKey` 三个"指向本机存储"的字段
@@ -12,11 +18,17 @@
  * 仅表示"备份文件中携带的下载任务条数"，UI 不展示为"已恢复"。
  */
 import { withTx } from '@/db/index';
+import { STORE_NAMES } from '@/db/schema';
+import { channelPrefsRepo } from '@/db/repositories/channelPrefsRepo';
 import { downloadRepo } from '@/db/repositories/downloadRepo';
+import { epgSourceRepo } from '@/db/repositories/epgSourceRepo';
 import { favoriteRepo } from '@/db/repositories/favoriteRepo';
 import { historyRepo } from '@/db/repositories/historyRepo';
 import { kvRepo } from '@/db/repositories/kvRepo';
+import { liveRepo } from '@/db/repositories/liveRepo';
+import { reminderRepo } from '@/db/repositories/reminderRepo';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
+import { reminderService } from '@/services/reminderService';
 import { settingsService } from '@/services/settingsService';
 import {
   base64ToBytes,
@@ -47,9 +59,13 @@ import type {
   BackupRecord,
   BackupSettings,
   BackupSource,
+  ChannelPrefs,
   DownloadTask,
+  EpgSource,
   FavoriteRecord,
   HistoryRecord,
+  LiveRecord,
+  Reminder,
   Source,
 } from '@/types';
 
@@ -602,6 +618,111 @@ function validateHistory(value: unknown): HistoryRecord | null {
   };
 }
 
+/* ---------- 直播域校验（备份 v2） ---------- */
+
+const LIVE_FORMATS = ['m3u', 'txt', 'auto'] as const;
+const EPG_PROTOCOLS = ['auto', 'diyp', 'xmltv'] as const;
+const EPG_MATCH_MODES = ['auto', 'channel-name', 'xmltv-id'] as const;
+const REMINDER_STATES = ['scheduled', 'firing', 'fired', 'missed', 'cancelled'] as const;
+const REMINDER_LEADS = [0, 5, 10, 15, 30] as const;
+
+function pick<T>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function validateLive(value: unknown): LiveRecord | null {
+  if (!isRecord(value)) return null;
+  if (typeof value['id'] !== 'string' || typeof value['url'] !== 'string') return null;
+  const catchup = isRecord(value['catchup']) ? value['catchup'] : null;
+  return {
+    id: value['id'],
+    name: typeof value['name'] === 'string' ? value['name'] : '未命名直播源',
+    url: value['url'],
+    format: pick(value['format'], LIVE_FORMATS, 'auto'),
+    channelCount: typeof value['channelCount'] === 'number' ? value['channelCount'] : null,
+    subscriptionId: typeof value['subscriptionId'] === 'string' ? value['subscriptionId'] : null,
+    ...(catchup
+      ? {
+          catchup: {
+            enabled: Boolean(catchup['enabled']),
+            template: typeof catchup['template'] === 'string' ? catchup['template'] : '',
+            days: typeof catchup['days'] === 'number' ? catchup['days'] : 1,
+          },
+        }
+      : {}),
+    createdAt: typeof value['createdAt'] === 'number' ? value['createdAt'] : Date.now(),
+    updatedAt: typeof value['updatedAt'] === 'number' ? value['updatedAt'] : Date.now(),
+  };
+}
+
+function validateEpgSource(value: unknown): EpgSource | null {
+  if (!isRecord(value)) return null;
+  if (typeof value['id'] !== 'string' || typeof value['endpoint'] !== 'string') return null;
+  return {
+    id: value['id'],
+    name: typeof value['name'] === 'string' ? value['name'] : '未命名 EPG 源',
+    endpoint: value['endpoint'],
+    protocol: pick(value['protocol'], EPG_PROTOCOLS, 'auto'),
+    matchMode: pick(value['matchMode'], EPG_MATCH_MODES, 'auto'),
+    priority: typeof value['priority'] === 'number' ? value['priority'] : 1,
+    enabled: value['enabled'] !== false,
+    builtin: Boolean(value['builtin']),
+    lastProbeAt: typeof value['lastProbeAt'] === 'number' ? value['lastProbeAt'] : null,
+    lastError: typeof value['lastError'] === 'string' ? value['lastError'] : null,
+    createdAt: typeof value['createdAt'] === 'number' ? value['createdAt'] : Date.now(),
+    updatedAt: typeof value['updatedAt'] === 'number' ? value['updatedAt'] : Date.now(),
+  };
+}
+
+function validateChannelPrefs(value: unknown): ChannelPrefs | null {
+  if (!isRecord(value)) return null;
+  if (typeof value['liveSourceId'] !== 'string') return null;
+  const groups = asArray<unknown>(value['groups']).filter(
+    (group): group is ChannelPrefs['groups'][number] =>
+      isRecord(group) && typeof group['id'] === 'string' && typeof group['name'] === 'string',
+  );
+  return {
+    liveSourceId: value['liveSourceId'],
+    groups: groups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      order: typeof group.order === 'number' ? group.order : 0,
+      createdAt: typeof group.createdAt === 'number' ? group.createdAt : Date.now(),
+    })),
+    assignments: isRecord(value['assignments']) ? (value['assignments'] as Record<string, string>) : {},
+    orders: isRecord(value['orders']) ? (value['orders'] as Record<string, string[]>) : {},
+    updatedAt: typeof value['updatedAt'] === 'number' ? value['updatedAt'] : Date.now(),
+  };
+}
+
+function validateReminder(value: unknown): Reminder | null {
+  if (!isRecord(value)) return null;
+  if (typeof value['id'] !== 'string' || typeof value['liveSourceId'] !== 'string') return null;
+  if (typeof value['channelKey'] !== 'string') return null;
+  const startAt = typeof value['startAt'] === 'number' ? value['startAt'] : null;
+  const notifyAt = typeof value['notifyAt'] === 'number' ? value['notifyAt'] : null;
+  if (startAt === null || notifyAt === null) return null;
+  return {
+    id: value['id'],
+    liveSourceId: value['liveSourceId'],
+    epgSourceId: typeof value['epgSourceId'] === 'string' ? value['epgSourceId'] : null,
+    channelKey: value['channelKey'],
+    channelName: typeof value['channelName'] === 'string' ? value['channelName'] : '',
+    programmeKey: typeof value['programmeKey'] === 'string' ? value['programmeKey'] : '',
+    programmeTitle: typeof value['programmeTitle'] === 'string' ? value['programmeTitle'] : '未命名节目',
+    startAt,
+    endAt: typeof value['endAt'] === 'number' ? value['endAt'] : startAt,
+    leadMinutes: pick(value['leadMinutes'], REMINDER_LEADS, 0),
+    notifyAt,
+    // 已触发/已取消的终态原样保留，避免换机后重复提醒；过期项由 reconcile 判 missed
+    state: pick(value['state'], REMINDER_STATES, 'scheduled'),
+    nativeId: typeof value['nativeId'] === 'number' ? value['nativeId'] : 0,
+    lastError: null,
+    createdAt: typeof value['createdAt'] === 'number' ? value['createdAt'] : Date.now(),
+    updatedAt: typeof value['updatedAt'] === 'number' ? value['updatedAt'] : Date.now(),
+  };
+}
+
 /** 校验并规范化备份文件结构（不发 IO） */
 export function normalizeBackupFile(raw: unknown): BackupFile {
   if (!isRecord(raw)) {
@@ -635,6 +756,18 @@ export function normalizeBackupFile(raw: unknown): BackupFile {
     downloads: asArray<unknown>(raw['downloads'])
       .map(validateDownloadMeta)
       .filter((value): value is BackupDownloadMeta => value !== null),
+    lives: asArray<unknown>(raw['lives'])
+      .map(validateLive)
+      .filter((value): value is LiveRecord => value !== null),
+    epgSources: asArray<unknown>(raw['epgSources'])
+      .map(validateEpgSource)
+      .filter((value): value is EpgSource => value !== null),
+    channelPrefs: asArray<unknown>(raw['channelPrefs'])
+      .map(validateChannelPrefs)
+      .filter((value): value is ChannelPrefs => value !== null),
+    reminders: asArray<unknown>(raw['reminders'])
+      .map(validateReminder)
+      .filter((value): value is Reminder => value !== null),
   };
 }
 
@@ -646,13 +779,18 @@ export function normalizeBackupFile(raw: unknown): BackupFile {
  * 不读 `blobs` 表，故备份体积与已下载视频大小无关。
  */
 async function collectBackup(includeCredentials: boolean): Promise<BackupFile> {
-  const [sources, favorites, history, settings, downloads] = await Promise.all([
-    sourceRepo.list(),
-    favoriteRepo.listByCreated(),
-    historyRepo.listAll(HISTORY_MAX),
-    settingsService.get(),
-    downloadRepo.listAll(),
-  ]);
+  const [sources, favorites, history, settings, downloads, lives, epgSources, channelPrefs, reminders] =
+    await Promise.all([
+      sourceRepo.list(),
+      favoriteRepo.listByCreated(),
+      historyRepo.listAll(HISTORY_MAX),
+      settingsService.get(),
+      downloadRepo.listAll(),
+      liveRepo.list(),
+      epgSourceRepo.list(),
+      channelPrefsRepo.list(),
+      reminderRepo.list(),
+    ]);
 
   return {
     schemaVersion: BACKUP_SCHEMA_VERSION,
@@ -663,6 +801,13 @@ async function collectBackup(includeCredentials: boolean): Promise<BackupFile> {
     history,
     settings,
     downloads: downloads.map((task) => toDownloadMeta(task, includeCredentials)),
+    // 直播源地址常带 token，与下载直链同一套脱敏口径
+    lives: includeCredentials ? lives : lives.map((live) => ({ ...live, url: redactUrl(live.url) })),
+    epgSources: includeCredentials
+      ? epgSources
+      : epgSources.map((source) => ({ ...source, endpoint: redactUrl(source.endpoint) })),
+    channelPrefs,
+    reminders,
   };
 }
 
@@ -728,18 +873,41 @@ export const backupService: BackupService = {
     const history = normalized.history.slice(0, HISTORY_MAX).map((record) => ({ ...record }));
 
     try {
-      await withTx(['sources', 'favorites', 'history'], 'readwrite', async (tx) => {
-        if (mode === 'overwrite') {
-          await tx.objectStore('sources').clear();
-          await favoriteRepo.clear(tx);
-          await historyRepo.clear(tx);
-        }
-        const sourceStore = tx.objectStore('sources');
-        for (const source of sources) await sourceStore.put(source);
-        await favoriteRepo.saveMany(favorites, tx);
-        // 必须传 tx：historyRepo 自开事务会让外层事务在 await 期间自动提交（REV-01）
-        await historyRepo.saveMany(history, tx);
-      });
+      await withTx(
+        ['sources', 'favorites', 'history', 'lives', 'epgSources', 'channelPrefs', 'reminders'],
+        'readwrite',
+        async (tx) => {
+          if (mode === 'overwrite') {
+            await tx.objectStore('sources').clear();
+            await favoriteRepo.clear(tx);
+            await historyRepo.clear(tx);
+            await tx.objectStore(STORE_NAMES.lives).clear();
+            await tx.objectStore(STORE_NAMES.channelPrefs).clear();
+            await tx.objectStore(STORE_NAMES.reminders).clear();
+            // 内置 EPG 源由 DB 迁移一次性种入，清空后不会重建 → 只清用户源
+            const epgStore = tx.objectStore(STORE_NAMES.epgSources);
+            const existingEpg = await epgStore.getAll();
+            for (const record of existingEpg) {
+              if (!record.builtin) await epgStore.delete(record.id);
+            }
+          }
+          const sourceStore = tx.objectStore('sources');
+          for (const source of sources) await sourceStore.put(source);
+          await favoriteRepo.saveMany(favorites, tx);
+          // 必须传 tx：historyRepo 自开事务会让外层事务在 await 期间自动提交（REV-01）
+          await historyRepo.saveMany(history, tx);
+
+          // 直播域四表同样只走外层 tx，禁止调用会自开事务的 repo 方法
+          const liveStore = tx.objectStore(STORE_NAMES.lives);
+          for (const record of normalized.lives) await liveStore.put(record);
+          const epgStore = tx.objectStore(STORE_NAMES.epgSources);
+          for (const record of normalized.epgSources) await epgStore.put(record);
+          const prefsStore = tx.objectStore(STORE_NAMES.channelPrefs);
+          for (const record of normalized.channelPrefs) await prefsStore.put(record);
+          const reminderStore = tx.objectStore(STORE_NAMES.reminders);
+          for (const record of normalized.reminders) await reminderStore.put(record);
+        },
+      );
     } catch (e) {
       throw toAppError(e, 'E_DB');
     }
@@ -767,11 +935,30 @@ export const backupService: BackupService = {
     appEvents.emit('favorites:changed', { id: null });
     appEvents.emit('history:changed', { id: null });
 
+    const liveTouched =
+      normalized.lives.length +
+        normalized.epgSources.length +
+        normalized.channelPrefs.length +
+        normalized.reminders.length >
+      0;
+    if (liveTouched) {
+      appEvents.emit('live:changed', { reason: 'import' });
+      // 提醒的原生排期属于导出设备，导入后必须重新对账才会真正生效。
+      // 失败不影响数据导入（Web 端恒 unsupported）。
+      void reminderService.reconcile().catch((e) => {
+        logger.warn('导入后节目提醒对账失败', e);
+      });
+    }
+
     return {
       sources: sources.length,
       favorites: favorites.length,
       history: history.length,
       downloads: normalized.downloads.length,
+      lives: normalized.lives.length,
+      epgSources: normalized.epgSources.length,
+      channelPrefs: normalized.channelPrefs.length,
+      reminders: normalized.reminders.length,
       settingsRestored,
     };
   },
@@ -861,6 +1048,10 @@ export function summarizeBackup(backup: BackupFile): {
   favorites: number;
   history: number;
   downloads: number;
+  lives: number;
+  epgSources: number;
+  channelPrefs: number;
+  reminders: number;
   exportedAt: number;
 } {
   return {
@@ -868,6 +1059,10 @@ export function summarizeBackup(backup: BackupFile): {
     favorites: backup.favorites.length,
     history: backup.history.length,
     downloads: backup.downloads.length,
+    lives: backup.lives.length,
+    epgSources: backup.epgSources.length,
+    channelPrefs: backup.channelPrefs.length,
+    reminders: backup.reminders.length,
     exportedAt: backup.exportedAt,
   };
 }

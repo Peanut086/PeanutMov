@@ -50,6 +50,7 @@ import {
   type EmbeddedAudioTrack,
   type EmbeddedTextTrack,
   type EmbeddedTrackState,
+  type NativeMediaInfo,
 } from '@/player/NativeEngine';
 import { isExoPlayerAvailable } from '@/native/exoPlayerPlugin';
 import { SubtitleManager } from '@/player/SubtitleManager';
@@ -127,6 +128,9 @@ export class PlayerController {
   private listeners = new Map<PlayerEventName, Set<(payload: never) => void>>();
   private state: PlayerState = 'idle';
   private options: PlayerLoadOptions | null = null;
+  /** B2：跨引擎重建保持的后台播放 / 纯音频开关 */
+  private backgroundPlayback = false;
+  private audioOnly = false;
 
   private rate: PlaybackRate = 1;
   private volume = 100;
@@ -381,8 +385,15 @@ export class PlayerController {
         onEmbeddedTracksChange: (state) => this.setEmbeddedTracks(state),
         // P1-a：原生侧回报"seek 后画面落地"，立即收口等待态并写历史
         onSeekSettled: () => this.settleSeek(),
+        // B1：原生侧播放意图变化（通知栏/线控/音频焦点）与上下集指令
+        onPlayingChange: (playing) => this.handleRemotePlaying(playing),
+        onRemoteCommand: (command) => this.emit('remotecommand', { command }),
       });
       nativeEngine.attach(host);
+      nativeEngine.setMediaInfo(this.mediaInfoOf());
+      // 切集重建引擎后，后台播放/纯音频开关必须重放，否则用户设置被静默重置
+      nativeEngine.setBackgroundPlayback(this.backgroundPlayback);
+      nativeEngine.setAudioOnly(this.audioOnly);
       try {
         await this.withMetadataTimeout(nativeEngine.load(playback), NATIVE_METADATA_TIMEOUT_MS);
         // 加载期间被销毁：销毁刚创建的引擎，不赋值给 this.engine
@@ -508,11 +519,19 @@ export class PlayerController {
         onWaiting: () => this.emit('statechange', { playing: true, waiting: true }),
         onEnded: () => this.handleEnded(),
         onError: (error) => this.handleEngineError(error),
+        onQualitiesChange: (qualities) => this.emit('qualitychange', { quality: this.quality, levels: qualities }),
         // EXT-07：WebView 失败降级到原生时同样要接轨道状态
         onEmbeddedTracksChange: (state) => this.setEmbeddedTracks(state),
         onSeekSettled: () => this.settleSeek(),
+        // B1：原生侧播放意图变化（通知栏/线控/音频焦点）与上下集指令
+        onPlayingChange: (playing) => this.handleRemotePlaying(playing),
+        onRemoteCommand: (command) => this.emit('remotecommand', { command }),
       });
       nativeEngine.attach(host);
+      nativeEngine.setMediaInfo(this.mediaInfoOf());
+      // 切集重建引擎后，后台播放/纯音频开关必须重放，否则用户设置被静默重置
+      nativeEngine.setBackgroundPlayback(this.backgroundPlayback);
+      nativeEngine.setAudioOnly(this.audioOnly);
       try {
         await this.withMetadataTimeout(nativeEngine.load(playback), NATIVE_METADATA_TIMEOUT_MS);
         // 加载期间被销毁：销毁刚创建的引擎，不赋值给 this.engine
@@ -1028,6 +1047,48 @@ export class PlayerController {
 
   private nativeEngine(): NativeEngine | null {
     return this.engine instanceof NativeEngine ? this.engine : null;
+  }
+
+  /* ---------- B1/B2：媒体会话 / 后台播放 / 纯音频 ---------- */
+
+  /** 锁屏与通知栏元数据：片名 + 当前集名 + 海报 */
+  private mediaInfoOf(): NativeMediaInfo {
+    const opts = this.options;
+    const episode = opts?.episodes.find((e) => e.episodeId === opts.episodeId);
+    return {
+      title: opts?.title ?? '',
+      subtitle: episode?.title ?? '',
+      artworkUrl: opts?.posterUrl ?? null,
+    };
+  }
+
+  /**
+   * 原生侧播放意图变化（通知栏/线控/音频焦点被抢）。
+   *
+   * 只同步状态、不回写引擎：否则「原生暂停 → JS 暂停 → 原生暂停」会形成回环。
+   */
+  private handleRemotePlaying(playing: boolean): void {
+    if (this.destroyed) return;
+    if (playing) {
+      this.setState('playing');
+    } else {
+      this.handlePause();
+    }
+  }
+
+  /**
+   * B2：后台继续播放。切集会重建引擎，故记住开关并在新引擎上重放。
+   * WebView 引擎不支持（切后台仍由 View 层暂停）。
+   */
+  setBackgroundPlayback(enabled: boolean): void {
+    this.backgroundPlayback = enabled;
+    this.nativeEngine()?.setBackgroundPlayback(enabled);
+  }
+
+  /** B2：纯音频模式（禁视频轨 + 收起原生 surface）。仅原生引擎支持 */
+  setAudioOnly(enabled: boolean): void {
+    this.audioOnly = enabled;
+    this.nativeEngine()?.setAudioOnly(enabled);
   }
 
   private setEmbeddedTracks(next: EmbeddedTrackState): void {

@@ -15,6 +15,7 @@
     "test:cov": "vitest run --coverage",
     "cap:sync": "cap sync android",
     "cap:android": "cap open android",
+    "android:install": "node scripts/dev-install.cjs",
     "postinstall": "npx patch-package"
   },
   "dependencies": {

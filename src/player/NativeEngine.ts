@@ -46,6 +46,24 @@ export interface NativeEngineEvents {
   onEmbeddedTracksChange?: (state: EmbeddedTrackState) => void;
   /** P1-a：seek 后画面真正渲染出第一帧（Java onRenderedFirstFrame 上报） */
   onSeekSettled?: (info: { targetMs: number; latencyMs: number }) => void;
+  /**
+   * B1：原生侧播放意图变化（通知栏/锁屏/线控/音频焦点被抢都会触发）。
+   *
+   * 不接这条回调就会出现「画面在播、按钮显示暂停」的双状态源。
+   */
+  onPlayingChange?: (playing: boolean) => void;
+  /** B1：通知栏/锁屏的上下集与关闭指令（真正的切集逻辑在 JS 侧） */
+  onRemoteCommand?: (command: RemoteCommand) => void;
+}
+
+/** 媒体会话远端指令 */
+export type RemoteCommand = 'previous' | 'next' | 'stop';
+
+/** B1：锁屏/通知栏元数据（随 prepare 下发，见 ExoPrepareOptions 注释） */
+export interface NativeMediaInfo {
+  title: string;
+  subtitle: string;
+  artworkUrl: string | null;
 }
 
 /* ---------- EXT-07：内嵌字幕 / 音轨 ---------- */
@@ -105,6 +123,7 @@ type ExoStateData = {
   state: string;
   message?: string;
   duration?: number;
+  command?: string;
   qualities?: ExoQuality[];
   textTracks?: RawEmbeddedTrack[];
   audioTracks?: RawEmbeddedTrack[];
@@ -151,6 +170,8 @@ export class NativeEngine implements PlayableEngine {
   private qualities: ExoQuality[] = [];
   /** EXT-07：内嵌字幕/音轨状态（Java 推送 + 本地乐观更新） */
   private tracks: EmbeddedTrackState = emptyEmbeddedTracks();
+  /** B1：锁屏/通知栏元数据，由 PlayerController 在 load 前注入 */
+  private mediaInfo: NativeMediaInfo | null = null;
 
   constructor(private readonly events: NativeEngineEvents) {}
 
@@ -193,6 +214,10 @@ export class NativeEngine implements PlayableEngine {
         rect: rectOf(host),
         // P0-7: 续播位置随 prepare 下发
         startPositionMs: source.startPositionMs ?? 0,
+        // B1：会话元数据只能随 MediaItem 下发，事后补设会动播放进度
+        title: this.mediaInfo?.title,
+        subtitle: this.mediaInfo?.subtitle,
+        artworkUrl: this.mediaInfo?.artworkUrl ?? undefined,
       });
     } catch (e) {
       this.pending = null;
@@ -344,6 +369,48 @@ export class NativeEngine implements PlayableEngine {
     );
   }
 
+  /* ---------- B1/B2：媒体会话元数据 / 后台播放 / 纯音频 ---------- */
+
+  /** 必须在 load() 之前调用：元数据随 prepare 一起下发（见 ExoPrepareOptions） */
+  setMediaInfo(info: NativeMediaInfo): void {
+    this.mediaInfo = info;
+  }
+
+  /** B2：后台继续播放。旧安装包没有该方法时静默降级为「切后台即暂停」 */
+  setBackgroundPlayback(enabled: boolean): void {
+    this.callOptional('setBackgroundPlayback', { enabled });
+  }
+
+  /** B2：纯音频模式（禁视频轨 + 收起 surface，画面位置交还 WebView） */
+  setAudioOnly(enabled: boolean): void {
+    this.callOptional('setAudioOnly', { enabled });
+  }
+
+  /**
+   * 新增桥接方法的可选调用。
+   *
+   * 旧安装包上 `ExoPlayer.xxx` 根本不存在，直接调用会**同步**抛 TypeError，
+   * `.catch()` 接不住——而这两个方法在 attachEngine 里是同步调的，
+   * 抛出去会让整个 load 失败。所以必须先探测再调。
+   */
+  private callOptional(
+    method: 'setBackgroundPlayback' | 'setAudioOnly',
+    payload: { enabled: boolean },
+  ): void {
+    const fn = ExoPlayer[method];
+    if (typeof fn !== 'function') {
+      logger.debug(`ExoPlayer.${method} 不可用（旧安装包），已跳过`);
+      return;
+    }
+    try {
+      void fn.call(ExoPlayer, payload).catch((e: unknown) =>
+        logger.debug(`ExoPlayer ${method} 失败`, e),
+      );
+    } catch (e) {
+      logger.debug(`ExoPlayer ${method} 抛错`, e);
+    }
+  }
+
   /** 本次会话累计丢帧（AC-125 帧率采样用） */
   getDroppedFrames(): number {
     return this.droppedFrames;
@@ -402,6 +469,18 @@ export class NativeEngine implements PlayableEngine {
         this.ready = false;
         this.events.onEnded();
         break;
+      case 'playing':
+      case 'paused':
+        // B1：原生侧改了播放意图（通知栏/线控/音频焦点），JS 状态必须跟上
+        this.events.onPlayingChange?.(data.state === 'playing');
+        break;
+      case 'remote': {
+        const command = data.command;
+        if (command === 'previous' || command === 'next' || command === 'stop') {
+          this.events.onRemoteCommand?.(command);
+        }
+        break;
+      }
       case 'qualities': {
         // v1.8 优化：清晰度列表更新
         if (data.qualities) {

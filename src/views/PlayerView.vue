@@ -45,9 +45,13 @@ import QualitySheet from '@/components/player/QualitySheet.vue';
 import DisplayModeSheet from '@/components/player/DisplayModeSheet.vue';
 import SkipIntroPrompt from '@/components/player/SkipIntroPrompt.vue';
 import SkipMarkSheet from '@/components/player/SkipMarkSheet.vue';
+import SleepTimerSheet from '@/components/player/SleepTimerSheet.vue';
 import PlayerErrorPanel from '@/components/player/PlayerErrorPanel.vue';
+import PlayerScreenLock from '@/components/player/PlayerScreenLock.vue';
 import NextEpisodePrompt from '@/components/player/NextEpisodePrompt.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
+import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
+import PosterImage from '@/components/common/PosterImage.vue';
 import EpisodeList from '@/components/media/EpisodeList.vue';
 import LineSelector from '@/components/media/LineSelector.vue';
 import IconDownload from '@/components/icons/IconDownload.vue';
@@ -354,6 +358,7 @@ const playerCtl = usePlayerController({
   subtitle: subtitleSettings.value,
   defaultRate: defaultRate.value,
   autoPlayNext: autoPlayNext.value,
+  backgroundPlayback: playerSettings.value.backgroundPlayback === true,
   resizeMode: currentResizeMode.value,
   longPressRate: longPressRate.value,
   describe: () => {
@@ -399,6 +404,13 @@ const {
   prevEpisodeId,
   autoNextTarget,
   acknowledgeAutoNext,
+  audioOnly,
+  backgroundPlayback,
+  remoteEpisodeTarget,
+  acknowledgeRemoteEpisode,
+  sleepTimer,
+  setAudioOnly,
+  setBackgroundPlayback,
   createController,
   load,
   togglePlay,
@@ -446,6 +458,45 @@ watch(autoNextTarget, (targetId) => {
   if (ep) chooseEpisode(ep);
 });
 
+/** B1：通知栏/锁屏/线控的上下集，与自动连播共用同一条路由入口 */
+watch(remoteEpisodeTarget, (targetId) => {
+  if (!targetId) return;
+  const ep = episodes.value.find((e) => e.id === targetId);
+  acknowledgeRemoteEpisode();
+  if (ep) chooseEpisode(ep);
+});
+
+/** B2：后台播放开关——立即生效并写回设置（纯音频模式隐含后台播放，见 composable） */
+function toggleBackgroundPlayback(): void {
+  const next = !backgroundPlayback.value;
+  setBackgroundPlayback(next);
+  void settings.update({ player: { ...playerSettings.value, backgroundPlayback: next } });
+  ui.toast(next ? '切后台将继续播放' : '切后台将自动暂停', 'info', 1500);
+}
+
+/** B3：睡眠定时——分钟档按真实时间走，「播完本集」等自然结束 */
+const {
+  choice: sleepChoice,
+  remainingSec: sleepRemainingSec,
+  active: sleepActive,
+  label: sleepLabel,
+} = sleepTimer;
+
+function armSleepMinutes(minutes: number): void {
+  sleepTimer.setMinutes(minutes);
+  ui.toast(`${minutes} 分钟后自动暂停`, 'info', 1800);
+}
+
+function armSleepEpisode(): void {
+  sleepTimer.setFinishEpisode();
+  ui.toast('本集播完后停止播放', 'info', 1800);
+}
+
+function cancelSleep(): void {
+  sleepTimer.cancel();
+  ui.toast('已关闭睡眠定时', 'info', 1500);
+}
+
 /* ---------- 面板 ---------- */
 const speedOpen = ref(false);
 const subtitleOpen = ref(false);
@@ -456,6 +507,7 @@ const qualityOpen = ref(false);
 const displayModeOpen = ref(false);
 const episodeOpen = ref(false);
 const moreOpen = ref(false);
+const sleepOpen = ref(false);
 const pickerOpen = ref(false);
 const downloading = ref(false);
 // OPT-10：手势帮助浮层
@@ -1097,6 +1149,9 @@ watch(
 onBeforeUnmount(() => {
   cancelAutoNext();
   clearSeekPreview();
+  // 起播进度 rAF 自续不受 finally 守卫保护：卸载会置反 pageAlive/epoch，
+  // 不在这里显式取消就会留下常驻循环。
+  cancelLoadingProgress();
   // 页面存活守卫：卸载后作废所有在飞异步链，防止后台链路劫持路由/覆盖全局状态
   pageAlive = false;
   ++loadEpoch;
@@ -2127,12 +2182,64 @@ watch(mediaId, async (next, prev) => {
 /* ---------- 沉浸态 ---------- */
 const immersive = computed(() => player.fullscreen);
 
+/* ---------- B4：横屏屏幕锁（防误触） ---------- */
+const screenLocked = ref(false);
+const lockRevealed = ref(false);
+let lockRevealTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 锁定态胶囊只在轻触后短暂露出；未锁定态跟随控件栏一起显隐 */
+const lockPillVisible = computed(() =>
+  screenLocked.value ? lockRevealed.value : controlsVisible.value,
+);
+
+function revealLockPill(): void {
+  lockRevealed.value = true;
+  if (lockRevealTimer !== null) clearTimeout(lockRevealTimer);
+  lockRevealTimer = setTimeout(() => {
+    lockRevealed.value = false;
+    lockRevealTimer = null;
+  }, 3000);
+}
+
+function clearLockReveal(): void {
+  if (lockRevealTimer !== null) {
+    clearTimeout(lockRevealTimer);
+    lockRevealTimer = null;
+  }
+  lockRevealed.value = false;
+}
+
+function toggleScreenLock(): void {
+  screenLocked.value = !screenLocked.value;
+  if (screenLocked.value) {
+    setControlsVisible(false);
+    revealLockPill();
+    ui.toast('已锁定屏幕，轻触画面可解锁', 'info', 2000);
+  } else {
+    clearLockReveal();
+    setControlsVisible(true);
+  }
+}
+
+// 退出全屏必须自动解锁，否则竖屏下控件全被吃掉，页面等于废了
+watch(immersive, (on) => {
+  if (!on && screenLocked.value) {
+    screenLocked.value = false;
+    clearLockReveal();
+    setControlsVisible(true);
+  }
+});
+
+onBeforeUnmount(clearLockReveal);
+
 /* ---------- 键盘快捷键（桌面浏览器） ---------- */
 /**
  * 焦点落在输入区或弹层内时让出键盘控制（REV-18，判定见 `player/shortcutGuard`）。
  */
 function onKeydown(ev: KeyboardEvent): void {
   if (shouldIgnoreShortcut(ev.target)) return;
+  // 锁屏时只留 Escape 作为退出全屏的逃生口（退出会自动解锁）
+  if (screenLocked.value && ev.key !== 'Escape') return;
   const step = playerSettings.value.seekStepSec ?? 10;
   switch (ev.key) {
     case ' ':
@@ -2396,6 +2503,36 @@ onBeforeUnmount(() => {
           :ambilight-intensity="ambilightIntensity"
           @ambilight-blocked="onAmbilightBlocked"
         >
+          <!-- B2：纯音频模式原生画面层已隐藏，用海报 + 声波把「还在播」表达出来 -->
+          <div v-if="audioOnly && !pipActive" class="audio-stage">
+            <img
+              v-if="item?.posterUrl"
+              class="audio-stage__blur"
+              :src="item.posterUrl"
+              alt=""
+              aria-hidden="true"
+              draggable="false"
+            />
+            <div class="audio-stage__scrim" aria-hidden="true" />
+            <div class="audio-stage__body">
+              <div class="audio-stage__cover">
+                <PosterImage :src="item?.posterUrl ?? null" :alt="titleText" eager />
+              </div>
+              <div class="audio-stage__meta">
+                <span class="audio-stage__badge">纯音频</span>
+                <p class="audio-stage__title">{{ titleText }}</p>
+                <p v-if="episodeLabel" class="audio-stage__sub">{{ episodeLabel }}</p>
+                <div
+                  class="audio-stage__bars"
+                  :class="{ 'audio-stage__bars--still': !player.playing }"
+                  aria-hidden="true"
+                >
+                  <i v-for="n in 5" :key="n" />
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- A-03：拖动进度时把目标帧垫在主画面位置，引擎到位后撤掉 -->
           <div v-if="seekPreviewUrl && !pipActive" class="seek-preview" aria-hidden="true">
             <img :src="seekPreviewUrl" alt="" draggable="false" />
@@ -2425,7 +2562,7 @@ onBeforeUnmount(() => {
           />
 
           <GestureLayer
-            v-if="!pageLoading && !loadError && !player.error"
+            v-if="!pageLoading && !loadError && !player.error && !screenLocked"
             :seek-max-sec="gestureSettings.seekMaxSec"
             :sensitivity="gestureSettings.sensitivity"
             @intent="onStageIntent"
@@ -2434,10 +2571,10 @@ onBeforeUnmount(() => {
           />
 
           <!-- P1-1：手势引导（首次进入自动显示） -->
-          <GestureGuide v-if="!pageLoading && !loadError && !player.error" />
+          <GestureGuide v-if="!pageLoading && !loadError && !player.error && !screenLocked" />
 
           <!-- OPT-10：手势帮助浮层（长按触发） -->
-          <GestureHelpOverlay :visible="gestureHelpVisible" @close="closeGestureHelp" />
+          <GestureHelpOverlay :visible="gestureHelpVisible && !screenLocked" @close="closeGestureHelp" />
 
           <PlayerHud
             :kind="hud.kind"
@@ -2448,7 +2585,7 @@ onBeforeUnmount(() => {
 
           <PlayerControls
             v-if="!loadError"
-            :visible="controlsVisible"
+            :visible="controlsVisible && !screenLocked"
             :title="titleText"
             :episode-label="episodeLabel"
             :playing="player.playing"
@@ -2495,7 +2632,7 @@ onBeforeUnmount(() => {
 
           <!-- EXT-07：沉浸态音轨入口（横屏控制条没有音轨位，用浮动胶囊补齐） -->
           <button
-            v-if="engineIsNative && immersive && !pipActive && embeddedTracks.audio.length > 0"
+            v-if="engineIsNative && immersive && !pipActive && !screenLocked && embeddedTracks.audio.length > 0"
             class="player-audio-chip"
             :class="{ 'player-audio-chip--hidden': !controlsVisible }"
             type="button"
@@ -2595,10 +2732,19 @@ onBeforeUnmount(() => {
             @confirm="onBackgroundContinue"
             @cancel="onBackgroundExit"
           />
+
+          <!-- B4：横屏屏幕锁（放在最后，锁定态拦截片要盖住上面所有交互层） -->
+          <PlayerScreenLock
+            v-if="immersive && !pipActive && !loadError && !player.error"
+            :locked="screenLocked"
+            :revealed="lockPillVisible"
+            @toggle="toggleScreenLock"
+            @reveal="revealLockPill"
+          />
         </PlayerSurface>
 
         <!-- 弹幕样式实时调节面板（非模态，叠在 player-stage 内） -->
-        <DanmakuStylePanel :open="danmakuStylePanelOpen" />
+        <DanmakuStylePanel :open="danmakuStylePanelOpen && !screenLocked" />
       </div>
 
       <!-- 竖屏下方信息区（全屏时隐藏） -->
@@ -2815,8 +2961,53 @@ onBeforeUnmount(() => {
         <li><button class="sheet-list__item" type="button" @click="openDetail">查看详情</button></li>
         <li><button class="sheet-list__item" type="button" @click="pickerOpen = true">下载本集</button></li>
         <li><button class="sheet-list__item" type="button" @click="skipMarkOpen = true">片头 / 片尾标记</button></li>
+        <li>
+          <button class="sheet-list__item" type="button" @click="moreOpen = false; sleepOpen = true">
+            <span>睡眠定时</span>
+            <span class="sheet-list__value" :class="{ 'sheet-list__value--on': sleepActive }">
+              {{ sleepLabel }}
+            </span>
+          </button>
+        </li>
+        <li class="sheet-list__row">
+          <span class="sheet-list__label">
+            后台播放
+            <small class="sheet-list__note">
+              {{ engineIsNative ? '切到后台或锁屏后继续播放' : '仅原生播放器支持' }}
+            </small>
+          </span>
+          <ToggleSwitch
+            :model-value="backgroundPlayback"
+            :disabled="!engineIsNative"
+            label="后台播放"
+            @change="toggleBackgroundPlayback"
+          />
+        </li>
+        <li class="sheet-list__row">
+          <span class="sheet-list__label">
+            纯音频
+            <small class="sheet-list__note">
+              {{ engineIsNative ? '收起画面只听声音，省电省流量' : '仅原生播放器支持' }}
+            </small>
+          </span>
+          <ToggleSwitch
+            :model-value="audioOnly"
+            :disabled="!engineIsNative"
+            label="纯音频模式"
+            @change="setAudioOnly"
+          />
+        </li>
       </ul>
     </BottomSheet>
+
+    <SleepTimerSheet
+      v-model="sleepOpen"
+      :choice="sleepChoice"
+      :remaining-sec="sleepRemainingSec"
+      @minutes="armSleepMinutes"
+      @finish-episode="armSleepEpisode"
+      @cancel="cancelSleep"
+    />
 
     <BottomSheet v-model="pickerOpen" :title="`下载 · ${titleText}`">
       <p class="picker-desc">将当前集加入下载队列。</p>
@@ -2892,6 +3083,127 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+/* B2：纯音频舞台——海报虚化铺底 + 前景封面 + 声波，指针穿透交给手势层 */
+.audio-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background-color: var(--color-bg-base);
+  pointer-events: none;
+}
+
+.audio-stage__blur {
+  position: absolute;
+  inset: -12%;
+  width: 124%;
+  height: 124%;
+  object-fit: cover;
+  filter: blur(28px) saturate(1.4);
+  opacity: 0.5;
+  transform: scale(1.05);
+}
+
+.audio-stage__scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    115deg,
+    color-mix(in srgb, var(--color-bg-base) 88%, transparent) 0%,
+    color-mix(in srgb, var(--color-brand) 22%, transparent) 55%,
+    color-mix(in srgb, var(--color-bg-base) 78%, transparent) 100%
+  );
+}
+
+.audio-stage__body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0 var(--space-5);
+}
+
+.audio-stage__cover {
+  flex: 0 0 auto;
+  height: 62%;
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-card);
+  overflow: hidden;
+  box-shadow: var(--shadow-3);
+}
+
+.audio-stage__meta {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.audio-stage__badge {
+  align-self: flex-start;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  background-color: color-mix(in srgb, var(--color-brand) 26%, transparent);
+  color: var(--color-brand);
+  font: var(--text-caption);
+}
+
+.audio-stage__title {
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font: var(--text-title-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audio-stage__sub {
+  color: var(--color-text-secondary);
+  font: var(--text-label);
+}
+
+.audio-stage__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 20px;
+  margin-top: var(--space-2);
+}
+
+.audio-stage__bars i {
+  width: 3px;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background-color: var(--color-brand);
+  transform-origin: bottom;
+  animation: audio-bar 900ms var(--ease-standard) infinite alternate;
+}
+
+.audio-stage__bars i:nth-child(2) { animation-duration: 620ms; }
+.audio-stage__bars i:nth-child(3) { animation-duration: 1080ms; }
+.audio-stage__bars i:nth-child(4) { animation-duration: 760ms; }
+.audio-stage__bars i:nth-child(5) { animation-duration: 940ms; }
+
+.audio-stage__bars--still i {
+  animation-play-state: paused;
+  transform: scaleY(0.22);
+  opacity: 0.5;
+}
+
+@keyframes audio-bar {
+  from { transform: scaleY(0.2); }
+  to { transform: scaleY(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .audio-stage__bars i {
+    animation: none;
+    transform: scaleY(0.6);
+  }
+
+  .audio-stage__bars i:nth-child(2) { transform: scaleY(0.9); }
+  .audio-stage__bars i:nth-child(4) { transform: scaleY(0.4); }
 }
 
 .player-root--landscape {
@@ -3174,6 +3486,40 @@ onBeforeUnmount(() => {
   color: var(--color-text-primary);
   font: var(--text-body-strong);
   text-align: left;
+}
+
+.sheet-list__value {
+  margin-left: auto;
+  color: var(--color-text-tertiary);
+  font: var(--text-label);
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet-list__value--on {
+  color: var(--color-brand-text);
+}
+
+.sheet-list__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-height: 60px;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.sheet-list__label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--color-text-primary);
+  font: var(--text-body-strong);
+}
+
+.sheet-list__note {
+  color: var(--color-text-secondary);
+  font: var(--text-caption);
 }
 
 .picker-desc {

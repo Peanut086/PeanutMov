@@ -171,8 +171,8 @@ export const DOWNLOAD_RATE_TICK_MS = 50;
 export const MAX_SUBSCRIPTION_BYTES = 2 * 1024 * 1024;
 /** 单份订阅最多源数量（7.7） */
 export const MAX_SUBSCRIPTION_SOURCES = 500;
-/** 备份文件 schemaVersion */
-export const BACKUP_SCHEMA_VERSION = 1;
+/** 备份文件 schemaVersion（v2 起纳入直播源/EPG 源/频道偏好/节目提醒） */
+export const BACKUP_SCHEMA_VERSION = 2;
 
 /* ---------- 校验 ---------- */
 export const SOURCE_NAME_MAX_LENGTH = 30;

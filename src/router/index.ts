@@ -117,6 +117,13 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresLayout: false, depth: 1, title: '观看历史' },
   },
   {
+    // D2：本地观影报告（历史表聚合，不联网）
+    path: '/report',
+    name: 'report',
+    component: () => import('@/views/WatchReportView.vue'),
+    meta: { requiresLayout: false, depth: 1, title: '观影报告' },
+  },
+  {
     path: '/favorites',
     name: 'favorites',
     component: () => import('@/views/FavoritesView.vue'),

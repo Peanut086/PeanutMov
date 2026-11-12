@@ -608,6 +608,11 @@ export interface PlayerSettings {
   ambilight?: boolean;
   /** C-09 氛围光强度 0~100（默认 85）；只影响渐变峰值不透明度，不影响取样成本 */
   ambilightIntensity?: number;
+  /**
+   * B2：切后台继续播放（默认关，保持既有「切后台即暂停」行为）。
+   * 仅原生引擎生效——WebView 的 video 在后台会被系统挂起，开了也播不动。
+   */
+  backgroundPlayback?: boolean;
 }
 
 export interface GestureSettings {
@@ -936,6 +941,11 @@ export interface BackupFile {
   history: HistoryRecord[];
   settings: AppSettings | null;
   downloads: Array<Omit<DownloadTask, 'sink' | 'filePath' | 'blobKey'>>;
+  /** v2：直播域四表。schemaVersion 1 的备份不含这些字段，归一化后为空数组 */
+  lives: LiveRecord[];
+  epgSources: EpgSource[];
+  channelPrefs: ChannelPrefs[];
+  reminders: Reminder[];
 }
 
 export interface BackupImportReport {
@@ -943,6 +953,10 @@ export interface BackupImportReport {
   favorites: number;
   history: number;
   downloads: number;
+  lives: number;
+  epgSources: number;
+  channelPrefs: number;
+  reminders: number;
   settingsRestored: boolean;
 }
 

@@ -267,7 +267,7 @@ async function onPullRefresh(): Promise<void> {
           </p>
         </section>
 
-        <!-- 豆瓣榜单榜单 榜单榜入口 -->
+        <!-- 豆瓣榜单入口 -->
         <section class="home-section" aria-labelledby="home-douban">
           <button class="home-douban-banner" type="button" @click="openDouban">
             <span class="home-douban-banner__icon" aria-hidden="true">
@@ -276,7 +276,7 @@ async function onPullRefresh(): Promise<void> {
               </svg>
             </span>
             <span class="home-douban-banner__text">
-              <span id="home-douban" class="home-douban-banner__title">豆瓣榜单 榜单榜</span>
+              <span id="home-douban" class="home-douban-banner__title">豆瓣榜单</span>
               <span class="home-douban-banner__desc">豆瓣 Top250 · 正在热映 · 热门剧集</span>
             </span>
             <span class="home-douban-banner__arrow" aria-hidden="true">›</span>

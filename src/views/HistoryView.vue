@@ -124,6 +124,10 @@ function goLibrary(): void {
   void router.push('/library');
 }
 
+function goReport(): void {
+  void router.push('/report');
+}
+
 async function retry(): Promise<void> {
   await history.load();
 }
@@ -133,6 +137,14 @@ async function retry(): Promise<void> {
   <main class="history-page" data-route="history">
     <AppHeader title="观看历史" back>
       <template #actions>
+        <button
+          class="history-report"
+          type="button"
+          :disabled="history.items.length === 0"
+          @click="goReport"
+        >
+          报告
+        </button>
         <button
           class="history-clear"
           type="button"
@@ -213,6 +225,18 @@ async function retry(): Promise<void> {
   padding: 0 var(--space-2);
   font: var(--text-label);
   color: var(--color-brand-text);
+}
+
+.history-report {
+  min-width: 44px;
+  height: 44px;
+  padding: 0 var(--space-2);
+  font: var(--text-label);
+  color: var(--color-text-secondary);
+}
+
+.history-report:disabled {
+  color: var(--color-text-disabled);
 }
 
 .history-clear:disabled {
