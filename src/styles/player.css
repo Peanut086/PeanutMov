@@ -138,3 +138,28 @@ html.native-underlay body {
 html.native-underlay .app-root {
   background-color: transparent !important;
 }
+
+/* 直播/回看页：整页透明会让浅色主题黑底深字，只把播放器所在的横带挖空
+   （洞的上下边界由 nativeUnderlay.ts 按播放器在页面内的偏移写入） */
+html.native-underlay .native-hole {
+  background-color: transparent !important;
+  background-image: linear-gradient(
+    to bottom,
+    var(--color-bg-base) 0 var(--native-hole-top, 0px),
+    transparent var(--native-hole-top, 0px) var(--native-hole-bottom, 0px),
+    var(--color-bg-base) var(--native-hole-bottom, 0px) 100%
+  );
+}
+
+/* 原生全屏：画面在 WebView 之下，而全屏播放器是透明的，页面内容会直接盖在视频上
+   （提高 z-index 无效）。全屏期间只保留播放器子树，页面其余部分与底部 Tab 全部不绘制。
+   visibility 会继承，故播放器自身显式改回 visible；不能用 display:none（播放器是其后代）。 */
+html.native-full .route-view,
+html.native-full .tabbar {
+  visibility: hidden;
+}
+
+html.native-full .live-player--fullscreen,
+html.native-full .replay-player--fullscreen {
+  visibility: visible;
+}

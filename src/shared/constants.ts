@@ -220,12 +220,18 @@ export const HLS_MAX_BUFFER_HIGH_S = 60;
 export const HLS_MAX_BUFFER_DEFAULT_S = 30;
 /** 直播低延迟：落后直播点多少个分片内追平 */
 export const LIVE_SYNC_COUNT = 3;
-/** 直播频道起播超时（超时自动切同组下一路） */
-export const TIMEOUT_LIVE_CHANNEL_MS = 8000;
+/** 直播频道起播超时（超时自动切同组下一路）；IPTV 跨省回源常需 8~10s，8s 会误判死台 */
+export const TIMEOUT_LIVE_CHANNEL_MS = 12000;
 /** 直播失效判定：同频道连续起播失败次数 */
 export const LIVE_DEAD_STREAK = 2;
 /** 直播自动切路上限（达到后停止切路，避免死循环） */
 export const LIVE_AUTO_SWITCH_MAX = 5;
+/**
+ * 直播/回看请求的默认 UA：部分 IPTV 源站按 UA 放行，okhttp 默认 UA 会被拒。
+ * 只作用于原生引擎（OkHttp）——WebView 的 XHR 设不了 User-Agent（浏览器禁止头）。
+ */
+export const IPTV_USER_AGENT =
+  'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
 
 /* ---------- v1.7：弹幕（CHG-22） ---------- */
 /** 同屏弹幕密度上限 */
@@ -280,8 +286,8 @@ export const CATCHUP_PROBE_TTL_MS = 6 * 60 * 60 * 1000;
 export const CATCHUP_PROBE_TIMEOUT_MS = 3000;
 /** kv 中存放回看探测结果的 key */
 export const KV_KEY_CATCHUP_PROBES = 'live-catchup-probes';
-/** 回看起播超时（FR-68：沿用直播 5s 口径，超时给出错误 + 重试/返回节目单） */
-export const TIMEOUT_REPLAY_START_MS = 5000;
+/** 回看起播超时（FR-68：与直播同口径，超时给出错误 + 重试/返回节目单） */
+export const TIMEOUT_REPLAY_START_MS = 12000;
 
 /** 单直播源自定义分组数上限 */
 export const LIVE_GROUP_MAX = 20;

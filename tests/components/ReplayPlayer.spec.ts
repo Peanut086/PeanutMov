@@ -9,6 +9,7 @@ import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import ReplayPlayer from '@/components/live/ReplayPlayer.vue';
+import { TIMEOUT_REPLAY_START_MS } from '@/shared/constants';
 
 const IDLE_TEXT = '回看地址尚未就绪';
 const LOADING_TEXT = '正在连接回看流';
@@ -67,7 +68,7 @@ describe('REV-01：ReplayPlayer 首次挂载即加载', () => {
   });
 });
 
-describe('P1-02：回看起播 5s 看门狗（FR-68）', () => {
+describe('P1-02：回看起播看门狗（FR-68）', () => {
   const TIMEOUT_TEXT = '起播超时，请检查网络或源是否支持回看';
   const REPLAY_URL = 'https://cdn.example.com/replay/20261106/200000.mp4';
 
@@ -75,13 +76,13 @@ describe('P1-02：回看起播 5s 看门狗（FR-68）', () => {
     vi.useRealTimers();
   });
 
-  it('5s 内未进入 playing → 报错并给出重试/返回节目单', async () => {
+  it('超时前未进入 playing → 报错并给出重试/返回节目单', async () => {
     vi.useFakeTimers();
     const wrapper = track(mountPlayer(REPLAY_URL));
     await flushPromises();
     expect(wrapper.text()).toContain(LOADING_TEXT);
 
-    vi.advanceTimersByTime(4999);
+    vi.advanceTimersByTime(TIMEOUT_REPLAY_START_MS - 1);
     await flushPromises();
     expect(wrapper.text()).toContain(LOADING_TEXT);
 
@@ -103,7 +104,7 @@ describe('P1-02：回看起播 5s 看门狗（FR-68）', () => {
     await flushPromises();
     expect(wrapper.text()).not.toContain(LOADING_TEXT);
 
-    vi.advanceTimersByTime(10_000);
+    vi.advanceTimersByTime(TIMEOUT_REPLAY_START_MS + 1000);
     await flushPromises();
     expect(wrapper.text()).not.toContain(TIMEOUT_TEXT);
   });
@@ -115,7 +116,7 @@ describe('P1-02：回看起播 5s 看门狗（FR-68）', () => {
     await flushPromises();
     wrapper.unmount();
 
-    vi.advanceTimersByTime(10_000);
+    vi.advanceTimersByTime(TIMEOUT_REPLAY_START_MS + 1000);
     await flushPromises();
     const timeoutLogs = warnSpy.mock.calls.filter((args) => String(args[1] ?? '').includes('回看起播超时'));
     expect(timeoutLogs.length).toBe(0);

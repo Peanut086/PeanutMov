@@ -4,7 +4,7 @@
  * - 实现 `PlayableEngine`：把 Java 侧 `ExoPlayerPlugin`（Media3 硬解，
  *   WebView 之上叠原生 surface）适配进 PlayerController 的引擎选择
  * - 进度靠 500ms 轮询 `progress()`（无逐帧事件桥），buffered 以 position 近似
- * - rect 对齐：ResizeObserver + 窗口 resize/orientationchange 防抖后 `setRect`
+ * - rect 对齐：ResizeObserver + 窗口 resize/orientationchange 后逐帧追到几何稳定
  * - 清晰度为空数组（面板天然隐藏）；PoC 边界见 `契约变更-v1.7.md` §2.4
  */
 import type { AppErrorShape, PlaybackSource, ResizeMode } from '@/types';
@@ -18,7 +18,7 @@ import { ExoPlayer, exoHeadersOf, type ExoQuality } from '@/native/exoPlayerPlug
 
 // P2-2: 进度轮询从 500ms 放宽到 1000ms，减少 CPU 开销
 const PROGRESS_POLL_MS = 1000;
-const RECT_SYNC_DEBOUNCE_MS = 150;
+const RECT_SETTLE_MS = 2000;
 
 /**
  * 把 Capacitor localhost URL 转成原生 file:// URI（ExoPlayer 需要）。
@@ -136,8 +136,9 @@ export class NativeEngine implements PlayableEngine {
   private detachState: PluginListenerHandle | null = null;
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private observer: ResizeObserver | null = null;
-  private rectSyncTimer: ReturnType<typeof setTimeout> | null = null;
   private onWindowResize: (() => void) | null = null;
+  private onScroll: (() => void) | null = null;
+  private scrollRaf: number | null = null;
 
   /** load() 的结算句柄：ready/error 事件到达前由 exostate 负责 resolve/reject */
   private pending: { resolve: () => void; reject: (e: unknown) => void } | null = null;
@@ -473,19 +474,37 @@ export class NativeEngine implements PlayableEngine {
     this.pollTimer = null;
   }
 
-  /** 全屏/旋屏/窗口变化 → 防抖重算 rect 对齐原生 overlay */
+  /** 全屏/旋屏/窗口变化 → 短窗口内逐帧对齐；页面滚动 → 逐帧对齐（直播页整页滚动） */
   private watchRect(host: HTMLElement): void {
     this.teardownRectWatch();
+    let lastKey = '';
+    let settleUntil = 0;
+    const pump = (): void => {
+      if (this.scrollRaf !== null) return;
+      this.scrollRaf = requestAnimationFrame(() => {
+        this.scrollRaf = null;
+        const rect = rectOf(host);
+        const key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
+        if (key !== lastKey) {
+          lastKey = key;
+          void ExoPlayer.setRect(rect).catch(() => undefined);
+        }
+        if (performance.now() < settleUntil) pump();
+      });
+    };
+    // 旋屏/全屏时视口是分几步落定的，单次防抖会停在中间态（真机实测画面错位持续数秒），
+    // 所以变化后开一个窗口逐帧比对，直到几何不再变化才自然收工
     const scheduleSync = (): void => {
-      if (this.rectSyncTimer !== null) clearTimeout(this.rectSyncTimer);
-      this.rectSyncTimer = setTimeout(() => {
-        this.rectSyncTimer = null;
-        void ExoPlayer.setRect(rectOf(host)).catch(() => undefined);
-      }, RECT_SYNC_DEBOUNCE_MS);
+      settleUntil = performance.now() + RECT_SETTLE_MS;
+      pump();
     };
     this.onWindowResize = scheduleSync;
     window.addEventListener('resize', scheduleSync);
     window.addEventListener('orientationchange', scheduleSync);
+    document.addEventListener('fullscreenchange', scheduleSync);
+    window.visualViewport?.addEventListener('resize', scheduleSync);
+    this.onScroll = pump;
+    window.addEventListener('scroll', this.onScroll, { capture: true, passive: true });
     if (typeof ResizeObserver !== 'undefined') {
       this.observer = new ResizeObserver(scheduleSync);
       this.observer.observe(host);
@@ -493,8 +512,14 @@ export class NativeEngine implements PlayableEngine {
   }
 
   private teardownRectWatch(): void {
-    if (this.rectSyncTimer !== null) clearTimeout(this.rectSyncTimer);
-    this.rectSyncTimer = null;
+    if (this.scrollRaf !== null) {
+      cancelAnimationFrame(this.scrollRaf);
+      this.scrollRaf = null;
+    }
+    if (this.onScroll) {
+      window.removeEventListener('scroll', this.onScroll, { capture: true });
+      this.onScroll = null;
+    }
     if (this.observer) {
       this.observer.disconnect();
       this.observer = null;
@@ -502,6 +527,8 @@ export class NativeEngine implements PlayableEngine {
     if (this.onWindowResize) {
       window.removeEventListener('resize', this.onWindowResize);
       window.removeEventListener('orientationchange', this.onWindowResize);
+      document.removeEventListener('fullscreenchange', this.onWindowResize);
+      window.visualViewport?.removeEventListener('resize', this.onWindowResize);
       this.onWindowResize = null;
     }
   }
@@ -538,12 +565,16 @@ function normalizeLabel(label: string | null | undefined, fallback: string): str
   return text.length > 0 ? text : fallback;
 }
 
-/** host 元素的 CSS px rect（Java 侧 ×density 换算物理像素） */
+/**
+ * host 元素的 CSS px rect（Java 侧 ×density 换算物理像素）。
+ * x/y 不做 0 截断：直播页整页滚动时播放器会移出视口上沿，截断会让画面钉在顶部、
+ * 与页面上挖出的透明带错位；负坐标交给原生父容器裁剪即可。
+ */
 function rectOf(host: HTMLElement): { x: number; y: number; width: number; height: number } {
   const r = host.getBoundingClientRect();
   return {
-    x: Math.max(0, Math.round(r.left)),
-    y: Math.max(0, Math.round(r.top)),
+    x: Math.round(r.left),
+    y: Math.round(r.top),
     width: Math.max(1, Math.round(r.width)),
     height: Math.max(1, Math.round(r.height)),
   };

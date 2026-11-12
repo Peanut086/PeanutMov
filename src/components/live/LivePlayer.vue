@@ -2,22 +2,26 @@
 /**
  * 直播播放器（CHG-13，v1 精简面）
  *
- * 复用 HlsEngine / VideoEngine 引擎与 Fullscreen / Orientation 控制器，
- * 但不走 PlayerController 的媒体-剧集模型：直播无进度、无历史、无字幕。
+ * HLS 优先原生 ExoPlayer（IPTV 源站不发 CORS 头，hls.js 在 WebView 里拉不到清单），
+ * 原生不可用/解不了再静默回退 HlsEngine / VideoEngine；
+ * 不走 PlayerController 的媒体-剧集模型：直播无进度、无历史、无字幕。
  * 频道切换 = 销毁旧引擎 + 加载新 URL（直播切台即释放，技术方案口径）。
  */
 import { onBeforeUnmount, ref, watch } from 'vue';
 
 import { FullscreenController } from '@/player/FullscreenController';
 import { HlsEngine } from '@/player/HlsEngine';
+import { NativeEngine, type NativeEngineEvents } from '@/player/NativeEngine';
 import { OrientationController } from '@/player/OrientationController';
+import { applyNativeUnderlay } from '@/player/nativeUnderlay';
 import { VideoEngine, type VideoEngineEvents } from '@/player/VideoEngine';
 import { normalizeFormat } from '@/sources/base/normalize';
 import { guessFormatFromUrl } from '@/shared/url';
 import { deviceService } from '@/services/deviceService';
+import { isExoPlayerAvailable } from '@/native/exoPlayerPlugin';
 import { setPlayerImmersive } from '@/native/playerUi';
 import type { PlaybackSource } from '@/types';
-import { TIMEOUT_LIVE_CHANNEL_MS } from '@/shared/constants';
+import { IPTV_USER_AGENT, TIMEOUT_LIVE_CHANNEL_MS } from '@/shared/constants';
 import { logger } from '@/shared/logger';
 
 const props = defineProps<{
@@ -38,9 +42,14 @@ const containerRef = ref<HTMLElement | null>(null);
 const state = ref<'idle' | 'loading' | 'playing' | 'paused' | 'error'>('idle');
 const errorMessage = ref<string | null>(null);
 const fullscreen = ref(false);
+/** 原生引擎生效中：舞台必须透明，否则盖住叠在 WebView 之下的原生画面 */
+const nativeActive = ref(false);
 
-let engine: HlsEngine | VideoEngine | null = null;
-/** 起播超时定时器（CHG-21：5s 内没出画面通知外层切路） */
+type LiveEngine = HlsEngine | VideoEngine | NativeEngine;
+let engine: LiveEngine | null = null;
+/** 加载代次：切台/卸载后作废仍在飞的旧加载（原生能力探测是异步的） */
+let loadSeq = 0;
+/** 起播超时定时器（CHG-21：超时没出画面通知外层切路） */
 let channelTimer: ReturnType<typeof setTimeout> | null = null;
 const fullscreenController = new FullscreenController({
   onChange: (fs) => {
@@ -96,12 +105,83 @@ watch(state, (s) => {
   void deviceService.keepAwake(s === 'loading' || s === 'playing');
 });
 
+/**
+ * 原生引擎事件 → 直播状态机。
+ * NativeEngine 不发 onPlay/onPause/onPlaying，暂停态由 togglePlay 自己维护。
+ */
+function nativeEvents(): NativeEngineEvents {
+  const { onWaiting, onEnded, onError } = engineEvents();
+  return {
+    onLoadedMetadata: () => {
+      if (state.value !== 'error') state.value = 'playing';
+      // 原生没有 playing 事件，淡入信号在这里发，否则切台后停在半透明
+      emit('canplay');
+    },
+    onTimeUpdate: () => undefined,
+    onWaiting,
+    onEnded,
+    onError,
+  };
+}
+
+function createEngine(format: PlaybackSource['format'], useNative: boolean): LiveEngine {
+  if (useNative) return new NativeEngine(nativeEvents());
+  return format === 'hls'
+    ? new HlsEngine({ ...engineEvents(), onQualityChange: () => undefined })
+    : new VideoEngine(engineEvents());
+}
+
 function destroyEngine(): void {
   engine?.destroy();
   engine = null;
+  nativeActive.value = false;
+}
+
+/* 原生画面在 WebView 之下：页面底色要挖洞让画，切回 WebView 引擎/卸载时还原 */
+let releaseUnderlay: (() => void) | null = null;
+watch(
+  [nativeActive, fullscreen],
+  ([native, full]) => {
+    releaseUnderlay?.();
+    releaseUnderlay = null;
+    const stage = containerRef.value;
+    if (native && stage) releaseUnderlay = applyNativeUnderlay(stage, full);
+  },
+  { flush: 'post' },
+);
+
+/** 起播一次：成功返回 null，失败返回可读原因（失败即销毁引擎，不留孤儿出声） */
+async function tryEngine(
+  next: LiveEngine,
+  source: PlaybackSource,
+  container: HTMLElement,
+  seq: number,
+  useNative: boolean,
+): Promise<string | null> {
+  nativeActive.value = useNative;
+  engine = next;
+  next.attach(container);
+  try {
+    await next.load(source);
+    if (seq !== loadSeq || engine !== next) return '已切换';
+    await next.play();
+    if (seq !== loadSeq || engine !== next) return '已切换';
+    if (channelTimer !== null) {
+      clearTimeout(channelTimer);
+      channelTimer = null;
+    }
+    return null;
+  } catch (e) {
+    if (seq !== loadSeq || engine !== next) return '已切换';
+    logger.warn(useNative ? '直播原生引擎加载失败' : '直播频道加载失败', source.url, e);
+    next.destroy();
+    engine = null;
+    return e instanceof Error ? e.message : '频道加载失败';
+  }
 }
 
 async function loadChannel(url: string): Promise<void> {
+  const seq = ++loadSeq;
   destroyEngine();
   errorMessage.value = null;
   state.value = 'loading';
@@ -130,7 +210,7 @@ async function loadChannel(url: string): Promise<void> {
   const source: PlaybackSource = {
     url,
     format,
-    headers: {},
+    headers: { 'User-Agent': IPTV_USER_AGENT },
     subtitles: [],
     lineId: 'live',
     quality: null,
@@ -138,33 +218,33 @@ async function loadChannel(url: string): Promise<void> {
     isLocal: false,
     isLive: true,
   };
-  const next =
-    format === 'hls'
-      ? new HlsEngine({ ...engineEvents(), onQualityChange: () => undefined })
-      : new VideoEngine(engineEvents());
-  engine = next;
-  next.attach(container);
-  try {
-    await next.load(source);
-    await next.play();
-    if (channelTimer !== null) {
-      clearTimeout(channelTimer);
-      channelTimer = null;
-    }
-  } catch (e) {
-    if (engine !== next) return;
-    logger.warn('直播频道加载失败', url, e);
-    state.value = 'error';
-    errorMessage.value = e instanceof Error ? e.message : '频道加载失败';
-    if (channelTimer !== null) { clearTimeout(channelTimer); channelTimer = null; }
-    emit('timeout', url);
+
+  /*
+   * IPTV 源站普遍不发 CORS 头，hls.js 的 XHR 在 WebView 里必被拦（清单都拉不到）；
+   * 原生 ExoPlayer 走 OkHttp，没有跨域限制，还能带 UA。故 HLS 一律优先原生。
+   */
+  const useNative = format === 'hls' && (await isExoPlayerAvailable());
+  if (seq !== loadSeq) return;
+
+  let failure = await tryEngine(createEngine(format, useNative), source, container, seq, useNative);
+  if (failure === null || seq !== loadSeq) return;
+  if (useNative) {
+    // 原生失败（插件异常/该流原生解不了）静默回退 WebView 再试一次，不计频道失效
+    failure = await tryEngine(createEngine(format, false), source, container, seq, false);
+    if (failure === null || seq !== loadSeq) return;
   }
+
+  state.value = 'error';
+  errorMessage.value = failure;
+  if (channelTimer !== null) { clearTimeout(channelTimer); channelTimer = null; }
+  emit('timeout', url);
 }
 
 watch(
   () => props.url,
   (url) => {
     if (!url) {
+      loadSeq++;
       destroyEngine();
       state.value = 'idle';
       errorMessage.value = null;
@@ -176,8 +256,14 @@ watch(
 
 function togglePlay(): void {
   if (!engine) return;
-  if (state.value === 'playing') engine.pause();
-  else void engine.play();
+  // 原生引擎不上报 play/pause 事件，状态在这里直接落（WebView 引擎重复落同值无副作用）
+  if (state.value === 'playing') {
+    engine.pause();
+    state.value = 'paused';
+  } else {
+    void engine.play();
+    state.value = 'playing';
+  }
 }
 
 async function toggleFullscreen(): Promise<void> {
@@ -187,7 +273,10 @@ async function toggleFullscreen(): Promise<void> {
 onBeforeUnmount(() => {
   if (channelTimer !== null) clearTimeout(channelTimer);
   channelTimer = null;
+  loadSeq++;
   destroyEngine();
+  releaseUnderlay?.();
+  releaseUnderlay = null;
   // 卸载时 state 仍可能是 playing（watcher 不会再跑），显式释放避免常亮泄漏到其它页面
   void deviceService.keepAwake(false);
   fullscreenController.destroy();
@@ -196,7 +285,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="live-player" :class="{ 'live-player--fullscreen': fullscreen }">
+  <section
+    class="live-player"
+    :class="{ 'live-player--fullscreen': fullscreen, 'live-player--native': nativeActive }"
+  >
     <div class="live-player-wrapper" :class="{ 'live-player-wrapper--loading': loading }">
       <div ref="containerRef" class="live-player__stage" />
 
@@ -257,6 +349,11 @@ onBeforeUnmount(() => {
   inset: 0;
   z-index: var(--z-dialog);
   aspect-ratio: auto;
+}
+
+/* 原生引擎的画面叠在 WebView 之下：舞台不透明就只剩黑屏有声（同点播 --native 口径） */
+.live-player--native {
+  background-color: transparent;
 }
 
 .live-player__stage {

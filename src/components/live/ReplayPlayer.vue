@@ -2,7 +2,8 @@
 /**
  * EXT-06/FR-68：回看播放器
  *
- * - 复用 HlsEngine / VideoEngine（按 URL 头识别格式）与 Fullscreen / Orientation 控制器
+ * - HLS 优先原生 ExoPlayer（回看源同样不发 CORS 头），失败回退 HlsEngine / VideoEngine；
+ *   复用 Fullscreen / Orientation 控制器
  * - 直播播放器（LivePlayer）不支持进度；回看是"点播"语义，故独立组件，
  *   不接 PlayerController（无剧集/历史/字幕/弹幕）
  * - 状态：idle / loading / playing / paused / ended / error
@@ -12,16 +13,20 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { FullscreenController } from '@/player/FullscreenController';
 import { HlsEngine } from '@/player/HlsEngine';
+import { NativeEngine, type NativeEngineEvents } from '@/player/NativeEngine';
 import { OrientationController } from '@/player/OrientationController';
+import { applyNativeUnderlay } from '@/player/nativeUnderlay';
 import { VideoEngine, type VideoEngineEvents } from '@/player/VideoEngine';
 import { normalizeFormat } from '@/sources/base/normalize';
 import SeekBar from '@/components/player/SeekBar.vue';
 import { deviceService } from '@/services/deviceService';
+import { isExoPlayerAvailable } from '@/native/exoPlayerPlugin';
 import { setPlayerImmersive } from '@/native/playerUi';
 import type { PlaybackSource } from '@/types';
 import { formatClock } from '@/shared/time';
 import { logger } from '@/shared/logger';
-import { TIMEOUT_REPLAY_START_MS } from '@/shared/constants';
+import { IPTV_USER_AGENT, TIMEOUT_REPLAY_START_MS } from '@/shared/constants';
+import { guessFormatFromUrl } from '@/shared/url';
 
 const props = defineProps<{
   /** 已渲染好的回看地址（含时间占位符），为空则展示 idle */
@@ -47,9 +52,14 @@ const duration = ref(0);
 const buffered = ref(0);
 const fullscreen = ref(false);
 const durationUnknown = ref(false);
+/** 原生引擎生效中：舞台必须透明，否则盖住叠在 WebView 之下的原生画面 */
+const nativeActive = ref(false);
 
-let engine: HlsEngine | VideoEngine | null = null;
-/** FR-68：回看起播看门狗（沿用直播 5s 口径） */
+type ReplayEngine = HlsEngine | VideoEngine | NativeEngine;
+let engine: ReplayEngine | null = null;
+/** 加载代次：换节目/卸载后作废仍在飞的旧加载（原生能力探测是异步的） */
+let loadSeq = 0;
+/** FR-68：回看起播看门狗（与直播同口径） */
 let startTimer: ReturnType<typeof setTimeout> | null = null;
 
 function clearStartTimer(): void {
@@ -60,7 +70,7 @@ function clearStartTimer(): void {
 }
 
 /** 起播超时：未进入 playing/paused 即报错并给出"重试/返回节目单"（模板已有两个动作） */
-function armStartTimer(next: HlsEngine | VideoEngine): void {
+function armStartTimer(next: ReplayEngine): void {
   clearStartTimer();
   startTimer = setTimeout(() => {
     startTimer = null;
@@ -135,10 +145,75 @@ function engineEvents(): VideoEngineEvents {
   };
 }
 
+/** 原生引擎事件 → 回看状态机（原生不上报 play/pause，暂停态由 togglePlay 维护） */
+function nativeEvents(): NativeEngineEvents {
+  const { onLoadedMetadata, onTimeUpdate, onWaiting, onEnded, onError } = engineEvents();
+  return {
+    // 原生只给时长；宽高占位 0（回看面板不用画面尺寸）
+    onLoadedMetadata: (len) => onLoadedMetadata(len, 0, 0),
+    onTimeUpdate,
+    onWaiting,
+    onEnded,
+    onError,
+  };
+}
+
+function createEngine(format: PlaybackSource['format'], useNative: boolean): ReplayEngine {
+  if (useNative) return new NativeEngine(nativeEvents());
+  return format === 'hls'
+    ? new HlsEngine({ ...engineEvents(), onQualityChange: () => undefined })
+    : new VideoEngine(engineEvents());
+}
+
 function destroyEngine(): void {
   clearStartTimer();
   engine?.destroy();
   engine = null;
+  nativeActive.value = false;
+}
+
+/* 原生画面在 WebView 之下：页面底色要挖洞让画，切回 WebView 引擎/卸载时还原 */
+let releaseUnderlay: (() => void) | null = null;
+watch(
+  [nativeActive, fullscreen],
+  ([native, full]) => {
+    releaseUnderlay?.();
+    releaseUnderlay = null;
+    const stage = containerRef.value;
+    if (native && stage) releaseUnderlay = applyNativeUnderlay(stage, full);
+  },
+  { flush: 'post' },
+);
+
+/** 起播一次：成功返回 null，失败返回可读原因（失败即销毁引擎，不留孤儿出声） */
+async function tryEngine(
+  next: ReplayEngine,
+  source: PlaybackSource,
+  container: HTMLElement,
+  seq: number,
+  useNative: boolean,
+): Promise<string | null> {
+  nativeActive.value = useNative;
+  engine = next;
+  next.attach(container);
+  armStartTimer(next);
+  try {
+    await next.load(source);
+    if (seq !== loadSeq || engine !== next) return '已切换';
+    await next.play();
+    if (seq !== loadSeq || engine !== next) return '已切换';
+    return null;
+  } catch (e) {
+    if (seq !== loadSeq || engine !== next) return '已切换';
+    logger.warn(
+      useNative ? '回看原生引擎加载失败' : '回看加载失败',
+      { host: safeHost(source.url), channel: props.channelName, template: props.programmeTitle },
+      e,
+    );
+    next.destroy();
+    engine = null;
+    return e instanceof Error ? e.message : '回看加载失败';
+  }
 }
 
 /** 日志只保留 host（需求「安全与隐私」：不记录完整回看 URL） */
@@ -151,6 +226,7 @@ function safeHost(url: string): string {
 }
 
 async function load(url: string): Promise<void> {
+  const seq = ++loadSeq;
   destroyEngine();
   errorMessage.value = null;
   currentTime.value = 0;
@@ -162,11 +238,13 @@ async function load(url: string): Promise<void> {
   state.value = 'loading';
   fullscreenController.setElement(container);
 
-  const format = normalizeFormat(url, 'mp4');
+  // 回看地址多由 catchup 模板渲染而来（?playseek= 等），认不出格式时按 HLS 试
+  const normalized = normalizeFormat(url, 'mp4');
+  const format = guessFormatFromUrl(url) ?? (normalized === 'mp4' ? 'hls' : normalized);
   const source: PlaybackSource = {
     url,
     format,
-    headers: {},
+    headers: { 'User-Agent': IPTV_USER_AGENT },
     subtitles: [],
     lineId: 'replay',
     quality: null,
@@ -174,26 +252,20 @@ async function load(url: string): Promise<void> {
     isLocal: false,
     isLive: false,
   };
-  const next =
-    format === 'hls'
-      ? new HlsEngine({ ...engineEvents(), onQualityChange: () => undefined })
-      : new VideoEngine(engineEvents());
-  engine = next;
-  next.attach(container);
-  armStartTimer(next);
-  try {
-    await next.load(source);
-    await next.play();
-  } catch (e) {
-    if (engine !== next) return;
-    logger.warn(
-      '回看加载失败',
-      { host: safeHost(url), channel: props.channelName, template: props.programmeTitle },
-      e,
-    );
-    state.value = 'error';
-    errorMessage.value = e instanceof Error ? e.message : '回看加载失败';
+
+  // 与直播同因：IPTV 源站不发 CORS 头，hls.js 拉不到清单，故 HLS 优先原生
+  const useNative = format === 'hls' && (await isExoPlayerAvailable());
+  if (seq !== loadSeq) return;
+
+  let failure = await tryEngine(createEngine(format, useNative), source, container, seq, useNative);
+  if (failure === null || seq !== loadSeq) return;
+  if (useNative) {
+    failure = await tryEngine(createEngine(format, false), source, container, seq, false);
+    if (failure === null || seq !== loadSeq) return;
   }
+
+  state.value = 'error';
+  errorMessage.value = failure;
 }
 
 /**
@@ -205,6 +277,7 @@ watch(
   () => props.url,
   (url) => {
     if (!url) {
+      loadSeq++;
       destroyEngine();
       state.value = 'idle';
       return;
@@ -226,15 +299,24 @@ onMounted(() => {
 
 function togglePlay(): void {
   if (!engine) return;
-  if (state.value === 'playing') engine.pause();
-  else void engine.play();
+  // 原生引擎不上报 play/pause，状态得自己维护（WebView 引擎重复置同值无副作用）
+  if (state.value === 'playing') {
+    engine.pause();
+    state.value = 'paused';
+  } else {
+    void engine.play();
+    state.value = 'playing';
+  }
 }
 
 function onSeek(sec: number): void {
   if (!engine) return;
   engine.seek(sec);
   currentTime.value = sec;
-  if (state.value === 'ended') void engine.play();
+  if (state.value === 'ended') {
+    void engine.play();
+    state.value = 'playing';
+  }
 }
 
 async function toggleFullscreen(): Promise<void> {
@@ -242,7 +324,10 @@ async function toggleFullscreen(): Promise<void> {
 }
 
 onBeforeUnmount(() => {
+  loadSeq++;
   destroyEngine();
+  releaseUnderlay?.();
+  releaseUnderlay = null;
   // 卸载时 state 可能仍是 playing（watcher 不会再跑），显式释放避免常亮泄漏到其它页面
   void deviceService.keepAwake(false);
   fullscreenController.destroy();
@@ -251,7 +336,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="replay-player" :class="{ 'replay-player--fullscreen': fullscreen }">
+  <section
+    class="replay-player"
+    :class="{ 'replay-player--fullscreen': fullscreen, 'replay-player--native': nativeActive }"
+  >
     <div ref="containerRef" class="replay-player__stage" />
 
     <div v-if="state === 'idle'" class="replay-player__overlay">
@@ -333,6 +421,11 @@ onBeforeUnmount(() => {
   inset: 0;
   z-index: var(--z-dialog);
   aspect-ratio: auto;
+}
+
+/* 原生画面叠在 WebView 之下，舞台底色必须透明才看得见 */
+.replay-player--native {
+  background-color: transparent;
 }
 
 .replay-player__stage {
