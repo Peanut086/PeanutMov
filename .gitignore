@@ -52,6 +52,7 @@ pnpm-debug.log*
 .vite/
 .eslintcache
 *.tsbuildinfo
+__pycache__/
 
 # 本地探测产物（含第三方订阅地址，FR-46 / AC-105 禁止入库）
 scripts/fixtures/
