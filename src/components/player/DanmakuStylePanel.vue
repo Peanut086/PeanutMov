@@ -5,7 +5,9 @@
  * 非模态侧 dock 面板，不遮挡视频画面。所有滑块 @input 实时生效，
  * 持久化写入 350ms debounce，避免频繁写存储。
  */
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
+
+import { useDebounce } from '@/composables/useDebounce';
 
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -41,14 +43,11 @@ watch(danmaku, (next) => {
   local.value = { ...next };
 }, { deep: true });
 
-let persistTimer: ReturnType<typeof setTimeout> | null = null;
-function schedulePersist(): void {
-  if (persistTimer) clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    void settings.update({ danmaku: { ...local.value } });
-    persistTimer = null;
-  }, 350);
-}
+const schedulePersist = useDebounce(() => {
+  settings.updateNonBlocking({ danmaku: { ...local.value } });
+}, 350);
+// 退出播放页时挂起的最后一次不能丢（useDebounce 的卸载钩子只 cancel，不补写）
+onBeforeUnmount(() => schedulePersist.flush());
 
 function updateField<K extends keyof DanmakuSettings>(key: K, value: DanmakuSettings[K]): void {
   (local.value as DanmakuSettings)[key] = value;

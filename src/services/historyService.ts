@@ -8,6 +8,8 @@
  * - 上限 500 条，超出按 `updatedAt` 淘汰；
  * - 不节流（节流由 PlayerController 负责）。
  */
+import { toRaw } from 'vue';
+
 import { historyRepo } from '@/db/repositories/historyRepo';
 import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { appEvents } from '@/services/events';
@@ -22,11 +24,15 @@ export interface HistoryService {
   get(sourceId: string, mediaId: string): Promise<HistoryRecord | null>;
   list(opts?: { limit?: number; offset?: number }): Promise<HistoryRecord[]>;
   listContinueWatching(limit?: number): Promise<HistoryRecord[]>;
+  listWithContinueWatching(
+    limit?: number,
+  ): Promise<{ items: HistoryRecord[]; continueWatching: HistoryRecord[] }>;
   getSeriesProgress(
     sourceId: string,
     mediaId: string,
   ): Promise<{ episodeNumber: number | null; positionSec: number; finished: boolean } | null>;
   remove(id: string): Promise<void>;
+  restore(record: HistoryRecord): Promise<void>;
   clear(): Promise<void>;
   count(): Promise<number>;
 }
@@ -34,6 +40,31 @@ export interface HistoryService {
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, value));
+}
+
+/**
+ * 从一份历史全量里筛「继续观看」。
+ *
+ * 单独抽出来，是为了让 `listWithContinueWatching` 能复用同一次读取——
+ * 之前 `list()` 与 `listContinueWatching()` 各扫一遍 500 条（每条都带 `mediaSnapshot`），
+ * 播放期每 10s 落一次进度就要付两遍。
+ */
+async function pendingFrom(all: HistoryRecord[], limit: number): Promise<HistoryRecord[]> {
+  const pending = all.filter(
+    (record) => !record.finished && record.progress > 0.05 && record.progress < PROGRESS_FINISHED_THRESHOLD,
+  );
+
+  // 「隐藏演示内容」必须同时作用于继续观看（AC-98 / REV-24）。
+  // `HistoryRecord` 不含 `isDemo`，按 mediaId 回查 `media` 表取 isDemo；
+  // 媒体缓存已被清理（查不到条目）时按"非演示"处理，避免把真实历史误隐藏。
+  const settings = await settingsService.get();
+  if (!settings.hideDemoContent) return pending.slice(0, limit);
+
+  // 去重后一次事务取全：此前逐条 `mediaRepo.get`，几百条待看记录就是几百个独立事务。
+  const mediaIds = [...new Set(pending.map((record) => record.mediaId))];
+  const rows = await mediaRepo.getMany(mediaIds);
+  const demoIds = new Set(rows.filter((item) => item.isDemo).map((item) => item.id));
+  return pending.filter((record) => !demoIds.has(record.mediaId)).slice(0, limit);
 }
 
 export const historyService: HistoryService = {
@@ -112,26 +143,14 @@ export const historyService: HistoryService = {
   },
 
   async listContinueWatching(limit = CONTINUE_WATCHING_LIMIT): Promise<HistoryRecord[]> {
+    return pendingFrom(await historyRepo.listAll(HISTORY_MAX), limit);
+  },
+
+  async listWithContinueWatching(
+    limit = CONTINUE_WATCHING_LIMIT,
+  ): Promise<{ items: HistoryRecord[]; continueWatching: HistoryRecord[] }> {
     const all = await historyRepo.listAll(HISTORY_MAX);
-    const pending = all.filter(
-      (record) =>
-        !record.finished &&
-        record.progress > 0.05 &&
-        record.progress < PROGRESS_FINISHED_THRESHOLD,
-    );
-
-    // 「隐藏演示内容」必须同时作用于继续观看（AC-98 / REV-24）。
-    // `HistoryRecord` 不含 `isDemo`，按 mediaId 回查 `media` 表取 isDemo；
-    // 媒体缓存已被清理（查不到条目）时按"非演示"处理，避免把真实历史误隐藏。
-    const settings = await settingsService.get();
-    if (!settings.hideDemoContent) return pending.slice(0, limit);
-
-    const demoIds = new Set<string>();
-    for (const record of pending) {
-      const item = await mediaRepo.get(record.mediaId);
-      if (item?.isDemo) demoIds.add(record.mediaId);
-    }
-    return pending.filter((record) => !demoIds.has(record.mediaId)).slice(0, limit);
+    return { items: all, continueWatching: await pendingFrom(all, limit) };
   },
 
   async getSeriesProgress(
@@ -150,6 +169,15 @@ export const historyService: HistoryService = {
   async remove(id: string): Promise<void> {
     await historyRepo.remove(id);
     appEvents.emit('history:changed', { id });
+  },
+
+  /**
+   * 撤销删除：整条原样写回（含 `positionSec` / `mediaSnapshot`），不走 saveProgress 重算进度。
+   * `toRaw`：视图传进来的是列表里的响应式代理，Proxy 进不了 IndexedDB。
+   */
+  async restore(record: HistoryRecord): Promise<void> {
+    await historyRepo.save(toRaw(record));
+    appEvents.emit('history:changed', { id: record.id });
   },
 
   async clear(): Promise<void> {

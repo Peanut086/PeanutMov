@@ -7,11 +7,12 @@
  * 主按钮文案随进度变化：播放 / 继续观看 · 第 N 集 / 重新播放（AC-36/37）。
  * 记录集号已超出当前源范围时显示「看到第 N 集（已下线）」并从第 1 集开始（AC-68）。
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type { Episode, MediaItem, PlayLine } from '@/types';
 import { formatClock } from '@/shared/time';
+import { IMG_W_BLUR, IMG_W_POSTER, sizedImage } from '@/shared/imageSize';
 
 import PosterImage from '@/components/common/PosterImage.vue';
 import MediaMeta from '@/components/media/MediaMeta.vue';
@@ -81,6 +82,13 @@ const mediaId = computed(() => (typeof route.params.mediaId === 'string' ? route
 const detail = computed(() => library.detail);
 const item = computed<MediaItem | null>(() => detail.value?.item ?? null);
 
+/**
+ * 顶部背景就是海报本身，但它最终被 `blur(14~28px)` 糊成一层色带——按原图请求
+ * 等于把整页最贵的一张图花在看不见的细节上。取色（`useScopedPalette`）仍走原图，
+ * 那条链路要把图画进 canvas，换 URL 会换缓存键并可能触发跨源预检。
+ */
+const backdropSrc = computed(() => sizedImage(item.value?.posterUrl ?? null, IMG_W_BLUR));
+
 /** 染色作用域根节点（只染本页子树，TabBar 与首页保持默认品牌色） */
 const rootRef = ref<HTMLElement | null>(null);
 /** 共享元素转场的封面源 */
@@ -119,6 +127,8 @@ const moreOpen = ref(false);
 const lineId = ref<string | null>(null);
 const manualLineId = ref<string | null>(null); // 用户手动选择的线路（会话内不再自动覆盖）
 const favoriteBump = ref(false);
+/** 收藏写库在飞：双击会让「读存在性 → 写/删」交错，按钮期间禁用 */
+const favoritePending = ref(false);
 
 const loading = computed(() => library.detailState === 'loading' || library.detailState === 'idle');
 const isError = computed(() => library.detailState === 'error');
@@ -381,10 +391,28 @@ async function ensurePlayable(ep: Episode): Promise<boolean> {
 }
 
 
+/*
+ * 自动链路的身份校验。
+ *
+ * 后台探测（`probeLines` 15s 预算）和自动换源（`findAlternateByTitle`）都是
+ * fire-and-forget：结果晚到时，用户可能已经翻到别的影片、甚至退出了详情页。
+ * 不复核就写 `lineId`、弹 toast、`router.replace`，会把用户硬拽到一部无关的片子上。
+ *
+ * 令牌在「换媒体」和「离开页面」时各自增一次，所以 A→B→返回 A 这种
+ * 「ID 又变回来了」的晚到结果同样会被判过期。
+ */
+let detailToken = 0;
+
+function isStaleChain(startToken: number): boolean {
+  return startToken !== detailToken;
+}
+
 async function load(refresh = false): Promise<void> {
   if (!mediaId.value) return;
+  const token = detailToken;
   unavailableIds.value = [];
   await library.loadDetail(mediaId.value, refresh);
+  if (isStaleChain(token)) return;
   
   // 批次2-4：消费 ep query 参数（换源时保留集号）
   const epQuery = route.query.ep;
@@ -439,6 +467,8 @@ async function backgroundProbeAndSwitch(): Promise<void> {
   const it = item.value;
   if (!it || lines.value.length === 0) return;
 
+  const token = detailToken;
+
   // 选择目标集进行探测（优先历史集，否则第1集）
   const targetEp = targetEpisode.value ?? episodes.value[0];
   if (!targetEp) return;
@@ -449,6 +479,9 @@ async function backgroundProbeAndSwitch(): Promise<void> {
     targetEpisode: targetEp,
     historyEpisodeId: progressRecord.value?.episodeId ?? null,
   });
+
+  // 探测结果只服务于「发起时那部片子」：换了媒体/离开页面就作废
+  if (isStaleChain(token)) return;
 
   // 探测完成后，如果用户已手动选择线路，不再自动切换
   if (manualLineId.value) return;
@@ -475,11 +508,16 @@ async function autoSwitchToPlayableSource(): Promise<void> {
   const it = item.value;
   if (!it) return;
 
+  const token = detailToken;
+
   // 批次3：传入目标集 ID 以便验证候选源的可播性
   const targetEpId = targetEpisode.value?.id ?? episodes.value[0]?.id;
   // 直接走 findAlternateByTitle（内部使用 listSourceCandidates）
   try {
     const alternate = await libraryService.findAlternateByTitle(it.title, it.year, it.sourceId, targetEpId);
+    // 候选是按「发起时那部片子」的标题找的：晚到时用户可能已在看别的片子，
+    // 此时 replace 会把他踢到一个毫不相关的详情页。
+    if (isStaleChain(token)) return;
     if (alternate) {
       toast.success(`已自动切换到「${alternate.sourceName}」`);
       await router.replace({ name: 'detail', params: { mediaId: alternate.mediaId } });
@@ -505,6 +543,8 @@ onMounted(async () => {
 });
 
 watch(mediaId, () => {
+  // 让上一部片子仍在飞的探测/换源链集体失效（含 A→B→返回 A 的同 ID 复发）
+  detailToken += 1;
   lineId.value = null;
   manualLineId.value = null;
   descExpanded.value = false;
@@ -512,6 +552,10 @@ watch(mediaId, () => {
   unavailableIds.value = [];
   autoSwitchTried.clear();
   void load(false);
+});
+
+onBeforeUnmount(() => {
+  detailToken += 1;
 });
 
 // P1: 切换线路时重置不可用集列表，避免旧线路的失败状态污染新线路
@@ -759,7 +803,8 @@ async function onEpisodeSelect(ep: Episode): Promise<void> {
 
 async function toggleFavorite(): Promise<void> {
   const it = item.value;
-  if (!it) return;
+  if (!it || favoritePending.value) return;
+  favoritePending.value = true;
   try {
     const added = await favorites.toggle({
       sourceId: it.sourceId,
@@ -776,6 +821,8 @@ async function toggleFavorite(): Promise<void> {
     toast.success(added ? '已收藏' : '已取消收藏');
   } catch (e) {
     toast.error(toErrorShape(e).message);
+  } finally {
+    favoritePending.value = false;
   }
 }
 
@@ -925,7 +972,14 @@ function openCompliance(): void {
   <main ref="rootRef" class="detail" data-route="detail">
     <!-- 顶部背景 -->
     <div class="detail__backdrop" aria-hidden="true">
-      <img v-if="item?.posterUrl" class="detail__backdrop-img" :src="item.posterUrl" alt="" />
+      <img
+        v-if="backdropSrc"
+        class="detail__backdrop-img"
+        :src="backdropSrc"
+        alt=""
+        loading="lazy"
+        decoding="async"
+      />
       <div class="detail__backdrop-fade" />
     </div>
 
@@ -1004,7 +1058,7 @@ function openCompliance(): void {
       <template v-else-if="item">
         <section ref="heroEl" class="detail-hero">
           <div ref="posterRef" class="detail-hero__poster">
-            <PosterImage :src="item.posterUrl" :alt="item.title" :cover-key="item.id" />
+            <PosterImage :src="item.posterUrl" :alt="item.title" :cover-key="item.id" :width-px="IMG_W_POSTER" />
           </div>
           <div class="detail-hero__meta">
             <h1 class="detail-hero__title" data-narrative-title>{{ item.title }}</h1>
@@ -1158,6 +1212,7 @@ function openCompliance(): void {
           class="detail-actions__icon"
           :class="{ 'detail-actions__icon--bump': favoriteBump, 'detail-actions__icon--on': isFavorite }"
           type="button"
+          :disabled="favoritePending"
           :aria-label="isFavorite ? '取消收藏' : '收藏'"
           :aria-pressed="isFavorite"
           @click="toggleFavorite"
@@ -1592,10 +1647,18 @@ function openCompliance(): void {
 }
 
 .detail-desc__toggle {
+  position: relative;
   margin-top: var(--space-2);
   min-height: 32px;
   font: var(--text-label);
   color: var(--color-brand-text);
+}
+
+/* 视觉 32，命中区补到 44（规范 §12.1） */
+.detail-desc__toggle::after {
+  content: '';
+  position: absolute;
+  inset: -6px 0;
 }
 
 .detail-compliance-link {
@@ -1709,6 +1772,7 @@ function openCompliance(): void {
 }
 
 .detail-preload-hint__close {
+  position: relative;
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
@@ -1718,6 +1782,13 @@ function openCompliance(): void {
   border-radius: var(--radius-full);
   color: var(--color-text-tertiary);
   transition: color 0.15s ease;
+}
+
+/* 视觉 28，命中区补到 44×44 */
+.detail-preload-hint__close::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
 }
 
 .detail-preload-hint__close:active {

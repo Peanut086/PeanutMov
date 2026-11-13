@@ -123,6 +123,7 @@ function isRecommended(lineId: string): boolean {
 }
 
 .line-selector__trigger {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
@@ -133,6 +134,13 @@ function isRecommended(lineId: string): boolean {
   border: 1px solid var(--color-border);
   color: var(--color-text-secondary);
   font: var(--font-weight-medium) 12px / 1 var(--font-family-base);
+}
+
+/* 视觉高度 30，命中区扩到 44（规范 §12.1） */
+.line-selector__trigger::after {
+  content: '';
+  position: absolute;
+  inset: -7px -4px;
 }
 
 .line-selector__trigger svg {

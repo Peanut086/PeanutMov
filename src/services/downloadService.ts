@@ -20,9 +20,10 @@ import { DownloadQueue, transition } from '@/services/downloadQueue';
 import { createDownloadEngine, setDownloadEngine } from '@/services/downloadEngine';
 import { nativeFilePathOf, readBlob } from '@/services/downloadSink';
 import { deleteFile, stat, toPlayableUrl } from '@/native/fs';
-import { currentNetworkType, isOnline } from '@/native/network';
+import { currentNetworkType, isOnline, onNetworkChange } from '@/native/network';
 import { onAppStateChange, type AppLifecycleState } from '@/native/appLifecycle';
 import { applyNativeSpeedLimit } from '@/native/mediaToolPlugin';
+import { nativeDownloadSetConcurrency } from '@/native/downloadPlugin';
 import {
   DOWNLOAD_CELLULAR_WARN_BYTES,
   DOWNLOAD_DEFAULT_CONCURRENCY,
@@ -113,6 +114,7 @@ let bootstrapped = false;
 let zombieChecked = false;
 /** 前后台监听解绑函数（REV-22：切后台暂停、回前台按设置自动恢复） */
 let lifecycleUnbind: (() => void) | null = null;
+let networkUnbind: (() => void) | null = null;
 let lastLifecycleState: AppLifecycleState = 'active';
 /** FIX-D3：运行时卡死 watchdog 定时器 */
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
@@ -177,6 +179,43 @@ async function emitQueueSummary(): Promise<void> {
   appEvents.emit('downloads:changed', { id: null });
 }
 
+/**
+ * 并发档位同步给原生直链下载器（EXT-04 / FR-62）。
+ * 原生侧此前硬编码 2 路，设置页的 1/2/3 只驱动 JS 队列，走原生时用户调档完全无感。
+ */
+async function syncNativeConcurrency(n: number): Promise<void> {
+  try {
+    await nativeDownloadSetConcurrency(n);
+  } catch (e) {
+    logger.debug('原生并发闸门下发失败（忽略，JS 队列仍按档位执行）', toAppError(e).message);
+  }
+}
+
+/**
+ * 「仅 Wi-Fi 下载」对在飞任务的兜底。
+ *
+ * preflight 只拦新任务：Wi-Fi 切到移动网络时正在下的任务仍然跑完，
+ * 所以设置页那句「移动网络下载将二次确认」此前对运行中任务并不成立。
+ * 只暂停、不自动恢复——自动恢复会把用户手工暂停的任务一起唤醒。
+ */
+async function enforceWifiOnlyOnCellular(): Promise<void> {
+  if (currentNetworkType() !== 'cellular') return;
+  try {
+    const settings = await settingsService.get();
+    if (!settings.download.wifiOnly) return;
+  } catch {
+    return;
+  }
+  const inFlight = await downloadRepo.listByStatus(['downloading', 'queued']);
+  if (inFlight.length === 0) return;
+  await downloadService.pauseAll('user');
+  appEvents.emit('toast', {
+    text: `已切到移动网络，${inFlight.length} 个下载按「仅 Wi-Fi」暂停`,
+    type: 'info',
+  });
+  logger.info('wifiOnly 触发在飞任务暂停', { tasks: inFlight.length });
+}
+
 /** 惰性创建队列（并发值来自设置） */
 async function ensureQueue(): Promise<DownloadQueue> {
   if (queue) return queue;
@@ -186,6 +225,7 @@ async function ensureQueue(): Promise<DownloadQueue> {
   } catch {
     concurrency = DOWNLOAD_DEFAULT_CONCURRENCY;
   }
+  await syncNativeConcurrency(concurrency);
 
   const saveProgress = async (id: string, patch: Partial<DownloadTask>): Promise<void> => {
     const current = await downloadRepo.get(id);
@@ -430,78 +470,104 @@ export function selectCompletedTask(
   return null;
 }
 
+/**
+ * 同一集「创建中」的在飞请求。
+ *
+ * IDB 没有跨事务的唯一约束，而 `create` 的「查已有 → 落库」中间隔着两次 await：
+ * 双击下载、或详情/播放两个入口同时下单，两边都会读到「还没有」，于是同一集
+ * 落库两个任务（各自排队、各占一份队列容量）。按 `${mediaId}::${episodeId}`
+ * 复用同一次创建即可。
+ */
+const createInFlight = new Map<string, Promise<{ task: DownloadTask; existed: boolean }>>();
+
+/**
+ * 创建单个下载任务的真实实现，只允许经 `create` 调用（否则绕过在飞去重）。
+ *
+ * EXT-04 增量（全部为可选字段，老调用方行为不变）：
+ * - `input.hlsQuality` 单次覆盖设置，仅 HLS 任务落库（直链 `hlsQuality=null`，AC-147）；
+ * - `input.batchId` 由 `createBatch` 注入；
+ * - `extra` 为服务内部使用的附加字段（预检摘要等），不对外承诺。
+ */
+async function runCreate(
+  input: CreateDownloadInput,
+  extra?: Partial<DownloadTask>,
+): Promise<{ task: DownloadTask; existed: boolean }> {
+  const existing = await downloadService.findActiveByEpisode(input.mediaId, input.episodeId);
+  if (existing) {
+    return { task: existing, existed: true };
+  }
+
+  // 默认假设支持续传，让下载引擎在实际下载时验证（见 downloadEngine.ts 124-130 行）
+  // 如果服务器不支持 Range，引擎会自动降级并更新 task.resumable
+  const resumable = true;
+  const policy = await policySnapshot();
+  const hlsQuality = isHlsDownload(input) ? normalizeQuality(input.hlsQuality ?? policy.hlsQuality) : null;
+
+  const now = Date.now();
+  const task: DownloadTask = {
+    id: cryptoRandomId(),
+    sourceId: input.sourceId,
+    mediaId: input.mediaId,
+    episodeId: input.episodeId,
+    episodeNumber: input.episodeNumber,
+    title: input.title,
+    episodeTitle: input.episodeTitle,
+    posterUrl: input.posterUrl,
+    url: input.url,
+    headers: input.headers ?? {},
+    format: input.format,
+    quality: input.quality ?? null,
+    status: 'queued',
+    priority: now,
+    totalBytes: null,
+    downloadedBytes: 0,
+    speedBps: 0,
+    retries: 0,
+    maxRetries: DOWNLOAD_MAX_RETRIES,
+    resumable,
+    sink: sinkKindFor(),
+    filePath: null,
+    blobKey: null,
+    subtitlePaths: null,
+    coverPath: null,
+    pendingSubtitleUrls: input.subtitleUrls,
+    pendingCoverUrl: input.coverUrl,
+    batchId: input.batchId ?? null,
+    hlsQuality,
+    selectedHeight: null,
+    container: null,
+    remux: null,
+    estimatedBytes: null,
+    preflight: null,
+    subtitleSelection: policy.attachSubtitles,
+    errorCode: null,
+    errorMessage: null,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: null,
+    ...(extra ?? {}),
+  };
+  await persist(task);
+  const q = await ensureQueue();
+  q.enqueue(task);
+  emitDownload({ type: 'status', task, previous: 'queued' });
+  await emitQueueSummary();
+  return { task, existed: false };
+}
+
 export const downloadService = {
-  /**
-   * 创建单个下载任务（AC-70：重复创建返回 `existed: true`）。
-   *
-   * EXT-04 增量（全部为可选字段，老调用方行为不变）：
-   * - `input.hlsQuality` 单次覆盖设置，仅 HLS 任务落库（直链 `hlsQuality=null`，AC-147）；
-   * - `input.batchId` 由 `createBatch` 注入；
-   * - `extra` 为服务内部使用的附加字段（预检摘要等），不对外承诺。
-   */
+  /** 创建单个下载任务（AC-70：重复创建返回 `existed: true`；在飞期间重复调用复用同一次创建） */
   async create(input: CreateDownloadInput, extra?: Partial<DownloadTask>): Promise<{ task: DownloadTask; existed: boolean }> {
     validateInput(input);
-    const existing = await this.findActiveByEpisode(input.mediaId, input.episodeId);
-    if (existing) {
-      return { task: existing, existed: true };
-    }
+    const key = existingKeyOf(input.mediaId, input.episodeId);
+    const pending = createInFlight.get(key);
+    if (pending) return pending;
 
-    // 默认假设支持续传，让下载引擎在实际下载时验证（见 downloadEngine.ts 124-130 行）
-    // 如果服务器不支持 Range，引擎会自动降级并更新 task.resumable
-    const resumable = true;
-    const policy = await policySnapshot();
-    const hlsQuality = isHlsDownload(input) ? normalizeQuality(input.hlsQuality ?? policy.hlsQuality) : null;
-
-    const now = Date.now();
-    const task: DownloadTask = {
-      id: cryptoRandomId(),
-      sourceId: input.sourceId,
-      mediaId: input.mediaId,
-      episodeId: input.episodeId,
-      episodeNumber: input.episodeNumber,
-      title: input.title,
-      episodeTitle: input.episodeTitle,
-      posterUrl: input.posterUrl,
-      url: input.url,
-      headers: input.headers ?? {},
-      format: input.format,
-      quality: input.quality ?? null,
-      status: 'queued',
-      priority: now,
-      totalBytes: null,
-      downloadedBytes: 0,
-      speedBps: 0,
-      retries: 0,
-      maxRetries: DOWNLOAD_MAX_RETRIES,
-      resumable,
-      sink: sinkKindFor(),
-      filePath: null,
-      blobKey: null,
-      subtitlePaths: null,
-      coverPath: null,
-      pendingSubtitleUrls: input.subtitleUrls,
-      pendingCoverUrl: input.coverUrl,
-      batchId: input.batchId ?? null,
-      hlsQuality,
-      selectedHeight: null,
-      container: null,
-      remux: null,
-      estimatedBytes: null,
-      preflight: null,
-      subtitleSelection: policy.attachSubtitles,
-      errorCode: null,
-      errorMessage: null,
-      createdAt: now,
-      updatedAt: now,
-      completedAt: null,
-      ...(extra ?? {}),
-    };
-    await persist(task);
-    const q = await ensureQueue();
-    q.enqueue(task);
-    emitDownload({ type: 'status', task, previous: 'queued' });
-    await emitQueueSummary();
-    return { task, existed: false };
+    const settled = runCreate(input, extra).finally(() => {
+      if (createInFlight.get(key) === settled) createInFlight.delete(key);
+    });
+    createInFlight.set(key, settled);
+    return settled;
   },
 
   /** 批量创建（AC-70：50 集不卡顿 —— 分批入队并让出事件循环） */
@@ -871,9 +937,16 @@ export const downloadService = {
     return newTask.task;
   },
 
-  async remove(id: string, opts?: { deleteFile?: boolean }): Promise<void> {
+  /**
+   * 删除任务（可选连带删文件）。
+   *
+   * `fileLeftBehind`：记录一定会消失，但文件/分块可能删不掉（只读目录、被占用、权限被撤）。
+   * 这种情况下磁盘上留下的是一个看不见的孤儿文件——必须把结果交给调用方去说话，
+   * 不能在这里 `.catch(() => undefined)` 假装删干净了。
+   */
+  async remove(id: string, opts?: { deleteFile?: boolean }): Promise<{ fileLeftBehind: boolean }> {
     const task = await downloadRepo.get(id);
-    if (!task) return;
+    if (!task) return { fileLeftBehind: false };
     const q = await ensureQueue();
 
     // 下载中先取消再删除（AC-80）
@@ -882,43 +955,61 @@ export const downloadService = {
     }
     q.dequeue(id);
 
+    let fileLeftBehind = false;
     if (opts?.deleteFile !== false) {
-      if (task.blobKey) await blobRepo.delete(task.blobKey).catch(() => undefined);
-      if (task.filePath && isNative()) await deleteFile(task.filePath).catch(() => undefined);
+      if (task.blobKey) {
+        fileLeftBehind = !(await blobRepo.delete(task.blobKey).then(() => true).catch(() => false));
+      }
+      if (task.filePath && isNative()) {
+        const ok = await deleteFile(task.filePath).then(() => true).catch(() => false);
+        fileLeftBehind = fileLeftBehind || !ok;
+      }
     }
     await downloadRepo.remove(id);
     await emitQueueSummary();
+    return { fileLeftBehind };
   },
 
-  async clearCompleted(): Promise<number> {
+  async clearCompleted(): Promise<{ removed: number; filesLeftBehind: number }> {
     const completed = await downloadRepo.listByStatus(['completed']);
+    let filesLeftBehind = 0;
     for (const task of completed) {
-      await this.remove(task.id, { deleteFile: true });
+      const result = await this.remove(task.id, { deleteFile: true });
+      if (result.fileLeftBehind) filesLeftBehind += 1;
     }
-    return completed.length;
+    return { removed: completed.length, filesLeftBehind };
   },
 
   /** 功能扩展-10：批量删除（AC-80） */
-  async removeMany(ids: string[], opts?: { deleteFile?: boolean }): Promise<number> {
+  async removeMany(
+    ids: string[],
+    opts?: { deleteFile?: boolean },
+  ): Promise<{ removed: number; filesLeftBehind: number; failed: number }> {
     let count = 0;
+    let filesLeftBehind = 0;
+    let failed = 0;
     for (const id of ids) {
       try {
-        await this.remove(id, opts);
+        const result = await this.remove(id, opts);
         count++;
+        if (result.fileLeftBehind) filesLeftBehind += 1;
       } catch {
         // 单条失败不中断批量
+        failed += 1;
       }
     }
-    return count;
+    return { removed: count, filesLeftBehind, failed };
   },
 
   /** 功能扩展-10：清理失败任务 */
-  async clearFailed(): Promise<number> {
-    const failed = await downloadRepo.listByStatus(['failed']);
-    for (const task of failed) {
-      await this.remove(task.id, { deleteFile: true });
+  async clearFailed(): Promise<{ removed: number; filesLeftBehind: number }> {
+    const failedTasks = await downloadRepo.listByStatus(['failed']);
+    let filesLeftBehind = 0;
+    for (const task of failedTasks) {
+      const result = await this.remove(task.id, { deleteFile: true });
+      if (result.fileLeftBehind) filesLeftBehind += 1;
     }
-    return failed.length;
+    return { removed: failedTasks.length, filesLeftBehind };
   },
 
   /** 功能扩展-10：计算存储占用（AC-79） */
@@ -1193,6 +1284,7 @@ export const downloadService = {
     await settingsService.update({ download: { concurrency: n } });
     const q = await ensureQueue();
     q.setConcurrency(n);
+    await syncNativeConcurrency(n);
   },
 
   /** 启动/回前台恢复队列；同时接线应用生命周期（AC-72 / REV-22） */
@@ -1381,6 +1473,11 @@ export const downloadService = {
    */
   bindLifecycle(): void {
     if (lifecycleUnbind) return;
+    if (!networkUnbind) {
+      networkUnbind = onNetworkChange(() => {
+        void enforceWifiOnlyOnCellular().catch(() => undefined);
+      });
+    }
     lifecycleUnbind = onAppStateChange((state) => {
       if (state === lastLifecycleState) return;
       lastLifecycleState = state;
@@ -1641,6 +1738,8 @@ export const downloadService = {
   __resetQueue(): void {
     lifecycleUnbind?.();
     lifecycleUnbind = null;
+    networkUnbind?.();
+    networkUnbind = null;
     lastLifecycleState = 'active';
     releaseWakeLock();
     stopWatchdog();

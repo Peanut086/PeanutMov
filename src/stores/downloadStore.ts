@@ -164,9 +164,10 @@ export const useDownloadStore = defineStore('download', () => {
     await downloadService.retry(id);
   }
 
-  async function remove(id: string, deleteFile?: boolean): Promise<void> {
-    await downloadService.remove(id, { deleteFile });
+  async function remove(id: string, deleteFile?: boolean): Promise<{ fileLeftBehind: boolean }> {
+    const result = await downloadService.remove(id, { deleteFile });
     await refresh();
+    return result;
   }
 
   async function pauseAll(): Promise<void> {
@@ -179,21 +180,27 @@ export const useDownloadStore = defineStore('download', () => {
     await refresh();
   }
 
-  async function clearCompleted(): Promise<void> {
-    await downloadService.clearCompleted();
+  async function clearCompleted(): Promise<{ removed: number; filesLeftBehind: number }> {
+    const result = await downloadService.clearCompleted();
     await refresh();
+    return result;
   }
 
   /** 功能扩展-10：批量删除 */
-  async function removeMany(ids: string[], deleteFile?: boolean): Promise<void> {
-    await downloadService.removeMany(ids, { deleteFile });
+  async function removeMany(
+    ids: string[],
+    deleteFile?: boolean,
+  ): Promise<{ removed: number; filesLeftBehind: number; failed: number }> {
+    const result = await downloadService.removeMany(ids, { deleteFile });
     await refresh();
+    return result;
   }
 
   /** 功能扩展-10：清理失败任务 */
-  async function clearFailed(): Promise<void> {
-    await downloadService.clearFailed();
+  async function clearFailed(): Promise<{ removed: number; filesLeftBehind: number }> {
+    const result = await downloadService.clearFailed();
     await refresh();
+    return result;
   }
 
   /** 功能扩展-10：存储占用 */

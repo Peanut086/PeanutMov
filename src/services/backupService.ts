@@ -1,15 +1,23 @@
 /**
  * 备份服务（API-13）
  *
- * - 导出：`schemaVersion = 2`，默认脱敏 `auth.password` / `auth.token`；
+ * - 导出：`schemaVersion = 3`，默认脱敏 `auth.password` / `auth.token`；
  * - 导入：校验 `schemaVersion`（缺失/过高 → `E_VERSION_UNSUPPORTED`），
- *   单事务写 sources/favorites/history + 直播域四表（可选 settings），失败全回滚。
+ *   单事务写 sources/favorites/history + 直播域四表 + 设置 + 用户数据 kv，失败全回滚。
  *
  * 直播域（v2）：`lives` / `epgSources` / `channelPrefs` / `reminders` 一并备份——
  * 这四张表是换机后最难手工重建的数据（订阅地址、分组排序、节目提醒）。
  * v1 备份不含这些字段，归一化为空数组后按"只导入携带的表"处理。
  * `epgSources` 的内置源在 overwrite 下**不清空**：它由 DB 迁移一次性种入，
  * 清掉后迁移不会重跑，EPG 会永久失去默认源。
+ *
+ * 设置（v3 起全量）：此前导出整个 `AppSettings` 却只恢复 8 个键，
+ * 云备份配置、网盘画质、弹幕、定时备份、搜索预算等一律"备份里有、恢复后没了"。
+ * 现按 `SETTINGS_RESTORE_KEYS` 全量回落，只把 `schemaVersion`/`updatedAt` 让给设置服务自己维护。
+ *
+ * 用户数据 kv（v3）：`import-records` 与 `danmakuLikes:*` 这类散装键走 `kvEntries`，
+ * 白名单在导出与导入两侧都生效——否则一份手改的备份就能覆盖 `app-settings`
+ * 或 `backup-encryption-key`，把恢复变成写入通道。
  *
  * `downloads`（FR-40 / CHG-04）：备份**包含下载任务元数据**，但不含视频文件与
  * blob 内容，且剔除 `sink`/`filePath`/`blobKey` 三个"指向本机存储"的字段
@@ -29,7 +37,8 @@ import { liveRepo } from '@/db/repositories/liveRepo';
 import { reminderRepo } from '@/db/repositories/reminderRepo';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { reminderService } from '@/services/reminderService';
-import { settingsService } from '@/services/settingsService';
+import { settingsService, settingsForBackup } from '@/services/settingsService';
+import { resetDanmakuLikeCache } from '@/services/danmakuLikeService';
 import {
   base64ToBytes,
   bytesToBase64,
@@ -45,7 +54,7 @@ import {
 } from '@/services/backupEncryption';
 import { WebDAVClient } from '@/services/webdavService';
 import { appEvents } from '@/services/events';
-import { APP_VERSION, BACKUP_SCHEMA_VERSION, HISTORY_MAX } from '@/shared/constants';
+import { APP_VERSION, BACKUP_SCHEMA_VERSION, HISTORY_MAX, KV_KEY_IMPORT_RECORDS } from '@/shared/constants';
 import { AppError, toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { formatDateStamp } from '@/shared/time';
@@ -53,6 +62,7 @@ import { Share } from '@capacitor/share';
 import { isNative } from '@/shared/platform';
 import { deleteFile, readTextFile, writeTextFile } from '@/native/fs';
 import type {
+  AppSettings,
   BackupFile,
   BackupImportReport,
   BackupMode,
@@ -60,10 +70,12 @@ import type {
   BackupSettings,
   BackupSource,
   ChannelPrefs,
+  DeepPartial,
   DownloadTask,
   EpgSource,
   FavoriteRecord,
   HistoryRecord,
+  KvBackupEntry,
   LiveRecord,
   Reminder,
   Source,
@@ -465,6 +477,23 @@ function redactSource(source: Source): Source {
   };
 }
 
+/**
+ * 设置里的机密：WebDAV 密码 + 加密盐/校验串。
+ *
+ * 此前导出无条件带上整个 `AppSettings`，"不含凭据"只作用于源与直播地址，
+ * WebDAV 密码其实一直躺在备份明文里；v3 开始恢复设置后这层泄露会真正生效，
+ * 所以按 `includeCredentials` 一并脱敏。校验串是口令的 PBKDF2 派生物，
+ * 拿到备份即可离线爆破，同样只在"包含凭据"时导出。
+ */
+function redactSettings(settings: AppSettings): AppSettings {
+  const next: AppSettings = { ...settings };
+  if (next.webdav) next.webdav = { ...next.webdav, password: '' };
+  if (next.backup) {
+    next.backup = { ...next.backup, encryptionSalt: null, encryptionVerifier: null };
+  }
+  return next;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -768,7 +797,64 @@ export function normalizeBackupFile(raw: unknown): BackupFile {
     reminders: asArray<unknown>(raw['reminders'])
       .map(validateReminder)
       .filter((value): value is Reminder => value !== null),
+    // 导入侧同样过白名单：备份 JSON 是外部输入，照单全收的话
+    // 手改的 kvEntries 就能写 app-settings / backup-encryption-key 这类敏感键
+    kvEntries: asArray<unknown>(raw['kvEntries'])
+      .map((entry): KvBackupEntry | null => {
+        if (!isRecord(entry) || typeof entry['key'] !== 'string') return null;
+        const key = entry['key'];
+        if (!isBackupKvKey(key) || entry['value'] === undefined) return null;
+        return { key, value: entry['value'] };
+      })
+      .filter((value): value is KvBackupEntry => value !== null),
   };
+}
+
+/**
+ * 随备份走的散装用户数据 kv 键（白名单，导出与导入共用）。
+ *
+ * 白名单而非黑名单：`kv` 里同时躺着 `app-settings`、`backup-index`、
+ * `backup-encryption-key` 与 `backup-file:*`（备份自身的元数据与密钥）。
+ * 按前缀全收会让一份备份文件递归套住自己，更要命的是导入侧照单全收等于
+ * 把"恢复数据"变成"任意键写入通道"——手改的备份能直接盖掉加密密钥。
+ *
+ * 也不收缓存类键（线路健康、回看探测、EPG/弹幕缓存、各类 streak 标记）：
+ * 它们是本机运行推导出来的，换机后重算比搬过来更正确。
+ */
+const BACKUP_KV_EXACT_KEYS: readonly string[] = [KV_KEY_IMPORT_RECORDS];
+const BACKUP_KV_PREFIXES: readonly string[] = ['danmakuLikes:'];
+
+function isBackupKvKey(key: string): boolean {
+  return BACKUP_KV_EXACT_KEYS.includes(key) || BACKUP_KV_PREFIXES.some((prefix) => key.startsWith(prefix));
+}
+
+/**
+ * 备份里的设置 → `settingsService.update` 的补丁。
+ *
+ * 全量回落：此前这里是手写的 8 个键，云备份地址、网盘画质、弹幕、定时备份与加密
+ * 配置、搜索预算等一律"备份里有、恢复后没了"。只有两个字段让给设置服务自己维护：
+ * `schemaVersion`（update 显式拒绝外部修改）与 `updatedAt`（写入时重新打时间戳）。
+ */
+const SETTINGS_SERVICE_OWNED_KEYS = ['schemaVersion', 'updatedAt'] as const;
+
+function settingsRestorePatch(settings: AppSettings): DeepPartial<AppSettings> {
+  const patch: Record<string, unknown> = { ...settings };
+  for (const key of SETTINGS_SERVICE_OWNED_KEYS) delete patch[key];
+  return patch as DeepPartial<AppSettings>;
+}
+
+/** 一次事务读全量 kv，按白名单挑出要备份的条目 */
+async function collectKvEntries(): Promise<KvBackupEntry[]> {
+  const records = await withTx(['kv'], 'readonly', async (tx) =>
+    tx.objectStore(STORE_NAMES.kv).getAll(),
+  );
+  const picked: KvBackupEntry[] = [];
+  for (const record of records as Array<{ key?: unknown; value?: unknown } | undefined>) {
+    if (!record || typeof record.key !== 'string' || !isBackupKvKey(record.key)) continue;
+    if (record.value === undefined || record.value === null) continue;
+    picked.push({ key: record.key, value: record.value });
+  }
+  return picked;
 }
 
 /**
@@ -779,7 +865,7 @@ export function normalizeBackupFile(raw: unknown): BackupFile {
  * 不读 `blobs` 表，故备份体积与已下载视频大小无关。
  */
 async function collectBackup(includeCredentials: boolean): Promise<BackupFile> {
-  const [sources, favorites, history, settings, downloads, lives, epgSources, channelPrefs, reminders] =
+  const [sources, favorites, history, settings, downloads, lives, epgSources, channelPrefs, reminders, kvEntries] =
     await Promise.all([
       sourceRepo.list(),
       favoriteRepo.listByCreated(),
@@ -790,6 +876,7 @@ async function collectBackup(includeCredentials: boolean): Promise<BackupFile> {
       epgSourceRepo.list(),
       channelPrefsRepo.list(),
       reminderRepo.list(),
+      collectKvEntries(),
     ]);
 
   return {
@@ -799,7 +886,8 @@ async function collectBackup(includeCredentials: boolean): Promise<BackupFile> {
     sources: includeCredentials ? sources : sources.map(redactSource),
     favorites,
     history,
-    settings,
+    // sanitize 顺带剔掉废弃字段，旧备份不会把已删设置带回新库
+    settings: includeCredentials ? settingsForBackup(settings) : redactSettings(settingsForBackup(settings)),
     downloads: downloads.map((task) => toDownloadMeta(task, includeCredentials)),
     // 直播源地址常带 token，与下载直链同一套脱敏口径
     lives: includeCredentials ? lives : lives.map((live) => ({ ...live, url: redactUrl(live.url) })),
@@ -808,6 +896,7 @@ async function collectBackup(includeCredentials: boolean): Promise<BackupFile> {
       : epgSources.map((source) => ({ ...source, endpoint: redactUrl(source.endpoint) })),
     channelPrefs,
     reminders,
+    kvEntries,
   };
 }
 
@@ -874,7 +963,7 @@ export const backupService: BackupService = {
 
     try {
       await withTx(
-        ['sources', 'favorites', 'history', 'lives', 'epgSources', 'channelPrefs', 'reminders'],
+        ['sources', 'favorites', 'history', 'lives', 'epgSources', 'channelPrefs', 'reminders', 'kv'],
         'readwrite',
         async (tx) => {
           if (mode === 'overwrite') {
@@ -889,6 +978,13 @@ export const backupService: BackupService = {
             const existingEpg = await epgStore.getAll();
             for (const record of existingEpg) {
               if (!record.builtin) await epgStore.delete(record.id);
+            }
+            // kv 只清"备份负责的那几个键"：整表清空会连 app-settings、
+            // backup-index、backup-encryption-key 一起抹掉，属于自我损坏
+            const kvStore = tx.objectStore(STORE_NAMES.kv);
+            const existingKvKeys = (await kvStore.getAllKeys()) as string[];
+            for (const key of existingKvKeys) {
+              if (isBackupKvKey(key)) await kvStore.delete(key);
             }
           }
           const sourceStore = tx.objectStore('sources');
@@ -906,25 +1002,26 @@ export const backupService: BackupService = {
           for (const record of normalized.channelPrefs) await prefsStore.put(record);
           const reminderStore = tx.objectStore(STORE_NAMES.reminders);
           for (const record of normalized.reminders) await reminderStore.put(record);
+          // 散装用户数据（订阅导入记录、弹幕点赞分桶）——键已在归一化时过白名单
+          const kvStore = tx.objectStore(STORE_NAMES.kv);
+          for (const entry of normalized.kvEntries) {
+            await kvStore.put({ key: entry.key, value: entry.value, updatedAt: now });
+          }
         },
       );
     } catch (e) {
       throw toAppError(e, 'E_DB');
     }
 
+    if (normalized.kvEntries.length > 0) {
+      // 点赞分桶有模块级内存缓存，不清掉的话本次会话看过的集读不到刚落库的数据
+      resetDanmakuLikeCache();
+    }
+
     let settingsRestored = false;
     if (normalized.settings) {
       try {
-        await settingsService.update({
-          theme: normalized.settings.theme,
-          hideDemoContent: normalized.settings.hideDemoContent,
-          player: normalized.settings.player,
-          gesture: normalized.settings.gesture,
-          download: normalized.settings.download,
-          searchHistory: normalized.settings.searchHistory,
-          complianceVersion: normalized.settings.complianceVersion,
-          complianceAcceptedAt: normalized.settings.complianceAcceptedAt,
-        });
+        await settingsService.update(settingsRestorePatch(normalized.settings));
         settingsRestored = true;
       } catch (e) {
         logger.warn('备份设置恢复失败（不影响数据导入）', e);
@@ -959,6 +1056,7 @@ export const backupService: BackupService = {
       epgSources: normalized.epgSources.length,
       channelPrefs: normalized.channelPrefs.length,
       reminders: normalized.reminders.length,
+      kvEntries: normalized.kvEntries.length,
       settingsRestored,
     };
   },

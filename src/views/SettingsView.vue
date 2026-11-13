@@ -93,12 +93,10 @@ const loadError = ref<string | null>(null);
  */
 const PLAYER_FALLBACK: PlayerSettings = {
   defaultRate: 1,
-  defaultQuality: 'auto',
   autoPlayNext: true,
   seekStepSec: 10,
   longPressRate: 2,
   subtitle: {
-    enabled: false,
     size: 'medium',
     color: 'white',
     background: 'black',
@@ -334,7 +332,10 @@ async function setSegmentConcurrency(value: 3 | 6 | 8): Promise<void> {
 }
 
 async function setWifiOnly(value: boolean): Promise<void> {
-  await update({ download: { wifiOnly: value } }, value ? '移动网络下载将二次确认' : '已允许移动网络直接下载');
+  await update(
+    { download: { wifiOnly: value } },
+    value ? '仅 Wi-Fi 下载：新建需确认，切到移动网络会暂停在飞任务' : '已允许移动网络直接下载',
+  );
 }
 
 async function setAutoResume(value: boolean): Promise<void> {

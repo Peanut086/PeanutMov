@@ -117,11 +117,15 @@ async function refresh(row: SubscriptionRow): Promise<void> {
   }
   refreshingId.value = row.id;
   try {
-    const { updated, newCount, jarDead } = await importService.refreshSubscription(row.id);
+    const { updated, newCount, jarDead, livesFailed } = await importService.refreshSubscription(row.id);
     const parts = [`覆盖 ${updated} 个源`];
     if (newCount > 0) parts.push(`新增 ${newCount} 条未导入`);
     if (jarDead > 0) parts.push(`${jarDead} 个 jar 已失效未覆盖`);
-    toast.success(`「${row.id}」已刷新：${parts.join('，')}`);
+    if (livesFailed > 0) parts.push(`${livesFailed} 个直播源同步失败`);
+    const text = `「${row.id}」已刷新：${parts.join('，')}`;
+    // 直播源没同步上就不算「全绿」：用 info 说完成绩，也把缺口留在屏幕上
+    if (livesFailed > 0) toast.info(text);
+    else toast.success(text);
   } catch (e) {
     toast.error(toErrorShape(e).message);
   } finally {

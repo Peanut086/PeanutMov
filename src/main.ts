@@ -40,17 +40,22 @@ async function bootstrap(): Promise<void> {
 
   await initSettings();
 
-  // 批次1：线路健康记忆初始化（加载持久化数据）
-  await initLineHealth();
+  // 批次1 + 演示数据：两者互不依赖（分别读写 kv 的独立键与 sources/media/lines/episodes），
+  // 并行省掉一次 IDB 冷启动往返。仍在挂载前完成——HomeView 不订阅 `sources:changed`，
+  // 种子数据晚于首屏就会一直停在空态。
+  await Promise.all([initLineHealth(), ensureDemoData()]);
 
   // P1：恢复 JS logger 级别（根据原生存储的详细日志开关状态）
-  await restoreLogLevel();
+  // 只影响后续日志 verbosity，内部已静默兜错，没必要让它挡首屏。
+  void restoreLogLevel();
 
-  // 演示数据：幂等；失败只记日志，页面仍可进入空态并手动重试
-  await ensureDemoData();
-
-  // 下载队列 + 前后台生命周期（AC-72 / REV-22）：切后台暂停、回前台按设置自动恢复
-  await initDownloads();
+  // 下载队列 + 前后台生命周期（AC-72 / REV-22）：切后台暂停、回前台按设置自动恢复。
+  // 内部的四个启动自检（存量坏任务清洗 / 僵尸检测 / HLS 完整性 / 重新入队）要扫全表并
+  // 逐个 stat() 本地文件，是首屏最长的一段等待，因此不 await：任务列表页自己有 `load()`，
+  // 自检过程又持续抛 `download` 事件，晚到的纠正一样会反映到 UI。
+  // 注意 initDownloads 内部仍保持「清洗 → 僵尸 → 完整性 → bootstrap」原序，顺序颠倒会让
+  // 坏任务被 autoResume 重新入队（见 downloadService.repairLocalArtifactTasks 注释）。
+  void initDownloads();
 
   // 豆瓣源跨源播放：让「仅片单」的豆瓣源能借 CMS 源的播放地址
   initDoubanRuntime();

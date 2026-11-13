@@ -182,6 +182,26 @@ public class DownloadPlugin extends Plugin {
     }
 
     /**
+     * 下发并发闸门（EXT-04 / FR-62）。
+     *
+     * JS 侧 `downloadService.setConcurrency` / 启动恢复时调用，
+     * 让设置页的并发档位对原生直链下载同样成立——此前原生恒为 2。
+     */
+    @PluginMethod
+    public void setConcurrency(PluginCall call) {
+        Integer value = call.getInt("maxConcurrent");
+        if (value == null) {
+            call.reject("maxConcurrent required");
+            return;
+        }
+        downloadManager.setMaxConcurrent(value);
+        JSObject result = new JSObject();
+        result.put("ok", true);
+        result.put("maxConcurrent", value);
+        call.resolve(result);
+    }
+
+    /**
      * 启动前台服务（用于保持下载进程存活）
      */
     @PluginMethod

@@ -10,7 +10,6 @@ import { mount } from '@vue/test-utils';
 import PlayerSurface from '@/components/player/PlayerSurface.vue';
 
 const SUBTITLE = {
-  enabled: true,
   size: 'medium',
   color: 'white',
   background: 'black',

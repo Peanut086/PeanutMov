@@ -9,7 +9,19 @@
  * - 路由返回时恢复列表页滚动位置（非 KeepAlive 页面会丢失）
  */
 
+import { prefersReducedMotion } from '@/composables/useSpring';
+
 const SCROLL_ATTR = 'data-scroll="page"';
+
+/**
+ * 系统「减少动态效果」下，JS 侧的滚动也必须瞬时到位。
+ *
+ * reset.css 的全局降级只管 CSS 动画与过渡，`scrollTo({ behavior: 'smooth' })`
+ * 是浏览器行为，不受那条规则约束——只能在这里现读媒体查询。
+ */
+function behavior(): ScrollBehavior {
+  return prefersReducedMotion() ? 'auto' : 'smooth';
+}
 
 /**
  * 获取当前页面的主滚动容器
@@ -27,9 +39,9 @@ export function getScrollContainer(): HTMLElement | Window {
 export function scrollToTop(container?: HTMLElement | Window): void {
   const target = container ?? getScrollContainer();
   if (target instanceof Window) {
-    target.scrollTo({ top: 0, behavior: 'smooth' });
+    target.scrollTo({ top: 0, behavior: behavior() });
   } else {
-    target.scrollTo({ top: 0, behavior: 'smooth' });
+    target.scrollTo({ top: 0, behavior: behavior() });
   }
 }
 

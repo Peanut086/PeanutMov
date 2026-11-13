@@ -15,6 +15,7 @@ import AppHeader from '@/components/layout/AppHeader.vue';
 import SafeArea from '@/components/layout/SafeArea.vue';
 import OfflineBanner from '@/components/common/OfflineBanner.vue';
 import PosterImage from '@/components/common/PosterImage.vue';
+import { IMG_W_CARD } from '@/shared/imageSize';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import PullToRefresh from '@/components/common/PullToRefresh.vue';
 import IconStar from '@/components/icons/IconStar.vue';
@@ -122,7 +123,7 @@ onMounted(() => {
         <section
           v-for="cat in categories"
           :key="cat.name"
-          class="douban-section"
+          class="douban-section state-enter"
           :aria-labelledby="`douban-${cat.name}`"
         >
           <div class="douban-section__head">
@@ -139,7 +140,7 @@ onMounted(() => {
               @click="searchItem(item)"
             >
               <div class="douban-card__frame">
-                <PosterImage :src="item.posterUrl" :alt="item.title" />
+                <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_CARD" />
                 <span v-if="item.rating" class="douban-card__rating" aria-hidden="true">
                   <IconStar :size="10" />
                   {{ item.rating.toFixed(1) }}

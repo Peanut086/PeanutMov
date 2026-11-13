@@ -5,10 +5,14 @@
  * - `loading="lazy"` + `decoding="async"`，首屏外不请求（NFR-P02）
  * - 加载完成前显示骨架；失败切成占位图标（不显示破图）
  * - 容器固定 2:3 比例，CLS = 0
+ * - `widthPx`（设备像素）决定向源站要多大的图：只有对象存储主机才会真的被缩放，
+ *   其余主机原样请求，所以传与不传都不会让图裂（详见 `@/shared/imageSize`）
  * - `coverKey` 把卡片身份写进 DOM：共享元素转场返程时不持有元素引用，
  *   按媒体 id 重新查询当前 rect（虚拟列表会回收 DOM，引用必然是过期的）
  */
 import { computed, ref, watch } from 'vue';
+
+import { sizedImage } from '@/shared/imageSize';
 
 const props = withDefaults(
   defineProps<{
@@ -20,8 +24,10 @@ const props = withDefaults(
     eager?: boolean;
     /** 转场身份标识，通常是 mediaId */
     coverKey?: string | null;
+    /** 目标显示宽度（设备像素）；0 = 不协商尺寸，直接请求原图 */
+    widthPx?: number;
   }>(),
-  { rounded: true, eager: false, coverKey: null },
+  { rounded: true, eager: false, coverKey: null, widthPx: 0 },
 );
 
 const failed = ref(false);
@@ -35,7 +41,8 @@ watch(
   },
 );
 
-const showPlaceholder = computed(() => !props.src || failed.value);
+const resolvedSrc = computed(() => sizedImage(props.src, props.widthPx));
+const showPlaceholder = computed(() => !resolvedSrc.value || failed.value);
 const loadingAttr = computed(() => (props.eager ? 'eager' : 'lazy'));
 </script>
 
@@ -44,10 +51,10 @@ const loadingAttr = computed(() => (props.eager ? 'eager' : 'lazy'));
     <div v-if="!loaded && !showPlaceholder" class="skeleton poster-image__skeleton" aria-hidden="true" />
 
     <img
-      v-if="src && !failed"
+      v-if="resolvedSrc && !failed"
       class="poster-image__img"
       :class="{ 'poster-image__img--loaded': loaded }"
-      :src="src"
+      :src="resolvedSrc"
       :alt="alt"
       :loading="loadingAttr"
       decoding="async"

@@ -35,16 +35,22 @@ function emitState(state: AppLifecycleState): void {
   }
 }
 
+/**
+ * 派发一次「返回」：后注册的先问，任一消费即短路（P3-17）。
+ *
+ * 正序 + 全跑是叠层弹层的隐患：详情页上再开一层弹层时，两个监听器都返回 true，
+ * 一次返回键会把两层一起关掉（用户看到"直接回到页面本体"）。而"最后打开的那层
+ * 才该响应返回"正是 Set 的插入序反过来读的那件事。
+ */
 function emitBack(): boolean {
-  let handled = false;
-  for (const listener of [...backListeners]) {
+  for (const listener of [...backListeners].reverse()) {
     try {
-      if (listener()) handled = true;
+      if (listener()) return true;
     } catch (e) {
       logger.warn('返回键监听器异常', e);
     }
   }
-  return handled;
+  return false;
 }
 
 function attachWeb(): void {

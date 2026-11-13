@@ -15,6 +15,9 @@
  *   `epgCache` 键空间由 `{channel}:{date}` 升级为 `epgv2:{sourceId}:{channelKey}:{date}`，
  *   因纯缓存且旧键无 sourceId 语义，升级时直接 clear()；同时写入内置默认 EPG 源。
  *   回滚方式：客户端降级时 v3 及以下忽略多出的 store；旧键缓存已清空但可重建。
+ * - v5（2026-11-12）：`history` 新增 `by-media` 索引。详情自愈（`recoverItem`）此前只能
+ *   `listAllRaw()` 读出最多 500 条（每条还带 `mediaSnapshot`）再在 JS 里 find；
+ *   回滚方式：索引是派生数据，降级后旧客户端不读它即可，无需清表。
  */
 import type { IDBPDatabase, IDBPTransaction } from 'idb';
 
@@ -129,5 +132,9 @@ export function upgrade(
       updatedAt: now,
     };
     tx.objectStore('epgSources').put(builtin);
+  }
+  // v5：history.by-media（详情自愈按 mediaId 查历史，避免全表读）
+  if (oldVersion < 5) {
+    tx.objectStore('history').createIndex('by-media', 'mediaId');
   }
 }

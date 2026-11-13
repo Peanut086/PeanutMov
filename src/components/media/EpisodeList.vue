@@ -171,6 +171,13 @@ function onClick(ep: Episode): void {
   background-color: var(--color-overlay-press-strong);
 }
 
+/* 视觉高度 40，命中区扩到 44（规范 §12.1） */
+.episode-chip::after {
+  content: '';
+  position: absolute;
+  inset: -2px -4px;
+}
+
 /* 当前集：品牌渐变实心 + 深色字，一屏内最醒目的元素 */
 .episode-chip--current {
   border-color: transparent;
@@ -192,7 +199,7 @@ function onClick(ep: Episode): void {
 
 /* 解析中（AC-92 补充）：呼吸提示，明确"点了、在解析"，不再静默干等 */
 .episode-chip--resolving {
-  animation: episode-chip-resolving 1.1s var(--ease-in-out, ease-in-out) infinite;
+  animation: episode-chip-resolving 1.1s var(--ease-in-out) infinite;
   cursor: progress;
 }
 
@@ -263,5 +270,10 @@ function onClick(ep: Episode): void {
   font-size: 12px;
   /* REV-15：scroll-snap 对齐 */
   scroll-snap-align: start;
+}
+
+/* 紧凑模式视觉更矮（36），命中区同样补到 44 */
+.episode-chip--compact::after {
+  inset: -4px -4px;
 }
 </style>

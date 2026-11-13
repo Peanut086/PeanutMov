@@ -18,6 +18,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import IconClose from '@/components/icons/IconClose.vue';
 import { useHaptic } from '@/composables/useHaptic';
 import { animateSpring, prefersReducedMotion } from '@/composables/useSpring';
+import { onBackButton } from '@/native/appLifecycle';
 
 const props = withDefaults(
   defineProps<{
@@ -66,6 +67,20 @@ const sheetTransition = computed(() => (dragClosing.value ? 'transform 200ms eas
 
 function close(): void {
   emit('update:modelValue', false);
+}
+
+/**
+ * 返回键与「Esc / 点遮罩 / 下拉关闭」走同一条路径（P3-17）。
+ *
+ * 只在打开期间挂总线、关闭即摘：总线按「后注册先消费」派发，所以叠了两层弹层时
+ * 返回键只退最上面那层，不会一次把两层都关掉。
+ */
+let offBack: (() => void) | null = null;
+
+function consumeBack(): boolean {
+  if (!props.modelValue) return false;
+  close();
+  return true;
 }
 
 function onScrim(): void {
@@ -182,10 +197,13 @@ watch(
       haptic('light');
       lastFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       document.addEventListener('keydown', onKeydown, true);
+      offBack = onBackButton(consumeBack);
       await nextTick();
       panelRef.value?.focus();
     } else {
       document.removeEventListener('keydown', onKeydown, true);
+      offBack?.();
+      offBack = null;
       lastFocused?.focus();
       lastFocused = null;
       // 重置拖拽状态：弹簧也一起掐掉，不让它继续往已收起的弹层上写位移
@@ -201,6 +219,8 @@ onBeforeUnmount(() => {
   stopSpring?.();
   stopSpring = null;
   document.removeEventListener('keydown', onKeydown, true);
+  offBack?.();
+  offBack = null;
   lastFocused?.focus();
   lastFocused = null;
 });

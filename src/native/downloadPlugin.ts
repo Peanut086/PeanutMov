@@ -63,8 +63,9 @@ type StateChangedListener = (event: NativeStateChangedEvent) => void;
 type CompletedListener = (event: NativeCompletedEvent) => void;
 type ErrorListener = (event: NativeErrorEvent) => void;
 
-let plugin: any = null;
-let initialized = false;
+let pluginRef: any = null;
+let pluginPromise: Promise<void> | null = null;
+let listenersPromise: Promise<void> | null = null;
 let available: boolean | null = null;
 
 const progressListeners = new Set<ProgressListener>();
@@ -74,19 +75,23 @@ const errorListeners = new Set<ErrorListener>();
 
 /**
  * 初始化插件（懒加载）
+ *
+ * 只能把代理存进模块变量，绝不能从 async 函数 return：registerPlugin 返回的代理
+ * 对任意属性名都给出一个函数，Promise 解析时会把 `.then` 当成 thenable 回调，
+ * 进而向原生发起一次名为 "then" 的调用 —— 原生下载器因此被永久判定为不可用。
  */
-async function initPlugin(): Promise<any> {
-  if (plugin) return plugin;
-  if (!isNative()) return null;
-
-  try {
-    const { registerPlugin } = await import('@capacitor/core');
-    plugin = registerPlugin<any>('Download');
-    return plugin;
-  } catch (e) {
-    logger.warn('Native Download plugin not available', e);
-    return null;
-  }
+function initPlugin(): Promise<void> {
+  if (pluginPromise) return pluginPromise;
+  pluginPromise = (async () => {
+    if (!isNative()) return;
+    try {
+      const { registerPlugin } = await import('@capacitor/core');
+      pluginRef = registerPlugin<any>('Download');
+    } catch (e) {
+      logger.warn('Native Download plugin not available', e);
+    }
+  })();
+  return pluginPromise;
 }
 
 /**
@@ -100,14 +105,14 @@ export async function isNativeDownloadAvailable(): Promise<boolean> {
     return false;
   }
 
-  try {
-    const p = await initPlugin();
-    if (!p) {
-      available = false;
-      return false;
-    }
+  await initPlugin();
+  if (!pluginRef) {
+    available = false;
+    return false;
+  }
 
-    const result = await p.isAvailable();
+  try {
+    const result = await pluginRef.isAvailable();
     available = result?.available === true;
     logger.debug('Native download availability checked', { available });
     return available;
@@ -119,37 +124,40 @@ export async function isNativeDownloadAvailable(): Promise<boolean> {
 }
 
 /**
- * 确保事件监听已注册
+ * 确保事件监听已注册（并发调用共用同一次注册，否则进度事件会成倍回放）
  */
-async function ensureListeners() {
-  if (initialized) return;
-  const p = await initPlugin();
-  if (!p) return;
+function ensureListeners(): Promise<void> {
+  if (listenersPromise) return listenersPromise;
+  listenersPromise = (async () => {
+    await initPlugin();
+    const p = pluginRef;
+    if (!p) return;
 
-  p.addListener('progress', (event: NativeProgressEvent) => {
-    progressListeners.forEach((fn) => fn(event));
-  });
+    p.addListener('progress', (event: NativeProgressEvent) => {
+      progressListeners.forEach((fn) => fn(event));
+    });
 
-  p.addListener('stateChanged', (event: NativeStateChangedEvent) => {
-    stateChangedListeners.forEach((fn) => fn(event));
-  });
+    p.addListener('stateChanged', (event: NativeStateChangedEvent) => {
+      stateChangedListeners.forEach((fn) => fn(event));
+    });
 
-  p.addListener('completed', (event: NativeCompletedEvent) => {
-    completedListeners.forEach((fn) => fn(event));
-  });
+    p.addListener('completed', (event: NativeCompletedEvent) => {
+      completedListeners.forEach((fn) => fn(event));
+    });
 
-  p.addListener('error', (event: NativeErrorEvent) => {
-    errorListeners.forEach((fn) => fn(event));
-  });
-
-  initialized = true;
+    p.addListener('error', (event: NativeErrorEvent) => {
+      errorListeners.forEach((fn) => fn(event));
+    });
+  })();
+  return listenersPromise;
 }
 
 /**
  * 启动下载
  */
 export async function nativeDownloadStart(task: NativeDownloadTask): Promise<void> {
-  const p = await initPlugin();
+  await initPlugin();
+  const p = pluginRef;
   if (!p) throw new Error('Native download plugin not available');
 
   await ensureListeners();
@@ -167,12 +175,20 @@ export async function nativeDownloadStart(task: NativeDownloadTask): Promise<voi
 }
 
 /**
+ * 控制类调用：原生不可用时静默跳过（调用方已按 available 走过 JS 回退）
+ */
+async function callNative(method: string, args?: Record<string, unknown>): Promise<void> {
+  await initPlugin();
+  const p = pluginRef;
+  if (!p) return;
+  await p[method](args ?? {});
+}
+
+/**
  * 暂停下载
  */
 export async function nativeDownloadPause(taskId: string): Promise<void> {
-  const p = await initPlugin();
-  if (!p) return;
-  await p.pause({ taskId });
+  await callNative('pause', { taskId });
   logger.debug('Native download paused', { taskId });
 }
 
@@ -180,9 +196,7 @@ export async function nativeDownloadPause(taskId: string): Promise<void> {
  * 恢复下载
  */
 export async function nativeDownloadResume(taskId: string): Promise<void> {
-  const p = await initPlugin();
-  if (!p) return;
-  await p.resume({ taskId });
+  await callNative('resume', { taskId });
   logger.debug('Native download resumed', { taskId });
 }
 
@@ -190,9 +204,7 @@ export async function nativeDownloadResume(taskId: string): Promise<void> {
  * 取消下载
  */
 export async function nativeDownloadCancel(taskId: string): Promise<void> {
-  const p = await initPlugin();
-  if (!p) return;
-  await p.cancel({ taskId });
+  await callNative('cancel', { taskId });
   logger.debug('Native download canceled', { taskId });
 }
 
@@ -200,20 +212,27 @@ export async function nativeDownloadCancel(taskId: string): Promise<void> {
  * 获取所有任务状态
  */
 export async function nativeDownloadGetStatus(): Promise<NativeDownloadStatus[]> {
-  const p = await initPlugin();
-  if (!p) return [];
+  await initPlugin();
+  if (!pluginRef) return [];
 
-  const result = await p.getStatus();
+  const result = await pluginRef.getStatus();
   return result?.tasks ?? [];
+}
+
+/**
+ * 下发并发闸门（EXT-04 / FR-62）：原生直链此前恒为 2 路，设置页调档无效。
+ * 原生不可用时静默跳过，JS 队列自己的闸门仍然生效。
+ */
+export async function nativeDownloadSetConcurrency(maxConcurrent: number): Promise<void> {
+  await callNative('setConcurrency', { maxConcurrent });
+  logger.debug('Native download concurrency applied', { maxConcurrent });
 }
 
 /**
  * 启动前台服务
  */
 export async function nativeDownloadStartForegroundService(): Promise<void> {
-  const p = await initPlugin();
-  if (!p) return;
-  await p.startForegroundService();
+  await callNative('startForegroundService');
   logger.debug('Native download foreground service started');
 }
 
@@ -221,9 +240,7 @@ export async function nativeDownloadStartForegroundService(): Promise<void> {
  * 停止前台服务
  */
 export async function nativeDownloadStopForegroundService(): Promise<void> {
-  const p = await initPlugin();
-  if (!p) return;
-  await p.stopForegroundService();
+  await callNative('stopForegroundService');
   logger.debug('Native download foreground service stopped');
 }
 

@@ -33,6 +33,7 @@ import { channelKeyFromLive } from '@/services/channelIdentity';
 import { appEvents } from '@/services/events';
 import { CATCHUP_MAX_DAYS } from '@/shared/constants';
 import { toErrorShape } from '@/shared/errors';
+import { prefersReducedMotion } from '@/composables/useSpring';
 import { useToast } from '@/composables/useToast';
 
 defineOptions({ name: 'EpgView' });
@@ -564,7 +565,7 @@ async function scrollToNow(): Promise<void> {
   await nextTick();
   const el = document.getElementById(`epg-item-${nowPlayingIndex.value}`);
   if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
   }
 }
 

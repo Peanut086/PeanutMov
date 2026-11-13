@@ -112,14 +112,14 @@
           <div class="config-item">
             <div class="config-label">
               <span>下载线程数</span>
-              <span class="config-value">{{ netdiskSettings.threadCount }}</span>
+              <span class="config-value">{{ threadCount }}</span>
             </div>
             <input
               type="range"
               min="1"
               max="8"
-              :value="netdiskSettings.threadCount"
-              @input="updateThreadCount(Number(($event.target as HTMLInputElement).value))"
+              :value="threadCount"
+              @input="onThreadCountInput(Number(($event.target as HTMLInputElement).value))"
               class="thread-slider"
             />
             <div class="thread-labels">
@@ -127,6 +127,11 @@
               <span>8</span>
             </div>
           </div>
+          <!-- 这两项只经 ext 合并下发给爬虫源，最终由第三方爬虫自行决定是否采纳（App 不代解网盘直链） -->
+          <p class="config-note">
+            以上参数会合并进网盘源的 ext 一并下发给爬虫，是否生效取决于该爬虫是否读取；
+            App 不代为解析网盘直链，也不会覆盖爬虫自身的画质策略。
+          </p>
         </div>
       </div>
 
@@ -174,10 +179,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue';
+import { ref, onBeforeUnmount, onMounted, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { Netdisk, backupCookieFile, loginWebView, restoreCookieFile, writeCookieFile } from '@/native/netdiskPlugin';
 import { useToast } from '@/composables/useToast';
+import { useDebounce } from '@/composables/useDebounce';
+import { toErrorShape } from '@/shared/errors';
 import { getAllPlatforms, COOKIE_ONLY_CAPABILITY_NOTE, type NetdiskPlatform } from '@/services/netdiskPlatforms';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { writeNetdiskConfig } from '@/services/netdiskConfig';
@@ -211,7 +218,35 @@ async function updateQuality(quality: string) {
   toast.success('画质设置已更新');
 }
 
-async function updateThreadCount(count: number) {
+/**
+ * 拖动中的即时值：`null` 表示没有未落盘的草稿，显示回落到存储值。
+ * 滑块每帧都会触发 `@input`，直写等于每帧一遍 IDB + 原生配置文件；本地跟手、落盘防抖。
+ */
+const threadCountDraft = ref<number | null>(null);
+const threadCount = computed(() => threadCountDraft.value ?? netdiskSettings.value.threadCount);
+
+const persistThreadCount = useDebounce(async () => {
+  const count = threadCountDraft.value;
+  if (count === null) return;
+  try {
+    await applyThreadCount(count);
+  } catch (e) {
+    // 落盘失败要出声：值没存住却说"改好了"，下次下载仍按旧线程数走
+    toast.error(toErrorShape(e).message);
+  } finally {
+    // 写成功才交还给存储值；提前清空会让滑块闪回旧值
+    if (threadCountDraft.value === count) threadCountDraft.value = null;
+  }
+}, 300);
+// 划走页面时挂起的最后一次不能丢（useDebounce 的卸载钩子只 cancel，不补写）
+onBeforeUnmount(() => persistThreadCount.flush());
+
+function onThreadCountInput(count: number): void {
+  threadCountDraft.value = count;
+  persistThreadCount();
+}
+
+async function applyThreadCount(count: number): Promise<void> {
   await settings.update({
     netdisk: {
       ...netdiskSettings.value,
@@ -225,18 +260,25 @@ async function updateThreadCount(count: number) {
 interface PlatformStatus extends NetdiskPlatform {
   saved: boolean;
   verified: boolean;
+  /** 读取本身失败（权限、原生异常）：与「确实没有 cookie 文件」是两回事，不能都显示未登录 */
+  unknown: boolean;
   nickname: string | null;
   memberType: string | null;
 }
 
 const platforms = ref<PlatformStatus[]>([]);
+/** 首轮检测是否完成：完成前显示「检测中…」，避免把还没读出的状态说成「未登录」 */
+const statusChecked = ref(false);
 
 function applyStatus(
   platform: PlatformStatus,
-  next: Pick<PlatformStatus, 'saved' | 'verified' | 'nickname' | 'memberType'>,
+  next: Pick<PlatformStatus, 'saved' | 'verified' | 'nickname' | 'memberType'> & {
+    unknown?: boolean;
+  },
 ): void {
   platform.saved = next.saved;
   platform.verified = next.verified;
+  platform.unknown = next.unknown ?? false;
   platform.nickname = next.nickname;
   platform.memberType = next.memberType;
 }
@@ -253,6 +295,9 @@ function capabilityNote(platform: NetdiskPlatform): string {
 
 /** 列表状态文案（R-DEV04-02：绝不把「cookie 文件存在」显示成「已登录」） */
 function statusText(platform: PlatformStatus): string {
+  if (!statusChecked.value) return '检测中…';
+  // 读失败 ≠ 未登录：说成未登录会把「权限没给 / 原生读挂了」误导成要重新登录
+  if (platform.unknown) return '状态读取失败';
   // FIX-B：权限缺失时 cookie 文件存在也等于不可用，优先展示异常态
   if (!hasAllFilesAccess.value && platform.saved) {
     return '权限异常';
@@ -270,7 +315,11 @@ function statusText(platform: PlatformStatus): string {
 /** 状态配色：仅 full-api 平台的账号校验结果可以用「已登录」绿色 */
 function statusClass(platform: PlatformStatus): Record<string, boolean> {
   const verified = !isCookieOnly(platform) && platform.verified;
-  return { logged: verified, saved: platform.saved && !verified };
+  return {
+    logged: verified,
+    saved: platform.saved && !verified,
+    error: statusChecked.value && platform.unknown,
+  };
 }
 
 onMounted(async () => {
@@ -280,6 +329,7 @@ onMounted(async () => {
     ...p,
     saved: false,
     verified: false,
+    unknown: false,
     nickname: null,
     memberType: null,
   }));
@@ -354,9 +404,17 @@ async function checkLoginStatus() {
       });
     } catch (e) {
       console.error(`Failed to check ${platform.key} login status`, e);
-      applyStatus(platform, { saved: false, verified: false, nickname: null, memberType: null });
+      // 原生调用被拒（存储权限缺失、目录不可访问）时并不等于「没有 cookie 文件」
+      applyStatus(platform, {
+        saved: false,
+        verified: false,
+        unknown: true,
+        nickname: null,
+        memberType: null,
+      });
     }
   }
+  statusChecked.value = true;
 }
 
 async function login(platform: PlatformStatus) {
@@ -526,7 +584,7 @@ function goBack() {
 
 .grant-btn {
   padding: 8px 16px;
-  background: var(--accent-color, #007aff);
+  background: var(--color-brand);
   color: #fff;
   border: none;
   border-radius: 8px;
@@ -554,7 +612,7 @@ function goBack() {
 
 .platform-card:hover {
   background: var(--bg-tertiary, #2a2a2a);
-  border-color: var(--accent-color, #007aff);
+  border-color: var(--color-brand);
 }
 
 .platform-main {
@@ -585,8 +643,8 @@ function goBack() {
 }
 
 .action-btn:hover {
-  background: var(--accent-color, #007aff);
-  border-color: var(--accent-color, #007aff);
+  background: var(--color-brand);
+  border-color: var(--color-brand);
 }
 
 .platform-icon {
@@ -622,6 +680,11 @@ function goBack() {
 
 .platform-status.saved {
   color: var(--color-warning, #fbbf24);
+}
+
+/* 读取失败：与「未登录」区分开，提示的是检测本身出了问题 */
+.platform-status.error {
+  color: var(--color-danger, #f87171);
 }
 
 /* 能力声明（OPT-05 / EXT-02）：cookie-only 平台的能力边界说明 */
@@ -733,8 +796,15 @@ function goBack() {
 }
 
 .config-value {
-  color: var(--accent-color, #007aff);
+  color: var(--color-brand);
   font-weight: 600;
+}
+
+.config-note {
+  margin: var(--space-2) 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-tertiary);
 }
 
 .quality-options {
@@ -755,12 +825,12 @@ function goBack() {
 }
 
 .quality-btn:hover {
-  border-color: var(--accent-color, #007aff);
+  border-color: var(--color-brand);
 }
 
 .quality-btn.active {
-  background: var(--accent-color, #007aff);
-  border-color: var(--accent-color, #007aff);
+  background: var(--color-brand);
+  border-color: var(--color-brand);
   color: #fff;
 }
 
@@ -779,7 +849,7 @@ function goBack() {
   appearance: none;
   width: 20px;
   height: 20px;
-  background: var(--accent-color, #007aff);
+  background: var(--color-brand);
   border-radius: 50%;
   cursor: pointer;
 }
@@ -787,7 +857,7 @@ function goBack() {
 .thread-slider::-moz-range-thumb {
   width: 20px;
   height: 20px;
-  background: var(--accent-color, #007aff);
+  background: var(--color-brand);
   border-radius: 50%;
   cursor: pointer;
   border: none;
@@ -808,7 +878,7 @@ function goBack() {
   padding: 0;
   background: none;
   border: none;
-  color: var(--accent-color, #007aff);
+  color: var(--color-brand);
   font-size: 12px;
   cursor: pointer;
   text-decoration: underline;
@@ -816,7 +886,7 @@ function goBack() {
 }
 
 .paste-cookie-link:hover {
-  color: var(--accent-color-hover, #0056b3);
+  color: var(--color-brand-strong);
 }
 
 /* 粘贴 Cookie 弹层内容 */
@@ -859,7 +929,7 @@ function goBack() {
 }
 
 .paste-textarea:focus {
-  border-color: var(--accent-color, #007aff);
+  border-color: var(--color-brand);
 }
 
 .paste-textarea::placeholder {
@@ -891,15 +961,15 @@ function goBack() {
 
 .paste-btn--cancel:hover {
   background: var(--bg-secondary, #1a1a1a);
-  border-color: var(--accent-color, #007aff);
+  border-color: var(--color-brand);
 }
 
 .paste-btn--confirm {
-  background: var(--accent-color, #007aff);
+  background: var(--color-brand);
   color: #fff;
 }
 
 .paste-btn--confirm:hover {
-  background: var(--accent-color-hover, #0056b3);
+  background: var(--color-brand-strong);
 }
 </style>

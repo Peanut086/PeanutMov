@@ -63,15 +63,29 @@ describe('pressBackButton', () => {
     expect(exitMock).not.toHaveBeenCalled();
   });
 
-  it('所有页面监听器都跑一遍，任一消费即算处理', () => {
-    const first = vi.fn(() => false);
-    const second = vi.fn(() => true);
-    const offA = onBackButton(first);
-    const offB = onBackButton(second);
+  it('叠了两层弹层：只有最上面那层被关掉', () => {
+    const under = vi.fn(() => true);
+    const over = vi.fn(() => true);
+    const offA = onBackButton(under);
+    const offB = onBackButton(over);
 
     expect(pressBackButton()).toBe(true);
-    expect(first).toHaveBeenCalledTimes(1);
-    expect(second).toHaveBeenCalledTimes(1);
+    expect(over).toHaveBeenCalledTimes(1);
+    // 正序 + 全跑的旧实现会把两层一起关掉，用户看到的是"返回键直接穿回页面本体"
+    expect(under).not.toHaveBeenCalled();
+    offA();
+    offB();
+  });
+
+  it('最上层不消费时继续往下问（页面级监听器照样兜得住）', () => {
+    const under = vi.fn(() => true);
+    const over = vi.fn(() => false);
+    const offA = onBackButton(under);
+    const offB = onBackButton(over);
+
+    expect(pressBackButton()).toBe(true);
+    expect(over).toHaveBeenCalledTimes(1);
+    expect(under).toHaveBeenCalledTimes(1);
     offA();
     offB();
   });

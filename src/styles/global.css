@@ -107,6 +107,42 @@
   }
 }
 
+/* ---------- 骨架/加载态 → 内容（批次 22） ----------
+ * v-if 分支切换会让内容整块"啪"地出现。给内容根节点加这个类，
+ * 让它挂载时补一段与路由进入同规格的位移。
+ *
+ * 与 `.route-view` 一样只用 transform、不用 opacity：
+ * 动画被冻结/不推进的 WebView 里，opacity 停在起点等于内容全不可见。
+ */
+.state-enter {
+  animation: state-enter var(--duration-base) var(--ease-decelerate);
+}
+
+@keyframes state-enter {
+  from {
+    transform: translateY(6px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/*
+ * 弹层列表行（批次 22）：9 个页面各自 scoped 定义了 `.sheet-list__item`，
+ * 但都没有按压反馈——点到不知道点没点上。收口到全局一处。
+ *
+ * `filter` 不是多余的：选中/危险行的背景色由各页 scoped 规则设定，
+ * 特异性压过这里的一条类选择器，只有 filter 能保证按下去一定有变化。
+ */
+.sheet-list__item {
+  transition: var(--transition-color), filter var(--duration-fast) var(--ease-standard);
+}
+
+.sheet-list__item:active {
+  background-color: var(--color-bg-pressed);
+  filter: brightness(0.94);
+}
+
 /* ---------- 路由过渡 ----------
  * 只做"进入"位移动画，**不使用透明度**：
  * 1) <Transition mode="out-in"> 在 leave 阶段再次导航会残留类名停在半透明（实测）；

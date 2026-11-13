@@ -123,37 +123,31 @@ function isNetdiskSource(source: Source): boolean {
 }
 
 /**
- * P4-3: 为网盘源附加画质/线程配置到 initExt
- * 配置以 JSON 格式追加，爬虫源启动时解析
- * P2-1: 加密 ext（长度 > 100 且含特殊字符）不追加，避免破坏加密结构
+ * P4-3: 把画质/线程配置合并进网盘源的 JSON ext
+ *
+ * 只认 JSON 对象形态。drpy/catvod 侧靠 `JSON.parse(ext)` 取源配置
+ * （见 assets/drpy_host.js 的 `__catvodEnsureInit`），此前用 `ext|||{json}`
+ * 追加会让整次解析抛错并退回 `{}` —— 不但配置没下发，连源自带的 api/token
+ * 配置一起丢掉，等于把能用的网盘源改坏。URL 形态与加密 ext 一律原样返回。
+ *
+ * 合并只是「尽力而为」的下发通道：未知 key 会被守规矩的爬虫忽略，
+ * 因此设置页据此标注为「由爬虫源自行生效」，不承诺必然生效。
+ * P2-1: 加密 ext（长度 > 100 且非 JSON 对象）不追加，避免破坏加密结构
  */
 function appendNetdiskConfig(initExt: string): string {
+  const trimmed = (initExt ?? '').trim();
+  if (!trimmed.startsWith('{')) return initExt;
+
   try {
-    // P2-1: 检测加密 ext（长度 > 100 且非 JSON 对象）
-    const isEncrypted = initExt.length > 100 && !initExt.trim().startsWith('{');
-    if (isEncrypted) {
-      logger.debug('跳过网盘配置追加（加密 ext）', { length: initExt.length });
+    const existing = JSON.parse(trimmed) as unknown;
+    if (existing === null || typeof existing !== 'object' || Array.isArray(existing)) {
       return initExt;
     }
-
     const config = getNetdiskConfig();
-    const configStr = formatConfigForSpider(config);
-    // 如果 initExt 已包含配置，替换；否则追加
-    if (initExt.includes('"quality"') || initExt.includes('"thread"')) {
-      // 尝试合并配置
-      try {
-        const existing = JSON.parse(initExt);
-        if (typeof existing === 'object') {
-          return JSON.stringify({ ...existing, ...config });
-        }
-      } catch {
-        // 解析失败，直接追加
-      }
-    }
-    // 追加配置（用分隔符避免冲突）
-    return initExt ? `${initExt}|||${configStr}` : configStr;
+    const patch = JSON.parse(formatConfigForSpider(config)) as Record<string, unknown>;
+    return JSON.stringify({ ...(existing as Record<string, unknown>), ...patch });
   } catch (e) {
-    logger.warn('附加网盘配置失败', e);
+    logger.debug('ext 不是 JSON 对象，跳过网盘配置合并', e);
     return initExt;
   }
 }

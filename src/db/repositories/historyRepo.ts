@@ -54,6 +54,20 @@ export const historyRepo = {
     return withTx(['history'], 'readonly', (tx) => tx.objectStore(STORE_NAMES.history).getAll());
   },
 
+  /**
+   * 按 mediaId 取一条历史（v5 `by-media` 索引）。
+   * 详情自愈只需要「有没有 + 任意一条快照」，不该把最多 500 条带快照的记录全读出来。
+   */
+  async getByMedia(mediaId: string): Promise<HistoryRecord | null> {
+    return withTx(['history'], 'readonly', async (tx) => {
+      const rows = await tx
+        .objectStore(STORE_NAMES.history)
+        .index('by-media')
+        .getAll(IDBKeyRange.only(mediaId), 1);
+      return rows[0] ?? null;
+    });
+  },
+
   async count(): Promise<number> {
     return withTx(['history'], 'readonly', (tx) => tx.objectStore(STORE_NAMES.history).count());
   },

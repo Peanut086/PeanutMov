@@ -552,7 +552,6 @@ export type ThemeMode = 'dark' | 'light' | 'system';
 export type Sensitivity = 'low' | 'medium' | 'high';
 
 export interface SubtitleSettings {
-  enabled: boolean;
   size: 'small' | 'medium' | 'large';
   color: 'white' | 'yellow';
   background: 'black' | 'none';
@@ -583,8 +582,6 @@ export interface SkipMarks {
 
 export interface PlayerSettings {
   defaultRate: PlaybackRate;
-  /** 'auto' 或具体档位标签，如 '720p' */
-  defaultQuality: string;
   autoPlayNext: boolean;
   seekStepSec: number;
   longPressRate: number;
@@ -644,7 +641,6 @@ export interface DownloadSettings {
 export interface AppSettings {
   schemaVersion: number;
   theme: ThemeMode;
-  locale: 'zh-CN';
   complianceVersion: number;
   complianceAcceptedAt: Timestamp | null;
   defaultSourceId: string | null;
@@ -839,8 +835,17 @@ export interface DanmakuSettings {
   interactive: boolean;
 }
 
+/**
+ * 逐层可选的补丁形状。
+ *
+ * `NonNullable` 不能省：可选属性在 TS 里是 `T | undefined`，
+ * `DanmakuSettings | undefined extends object` 判定为 false，
+ * 于是 `danmaku` / `netdisk` / `webdav` / `backup` 这些可选嵌套对象
+ * 会被当成整体类型，调用方只能先读全量再整对象写回 —— 既啰嗦又是
+ * 并发覆盖的源头（见 settingsService 的写队列）。
+ */
 export type DeepPartial<T> = {
-  [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
+  [K in keyof T]?: NonNullable<T[K]> extends object ? DeepPartial<NonNullable<T[K]>> : T[K];
 };
 
 /* ---------- 订阅导入 ---------- */
@@ -946,6 +951,17 @@ export interface BackupFile {
   epgSources: EpgSource[];
   channelPrefs: ChannelPrefs[];
   reminders: Reminder[];
+  /**
+   * v3：设置之外的散装用户数据 kv 条目（订阅导入记录、弹幕点赞分桶）。
+   * 只收白名单键，见 `backupService` 的 `BACKUP_KV_ALLOWLIST`；v2 及更早的备份缺省为空数组。
+   */
+  kvEntries: KvBackupEntry[];
+}
+
+/** 备份里的一条 kv 用户数据（值原样存取，由归属模块自己解释） */
+export interface KvBackupEntry {
+  key: string;
+  value: unknown;
 }
 
 export interface BackupImportReport {
@@ -957,6 +973,8 @@ export interface BackupImportReport {
   epgSources: number;
   channelPrefs: number;
   reminders: number;
+  /** v3：随备份恢复的散装用户数据 kv 条数（订阅导入记录、弹幕点赞分桶） */
+  kvEntries: number;
   settingsRestored: boolean;
 }
 

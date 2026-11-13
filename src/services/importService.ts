@@ -751,7 +751,13 @@ export async function listImportRecords(): Promise<ImportRecord[]> {
 async function refreshSubscriptionImpl(
   url: string,
   signal?: AbortSignal,
-): Promise<{ updated: number; newCount: number; jarDead: number; livesSynced: number }> {
+): Promise<{
+  updated: number;
+  newCount: number;
+  jarDead: number;
+  livesSynced: number;
+  livesFailed: number;
+}> {
   const preview = await importService.previewFromUrl(url, signal);
   const valid = preview.entries.filter((entry) => entry.valid && entry.normalized !== null);
   const jarDead = valid.filter((entry) => (entry.warning ?? '').includes('jar 不可达')).length;
@@ -762,16 +768,20 @@ async function refreshSubscriptionImpl(
 
   // 功能扩展-2：同步直播源（url 即 subscriptionId）
   let livesSynced = 0;
+  let livesFailed = 0;
   if (preview.lives.length > 0) {
     try {
-      await liveService.addTvboxLives(preview.lives, url);
-      livesSynced = preview.lives.length;
+      const lives = await liveService.addTvboxLives(preview.lives, url);
+      livesSynced = lives.added;
+      livesFailed = lives.failed;
     } catch (e) {
+      // 整批失败也计入 failed：调用方的「刷新成功」不能把这一步抹平
+      livesFailed = preview.lives.length;
       logger.warn('刷新订阅同步直播源失败', url, e);
     }
   }
 
-  return { updated: result.success, newCount, jarDead, livesSynced };
+  return { updated: result.success, newCount, jarDead, livesSynced, livesFailed };
 }
 
 /* ---------- EXT-08：导入诊断实现 ---------- */

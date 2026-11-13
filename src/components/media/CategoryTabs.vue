@@ -7,6 +7,7 @@
  */
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 
+import { prefersReducedMotion } from '@/composables/useSpring';
 import type { Category } from '@/types';
 
 const props = withDefaults(
@@ -39,7 +40,11 @@ async function syncIndicator(): Promise<void> {
   // 滑块绝对定位于滚动容器内，offsetLeft 即相对于容器内容区的坐标，随滚动自然位移
   indicator.style.transform = `translateX(${active.offsetLeft}px)`;
   indicator.style.width = `${active.offsetWidth}px`;
-  active.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+  active.scrollIntoView({
+    behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+    inline: 'center',
+    block: 'nearest',
+  });
 }
 
 watch(() => props.modelValue, () => { nextTick(syncIndicator); });
@@ -111,7 +116,7 @@ onUnmounted(() => {
   position: absolute;
   top: var(--space-1);
   left: 0;
-  height: 32px;
+  height: 36px;
   border-radius: var(--radius-full);
   background-color: var(--color-brand-soft);
   border: 1px solid rgba(240, 168, 46, 0.4);
@@ -126,8 +131,9 @@ onUnmounted(() => {
 }
 
 .category-tabs__item {
+  position: relative;
   flex: 0 0 auto;
-  height: 32px;
+  height: 36px;
   padding: 0 var(--space-3);
   border-radius: var(--radius-full);
   background-color: var(--color-bg-elevated);
@@ -136,6 +142,13 @@ onUnmounted(() => {
   font: var(--font-weight-medium) 13px / 30px var(--font-family-base);
   scroll-snap-align: start;
   transition: var(--transition-color);
+}
+
+/* 视觉 36（分类条本身 44 高），命中区补足整条高度 */
+.category-tabs__item::after {
+  content: '';
+  position: absolute;
+  inset: -4px -4px;
 }
 
 .category-tabs__item--active {

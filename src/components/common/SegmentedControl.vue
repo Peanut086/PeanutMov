@@ -2,7 +2,7 @@
 /**
  * 分段选择器（设计规范 8.3）
  *
- * 2–4 项互斥；容器 36 高、内边距 3，选中块 elevated + shadow-1。
+ * 2–4 项互斥；容器 44 高（触控命中区）、内边距 3，选中块 elevated + shadow-1。
  * 只做背景色过渡（无滑块位移），降低实现复杂度。
  */
 export interface SegmentedOption {
@@ -55,7 +55,8 @@ function choose(opt: SegmentedOption): void {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  height: 38px;
+  /* 命中区 44：分段项自身被 overflow:hidden 裁住，只能把容器抬到规范高度 */
+  height: 44px;
   padding: 3px;
   border-radius: var(--radius-md);
   background-color: var(--color-bg-elevated);
@@ -74,7 +75,7 @@ function choose(opt: SegmentedOption): void {
 
 .segmented__item {
   min-width: 72px;
-  height: 32px;
+  height: 38px;
   padding: 0 var(--space-3);
   border-radius: 9px;
   color: var(--color-text-secondary);
@@ -82,7 +83,7 @@ function choose(opt: SegmentedOption): void {
   font-family: var(--font-family-base);
   font-size: var(--font-size-14);
   font-weight: var(--font-weight-medium);
-  line-height: 32px;
+  line-height: 38px;
   transition: var(--transition-color);
   white-space: nowrap;
   overflow: hidden;

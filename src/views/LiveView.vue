@@ -9,7 +9,7 @@
  * - FR-68 回看入口**不在本页**（需求 §5.3 / REV-02）：回看入口只在节目单页（EpgView），
  *   本页只保留「完整节目单 ›」跳转
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type { ChannelPrefs, EpgChannelRef, LiveChannelExtrasMap, LiveGroup, LiveRecord } from '@/types';
@@ -23,6 +23,7 @@ import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import SearchBar from '@/components/common/SearchBar.vue';
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
+import { useVirtualGrid } from '@/components/media/useVirtualGrid';
 import LivePlayer from '@/components/live/LivePlayer.vue';
 import ChannelGroupSheet from '@/components/live/ChannelGroupSheet.vue';
 import ChannelLogo from '@/components/live/ChannelLogo.vue';
@@ -40,11 +41,15 @@ import { appEvents } from '@/services/events';
 import { LIVE_DEAD_STREAK, LIVE_AUTO_SWITCH_MAX, EPG_PREFETCH_MAX, CATCHUP_MAX_DAYS } from '@/shared/constants';
 import { CATCHUP_TOKENS, validateCatchupTemplate } from '@/shared/catchupTemplate';
 import { filterChannelsByQuery } from '@/shared/channelSearch';
+import { prefersReducedMotion } from '@/composables/useSpring';
+import { useDebounce } from '@/composables/useDebounce';
 import { useToast } from '@/composables/useToast';
+import { useUiStore } from '@/stores/uiStore';
 import { logger } from '@/shared/logger';
 import { toErrorShape } from '@/shared/errors';
 
 const toast = useToast();
+const ui = useUiStore();
 const router = useRouter();
 const route = useRoute();
 
@@ -140,8 +145,29 @@ watch(
   },
 );
 
+/**
+ * 起播状态计数复位。
+ *
+ * 换源/重试是「新一轮起播」：上一源攒下的自动切路次数与失效频道名单若不带清零，
+ * `LIVE_AUTO_SWITCH_MAX` 会在新源第一次失败时就触顶（直接弹「所有频道不可用」），
+ * 上一源判死的频道名也会误伤新源里的同名频道。
+ */
+function resetSwitchCounters(): void {
+  autoSwitchCount.value = 0;
+  allChannelsDead.value = false;
+  deadNames.value = new Set();
+  failStreak.clear();
+}
+
 /** 起播超时/失败：累计失效 → 切同组下一路（同名多路优先，排除 dead 频道） */
 function onChannelTimeout(failedUrl: string): void {
+  /*
+   * 只认「当前正在播的那一路」的失败：引擎销毁前可能还有异步 error 回调在飞，
+   * 用户此时已手动换台，照单处理会把好端端的新流当成失败继续往下切，
+   * 并给根本没试过的频道记一次失效。
+   */
+  if (playing.value?.url !== failedUrl) return;
+
   const flat = groups.value.flatMap((g) => g.channels);
   const failed = flat.find((c) => c.url === failedUrl) ?? null;
   if (failed) {
@@ -337,11 +363,36 @@ const currentOrder = computed<string[] | undefined>(() => prefs.value?.orders[ac
 
 /* ---------- C2：频道搜索（跨全部分组） ---------- */
 const channelQuery = ref('');
-const searching = computed(() => channelQuery.value.trim().length > 0);
+/**
+ * 真正生效的搜索词：输入框跟手，过滤 + 排序 + 窗口重建延后 300ms 才跑。
+ * 一份 IPTV 订阅动辄几千个频道，每敲一个键就全表重排一次是白白付的钱。
+ */
+const committedQuery = ref('');
+const commitQuery = useDebounce(() => {
+  committedQuery.value = channelQuery.value;
+}, 300);
+
+watch(channelQuery, (next) => {
+  // 清空要立刻生效：点「清除搜索」不该再等一个防抖周期
+  if (next.trim() === '') {
+    resetChannelQuery();
+    return;
+  }
+  commitQuery();
+});
+
+/** 关键词作废（切源、定位频道、清除搜索）：挂起的那一次也必须一起作废 */
+function resetChannelQuery(): void {
+  commitQuery.cancel();
+  channelQuery.value = '';
+  committedQuery.value = '';
+}
+
+const searching = computed(() => committedQuery.value.trim().length > 0);
 
 /** 搜索命中数（不含失效沉底重排，纯过滤结果） */
 const searchHits = computed<LiveChannel[]>(() =>
-  searching.value ? filterChannelsByQuery(allChannels.value, channelQuery.value) : [],
+  searching.value ? filterChannelsByQuery(allChannels.value, committedQuery.value) : [],
 );
 
 /**
@@ -360,8 +411,52 @@ const visibleChannels = computed<LiveChannel[]>(() => {
 
 /** 切源等于换了一份频道表，旧关键词不该继续压在新列表上 */
 watch(activeId, () => {
-  channelQuery.value = '';
+  resetChannelQuery();
 });
+
+/* ---------- 频道列表虚拟化 ---------- */
+
+/**
+ * 一份 IPTV 订阅动辄几千个频道，每个频道是 1 个 `li` + 2 个 `button` + ChannelLogo：
+ * 全量渲染时打开直播页要卡一下，改一个搜索词还要把整表重建一次。
+ *
+ * 行高跟海报比例无关（单行文本），所以不走 `useVirtualGrid` 的海报公式，
+ * 而是量一次真实行高（含 row-gap）给它当行步长。
+ */
+const channelsEl = useTemplateRef<HTMLElement>('channels');
+
+function channelRowStride(): number {
+  const ul = channelsEl.value;
+  // 虚拟化以后首个子节点可能已经是别的东西，只认真实行类的节点量高度
+  const row = ul?.querySelector<HTMLElement>('.live-channel-row');
+  if (!ul || !row) return 0;
+  const gap = Number.parseFloat(getComputedStyle(ul).rowGap);
+  return row.offsetHeight + (Number.isFinite(gap) ? gap : 0);
+}
+
+const {
+  visibleItems: renderChannels,
+  padTop: channelsPadTop,
+  padBottom: channelsPadBottom,
+  startIndex: channelsStartIndex,
+  scrollToIndex: scrollChannelsToIndex,
+} = useVirtualGrid(() => channelsEl.value ?? null, {
+  items: () => visibleChannels.value,
+  columns: () => 2,
+  paddingX: () => 0,
+  showMeta: () => false,
+  rowStride: channelRowStride,
+});
+
+/**
+ * 占位靠容器自身的内边距撑开（不额外插占位节点）：
+ * 上内边距 = 窗口前所有行的高度，下内边距 = 窗口后所有行的高度，
+ * 于是滚动条长度与滚动位置都和全量渲染时一致。
+ */
+const channelsStyle = computed(() => ({
+  paddingTop: `calc(var(--space-3) + ${channelsPadTop.value}px)`,
+  paddingBottom: `${channelsPadBottom.value}px`,
+}));
 
 function pickDefaultScope(): string {
   const first = scopeList.value.find((scope) => scope.key !== 'all' && scope.channelKeys.length > 0);
@@ -407,7 +502,7 @@ async function focusChannel(name: string): Promise<void> {
   const token = ++focusToken;
   activeScope.value = 'all';
   // 搜索态的列表是过滤后的子集，下标对不上要定位的那一行
-  channelQuery.value = '';
+  resetChannelQuery();
   await nextTick();
   if (token !== focusToken) return;
   const list = visibleChannels.value;
@@ -419,9 +514,11 @@ async function focusChannel(name: string): Promise<void> {
   const target = list[index]!;
   focusUrl.value = target.url;
   await nextTick();
+  // 列表已窗口化：目标行不在窗口里时 DOM 压根没有这个节点，先把窗口挪过去再滚
+  await scrollChannelsToIndex(index);
   document.getElementById(`live-channel-${index}`)?.scrollIntoView({
     block: 'center',
-    behavior: 'smooth',
+    behavior: prefersReducedMotion() ? 'auto' : 'smooth',
   });
   clearFocusTimer();
   focusTimer = setTimeout(() => {
@@ -453,20 +550,32 @@ function prefetchEpg(): void {
     .catch((error) => logger.debug('EPG 预取失败（静默）', error));
 }
 
+/**
+ * 切源请求令牌。
+ *
+ * `channelsWithExtrasOf` 是网络拉取，慢源先点、快源后点时，先点的那次会后落库：
+ * 频道列表、分组和「自动播第一个频道」全被盖回旧源，而高亮仍停在后点的源上。
+ * 递增号在每次写入前复核；拉取本身没有 AbortSignal 入口，所以只丢结果不取消请求。
+ */
+let sourceToken = 0;
+
 async function selectRecord(id: string, focusName: string | null = null): Promise<void> {
   const record = records.value.find((r) => r.id === id);
   if (!record) return;
+  const token = ++sourceToken;
   activeId.value = id;
   activeScope.value = 'all';
   playing.value = null;
   channelSwitching.value = false;
   channelsLoading.value = true;
   channelsError.value = null;
+  resetSwitchCounters();
   try {
     const [data, nextPrefs] = await Promise.all([
       liveService.channelsWithExtrasOf(record),
       channelPrefsService.get(record.id),
     ]);
+    if (token !== sourceToken) return;
     groups.value = data.groups;
     allChannels.value = data.channels;
     extras.value = data.extras;
@@ -481,24 +590,34 @@ async function selectRecord(id: string, focusName: string | null = null): Promis
       if (first) playing.value = { url: first.url, title: first.name };
     }
   } catch (e) {
+    if (token !== sourceToken) return;
     channelsError.value = describeSourceError(e);
   } finally {
-    channelsLoading.value = false;
+    // 只有仍代表最新一次切源时才回收 loading，否则会把后一次请求的骨架屏提前撤掉
+    if (token === sourceToken) channelsLoading.value = false;
   }
+  if (token !== sourceToken) return;
   if (focusName) await focusChannel(focusName);
   prefetchEpg();
 }
 
 async function loadPrefs(): Promise<void> {
   if (!activeId.value) return;
+  const id = activeId.value;
+  // 共享同一次切源的代次，但不递增：这是当前源的附属读取，不该作废在飞的切源拉取
+  const token = sourceToken;
   try {
-    prefs.value = await channelPrefsService.get(activeId.value);
+    const nextPrefs = await channelPrefsService.get(id);
+    // 期间切了源：这份 prefs 属于旧源，写下去会盖掉新源刚落库的分组与排序
+    if (token !== sourceToken || activeId.value !== id) return;
+    prefs.value = nextPrefs;
   } catch (e) {
     toast.error(toErrorShape(e).message);
   }
 }
 
 function playChannel(channel: { name: string; url: string }): void {
+  // 手动换台只重置自动切路预算；失效名单是「沉底」依据，不清，否则每次点台都把死频道捞回来
   autoSwitchCount.value = 0;
   allChannelsDead.value = false;
   if (playing.value && playing.value.url !== channel.url) {
@@ -514,10 +633,7 @@ function onPlayerCanplay(): void {
 
 /** FIX-L5: 重试当前直播源所有频道 */
 function retryAllChannels(): void {
-  autoSwitchCount.value = 0;
-  allChannelsDead.value = false;
-  deadNames.value = new Set();
-  failStreak.clear();
+  resetSwitchCounters();
   void reload();
 }
 
@@ -527,13 +643,7 @@ function switchToNextSource(): void {
   const idx = records.value.findIndex((r) => r.id === activeId.value);
   const nextIdx = (idx + 1) % records.value.length;
   const nextRecord = records.value[nextIdx];
-  if (nextRecord) {
-    autoSwitchCount.value = 0;
-    allChannelsDead.value = false;
-    deadNames.value = new Set();
-    failStreak.clear();
-    void selectRecord(nextRecord.id);
-  }
+  if (nextRecord) void selectRecord(nextRecord.id);
 }
 
 /** FIX-L5: 跳转到导入直播源页面 */
@@ -690,19 +800,35 @@ async function submitAdd(): Promise<void> {
   }
 }
 
+/**
+ * 删除直播源前先确认：这一步连带清掉该源的自定义分组/排序（`channelPrefsService.remove`），
+ * 而重建只能回到「重新填 URL」，没有可撤销的还原路径。
+ */
 async function removeRecord(record: LiveRecord): Promise<void> {
-  await liveService.remove(record.id);
-  await channelPrefsService.remove(record.id).catch(() => undefined);
-  toast.info(`已删除「${record.name}」`);
-  if (activeId.value === record.id) {
-    activeId.value = null;
-    playing.value = null;
-    groups.value = [];
-    allChannels.value = [];
-    extras.value = {};
-    prefs.value = null;
+  const ok = await ui.confirm({
+    title: `删除「${record.name}」？`,
+    message: '该源的频道列表、自定义分组与排序一并清除，需要重新粘贴源地址才能恢复。',
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await liveService.remove(record.id);
+    await channelPrefsService.remove(record.id).catch(() => undefined);
+    toast.info(`已删除「${record.name}」`);
+    if (activeId.value === record.id) {
+      activeId.value = null;
+      playing.value = null;
+      groups.value = [];
+      allChannels.value = [];
+      extras.value = {};
+      prefs.value = null;
+    }
+    await reload();
+  } catch (e) {
+    // 确认之后失败必须说话，否则用户以为已经删掉了
+    toast.error(toErrorShape(e).message);
   }
-  await reload();
 }
 
 /* ---------- 回看设置（P1-01 / FR-68：源级模板 + 回看天数） ---------- */
@@ -926,11 +1052,11 @@ async function clearCatchup(): Promise<void> {
 
         <!-- C2：搜不到时给出可行动出口，而不是复用「该分组暂无频道」 -->
         <div v-else-if="searching && visibleChannels.length === 0" class="live-empty-scope">
-          <p>没找到「{{ channelQuery.trim() }}」</p>
+          <p>没找到「{{ committedQuery.trim() }}」</p>
           <button
             class="btn btn--secondary btn--sm live-empty-scope__add"
             type="button"
-            @click="channelQuery = ''"
+            @click="resetChannelQuery"
           >
             清除搜索
           </button>
@@ -949,10 +1075,10 @@ async function clearCatchup(): Promise<void> {
           </button>
         </div>
 
-        <ul v-else class="live-channels">
+        <ul v-else ref="channels" class="live-channels state-enter" :style="channelsStyle">
           <li
-            v-for="(channel, idx) in visibleChannels"
-            :id="`live-channel-${idx}`"
+            v-for="(channel, idx) in renderChannels"
+            :id="`live-channel-${channelsStartIndex + idx}`"
             :key="channel.url"
             class="live-channel-row"
           >
@@ -1350,6 +1476,12 @@ async function clearCatchup(): Promise<void> {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  transition: var(--transition-color);
+}
+
+/* 批次 22：整行按下去要有反馈，否则长列表里点哪一下都不知道成没成 */
+.live-channel:active {
+  background-color: var(--color-bg-pressed);
 }
 
 .live-channel__text {
@@ -1410,6 +1542,11 @@ async function clearCatchup(): Promise<void> {
 
 .live-channel__fav--on {
   color: var(--color-brand-text);
+}
+
+.live-channel__fav:active {
+  color: var(--color-text-primary);
+  background-color: var(--color-overlay-press);
 }
 
 /* v1.7/CHG-23：EPG 节目单 */

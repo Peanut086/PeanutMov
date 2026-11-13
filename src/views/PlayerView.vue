@@ -30,6 +30,7 @@ import { formatClock } from '@/shared/time';
 import { toErrorShape, isCanceled, AppError } from '@/shared/errors';
 import { danmakuPerf } from '@/shared/danmakuPerf';
 import { guidanceOf, magnetUrlOf } from '@/shared/sourceFailure';
+import { IMG_W_BLUR, sizedImage } from '@/shared/imageSize';
 
 import PlayerSurface from '@/components/player/PlayerSurface.vue';
 import PlayerControls from '@/components/player/PlayerControls.vue';
@@ -68,6 +69,7 @@ import { lineHealthService, lineKey } from '@/services/lineHealthService';
 import { rankLines } from '@/services/lineRanking';
 import { skipMarkService } from '@/services/skipMarkService';
 import { useBackButton } from '@/composables/useBackButton';
+import { useDebounce } from '@/composables/useDebounce';
 import { usePlayerController } from '@/composables/usePlayerController';
 import { useSeekThumbnails } from '@/composables/useSeekThumbnails';
 import { useSkipIntro } from '@/composables/useSkipIntro';
@@ -263,12 +265,10 @@ function announceOfflineEpisode(): void {
  */
 const PLAYER_FALLBACK: PlayerSettings = {
   defaultRate: 1,
-  defaultQuality: 'auto',
   autoPlayNext: true,
   seekStepSec: 10,
   longPressRate: 2,
   subtitle: {
-    enabled: false,
     size: 'medium',
     color: 'white',
     background: 'black',
@@ -470,7 +470,7 @@ watch(remoteEpisodeTarget, (targetId) => {
 function toggleBackgroundPlayback(): void {
   const next = !backgroundPlayback.value;
   setBackgroundPlayback(next);
-  void settings.update({ player: { ...playerSettings.value, backgroundPlayback: next } });
+  settings.updateNonBlocking({ player: { ...playerSettings.value, backgroundPlayback: next } });
   ui.toast(next ? '切后台将继续播放' : '切后台将自动暂停', 'info', 1500);
 }
 
@@ -652,7 +652,7 @@ async function onSkipClear(side: 'intro' | 'credits'): Promise<void> {
 }
 
 function onAutoSkipChange(value: boolean): void {
-  void settings.update({
+  settings.updateNonBlocking({
     player: { ...playerSettings.value, autoSkipIntro: value },
   });
 }
@@ -1157,7 +1157,7 @@ onBeforeUnmount(() => {
   ++loadEpoch;
   pageAbort.abort();
   // P1-4：音量记忆写回。音量在原生下由系统自己记住，这里存的值只在退回倍率路径时使用。
-  void settings.update({
+  settings.updateNonBlocking({
     player: {
       ...settings.player,
       lastVolume: lastVolumeForMemory,
@@ -1170,6 +1170,9 @@ watch(() => currentPlayback.value, clearSeekPreview);
 
 /* ---------- 标题/集标签 ---------- */
 const titleText = computed(() => fallbackTitle.value);
+
+/** 音频模式的背景层只是 `blur(28px)` 的色底，按原图请求纯属浪费 */
+const audioBlurSrc = computed(() => sizedImage(item.value?.posterUrl ?? null, IMG_W_BLUR));
 const episodeLabel = computed(() => {
   const ep = currentEpisode.value;
   if (!ep) return '';
@@ -1681,18 +1684,28 @@ async function onDownloadCurrent(): Promise<void> {
   }
 }
 
+/** 收藏写库在飞：双击会让「读存在性 → 写/删」交错，期间只处理第一次点击 */
+const favoritePending = ref(false);
+
 async function onToggleFavorite(): Promise<void> {
   const it = item.value;
-  if (!it) return;
-  const added = await favorites.toggle({
-    sourceId: it.sourceId,
-    mediaId: it.id,
-    title: it.title,
-    posterUrl: it.posterUrl,
-    type: it.type,
-    year: it.year,
-  });
-  toast.success(added ? '已收藏' : '已取消收藏');
+  if (!it || favoritePending.value) return;
+  favoritePending.value = true;
+  try {
+    const added = await favorites.toggle({
+      sourceId: it.sourceId,
+      mediaId: it.id,
+      title: it.title,
+      posterUrl: it.posterUrl,
+      type: it.type,
+      year: it.year,
+    });
+    toast.success(added ? '已收藏' : '已取消收藏');
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    favoritePending.value = false;
+  }
 }
 
 const isFavorite = computed(() => {
@@ -1728,25 +1741,33 @@ async function copyError(): Promise<void> {
   }
 }
 
+/**
+ * 字幕设置的持久化：字号/描边/偏移都是滑块，拖动一帧触发一次 `@input`，
+ * 直接写存储会把 IDB 写打成一片。本地值保持即时（画面跟着动），落盘收敛成一次。
+ */
+const persistSubtitles = useDebounce(() => {
+  settings.updateNonBlocking({ player: { ...playerSettings.value, subtitle: { ...localSubtitles.value } } });
+}, 300);
+// 卸载时挂起的最后一次不能丢：useDebounce 自己的 onBeforeUnmount 只做 cancel，这里补 flush
+onBeforeUnmount(() => persistSubtitles.flush());
+
 function onSubtitleSettings(patch: Partial<SubtitleSettings>): void {
   localSubtitles.value = { ...localSubtitles.value, ...patch };
   if (patch.offsetSec !== undefined) setSubtitleOffset(patch.offsetSec);
-  void settings.update({
-    player: { ...playerSettings.value, subtitle: { ...localSubtitles.value, ...patch } },
-  });
+  persistSubtitles();
 }
 
 function onDisplayModeSelect(mode: ResizeMode): void {
   setResizeMode(mode);
-  void settings.update({ player: { ...playerSettings.value, resizeMode: mode } });
+  settings.updateNonBlocking({ player: { ...playerSettings.value, resizeMode: mode } });
 }
 
 function setAmbilight(on: boolean): void {
-  void settings.update({ player: { ...playerSettings.value, ambilight: on } });
+  settings.updateNonBlocking({ player: { ...playerSettings.value, ambilight: on } });
 }
 
 function setAmbilightIntensity(value: number): void {
-  void settings.update({ player: { ...playerSettings.value, ambilightIntensity: value } });
+  settings.updateNonBlocking({ player: { ...playerSettings.value, ambilightIntensity: value } });
 }
 
 /**
@@ -2018,7 +2039,6 @@ async function onSelectEmbeddedSubtitle(id: number | null): Promise<void> {
   try {
     await c.setEmbeddedSubtitleTrack(id);
     const track = id === null ? null : embeddedTracks.value.text.find((t) => t.id === id) ?? null;
-    localSubtitles.value = { ...localSubtitles.value, enabled: id !== null };
     // 记住偏好：语言码；「关闭字幕」落 null，下次起播保持关闭
     void settings
       .update({ player: { subtitle: { ...subtitleSettings.value, preferredLang: track?.language ?? null } } })
@@ -2506,11 +2526,13 @@ onBeforeUnmount(() => {
           <!-- B2：纯音频模式原生画面层已隐藏，用海报 + 声波把「还在播」表达出来 -->
           <div v-if="audioOnly && !pipActive" class="audio-stage">
             <img
-              v-if="item?.posterUrl"
+              v-if="audioBlurSrc"
               class="audio-stage__blur"
-              :src="item.posterUrl"
+              :src="audioBlurSrc"
               alt=""
               aria-hidden="true"
+              loading="lazy"
+              decoding="async"
               draggable="false"
             />
             <div class="audio-stage__scrim" aria-hidden="true" />
@@ -2837,6 +2859,7 @@ onBeforeUnmount(() => {
             class="player-info__action"
             :class="{ 'player-info__action--on': isFavorite }"
             type="button"
+            :disabled="favoritePending"
             @click="onToggleFavorite"
           >
             <IconHeart :size="18" :filled="isFavorite" />

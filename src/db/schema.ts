@@ -113,7 +113,7 @@ export interface CinemaDB extends DBSchema {
   history: {
     key: string;
     value: HistoryRecord;
-    indexes: { 'by-updated': number; 'by-source': string };
+    indexes: { 'by-updated': number; 'by-source': string; 'by-media': string };
   };
   favorites: {
     key: string;

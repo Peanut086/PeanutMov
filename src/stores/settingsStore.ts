@@ -108,6 +108,20 @@ export const useSettingsStore = defineStore('settings', () => {
     await reload();
   }
 
+  /**
+   * 不阻塞交互的设置写入：调用方不等落盘，但失败必须出声。
+   *
+   * 页面上大量 `void settings.update(...)` 把拒绝吞掉了——滑块/开关看起来已经改好，
+   * 实际什么都没存。这里统一走数据层 → Toast 的既有桥接通道（`bindAppToasts`）。
+   */
+  function updateNonBlocking(patch: DeepPartial<AppSettings>): void {
+    void update(patch).catch((e: unknown) => {
+      const shape = toErrorShape(e, 'E_DB');
+      error.value = shape;
+      appEvents.emit('toast', { text: shape.message, type: 'error' });
+    });
+  }
+
   async function resetAllData(keepDemo: boolean): Promise<void> {
     await settingsService.resetAllData({ keepDemo });
     await reload();
@@ -131,6 +145,7 @@ export const useSettingsStore = defineStore('settings', () => {
     load,
     update,
     updateBackup,
+    updateNonBlocking,
     acceptCompliance,
     resetAllData,
     $dispose,

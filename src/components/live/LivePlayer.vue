@@ -72,22 +72,48 @@ const fullscreenController = new FullscreenController({
 });
 const orientationController = new OrientationController();
 
-function engineEvents(): VideoEngineEvents {
+/**
+ * 一次加载只上报一次失败/超时。
+ *
+ * HLS 引擎的 fatal 分支既 `settle(false)`（→ `load()` reject）又回调 `onError`，
+ * 两个出口都发 `timeout` 会让外层 `failStreak` 一次加 2；`LIVE_DEAD_STREAK = 2`
+ * 之下第一次真实失败就把频道判死沉底。
+ */
+let timeoutReported = false;
+
+function reportTimeout(url: string): void {
+  if (timeoutReported) return;
+  timeoutReported = true;
+  emit('timeout', url);
+}
+
+/**
+ * 引擎事件 → 直播状态机。
+ *
+ * `seq`/`url` 是发起这次加载时的闭包值：引擎销毁前仍可能投递异步事件，
+ * 不校验代次就会让上一路的 error/canplay 改动当前这路的界面状态。
+ */
+function engineEvents(url: string, seq: number): VideoEngineEvents {
+  const valid = () => seq === loadSeq;
   return {
     onLoadedMetadata: () => {
-      if (state.value !== 'error') state.value = 'playing';
+      if (!valid() || state.value === 'error') return;
+      state.value = 'playing';
     },
     onTimeUpdate: () => undefined,
     onPlay: () => {
-      state.value = 'playing';
+      if (valid()) state.value = 'playing';
     },
     onPause: () => {
-      if (state.value !== 'error') state.value = 'paused';
+      if (!valid() || state.value === 'error') return;
+      state.value = 'paused';
     },
     onWaiting: () => {
-      if (state.value !== 'error') state.value = 'loading';
+      if (!valid() || state.value === 'error') return;
+      state.value = 'loading';
     },
     onPlaying: () => {
+      if (!valid()) return;
       state.value = 'playing';
       emit('canplay');
     },
@@ -95,10 +121,11 @@ function engineEvents(): VideoEngineEvents {
       /* 直播流不会 ended；RTP 断流由 error 分支处理 */
     },
     onError: (error) => {
+      if (!valid()) return;
       state.value = 'error';
       errorMessage.value = error.message;
       if (channelTimer !== null) { clearTimeout(channelTimer); channelTimer = null; }
-      emit('timeout', props.url ?? '');
+      reportTimeout(url);
     },
   };
 }
@@ -112,11 +139,12 @@ watch(state, (s) => {
  * 原生引擎事件 → 直播状态机。
  * NativeEngine 不发 onPlay/onPause/onPlaying，暂停态由 togglePlay 自己维护。
  */
-function nativeEvents(): NativeEngineEvents {
-  const { onWaiting, onEnded, onError } = engineEvents();
+function nativeEvents(url: string, seq: number): NativeEngineEvents {
+  const { onWaiting, onEnded, onError } = engineEvents(url, seq);
   return {
     onLoadedMetadata: () => {
-      if (state.value !== 'error') state.value = 'playing';
+      if (seq !== loadSeq || state.value === 'error') return;
+      state.value = 'playing';
       // 原生没有 playing 事件，淡入信号在这里发，否则切台后停在半透明
       emit('canplay');
     },
@@ -127,11 +155,11 @@ function nativeEvents(): NativeEngineEvents {
   };
 }
 
-function createEngine(format: PlaybackSource['format'], useNative: boolean): LiveEngine {
-  if (useNative) return new NativeEngine(nativeEvents());
+function createEngine(format: PlaybackSource['format'], useNative: boolean, url: string, seq: number): LiveEngine {
+  if (useNative) return new NativeEngine(nativeEvents(url, seq));
   return format === 'hls'
-    ? new HlsEngine({ ...engineEvents(), onQualityChange: () => undefined })
-    : new VideoEngine(engineEvents());
+    ? new HlsEngine({ ...engineEvents(url, seq), onQualityChange: () => undefined })
+    : new VideoEngine(engineEvents(url, seq));
 }
 
 function destroyEngine(): void {
@@ -185,6 +213,7 @@ async function tryEngine(
 
 async function loadChannel(url: string): Promise<void> {
   const seq = ++loadSeq;
+  timeoutReported = false;
   destroyEngine();
   errorMessage.value = null;
   state.value = 'loading';
@@ -195,7 +224,7 @@ async function loadChannel(url: string): Promise<void> {
   if (url.startsWith('rtmp://')) {
     state.value = 'error';
     errorMessage.value = '当前环境不支持 RTMP 协议';
-    emit('timeout', url);
+    reportTimeout(url);
     return;
   }
 
@@ -203,8 +232,8 @@ async function loadChannel(url: string): Promise<void> {
   if (channelTimer !== null) clearTimeout(channelTimer);
   channelTimer = setTimeout(() => {
     channelTimer = null;
-    if (state.value === 'playing') return;
-    emit('timeout', url);
+    if (seq !== loadSeq || state.value === 'playing') return;
+    reportTimeout(url);
   }, TIMEOUT_LIVE_CHANNEL_MS);
 
   // FIX-L3: 直播场景下 URL 无法识别格式时默认按 HLS 尝试（IPTV 主流协议）
@@ -229,18 +258,18 @@ async function loadChannel(url: string): Promise<void> {
   const useNative = format === 'hls' && (await isExoPlayerAvailable());
   if (seq !== loadSeq) return;
 
-  let failure = await tryEngine(createEngine(format, useNative), source, container, seq, useNative);
+  let failure = await tryEngine(createEngine(format, useNative, url, seq), source, container, seq, useNative);
   if (failure === null || seq !== loadSeq) return;
   if (useNative) {
     // 原生失败（插件异常/该流原生解不了）静默回退 WebView 再试一次，不计频道失效
-    failure = await tryEngine(createEngine(format, false), source, container, seq, false);
+    failure = await tryEngine(createEngine(format, false, url, seq), source, container, seq, false);
     if (failure === null || seq !== loadSeq) return;
   }
 
   state.value = 'error';
   errorMessage.value = failure;
   if (channelTimer !== null) { clearTimeout(channelTimer); channelTimer = null; }
-  emit('timeout', url);
+  reportTimeout(url);
 }
 
 watch(
@@ -248,6 +277,10 @@ watch(
   (url) => {
     if (!url) {
       loadSeq++;
+      if (channelTimer !== null) {
+        clearTimeout(channelTimer);
+        channelTimer = null;
+      }
       destroyEngine();
       state.value = 'idle';
       errorMessage.value = null;

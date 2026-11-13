@@ -94,6 +94,7 @@ function makeBackup(): BackupFile {
     epgSources: [],
     channelPrefs: [],
     reminders: [],
+    kvEntries: [],
   };
 }
 

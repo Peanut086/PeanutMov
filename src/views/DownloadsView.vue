@@ -270,8 +270,16 @@ async function batchDelete(): Promise<void> {
   if (!ok) return;
   batchOperating.value = true;
   try {
-    await downloads.removeMany(Array.from(selectedIds.value), true);
-    toast.success(`已删除 ${selectedCount.value} 个任务`);
+    const { removed, filesLeftBehind, failed } = await downloads.removeMany(
+      Array.from(selectedIds.value),
+      true,
+    );
+    const parts = [`已删除 ${removed} 个任务`];
+    if (failed > 0) parts.push(`${failed} 个未能删除`);
+    if (filesLeftBehind > 0) parts.push(`${filesLeftBehind} 个本地文件没删掉，需手动清理`);
+    const text = parts.join('，');
+    if (failed > 0 || filesLeftBehind > 0) toast.error(text);
+    else toast.success(text);
     selectedIds.value.clear();
     batchMode.value = false;
     await loadStorageUsage();
@@ -320,8 +328,13 @@ async function deleteBatchCompleted(batchId: string): Promise<void> {
   batchOperating.value = true;
   try {
     const completedIds = group.tasks.filter((t) => t.status === 'completed').map((t) => t.id);
-    await downloads.removeMany(completedIds, true);
-    toast.success(`已删除 ${completedCount} 个任务`);
+    const { removed, filesLeftBehind, failed } = await downloads.removeMany(completedIds, true);
+    const parts = [`已删除 ${removed} 个任务`];
+    if (failed > 0) parts.push(`${failed} 个未能删除`);
+    if (filesLeftBehind > 0) parts.push(`${filesLeftBehind} 个本地文件没删掉，需手动清理`);
+    const text = parts.join('，');
+    if (failed > 0 || filesLeftBehind > 0) toast.error(text);
+    else toast.success(text);
     await loadStorageUsage();
   } catch (e) {
     toast.error(toErrorShape(e).message);
@@ -346,8 +359,12 @@ async function clearFailed(): Promise<void> {
   });
   if (!ok) return;
   try {
-    await downloads.clearFailed();
-    toast.success(`已清理 ${failedCount} 个失败任务`);
+    const { removed, filesLeftBehind } = await downloads.clearFailed();
+    const parts = [`已清理 ${removed} 个失败任务`];
+    if (filesLeftBehind > 0) parts.push(`${filesLeftBehind} 个残留文件没删掉，需手动清理`);
+    const text = parts.join('，');
+    if (filesLeftBehind > 0) toast.error(text);
+    else toast.success(text);
     await loadStorageUsage();
   } catch (e) {
     toast.error(toErrorShape(e).message);
@@ -379,12 +396,22 @@ async function clearCompleted(): Promise<void> {
   menuOpen.value = false;
   const ok = await ui.confirm({
     title: '清除已完成记录？',
-    message: '只删除列表记录，已下载的文件请单独删除。',
+    message: '将删除全部已完成任务的记录与本地文件（释放存储空间），此操作不可撤销。',
     confirmText: '清除',
+    danger: true,
   });
   if (!ok) return;
-  await downloads.clearCompleted();
-  toast.success('已清除已完成记录');
+  try {
+    const { removed, filesLeftBehind } = await downloads.clearCompleted();
+    const parts = [`已清除 ${removed} 条记录`];
+    if (filesLeftBehind > 0) parts.push(`${filesLeftBehind} 个本地文件没删掉，需手动清理`);
+    const text = parts.join('，');
+    if (filesLeftBehind > 0) toast.error(text);
+    else toast.success(text);
+    await loadStorageUsage();
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
 }
 
 async function onPause(task: DownloadTask): Promise<void> {
@@ -421,10 +448,13 @@ async function onRemove(task: DownloadTask): Promise<void> {
   });
   if (!ok) return;
   try {
-    await downloads.remove(task.id, true);
+    const { fileLeftBehind } = await downloads.remove(task.id, true);
     detailOpen.value = false;
     detailTask.value = null;
-    toast.success('已删除');
+    // 记录删了但文件还在：不说就等于在本地留了个谁也找不到的孤儿
+    if (fileLeftBehind) toast.error('记录已删除，但本地文件没删掉，需手动清理');
+    else toast.success('已删除');
+    await loadStorageUsage();
   } catch (e) {
     toast.error(toErrorShape(e).message);
   }
@@ -515,7 +545,7 @@ function goLibrary(): void {
           <button class="btn btn--secondary btn--sm" type="button" @click="refresh">重试</button>
         </div>
 
-        <DownloadSummary :summary="downloads.summary" :celebrate="celebrateSummary" />
+        <DownloadSummary class="state-enter" :summary="downloads.summary" :celebrate="celebrateSummary" />
 
         <!-- 功能扩展-10：存储占用展示 -->
         <div class="storage-info">
@@ -540,7 +570,7 @@ function goLibrary(): void {
         </div>
 
         <!-- EXT-04：按批次分组展示 -->
-        <div v-if="batchGroups.length > 0" class="downloads-batches">
+        <div v-if="batchGroups.length > 0" class="downloads-batches state-enter">
           <div v-for="group in batchGroups" :key="group.batchId" class="batch-group">
             <DownloadBatchGroup
               v-if="group.batchId"

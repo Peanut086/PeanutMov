@@ -3,23 +3,45 @@
  * 通用确认对话框（设计规范 8.9）
  *
  * 由 `uiStore.confirm()` 驱动：`await confirm({...})` 返回 boolean。
- * 遮罩点击**不关闭**（防误触）；Esc 视为取消；危险操作初始焦点在"取消"。
+ * 遮罩点击**不关闭**（防误触）；Esc 与 Android 返回键都视为取消；危险操作初始焦点在"取消"。
  */
-import { nextTick, ref, watch } from 'vue';
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import { useUiStore } from '@/stores/uiStore';
+import { onBackButton } from '@/native/appLifecycle';
 
 const ui = useUiStore();
 const cancelRef = ref<HTMLButtonElement | null>(null);
 
+/**
+ * 返回键 = 取消（P3-17）。确认框是模态的：返回键若直接落到路由，用户会被带出
+ * 当前页面，而对话框还挂在 body 上等下一个响应。
+ */
+let offBack: (() => void) | null = null;
+
+function consumeBack(): boolean {
+  if (!ui.confirmState) return false;
+  ui.resolveConfirm(false);
+  return true;
+}
+
 watch(
   () => ui.confirmState,
   async (state) => {
+    // 连开两个确认框时 state 会被整体替换：先摘再挂，不留重复监听
+    offBack?.();
+    offBack = null;
     if (!state) return;
+    offBack = onBackButton(consumeBack);
     await nextTick();
     cancelRef.value?.focus();
   },
 );
+
+onBeforeUnmount(() => {
+  offBack?.();
+  offBack = null;
+});
 
 function onKeydown(ev: KeyboardEvent): void {
   if (ev.key === 'Escape') {

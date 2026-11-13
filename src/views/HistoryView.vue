@@ -8,16 +8,18 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import type { HistoryRecord } from '@/types';
+import type { HistoryRecord, LoadState } from '@/types';
 import { historyGroupOf } from '@/shared/time';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import StateView from '@/components/common/StateView.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import HistoryListItem from '@/components/media/HistoryListItem.vue';
 import { useHistoryStore } from '@/stores/historyStore';
+import { historyService } from '@/services/historyService';
 import { useSourceStore } from '@/stores/sourceStore';
 import { useToast } from '@/composables/useToast';
 import { beginSharedCover } from '@/composables/useSharedElement';
@@ -35,6 +37,14 @@ const menuOpen = ref(false);
 
 const loading = computed(() => history.state === 'idle' || history.state === 'loading');
 const isEmpty = computed(() => history.state === 'empty' || history.items.length === 0);
+
+/** 交给 StateView 的四态；优先级与原 v-if/v-else-if 链逐条一致 */
+const viewState = computed<LoadState>(() => {
+  if (loading.value) return 'loading';
+  if (history.error) return 'error';
+  if (isEmpty.value) return 'empty';
+  return 'success';
+});
 
 const groups = computed(() => {
   const sorted = [...history.items].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -78,7 +88,16 @@ async function removeOne(): Promise<void> {
   menuOpen.value = false;
   try {
     await history.remove(rec.id);
-    toast.success('已删除该条记录');
+    toast.action('已删除该条记录', { label: '撤销', onClick: () => void restoreRecord(rec) }, 'success');
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
+}
+
+/** 撤销：按原 id 写回，播放进度与 `updatedAt`（分组归属）都不重算 */
+async function restoreRecord(rec: HistoryRecord): Promise<void> {
+  try {
+    await historyService.restore(rec);
   } catch (e) {
     toast.error(toErrorShape(e).message);
   }
@@ -157,29 +176,28 @@ async function retry(): Promise<void> {
     </AppHeader>
 
     <div class="history-body" data-scroll="page">
-      <div v-if="loading" class="history-loading" role="status">
-        <LoadingSpinner :size="24" />
-        <span>正在读取历史…</span>
-      </div>
+      <StateView :state="viewState">
+        <template #loading>
+          <div class="history-loading" role="status">
+            <LoadingSpinner :size="24" />
+            <span>正在读取历史…</span>
+          </div>
+        </template>
 
-      <ErrorState
-        v-else-if="history.error"
-        :error="history.error"
-        back-text="返回"
-        @retry="retry"
-        @back="goBack"
-      />
+        <template #error>
+          <ErrorState :error="history.error" back-text="返回" @retry="retry" @back="goBack" />
+        </template>
 
-      <EmptyState
-        v-else-if="isEmpty"
-        variant="history"
-        title="还没有观看记录"
-        description="看过的内容会出现在这里"
-        action-text="去媒体库"
-        @action="goLibrary"
-      />
+        <template #empty>
+          <EmptyState
+            variant="history"
+            title="还没有观看记录"
+            description="看过的内容会出现在这里"
+            action-text="去媒体库"
+            @action="goLibrary"
+          />
+        </template>
 
-      <template v-else>
         <section v-for="group in groups" :key="group.label" class="history-group">
           <h2 class="history-group__title">{{ group.label }}</h2>
           <ul>
@@ -193,7 +211,7 @@ async function retry(): Promise<void> {
             </li>
           </ul>
         </section>
-      </template>
+      </StateView>
     </div>
 
     <BottomSheet v-model="menuOpen" :title="menuRecord?.title ?? '操作'">

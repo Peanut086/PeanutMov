@@ -21,8 +21,10 @@ export default defineConfig({
     exclude: ['node_modules', 'dist', 'android'],
     clearMocks: true,
     // 数据层用例的 beforeEach 会 closeDb/deleteDatabase（fake-indexeddb）；
-    // 26 个文件并行时偶发超过默认 10s。仅放宽钩子超时，不改任何断言语义。
-    hookTimeout: 30000,
+    // 并发文件数从 26 涨到 200 后，钩子排队等资源的时间远超断言本身
+    // （downloadCreateInFlight 单跑 4.3s，全量时 beforeEach 顶到 30s 超时）。
+    // 仅放宽钩子超时，不改任何断言语义。
+    hookTimeout: 60000,
     // 路由导航用例（17 条懒加载路由逐个 push）在 31 个文件并发时实测 >5s，
     // 单跑 2.2s 通过 → 属并发资源竞争，非逻辑缺陷。仅放宽单测超时。
     testTimeout: 20000,

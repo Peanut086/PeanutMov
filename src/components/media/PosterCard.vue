@@ -18,6 +18,7 @@ import { mediaTypeLabel } from '@/components/common/format';
 import { useHaptic } from '@/composables/useHaptic';
 import { prefersReducedMotion } from '@/composables/useSpring';
 import { isLowEndDevice } from '@/shared/deviceTier';
+import { IMG_W_CARD } from '@/shared/imageSize';
 import { liftPose, restPose, tiltPose } from '@/shared/posterTilt';
 
 const props = withDefaults(
@@ -215,7 +216,7 @@ onBeforeUnmount(() => {
     @click="onClick"
   >
     <div class="poster-card__frame">
-      <PosterImage :src="item.posterUrl" :alt="item.title" />
+      <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_CARD" />
 
       <!-- C-08：跟随指针的镜面高光，只在倾斜期间点亮 -->
       <span ref="sheen" class="poster-card__sheen" aria-hidden="true" />

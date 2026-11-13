@@ -528,7 +528,6 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     if (!c) return;
     try {
       await c.setSubtitle(id);
-      localSubtitles.value = { ...localSubtitles.value, enabled: id !== null };
     } catch (e) {
       // 播放不中断：失败轨已在面板标记「不可用」，这里只补一条 Toast（AC-46）
       ui.toast(toErrorShape(e).message, 'error');
@@ -541,7 +540,6 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     if (!c) return;
     try {
       await c.retrySubtitle(id);
-      localSubtitles.value = { ...localSubtitles.value, enabled: true };
       ui.toast('字幕已重新加载', 'success');
     } catch (e) {
       ui.toast(toErrorShape(e).message, 'error');
@@ -553,7 +551,6 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     if (!c) return;
     try {
       const track = await c.addLocalSubtitle(file);
-      localSubtitles.value = { ...localSubtitles.value, enabled: true };
       player.patch({ activeSubtitleId: track.id });
       ui.toast(`已加载字幕：${track.label}`, 'success');
     } catch (e) {

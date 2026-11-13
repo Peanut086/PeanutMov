@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import BottomSheet from '@/components/common/BottomSheet.vue';
+import { pressBackButton, setBackFallback } from '@/native/appLifecycle';
 
 /**
  * 底部弹层拖拽释放（A 批次·A-02）
@@ -14,6 +15,8 @@ import BottomSheet from '@/components/common/BottomSheet.vue';
 
 let queue: Array<(now: number) => void> = [];
 let clock = 0;
+/** 每个用例挂上的弹层：afterEach 统一卸载，避免残留组件继续占住返回键总线 */
+const mounted = new Set<{ unmount: () => void }>();
 
 /** 手动推进 rAF；真实时长由 fake timers 管，这里只喂帧 */
 function pump(frames: number): void {
@@ -36,6 +39,7 @@ async function mountAndOpen(): Promise<VueWrapper> {
     props: { modelValue: true, title: '选集' },
     global: { stubs: { Teleport: true } },
   });
+  mounted.add(wrapper);
   await wrapper.vm.$nextTick();
   return wrapper;
 }
@@ -74,6 +78,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // 先卸载再撤桩：unmount 会走 cancelAnimationFrame 掐弹簧
+  for (const wrapper of [...mounted].reverse()) wrapper.unmount();
+  mounted.clear();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -137,5 +144,68 @@ describe('BottomSheet 拖拽释放', () => {
     pump(20);
     await wrapper.vm.$nextTick();
     expect(offsetOf(wrapper).style).toBe(grabbed.style);
+  });
+});
+
+/**
+ * 硬件返回键（P3-17）
+ *
+ * 弹层过去只认 Esc 与遮罩：Android 的物理返回键直接落到路由上，用户离开页面，
+ * 而弹层还挂在 body 上等下一次响应。这里验的是「挂上总线 / 关闭即摘 / 叠层只退一层」。
+ *
+ * 注册在 `watch(() => props.modelValue)` 里（非 immediate），所以必须**先挂闭再翻成开**，
+ * 直接用上面 `mountAndOpen` 那样以 open 状态挂载是走不到注册的。
+ */
+async function mountByOpening(): Promise<VueWrapper> {
+  const wrapper = mount(BottomSheet, {
+    props: { modelValue: false, title: '选集' },
+    global: { stubs: { Teleport: true } },
+  });
+  mounted.add(wrapper);
+  await wrapper.setProps({ modelValue: true });
+  await wrapper.vm.$nextTick();
+  return wrapper;
+}
+
+describe('BottomSheet 返回键总线', () => {
+  afterEach(() => {
+    setBackFallback(null);
+  });
+
+  it('打开时返回键关闭弹层并消费本次返回', async () => {
+    const wrapper = await mountByOpening();
+
+    expect(pressBackButton()).toBe(true);
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual([false]);
+  });
+
+  it('关闭后摘掉监听，返回键交回路由兜底', async () => {
+    const wrapper = await mountByOpening();
+    pressBackButton();
+    await wrapper.setProps({ modelValue: false });
+
+    const fallback = vi.fn(() => true);
+    setBackFallback(fallback);
+    expect(pressBackButton()).toBe(true);
+    expect(fallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('叠两层只关最上面那层，不会一次穿回页面本体', async () => {
+    const under = await mountByOpening();
+    const over = await mountByOpening();
+
+    expect(pressBackButton()).toBe(true);
+    expect(over.emitted('update:modelValue')?.[0]).toEqual([false]);
+    expect(under.emitted('update:modelValue')).toBeUndefined();
+  });
+
+  it('卸载即摘：残留组件不能继续吞掉返回键', async () => {
+    const wrapper = await mountByOpening();
+    // 从登记表里摘掉再卸载：这里要验的就是「这一次卸载」本身
+    mounted.delete(wrapper);
+    wrapper.unmount();
+
+    setBackFallback(() => false);
+    expect(pressBackButton()).toBe(false);
   });
 });

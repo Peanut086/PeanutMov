@@ -146,6 +146,7 @@ function reportText(report: BackupImportReport, prefix: string): string {
     report.epgSources > 0 ? `EPG源${report.epgSources}` : '',
     report.channelPrefs > 0 ? `频道分组${report.channelPrefs}` : '',
     report.reminders > 0 ? `提醒${report.reminders}` : '',
+    report.kvEntries > 0 ? `导入记录与点赞${report.kvEntries}` : '',
   ].filter(Boolean);
   return (
     `${prefix} 源${report.sources}/收藏${report.favorites}/历史${report.history}` +

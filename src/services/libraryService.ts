@@ -844,9 +844,8 @@ export const libraryService: LibraryService = {
     const cached = await mediaRepo.get(mediaId);
     if (cached) return cached;
 
-    // 2. 从历史记录查找
-    const allHistory = await historyRepo.listAllRaw();
-    const record = allHistory.find((r) => r.mediaId === mediaId);
+    // 2. 从历史记录查找（v5 by-media 索引；此前是 listAllRaw + find 全表扫）
+    const record = await historyRepo.getByMedia(mediaId);
     if (!record) return null;
 
     // 3. 检查源是否存在

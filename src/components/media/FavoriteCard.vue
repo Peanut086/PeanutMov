@@ -8,6 +8,7 @@
 import type { FavoriteRecord } from '@/types';
 
 import PosterImage from '@/components/common/PosterImage.vue';
+import { IMG_W_CARD } from '@/shared/imageSize';
 import { mediaTypeLabel } from '@/components/common/format';
 
 const props = defineProps<{ item: FavoriteRecord }>();
@@ -56,7 +57,7 @@ function onClick(): void {
     @click="onClick"
   >
     <div class="favorite-card__frame">
-      <PosterImage :src="item.posterUrl" :alt="item.title" />
+      <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_CARD" />
       <span v-if="item.sourceRemoved" class="favorite-card__warning">源已移除</span>
     </div>
     <span class="favorite-card__title clamp-2">{{ item.title }}</span>

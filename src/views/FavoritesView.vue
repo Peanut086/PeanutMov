@@ -8,15 +8,17 @@
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
-import type { FavoriteRecord } from '@/types';
+import type { FavoriteRecord, LoadState } from '@/types';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import StateView from '@/components/common/StateView.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import FavoriteCard from '@/components/media/FavoriteCard.vue';
 import { useFavoriteStore } from '@/stores/favoriteStore';
+import { favoriteService } from '@/services/favoriteService';
 import { useToast } from '@/composables/useToast';
 import { toErrorShape } from '@/shared/errors';
 
@@ -30,6 +32,14 @@ const active = ref<FavoriteRecord | null>(null);
 
 const loading = computed(() => favorites.state === 'idle' || favorites.state === 'loading');
 const isEmpty = computed(() => favorites.state === 'empty' || favorites.items.length === 0);
+
+/** 交给 StateView 的四态；优先级与原 v-if/v-else-if 链逐条一致（加载 > 错误 > 空 > 内容） */
+const viewState = computed<LoadState>(() => {
+  if (loading.value) return 'loading';
+  if (favorites.state === 'error') return 'error';
+  if (isEmpty.value) return 'empty';
+  return 'success';
+});
 
 const sorted = computed(() => {
   const list = [...favorites.items];
@@ -62,7 +72,16 @@ async function unfavorite(): Promise<void> {
   menuOpen.value = false;
   try {
     await favorites.remove(item.id);
-    toast.success('已取消收藏');
+    toast.action('已取消收藏', { label: '撤销', onClick: () => void restoreFavorite(item) }, 'success');
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
+}
+
+/** 撤销：整条记录原样写回（收藏时间与排序位不变），列表靠 `favorites:changed` 事件刷新 */
+async function restoreFavorite(item: FavoriteRecord): Promise<void> {
+  try {
+    await favoriteService.restore(item);
   } catch (e) {
     toast.error(toErrorShape(e).message);
   }
@@ -96,27 +115,31 @@ function goLibrary(): void {
     </AppHeader>
 
     <div class="favorites-body" data-scroll="page">
-      <div v-if="loading" class="favorites-loading" role="status">
-        <LoadingSpinner :size="24" />
-        <span>正在读取收藏…</span>
-      </div>
+      <StateView :state="viewState">
+        <template #loading>
+          <div class="favorites-loading" role="status">
+            <LoadingSpinner :size="24" />
+            <span>正在读取收藏…</span>
+          </div>
+        </template>
 
-      <ErrorState
-        v-else-if="favorites.state === 'error'"
-        :error="{ code: 'E_DB', message: '收藏读取失败', detail: null, retryable: true, httpStatus: null }"
-        @retry="favorites.load()"
-      />
+        <template #error>
+          <ErrorState
+            :error="{ code: 'E_DB', message: '收藏读取失败', detail: null, retryable: true, httpStatus: null }"
+            @retry="favorites.load()"
+          />
+        </template>
 
-      <EmptyState
-        v-else-if="isEmpty"
-        variant="favorite"
-        title="还没有收藏"
-        description="在详情页点 ♥ 收藏想看的内容"
-        action-text="去媒体库看看"
-        @action="goLibrary"
-      />
+        <template #empty>
+          <EmptyState
+            variant="favorite"
+            title="还没有收藏"
+            description="在详情页点 ♥ 收藏想看的内容"
+            action-text="去媒体库看看"
+            @action="goLibrary"
+          />
+        </template>
 
-      <template v-else>
         <p class="favorites-count">共 {{ sorted.length }} 个 · 按{{ orderLabel }}排序</p>
         <div class="favorites-grid">
           <FavoriteCard
@@ -127,7 +150,7 @@ function goLibrary(): void {
             @longpress="onLongPress"
           />
         </div>
-      </template>
+      </StateView>
     </div>
 
     <BottomSheet v-model="sortOpen" title="排序方式">

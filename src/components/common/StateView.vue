@@ -63,7 +63,7 @@ const showContent = computed(() => props.state === 'success' || props.state === 
 
 <template>
   <div class="state-view" :data-state="state">
-    <Transition name="state-fade" mode="out-in">
+    <Transition name="state-fade">
       <div :key="state" class="state-view__content">
         <!-- 加载 -->
         <div v-if="state === 'loading'" class="state-view__panel" role="status" aria-live="polite">
@@ -158,21 +158,22 @@ const showContent = computed(() => props.state === 'success' || props.state === 
   white-space: nowrap;
 }
 
-/* 状态切换 crossfade：150ms 淡入淡出 */
-.state-fade-enter-active,
-.state-fade-leave-active {
-  transition: opacity 150ms var(--ease-standard);
+/*
+ * 状态切换只给"进入"补一段位移，离场立刻移除。
+ * 不用 opacity：动画没被推进的环境（低端 WebView / 无头）会停在起点，等于内容全透明，
+ * 与 global.css 里路由过渡避开淡入是同一条取舍。
+ */
+.state-fade-enter-active {
+  transition: transform var(--duration-fast) var(--ease-decelerate);
 }
 
-.state-fade-enter-from,
-.state-fade-leave-to {
-  opacity: 0;
+.state-fade-enter-from {
+  transform: translateY(6px);
 }
 
 /* 尊重系统"减少动态效果"设置 */
 @media (prefers-reduced-motion: reduce) {
-  .state-fade-enter-active,
-  .state-fade-leave-active {
+  .state-fade-enter-active {
     transition: none;
   }
 }

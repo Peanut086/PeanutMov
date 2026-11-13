@@ -33,7 +33,8 @@ import java.util.concurrent.Executors;
  * 原生层不再产生任何 HLS 输出文件。
  *
  * DEV-04 / AND-16：所有下载任务（含排队/暂停）统一登记在 pendingTasks /
- * activeDownloads / pausedTasks 三张表里，统一受 MAX_CONCURRENT 闸门约束，
+ * activeDownloads / pausedTasks 三张表里，统一受 `maxConcurrent` 闸门约束（可由
+ * JS 侧 `download.concurrency` 下发，见 {@link #setMaxConcurrent}），
  * 暂停、恢复、取消对排队任务与执行中任务语义一致。
  *
  * EXT-04 / FR-60（HLS→MP4 转封装）**不在本类实现**，原因有两条硬约束：
@@ -46,11 +47,22 @@ import java.util.concurrent.Executors;
 public class NativeDownloadManager {
 
     private static final String TAG = "NativeDownloadMgr";
-    private static final int MAX_CONCURRENT = 2;
+    /** 与 JS 侧 DOWNLOAD_DEFAULT_CONCURRENCY 一致 */
+    private static final int DEFAULT_MAX_CONCURRENT = 2;
+    /**
+     * 并发上限：设置页只给 1/2/3 三档（且受 §原生线程池硬限制约束），
+     * 留出 4 作为天花板，池子按它预建，闸门按 `maxConcurrent` 动态收紧。
+     */
+    private static final int MAX_CONCURRENT_CEILING = 4;
 
     private static NativeDownloadManager instance;
     private final Context context;
     private final ExecutorService executor;
+    /**
+     * 实际并发闸门。此前是 `MAX_CONCURRENT` 常量，导致设置页的
+     * `download.concurrency` 在原生直链上完全不起作用（JS 队列认、原生不认）。
+     */
+    private volatile int maxConcurrent = DEFAULT_MAX_CONCURRENT;
     private final Map<String, RangeDownloader> activeDownloads;
     private final Map<String, DownloadTask> pendingTasks;
     /** DEV-04 / AND-16：排队中被暂停的任务（既不在 active 也不再参与调度） */
@@ -62,7 +74,7 @@ public class NativeDownloadManager {
 
     private NativeDownloadManager(Context context) {
         this.context = context.getApplicationContext();
-        this.executor = Executors.newFixedThreadPool(MAX_CONCURRENT);
+        this.executor = Executors.newFixedThreadPool(MAX_CONCURRENT_CEILING);
         this.activeDownloads = new ConcurrentHashMap<>();
         this.pendingTasks = new ConcurrentHashMap<>();
         this.pausedTasks = new ConcurrentHashMap<>();
@@ -79,6 +91,25 @@ public class NativeDownloadManager {
 
     public void setPlugin(DownloadPlugin plugin) {
         this.plugin = plugin;
+    }
+
+    /**
+     * 下发并发闸门（EXT-04 / FR-62）：`download.concurrency` 此前只驱动 JS 队列，
+     * 原生直链恒为 2，用户调档没有任何可见效果。
+     *
+     * 调高时立刻把等待队列填到新闸门；调高不需要停任务，调低只影响后续调度
+     * （进行中的任务不中断，避免半截 .part 反复续传）。
+     */
+    public void setMaxConcurrent(int value) {
+        int next = Math.max(1, Math.min(MAX_CONCURRENT_CEILING, value));
+        if (next == maxConcurrent) {
+            return;
+        }
+        maxConcurrent = next;
+        Log.d(TAG, "Native concurrency gate -> " + next);
+        for (int i = activeDownloads.size(); i < next; i++) {
+            scheduleNextTask();
+        }
     }
 
     // ========== 公开 API ==========
@@ -111,7 +142,7 @@ public class NativeDownloadManager {
             taskRegistry.put(taskId, restarted);
             pendingTasks.put(taskId, restarted);
             Log.d(TAG, "Resuming paused task via start: " + taskId);
-            if (activeDownloads.get(taskId) != running && activeDownloads.size() < MAX_CONCURRENT) {
+            if (activeDownloads.get(taskId) != running && activeDownloads.size() < maxConcurrent) {
                 // 旧实例已在检查与登记之间退出，直接调度
                 executeTask(restarted);
             }
@@ -132,7 +163,7 @@ public class NativeDownloadManager {
         pendingTasks.put(taskId, task);
 
         // 检查是否可以立即执行
-        if (activeDownloads.size() < MAX_CONCURRENT) {
+        if (activeDownloads.size() < maxConcurrent) {
             executeTask(task);
         } else {
             Log.d(TAG, "Task queued (concurrent limit reached): " + taskId);
@@ -177,7 +208,7 @@ public class NativeDownloadManager {
         } else if (pausedTask != null) {
             // 排队中暂停 / 已退出执行的任务：重新参与调度
             pendingTasks.put(taskId, pausedTask);
-            if (activeDownloads.size() < MAX_CONCURRENT) {
+            if (activeDownloads.size() < maxConcurrent) {
                 executeTask(pausedTask);
             }
         }
@@ -267,7 +298,7 @@ public class NativeDownloadManager {
     }
 
     private void scheduleNextTask() {
-        if (activeDownloads.size() < MAX_CONCURRENT) {
+        if (activeDownloads.size() < maxConcurrent) {
             for (DownloadTask next : pendingTasks.values()) {
                 if (pausedTasks.containsKey(next.taskId)) continue;
                 if (activeDownloads.containsKey(next.taskId)) continue;

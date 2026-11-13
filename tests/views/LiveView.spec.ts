@@ -10,10 +10,12 @@
  *
  * 分组/排序服务使用真实实现（fake-indexeddb），仅 mock 网络与路由。
  */
+import { createPinia, setActivePinia } from 'pinia';
 import { mount, type VueWrapper } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { channelPrefsService } from '@/services/channelPrefsService';
+import { useUiStore } from '@/stores/uiStore';
 import { AppError } from '@/shared/errors';
 import { kvRepo } from '@/db/repositories/kvRepo';
 import type { LiveChannel } from '@/sources/live/liveParsers';
@@ -175,6 +177,7 @@ function rowNames(wrapper: VueWrapper): string[] {
 }
 
 beforeEach(async () => {
+  setActivePinia(createPinia());
   await resetAll();
   routeMocks.query = {};
   routeMocks.params = {};
@@ -497,5 +500,195 @@ describe('LiveView 源级回看设置（P1-01 / FR-68）', () => {
 
     expect(wrapper.text()).toContain('回看模板不能为空');
     expect(toastMocks.success).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 删除直播源是「删了就回不来」的操作（P3-19）
+ *
+ * `removeRecord` 连带清掉该源的自定义分组与排序（`channelPrefsService.remove`），重建只能
+ * 回到「重新粘贴源地址」，没有可撤销的还原路径——所以入口必须先过一遍 `ui.confirm`，
+ * 而且取消时既不能删，也不能提示「已删除」。
+ */
+describe('LiveView 删除直播源二次确认（P3-19）', () => {
+  async function openManage(wrapper: VueWrapper): Promise<void> {
+    await wrapper.find('.live-add').trigger('click');
+    await settle();
+  }
+
+  it('取消确认：源、分组排序都不动，也不弹「已删除」', async () => {
+    const wrapper = await mountView();
+    const ui = useUiStore();
+    const confirm = vi.spyOn(ui, 'confirm').mockResolvedValue(false);
+    const remove = vi.spyOn(channelPrefsService, 'remove').mockResolvedValue(undefined);
+    await openManage(wrapper);
+
+    await wrapper.find('.live-manage__remove').trigger('click');
+    await settle();
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(liveService.remove).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(toastMocks.info).not.toHaveBeenCalled();
+  });
+
+  it('确认文案交代不可逆：频道列表/分组/排序一起没，需要重新粘贴源地址', async () => {
+    const wrapper = await mountView();
+    const ui = useUiStore();
+    const confirm = vi.spyOn(ui, 'confirm').mockResolvedValue(false);
+    await openManage(wrapper);
+
+    await wrapper.find('.live-manage__remove').trigger('click');
+    await settle();
+
+    const options = confirm.mock.calls[0]![0];
+    expect(options.title).toContain('源A');
+    expect(options.message).toContain('频道列表');
+    expect(options.message).toContain('重新粘贴');
+    expect(options.danger).toBe(true);
+  });
+
+  it('确认删除：删源并顺带清掉该源的分组成员与排序', async () => {
+    const wrapper = await mountView();
+    const ui = useUiStore();
+    const confirm = vi.spyOn(ui, 'confirm').mockResolvedValue(true);
+    const remove = vi.spyOn(channelPrefsService, 'remove').mockResolvedValue(undefined);
+    await openManage(wrapper);
+
+    await wrapper.find('.live-manage__remove').trigger('click');
+    await settle();
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(liveService.remove).toHaveBeenCalledWith(SOURCE_ID);
+    expect(remove).toHaveBeenCalledWith(SOURCE_ID);
+    expect(toastMocks.info).toHaveBeenCalledTimes(1);
+  });
+
+  it('确认之后删除失败也要说话，不能静默当成已删', async () => {
+    const wrapper = await mountView();
+    const ui = useUiStore();
+    vi.spyOn(ui, 'confirm').mockResolvedValue(true);
+    vi.mocked(liveService.remove).mockRejectedValue(new AppError('E_NETWORK', '网络异常'));
+    await openManage(wrapper);
+
+    await wrapper.find('.live-manage__remove').trigger('click');
+    await settle();
+
+    expect(toastMocks.info).not.toHaveBeenCalled();
+    expect(toastMocks.error).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * C2 频道搜索的输入代价（EXT 批次二 23）
+ *
+ * 一份 IPTV 订阅动辄几千个频道：搜索词每敲一个键都会重跑「全表过滤 + 相关性排序 + 虚拟窗口
+ * 重建」。这里把生效关键词延后 300ms（`committedQuery`），输入框本身仍然跟手——所以断言的是
+ * 「列表在防抖窗口内不动、窗口后一次到位」，而不是「输入框里的字不动」。
+ *
+ * 注：本文件的 `settle()` 建立在真实宏任务上，这里也必须用真实时间等 350ms；
+ * 换 fake timers 会让 fake-indexeddb 的 `resetAll()` 卡死。
+ */
+describe('LiveView 频道搜索防抖（批次 23）', () => {
+  async function toAllScope(wrapper: VueWrapper): Promise<void> {
+    const chip = wrapper.findAll('.live-group-chip').find((node) => node.text() === '全部');
+    expect(chip, '应有「全部」作用域 chip').toBeTruthy();
+    await chip!.trigger('click');
+    await settle();
+  }
+
+  function rowCount(wrapper: VueWrapper): number {
+    return wrapper.findAll('.live-channel-row').length;
+  }
+
+  it('防抖窗口内列表不重建，300ms 后一次到位', async () => {
+    const wrapper = await mountView();
+    await toAllScope(wrapper);
+    expect(rowNames(wrapper)).toEqual([CCTV, CCTV, HUNAN]);
+
+    await wrapper.find('.live-search input').setValue(HUNAN.slice(0, 2));
+
+    await settle(2);
+    expect(rowCount(wrapper)).toBe(3);
+    // 命中统计条读的是生效关键词：没到窗口就该还没有
+    expect(wrapper.find('.live-search__summary').exists()).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await settle();
+    expect(rowNames(wrapper)).toEqual([HUNAN]);
+    expect(wrapper.find('.live-search__summary').text()).toContain('1');
+  });
+
+  it('输入框跟手：防抖期间显示值已是最终输入', async () => {
+    const wrapper = await mountView();
+    const input = wrapper.find('.live-search input');
+    await input.setValue('湖南卫');
+
+    await settle(2);
+    expect((input.element as HTMLInputElement).value).toBe('湖南卫');
+    expect(rowCount(wrapper)).toBe(2);
+  });
+
+  it('清空立即生效（不等一个防抖周期），包括点「清除搜索」', async () => {
+    const wrapper = await mountView();
+    await toAllScope(wrapper);
+
+    await wrapper.find('.live-search input').setValue('不存在的频道');
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await settle();
+    expect(rowCount(wrapper)).toBe(0);
+    expect(wrapper.find('.live-empty-scope').text()).toContain('没找到');
+
+    await wrapper.find('.live-empty-scope__add').trigger('click');
+    await settle(2);
+    expect(rowCount(wrapper)).toBe(3);
+    expect(wrapper.find('.live-empty-scope').exists()).toBe(false);
+    // 挂起的那一次（若有）必须一起作废，不能 300ms 后把已清的词又贴回来
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await settle();
+    expect(rowCount(wrapper)).toBe(3);
+  });
+
+  it('关键词删回空立刻恢复列表，不再等一个防抖周期', async () => {
+    const wrapper = await mountView();
+    await toAllScope(wrapper);
+    const input = wrapper.find('.live-search input');
+
+    await input.setValue(HUNAN.slice(0, 2));
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await settle();
+    expect(rowCount(wrapper)).toBe(1);
+
+    await input.setValue('');
+    await settle(2);
+    // 空词走同步分支：若仍排 300ms 的队，此刻应还是 1 行
+    expect(rowCount(wrapper)).toBe(3);
+    expect(wrapper.find('.live-search__summary').exists()).toBe(false);
+  });
+
+  it('换源作废旧关键词：挂起的提交不会压在新频道表上', async () => {
+    vi.mocked(liveService.list).mockResolvedValue([
+      record(),
+      { ...record(), id: 'live-2', name: '源B' },
+    ]);
+    const wrapper = await mountView();
+    await toAllScope(wrapper);
+
+    const input = wrapper.find('.live-search input');
+    await input.setValue(HUNAN.slice(0, 2));
+
+    const chipB = wrapper
+      .findAll('.live-source-chip')
+      .find((node) => node.text() === '源B');
+    expect(chipB, '应有第二个源可切').toBeTruthy();
+    await chipB!.trigger('click');
+    await settle();
+
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await settle();
+    // 换源后回到默认分组（央视 = 2 行）；挂起的 commit 若没被 cancel，会被旧关键词压成 1 行
+    expect(rowCount(wrapper)).toBe(2);
+    expect((input.element as HTMLInputElement).value).toBe('');
+    expect(wrapper.find('.live-search__summary').exists()).toBe(false);
   });
 });

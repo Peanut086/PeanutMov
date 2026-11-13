@@ -40,6 +40,7 @@ import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import SegmentedControl from '@/components/common/SegmentedControl.vue';
 import PosterImage from '@/components/common/PosterImage.vue';
+import { IMG_W_COMPACT, IMG_W_INLINE } from '@/shared/imageSize';
 
 import { useHistoryStore } from '@/stores/historyStore';
 import { useSourceStore } from '@/stores/sourceStore';
@@ -554,7 +555,7 @@ const ringOffset = computed(() => 100 - toPercent(ringRate.value));
               @click="resume(record.mediaId, record.sourceId, record.episodeId)"
             >
               <span class="nearly__cover">
-                <PosterImage :src="record.posterUrl" :alt="record.title" :cover-key="record.mediaId" />
+                <PosterImage :src="record.posterUrl" :alt="record.title" :cover-key="record.mediaId" :width-px="IMG_W_COMPACT" />
                 <span class="nearly__badge">{{ formatProgress(record.progress) }}</span>
               </span>
               <span class="nearly__title truncate-2">{{ record.title }}</span>
@@ -627,7 +628,7 @@ const ringOffset = computed(() => 100 - toPercent(ringRate.value));
                 @click="openDetail(record.mediaId, record.sourceId)"
               >
                 <span class="titles__cover">
-                  <PosterImage :src="record.posterUrl" :alt="record.title" :cover-key="record.mediaId" />
+                  <PosterImage :src="record.posterUrl" :alt="record.title" :cover-key="record.mediaId" :width-px="IMG_W_INLINE" />
                 </span>
                 <span class="titles__body">
                   <span class="titles__name truncate-1">{{ record.title }}</span>

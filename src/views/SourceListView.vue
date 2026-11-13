@@ -418,7 +418,7 @@ async function batchEnable(): Promise<void> {
         // 单个失败不阻断其余
       }
     }
-    toast.success(`已启用 ${enabled} 个源`);
+    toast.success(enabled === targets.length ? `已启用 ${enabled} 个源` : `已启用 ${enabled} 个源，${targets.length - enabled} 个未能启用`);
     batchMode.value = false;
     selectedIds.value.clear();
   } finally {
@@ -451,7 +451,7 @@ async function batchDisable(): Promise<void> {
         // 单个失败不阻断其余
       }
     }
-    toast.success(`已禁用 ${disabled} 个源`);
+    toast.success(disabled === targets.length ? `已禁用 ${disabled} 个源` : `已禁用 ${disabled} 个源，${targets.length - disabled} 个未能禁用`);
     batchMode.value = false;
     selectedIds.value.clear();
   } finally {

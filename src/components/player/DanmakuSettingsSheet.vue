@@ -37,7 +37,7 @@ const danmaku = computed<DanmakuSettings>(
 );
 
 function patch(part: Partial<DanmakuSettings>): void {
-  void settings.update({ danmaku: { ...danmaku.value, ...part } });
+  settings.updateNonBlocking({ danmaku: { ...danmaku.value, ...part } });
 }
 </script>
 

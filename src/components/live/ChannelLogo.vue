@@ -11,6 +11,8 @@
  */
 import { computed, ref, watch } from 'vue';
 
+import { sizedImage } from '@/shared/imageSize';
+
 const props = withDefaults(
   defineProps<{ src: string | null; name: string; size?: number }>(),
   { size: 28 },
@@ -27,7 +29,17 @@ watch(
   },
 );
 
-const showImage = computed(() => !!props.src && !failed.value);
+/**
+ * 台标是全站唯一「显示尺寸已知」的图：`size` 就是 CSS px，乘上 DPR 就是目标设备像素
+ * （`object-fit: contain` 的方框，宽度方向刚好用满）。IPTV 的 `tvg-logo` 常有
+ * 512~1024px 的原图，缩进 26px 的格子纯属浪费。
+ */
+const logoSrc = computed(() => {
+  const dpr = typeof window === 'undefined' ? 2 : window.devicePixelRatio || 2;
+  return sizedImage(props.src, Math.round(props.size * dpr));
+});
+
+const showImage = computed(() => !!logoSrc.value && !failed.value);
 
 /** 频道号优先：同一套 CCTV 里「1」「5」「13」比清一色的「C」有用得多 */
 const badgeText = computed(() => {
@@ -68,7 +80,7 @@ const badgeStyle = computed(() => {
       v-if="showImage"
       class="channel-logo__img"
       :class="{ 'channel-logo__img--loaded': loaded }"
-      :src="src!"
+      :src="logoSrc!"
       alt=""
       loading="lazy"
       decoding="async"

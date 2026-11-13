@@ -4,8 +4,9 @@
  * 设计要点（见技术方案 §6.2、§8.3-9）：
  * - **单一额度源**：JS 侧所有写盘流量都在 `DownloadSink.write()` 前 `consume(bytes)`，
  *   因此直链与 HLS 分片天然共用同一份额度，不需要改动 `hlsDownloader` 的下载主循环。
- * - **原生路径不重复扣减**：Android 走 OkHttp（`RangeDownloader` 内的原生令牌桶），
- *   这条链路不经过 JS sink，因此这里不会被调用。
+ * - **原生路径各自扣减**：Android 直链走 OkHttp → `RandomAccessFile`，不经过 JS sink，
+ *   因此这里不会被调用；同档位由 `MediaTool.setSpeedLimit` 下发给原生
+ *   `DownloadThrottle`（全进程一份额度），两条链路合起来才等价于「对所有下载任务生效」。
  * - **`unlimited` 零开销**：`bytesPerSec === Infinity` 时不进桶、不 await，直接返回。
  * - **切档清桶**：新档位立即生效，最多在 3s 内收敛（AC-149）。
  * - **元数据不占额度**：m3u8 / 密钥 / 字幕 / 封面 / 预检探测一律不调用 `consume`。

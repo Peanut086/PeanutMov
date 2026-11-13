@@ -11,6 +11,7 @@ import { channelPrefsRepo } from '@/db/repositories/channelPrefsRepo';
 import { reminderService } from '@/services/reminderService';
 import { replayService } from '@/services/replayService';
 import { AppError } from '@/shared/errors';
+import { logger } from '@/shared/logger';
 import { clampCatchupDays, validateCatchupTemplate } from '@/shared/catchupTemplate';
 import { normalizeChannelName } from '@/shared/channelKey';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
@@ -238,13 +239,14 @@ export const liveService = {
 
   /**
    * 批量添加 TVBox `lives[]` 提取出的直播源（CHG-13；已存在同 URL 的跳过）。
-   * 返回新增数量；供订阅导入成功后调用（单个失败不阻塞其它）。
+   * 返回新增/失败数；供订阅导入成功后调用（单个失败不阻塞其它，但必须让调用方看得见）。
    */
   async addTvboxLives(
     lives: Array<{ name: string; url: string }>,
     subscriptionId?: string | null,
-  ): Promise<number> {
+  ): Promise<{ added: number; failed: number }> {
     let added = 0;
+    let failed = 0;
     for (const live of lives) {
       const existing = await liveRepo.getByUrl(live.url);
       if (existing) continue;
@@ -256,11 +258,13 @@ export const liveService = {
           subscriptionId: subscriptionId ?? null,
         });
         added += 1;
-      } catch {
-        // 单个直播源拉取失败不阻塞其它（导入订阅是主流程）
+      } catch (e) {
+        // 单个直播源写入失败不阻塞其它（导入订阅是主流程），但要计入 failed
+        failed += 1;
+        logger.warn('添加 TVBox 直播源失败', live.url, e);
       }
     }
-    return added;
+    return { added, failed };
   },
 };
 

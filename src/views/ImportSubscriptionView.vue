@@ -293,9 +293,12 @@ async function commit(): Promise<void> {
     // CHG-13：订阅带 lives[] 直播源时自动添加到直播页（幂等，同 URL 跳过）
     const lives = preview.value?.lives ?? [];
     if (lives.length > 0 && next.success > 0) {
-      const added = await liveService.addTvboxLives(lives, url.value.trim() || fileName.value);
-      if (added > 0) {
-        toast.info(`识别到 ${added} 个直播源，已添加到「直播」页`);
+      const livesResult = await liveService.addTvboxLives(lives, url.value.trim() || fileName.value);
+      if (livesResult.added > 0) {
+        toast.info(`识别到 ${livesResult.added} 个直播源，已添加到「直播」页`);
+      }
+      if (livesResult.failed > 0) {
+        toast.error(`直播源有 ${livesResult.failed} 个没能添加，可到「直播」页手动补`);
       }
     }
     const skippedTotal = next.skipped;

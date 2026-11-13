@@ -41,7 +41,7 @@ describe('DB 表结构与事务（AC-14）', () => {
     await resetAll();
   });
 
-  it('v4 建表：16 个 store（v3 的 13 个 + epgSources / channelPrefs / reminders）与全部索引均存在', async () => {
+  it('v5 建表：16 个 store（v3 的 13 个 + epgSources / channelPrefs / reminders）与全部索引均存在', async () => {
     const db = await getDb();
     const stores = [...db.objectStoreNames].sort();
     expect(stores).toEqual(
@@ -66,7 +66,7 @@ describe('DB 表结构与事务（AC-14）', () => {
     );
 
     const tx = db.transaction(
-      ['sources', 'media', 'episodes', 'downloads', 'lives', 'epgSources', 'channelPrefs', 'reminders'],
+      ['sources', 'media', 'episodes', 'downloads', 'history', 'lives', 'epgSources', 'channelPrefs', 'reminders'],
       'readonly',
     );
     expect([...tx.objectStore('sources').indexNames].sort()).toEqual(
@@ -80,6 +80,10 @@ describe('DB 表结构与事务（AC-14）', () => {
     );
     expect([...tx.objectStore('downloads').indexNames].sort()).toEqual(
       ['by-created', 'by-media', 'by-priority', 'by-status'].sort(),
+    );
+    // v5 新增 history.by-media：自愈按 mediaId 查历史，不再全表读
+    expect([...tx.objectStore('history').indexNames].sort()).toEqual(
+      ['by-media', 'by-source', 'by-updated'].sort(),
     );
     expect([...tx.objectStore('lives').indexNames].sort()).toEqual(['by-created']);
     // EXT-06（DB v4）新增索引

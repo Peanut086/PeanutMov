@@ -1,8 +1,13 @@
 /**
  * 网盘配置传递工具（P4-3）
  *
- * 将 App 的网盘画质/线程配置传递给爬虫源。
- * 配置写入 /sdcard/TVBox/netdisk_config.json，爬虫源启动时读取。
+ * 两条下发通道，都不保证被消费：
+ * 1. `netdisk_config.json`（写进 /sdcard/TVBox，沿用 TVBox 共享目录约定）——
+ *    只有主动去读该文件的爬虫才会用到；本工程自身不读。
+ * 2. 合并进爬虫源 ext 的 JSON（`quality` / `thread`）——由爬虫自行决定是否采纳。
+ *
+ * App 不代解网盘直链（网盘平台能力分级 Q-03：夸克 full-api 仅用于账号/会员校验），
+ * 因此这两项本质是「尽力而为的配置提示」，设置页已按此口径说明。
  */
 import { useSettingsStore } from '@/stores/settingsStore';
 import { writeCookieFile, readCookieFile } from '@/native/netdiskPlugin';

@@ -19,6 +19,7 @@ import EmptyState from '@/components/common/EmptyState.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import PosterImage from '@/components/common/PosterImage.vue';
+import { IMG_W_INLINE } from '@/shared/imageSize';
 import SearchFailurePanel from '@/components/search/SearchFailurePanel.vue';
 import IconChevron from '@/components/icons/IconChevron.vue';
 import IconClose from '@/components/icons/IconClose.vue';
@@ -649,7 +650,7 @@ function openSourceManage(): void {
               <li v-for="group in relevantGroups" :key="group.key">
                 <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
                   <span class="result-row__poster">
-                    <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" />
+                    <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" :width-px="IMG_W_INLINE" />
                   </span>
                   <span class="result-row__body">
                     <span class="result-row__title">
@@ -705,7 +706,7 @@ function openSourceManage(): void {
                 <li v-for="group in otherGroups" :key="group.key">
                   <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
                     <span class="result-row__poster">
-                      <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" />
+                      <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" :width-px="IMG_W_INLINE" />
                     </span>
                     <span class="result-row__body">
                       <span class="result-row__title">
@@ -744,7 +745,7 @@ function openSourceManage(): void {
               <li v-for="item in relevantFlat" :key="item.id">
                 <button class="result-row" type="button" @click="openDetail(item)">
                   <span class="result-row__poster">
-                    <PosterImage :src="item.posterUrl" :alt="item.title" />
+                    <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_INLINE" />
                   </span>
                   <span class="result-row__body">
                     <span class="result-row__title">
@@ -782,7 +783,7 @@ function openSourceManage(): void {
                 <li v-for="item in otherFlat" :key="item.id">
                   <button class="result-row" type="button" @click="openDetail(item)">
                     <span class="result-row__poster">
-                      <PosterImage :src="item.posterUrl" :alt="item.title" />
+                      <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_INLINE" />
                     </span>
                     <span class="result-row__body">
                       <span class="result-row__title">
@@ -1640,6 +1641,7 @@ function openSourceManage(): void {
 }
 
 .source-select-sheet__close {
+  position: relative;
   width: 32px;
   height: 32px;
   display: flex;
@@ -1650,6 +1652,13 @@ function openSourceManage(): void {
   color: var(--color-text-secondary, #666);
   cursor: pointer;
   border-radius: var(--radius-full);
+}
+
+/* 视觉 32，命中区补到 44×44 */
+.source-select-sheet__close::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
 }
 
 .source-select-sheet__close:active {

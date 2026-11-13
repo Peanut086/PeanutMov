@@ -546,6 +546,7 @@ const miniBuffered = computed(() =>
 
 /* 紧凑模式：一行内的小号文字按钮（倍速/清晰度）+ 图标按钮（字幕/全屏） */
 .controls-mini {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -557,6 +558,13 @@ const miniBuffered = computed(() =>
   color: rgba(255, 255, 255, 0.9);
   border-radius: var(--radius-sm);
   white-space: nowrap;
+}
+
+/* 视觉高度 36，命中区扩到 44（规范 §12.1，与 .controls-secondary__btn 同一手法） */
+.controls-mini::after {
+  content: '';
+  position: absolute;
+  inset: -4px -2px;
 }
 
 .controls-mini--icon {

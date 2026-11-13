@@ -108,7 +108,7 @@ describe('备份导出直播域四表（A5）', () => {
     const blob = await backupService.exportData({ includeCredentials: true });
     const json = JSON.parse(await blob.text()) as BackupFile;
 
-    expect(json.schemaVersion).toBe(2);
+    expect(json.schemaVersion).toBe(3);
     expect(json.lives).toHaveLength(1);
     expect(json.lives[0]?.name).toBe('测试直播源');
     // 内置源也在 epgSources 表里，一并导出

@@ -439,6 +439,13 @@ public class RangeDownloader {
                         break;
                     }
 
+                    try {
+                        DownloadThrottle.shared().acquire(bytesRead);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+
                     outputFile.write(buffer, 0, bytesRead);
                     localDownloaded += bytesRead;
                     downloadedBytes.addAndGet(bytesRead);
@@ -492,6 +499,13 @@ public class RangeDownloader {
         try {
             while ((bytesRead = inputStream.read(buffer)) != -1) {
                 if (canceled.get() || paused.get()) {
+                    break;
+                }
+
+                try {
+                    DownloadThrottle.shared().acquire(bytesRead);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
                     break;
                 }
 

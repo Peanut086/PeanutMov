@@ -15,6 +15,7 @@ import type { DownloadTask } from '@/types';
 
 import { burstSparks } from '@/services/sparkField';
 import PosterImage from '@/components/common/PosterImage.vue';
+import { IMG_W_INLINE } from '@/shared/imageSize';
 import { formatBytes, formatEta, formatSpeed, toPercent } from '@/components/common/format';
 import IconPlay from '@/components/icons/IconPlay.vue';
 import IconPause from '@/components/icons/IconPause.vue';
@@ -135,7 +136,7 @@ watch(
     <button class="download-item__main" type="button" @click="emit('select', task)">
       <span class="download-item__thumb">
         <span class="download-item__poster">
-          <PosterImage :src="task.posterUrl" :alt="task.title" />
+          <PosterImage :src="task.posterUrl" :alt="task.title" :width-px="IMG_W_INLINE" />
         </span>
         <!-- C-11：完成勾是常驻终态，收尾动画只负责"画出来"这一下 -->
         <span v-if="canPlay" ref="checkEl" class="download-item__check" aria-hidden="true">

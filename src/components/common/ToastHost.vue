@@ -50,12 +50,12 @@ const iconPath: Record<'info' | 'success' | 'error', string> = {
 <template>
   <div class="toast-host" role="status" aria-live="polite" aria-atomic="false">
     <TransitionGroup name="toast" tag="div" class="toast-host__list">
-      <button
+      <!-- 容器只能是 div：撤销按钮要能 Tab 到，而 button 里不能再套一个可聚焦控件 -->
+      <div
         v-for="t in toasts"
         :key="t.id"
         class="toast"
         :class="`toast--${t.type}`"
-        type="button"
         :role="t.type === 'error' ? 'alert' : 'status'"
         @click="ui.dismiss(t.id)"
       >
@@ -72,12 +72,13 @@ const iconPath: Record<'info' | 'success' | 'error', string> = {
           <path :d="iconPath[t.type]" />
         </svg>
         <span class="toast__text">{{ t.text }}</span>
-        <span
+        <button
           v-if="t.action"
           class="toast__action"
+          type="button"
           @click.stop="onAction(t)"
-        >{{ t.action.label }}</span>
-      </button>
+        >{{ t.action.label }}</button>
+      </div>
     </TransitionGroup>
   </div>
 </template>
@@ -120,6 +121,7 @@ const iconPath: Record<'info' | 'success' | 'error', string> = {
   font: var(--font-weight-medium) 13px / 1.5 var(--font-family-base);
   text-align: left;
   pointer-events: auto;
+  cursor: pointer;
 }
 
 .toast__icon {

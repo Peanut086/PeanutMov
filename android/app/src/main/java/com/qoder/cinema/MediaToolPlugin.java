@@ -8,6 +8,9 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import com.qoder.cinema.download.DownloadService;
+import com.qoder.cinema.download.DownloadThrottle;
+
+import android.os.StatFs;
 
 import java.io.File;
 import java.io.IOException;
@@ -36,8 +39,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 1. `cancelRemux`：API-17 用 `taskId`，`src/native/mediaToolPlugin.ts` 用 `inputPath` → 两者都接受；
  * 2. `remuxMp4`：API-17 有 `taskId`，JS 桥未传 → `taskId` 变可选，事件里同时回传 `inputPath` 供关联。
  *
- * 未实现（属 API-18，另一任务范围）：`getStorageInfo` / `setSpeedLimit`。
- * 前端对这两个方法已有 try/catch 降级，调用失败不会中断预检与下载链路。
+ * 能力补齐（原属 API-18，现随 EXT-04 / FR-63 落地）：`getStorageInfo` / `setSpeedLimit`。
+ * 前者用 StatFs 报真实可用空间——前端此前回退的 `navigator.storage.estimate()`
+ * 在 Android WebView 上拿到的是配额估值而非磁盘剩余，预检因此会算错；
+ * 后者把档位下发给 {@link DownloadThrottle}，让「对所有下载任务生效」这句承诺成立
+ * （原生直链不经 JS sink，此前只有 JS 桶在扣减）。
  *
  * @author xyp
  */
@@ -124,6 +130,63 @@ public class MediaToolPlugin extends Plugin {
         result.put("engine", "MediaExtractor+MediaMuxer");
         result.put("maxTimeoutMs", MAX_TIMEOUT_MS);
         call.resolve(result);
+    }
+
+    // ========== EXT-04 / FR-63：存储与限速 ==========
+
+    /**
+     * 真实可用空间。
+     *
+     * Directory.Data 在 Android 上就是 `getFilesDir()`，因此直接对它 StatFs；
+     * 前端此前回退的 `navigator.storage.estimate()` 拿到的是浏览器配额估值，
+     * 与磁盘剩余可能差一个数量级，预检「空间不足」判定因此不可信。
+     */
+    @PluginMethod
+    public void getStorageInfo(PluginCall call) {
+        try {
+            File probe = resolveProbeDir(call.getString("path"));
+            StatFs stat = new StatFs(probe.getAbsolutePath());
+            long blockSize = stat.getBlockSizeLong();
+            JSObject result = new JSObject();
+            result.put("freeBytes", stat.getAvailableBlocksLong() * blockSize);
+            result.put("totalBytes", stat.getBlockCountLong() * blockSize);
+            result.put("path", probe.getAbsolutePath());
+            call.resolve(result);
+        } catch (Exception e) {
+            call.reject("getStorageInfo 失败: " + e.getMessage());
+        }
+    }
+
+    /** 下发全局限速额度；bytesPerSec <= 0 表示不限速。切换立即对进行中的分段线程生效 */
+    @PluginMethod
+    public void setSpeedLimit(PluginCall call) {
+        Long bytesPerSec = call.getLong("bytesPerSec");
+        if (bytesPerSec == null) {
+            call.reject("bytesPerSec required");
+            return;
+        }
+        long value = bytesPerSec < 0 ? 0L : bytesPerSec;
+        DownloadThrottle.shared().setBytesPerSec(value);
+        JSObject result = new JSObject();
+        result.put("ok", true);
+        result.put("bytesPerSec", value);
+        call.resolve(result);
+    }
+
+    /** 只接受 `getFilesDir()` 之内的相对路径，绝对路径与 `..` 越界一律退回根目录 */
+    private File resolveProbeDir(String relPath) {
+        File filesDir = getContext().getFilesDir();
+        if (relPath == null || relPath.trim().isEmpty()) {
+            return filesDir;
+        }
+        try {
+            File candidate = new File(filesDir, relPath);
+            if (candidate.getCanonicalPath().startsWith(filesDir.getCanonicalPath())) {
+                return candidate.exists() ? candidate : filesDir;
+            }
+        } catch (IOException ignored) {
+        }
+        return filesDir;
     }
 
     // ========== API-17 ==========

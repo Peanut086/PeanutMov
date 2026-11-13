@@ -30,6 +30,7 @@ import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useLibraryStore } from '@/stores/libraryStore';
 import { useSourceStore } from '@/stores/sourceStore';
 import { useInfiniteScroll } from '@/composables/useInfiniteScroll';
+import { useDebounce } from '@/composables/useDebounce';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { toErrorShape } from '@/shared/errors';
@@ -49,6 +50,30 @@ const { isOffline } = useOnlineStatus();
 const filterOpen = ref(false);
 const sourceOpen = ref(false);
 const sourceSearchKeyword = ref('');
+/**
+ * 源选择的生效关键词：输入框跟手，过滤 + `localeCompare` 全表重排延后 300ms。
+ * 定制订阅常有几十上百个源，每敲一个键重排一次的代价不该由键盘节奏来付。
+ */
+const committedSourceKeyword = ref('');
+const commitSourceKeyword = useDebounce(() => {
+  committedSourceKeyword.value = sourceSearchKeyword.value;
+}, 300);
+
+watch(sourceSearchKeyword, (next) => {
+  // 清空要立刻生效：点「清除」不该再等一个防抖周期
+  if (next.trim() === '') {
+    resetSourceSearch();
+    return;
+  }
+  commitSourceKeyword();
+});
+
+/** 关键词作废（关弹层、切源）：挂起的那一次也一起作废 */
+function resetSourceSearch(): void {
+  commitSourceKeyword.cancel();
+  sourceSearchKeyword.value = '';
+  committedSourceKeyword.value = '';
+}
 const quickSheetOpen = ref(false);
 const quickItem = ref<MediaItem | null>(null);
 const refreshing = ref(false);
@@ -252,7 +277,7 @@ watch(
 // 打开源选择时自动滚动到当前选中项
 watch(sourceOpen, async (open) => {
   if (!open) return;
-  sourceSearchKeyword.value = '';
+  resetSourceSearch();
   const currentId = sources.currentSourceId;
   if (!currentId) return;
   await nextTick();
@@ -284,7 +309,7 @@ async function resetFilters(): Promise<void> {
 
 /** 选择源列表：按名称排序 + 关键字过滤 */
 const filteredSources = computed(() => {
-  const keyword = sourceSearchKeyword.value.trim().toLowerCase();
+  const keyword = committedSourceKeyword.value.trim().toLowerCase();
   const list = keyword
     ? sources.sources.filter((s) => s.name.toLowerCase().includes(keyword))
     : [...sources.sources];
@@ -293,7 +318,7 @@ const filteredSources = computed(() => {
 
 async function chooseSource(sourceId: string | null): Promise<void> {
   sourceOpen.value = false;
-  sourceSearchKeyword.value = '';
+  resetSourceSearch();
   await library.openSource(sourceId);
   if (library.state === 'error') toast.error(library.error?.message ?? '加载失败');
 }
@@ -321,16 +346,21 @@ function openLongPress(item: MediaItem): void {
 async function quickFavorite(): Promise<void> {
   const item = quickItem.value;
   if (!item) return;
-  const added = await favorites.toggle({
-    sourceId: item.sourceId,
-    mediaId: item.id,
-    title: item.title,
-    posterUrl: item.posterUrl,
-    type: item.type,
-    year: item.year,
-  });
-  toast.success(added ? '已收藏' : '已取消收藏');
-  quickSheetOpen.value = false;
+  try {
+    const added = await favorites.toggle({
+      sourceId: item.sourceId,
+      mediaId: item.id,
+      title: item.title,
+      posterUrl: item.posterUrl,
+      type: item.type,
+      year: item.year,
+    });
+    toast.success(added ? '已收藏' : '已取消收藏');
+    quickSheetOpen.value = false;
+  } catch (e) {
+    // 写库失败必须出声：面板不关、卡片不变，用户只能从提示里知道这一下没存上
+    toast.error(toErrorShape(e).message);
+  }
 }
 
 function quickDownload(): void {
@@ -526,7 +556,7 @@ function openSettings(): void {
             class="source-picker__search-clear"
             type="button"
             aria-label="清除搜索"
-            @click="sourceSearchKeyword = ''"
+            @click="resetSourceSearch"
           >
             <IconClose :size="14" />
           </button>

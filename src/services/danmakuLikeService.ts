@@ -85,3 +85,12 @@ export const danmakuLikeService = {
   loadLikes,
   toggleLike,
 };
+
+/**
+ * 备份导入后调用：内存分桶与 `loadedKeys` 属于导入前的设备状态，
+ * 不清掉的话已看过的集永远不会重读刚落库的点赞。
+ */
+export function resetDanmakuLikeCache(): void {
+  entries.clear();
+  loadedKeys.clear();
+}

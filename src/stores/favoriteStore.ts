@@ -17,13 +17,22 @@ export const useFavoriteStore = defineStore('favorite', () => {
   const error = ref<AppErrorShape | null>(null);
 
   let unsubscribe: (() => void) | null = null;
+  /**
+   * 全量重读的代次：`favorites:changed` 订阅与 `toggle`/`remove` 各自的收尾刷新会并发跑，
+   * 两次 `favoriteService.list()` 的完成顺序不确定——晚到的旧快照会把 `items` 盖回去，
+   * ♥ 按钮的 `isFavorite` 于是回跳一下。只认最后一次读取的结果。
+   */
+  let refreshSeq = 0;
 
   async function refresh(): Promise<void> {
+    const seq = ++refreshSeq;
     try {
       const rows = await favoriteService.list(order.value);
+      if (seq !== refreshSeq) return;
       items.value = rows;
       state.value = rows.length === 0 ? 'empty' : 'success';
     } catch (e) {
+      if (seq !== refreshSeq) return;
       error.value = toErrorShape(e, 'E_DB');
       state.value = 'error';
     }

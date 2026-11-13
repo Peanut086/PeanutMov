@@ -18,6 +18,7 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import { LIVE_GROUP_MAX, LIVE_GROUP_NAME_MAX } from '@/shared/constants';
 import { toErrorShape } from '@/shared/errors';
 import { channelPrefsService } from '@/services/channelPrefsService';
+import { useUiStore } from '@/stores/uiStore';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -34,6 +35,8 @@ const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void;
   (e: 'changed'): void;
 }>();
+
+const ui = useUiStore();
 
 const busy = ref(false);
 const errorText = ref<string | null>(null);
@@ -155,7 +158,24 @@ function commitRename(): void {
   void run(() => channelPrefsService.renameGroup(props.liveSourceId, id, name));
 }
 
-function removeGroup(groupId: string): void {
+/**
+ * 删除分组要二次确认：`removeGroup` 顺带把组内频道的归属清掉，
+ * 而频道本身还在源分组里，用户往往以为「组没了 = 频道也没了」。
+ */
+async function removeGroup(groupId: string): Promise<void> {
+  const group = groups.value.find((item) => item.id === groupId);
+  if (!group) return;
+  const memberCount = counts.value[groupId] ?? 0;
+  const ok = await ui.confirm({
+    title: `删除分组「${group.name}」？`,
+    message:
+      memberCount > 0
+        ? `组内 ${memberCount} 个频道不会被删除，但会退回源分组。`
+        : '该分组内还没有频道。',
+    confirmText: '删除',
+    danger: true,
+  });
+  if (!ok) return;
   void run(() => channelPrefsService.removeGroup(props.liveSourceId, groupId));
 }
 
@@ -399,6 +419,7 @@ function removeFromGroup(): void {
 
 /* REV-22：分组上下移 */
 .groups__move {
+  position: relative;
   flex: 0 0 auto;
   width: 28px;
   height: 28px;
@@ -409,6 +430,13 @@ function removeFromGroup(): void {
   font: var(--text-caption);
   cursor: pointer;
   transition: background-color var(--duration-fast);
+}
+
+/* 视觉 28×28：只在竖直方向补到 44 命中区，横向不扩是为了不与相邻的 ↑/↓ 抢点击 */
+.groups__move::after {
+  content: '';
+  position: absolute;
+  inset: -8px 0;
 }
 
 .groups__move:active:not(:disabled) {

@@ -306,6 +306,7 @@ function apply(): void {
 }
 
 .filter-chip {
+  position: relative;
   min-height: 36px;
   padding: 0 var(--space-3);
   border-radius: var(--radius-full);
@@ -314,6 +315,13 @@ function apply(): void {
   color: var(--color-text-secondary);
   font: var(--text-label-strong);
   transition: var(--transition-color);
+}
+
+/* 视觉 36，命中区补到 44（规范 §12.1） */
+.filter-chip::after {
+  content: '';
+  position: absolute;
+  inset: -4px 0;
 }
 
 .filter-chip--active {

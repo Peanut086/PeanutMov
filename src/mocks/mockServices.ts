@@ -263,19 +263,16 @@ function defaultSettings(): AppSettings {
   return {
     schemaVersion: 1,
     theme: 'dark',
-    locale: 'zh-CN',
     complianceVersion: COMPLIANCE_VERSION,
     complianceAcceptedAt: null,
     defaultSourceId: null,
     hideDemoContent: false,
     player: {
       defaultRate: 1,
-      defaultQuality: 'auto',
       autoPlayNext: true,
       seekStepSec: 10,
       longPressRate: 2,
       subtitle: {
-        enabled: false,
         size: 'medium',
         color: 'white',
         background: 'black',

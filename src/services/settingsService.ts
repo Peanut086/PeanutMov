@@ -24,7 +24,11 @@ import { SEARCH_BUDGET_DEFAULT, isSearchBudgetPreset } from '@/shared/searchBudg
 import { AppError } from '@/shared/errors';
 import type { AppSettings, BackupSettings, DanmakuSettings, DeepPartial, DownloadSettings, GestureSettings, PlayerSettings } from '@/types';
 
-const SCHEMA_VERSION = 2;
+/**
+ * v3：剔除废弃字段（见 `DROPPED_KEYS`）。
+ * 旧库靠这里触发一次性重写落盘，v1→v2 的弹幕默认开启逻辑保留在 `load()` 的分支里。
+ */
+const SCHEMA_VERSION = 3;
 
 /**
  * EXT-05：备份增强默认值。
@@ -91,19 +95,16 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
   return {
     schemaVersion: SCHEMA_VERSION,
     theme: 'system',
-    locale: 'zh-CN',
     complianceVersion: COMPLIANCE_VERSION,
     complianceAcceptedAt: null,
     defaultSourceId: null,
     hideDemoContent: false,
     player: {
       defaultRate: 1,
-      defaultQuality: 'auto',
       autoPlayNext: true,
       seekStepSec: 10,
       longPressRate: 2,
       subtitle: {
-        enabled: false,
         size: 'medium',
         color: 'white',
         background: 'black',
@@ -199,6 +200,24 @@ function validatePreloadLimit(value: unknown, fallback: number): number {
   return (PRELOAD_LIMITS as readonly number[]).includes(value) ? value : fallback;
 }
 
+/**
+ * 已废弃的设置键：类型里删掉了，但老库与老备份里的残值会随 `{ ...defaults, ...input }`
+ * 回流并重新落盘，所以每次 sanitize 主动剔除。
+ *
+ * - `locale`：项目无 i18n，此前被无条件归一成 'zh-CN'，等于一个永不可用的字段；
+ * - `player.defaultQuality`：无 UI 无读取，起播档位恒为 auto、线路排序不看用户偏好；
+ * - `player.subtitle.enabled`：零读取，字幕开关的真实载体是运行时的活动轨道 id。
+ */
+const DROPPED_KEYS = {
+  root: ['locale'],
+  player: ['defaultQuality'],
+  subtitle: ['enabled'],
+} as const;
+
+function pruneDropped(target: object, keys: readonly string[]): void {
+  for (const key of keys) delete (target as Record<string, unknown>)[key];
+}
+
 /** 校正设置的合法域（越界值回落到默认，避免 UI 崩溃） */
 function sanitize(input: AppSettings): AppSettings {
   const defaults = defaultSettings(input.updatedAt);
@@ -227,6 +246,8 @@ function sanitize(input: AppSettings): AppSettings {
     : 85;
   // 只有显式 true 才算开启：旧设置库里没有这个字段
   player.backgroundPlayback = player.backgroundPlayback === true;
+  pruneDropped(player.subtitle, DROPPED_KEYS.subtitle);
+  pruneDropped(player, DROPPED_KEYS.player);
 
   const gesture: GestureSettings = { ...defaults.gesture, ...(gesturePatch ?? {}) };
   gesture.seekMaxSec = Math.max(30, Math.min(180, Number(gesture.seekMaxSec) || defaults.gesture.seekMaxSec));
@@ -276,11 +297,10 @@ function sanitize(input: AppSettings): AppSettings {
   danmaku.filterBottom = Boolean(danmaku.filterBottom);
   danmaku.interactive = danmaku.interactive !== false;
 
-  return {
+  const merged: AppSettings = {
     ...defaults,
     ...input,
     schemaVersion: SCHEMA_VERSION,
-    locale: 'zh-CN',
     complianceVersion:
       typeof input.complianceVersion === 'number' && Number.isFinite(input.complianceVersion)
         ? input.complianceVersion
@@ -308,9 +328,44 @@ function sanitize(input: AppSettings): AppSettings {
     gesture,
     download,
   };
+  pruneDropped(merged, DROPPED_KEYS.root);
+  return merged;
+}
+
+/** 当前设置结构版本：备份写入与恢复校验都以此为唯一口径，避免两处各写一个数字 */
+export const SETTINGS_SCHEMA_VERSION = SCHEMA_VERSION;
+
+/**
+ * 备份读写用的设置快照：走一遍 sanitize，顺手剔掉废弃字段的残值
+ * （`locale` / `player.defaultQuality` / `player.subtitle.enabled`），
+ * 免得旧备份把已删字段一路带回新库。
+ */
+export function settingsForBackup(settings: AppSettings): AppSettings {
+  return sanitize(settings);
 }
 
 let cached: AppSettings | null = null;
+
+/**
+ * 写队列：所有改设置的调用串行执行。
+ *
+ * 每个写操作都是「读全量 → 合并 → 整份落库」，两次并发调用会读到同一份 `current`，
+ * 后写的那次把先写的整份盖掉 —— 丢的不只是同一个字段，而是对方整轮改动。
+ * 真实撞车点：连续敲搜索词（`pushSearchHistory`）、退出播放页时同时写音量与恢复位置、
+ * 合规同意撞上主题切换、备份导入边写设置边写其它域。
+ * IndexedDB 没有跨事务的字段级更新，只能在服务内排队。
+ */
+let writeQueue: Promise<unknown> = Promise.resolve();
+
+function enqueue<T>(task: () => Promise<T>): Promise<T> {
+  const run = writeQueue.then(task, task);
+  // 队列本身必须对失败免疫，否则一次抛错会让后续所有写永久卡死
+  writeQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
 
 async function load(): Promise<AppSettings> {
   if (cached) return cached;
@@ -350,37 +405,43 @@ export const settingsService = {
   },
 
   async update(patch: DeepPartial<AppSettings>): Promise<AppSettings> {
-    const current = await load();
     if (isRecord(patch) && 'schemaVersion' in patch) {
       const incoming = (patch as { schemaVersion?: unknown }).schemaVersion;
       if (incoming !== undefined && incoming !== SCHEMA_VERSION) {
         throw new AppError('E_INVALID_INPUT', 'schemaVersion 不允许修改');
       }
     }
-    const merged = sanitize(deepMerge(current, patch));
-    merged.updatedAt = Date.now();
-    const next = await persist(merged);
-    appEvents.emit('settings:changed', { patch: (patch ?? {}) as Record<string, unknown> });
-    return next;
+    return enqueue(async () => {
+      const current = await load();
+      const merged = sanitize(deepMerge(current, patch));
+      merged.updatedAt = Date.now();
+      const next = await persist(merged);
+      appEvents.emit('settings:changed', { patch: (patch ?? {}) as Record<string, unknown> });
+      return next;
+    });
   },
 
   async reset(): Promise<AppSettings> {
-    const fresh = defaultSettings();
-    const next = await persist(fresh);
-    appEvents.emit('settings:changed', { patch: {} });
-    return next;
+    return enqueue(async () => {
+      const fresh = defaultSettings();
+      const next = await persist(fresh);
+      appEvents.emit('settings:changed', { patch: {} });
+      return next;
+    });
   },
 
   async acceptCompliance(version: number): Promise<void> {
-    const current = await load();
-    const next: AppSettings = {
-      ...current,
-      complianceVersion: Math.max(current.complianceVersion, version),
-      complianceAcceptedAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    await persist(next);
-    appEvents.emit('settings:changed', { patch: { complianceVersion: next.complianceVersion } });
+    await enqueue(async () => {
+      const current = await load();
+      const next: AppSettings = {
+        ...current,
+        complianceVersion: Math.max(current.complianceVersion, version),
+        complianceAcceptedAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await persist(next);
+      appEvents.emit('settings:changed', { patch: { complianceVersion: next.complianceVersion } });
+    });
   },
 
   async isComplianceAccepted(version: number): Promise<boolean> {
@@ -391,25 +452,31 @@ export const settingsService = {
   async pushSearchHistory(keyword: string): Promise<string[]> {
     const trimmed = keyword.trim();
     if (trimmed.length === 0) return (await load()).searchHistory;
-    const current = await load();
-    const next = [trimmed, ...current.searchHistory.filter((k) => k !== trimmed)].slice(0, SEARCH_HISTORY_MAX);
-    const updated = await persist({ ...current, searchHistory: next, updatedAt: Date.now() });
-    return updated.searchHistory;
+    return enqueue(async () => {
+      const current = await load();
+      const next = [trimmed, ...current.searchHistory.filter((k) => k !== trimmed)].slice(0, SEARCH_HISTORY_MAX);
+      const updated = await persist({ ...current, searchHistory: next, updatedAt: Date.now() });
+      return updated.searchHistory;
+    });
   },
 
   async clearSearchHistory(): Promise<void> {
-    const current = await load();
-    await persist({ ...current, searchHistory: [], updatedAt: Date.now() });
+    await enqueue(async () => {
+      const current = await load();
+      await persist({ ...current, searchHistory: [], updatedAt: Date.now() });
+    });
   },
 
   /** OPT-07：删除单条搜索历史 */
   async removeSearchHistoryItem(keyword: string): Promise<string[]> {
     const trimmed = keyword.trim();
     if (trimmed.length === 0) return (await load()).searchHistory;
-    const current = await load();
-    const next = current.searchHistory.filter((k) => k !== trimmed);
-    const updated = await persist({ ...current, searchHistory: next, updatedAt: Date.now() });
-    return updated.searchHistory;
+    return enqueue(async () => {
+      const current = await load();
+      const next = current.searchHistory.filter((k) => k !== trimmed);
+      const updated = await persist({ ...current, searchHistory: next, updatedAt: Date.now() });
+      return updated.searchHistory;
+    });
   },
 
   /**
@@ -443,8 +510,10 @@ export const settingsService = {
       // 重新种入演示源与演示条目（AC-99）：演示源、分类、12 条媒体、线路与剧集
       await seedDemoData({ sourceId: DEMO_SOURCE_ID, restore: true });
     }
-    const current = await load();
-    await persist({ ...current, defaultSourceId: null, updatedAt: Date.now() });
+    await enqueue(async () => {
+      const current = await load();
+      await persist({ ...current, defaultSourceId: null, updatedAt: Date.now() });
+    });
     appEvents.emit('sources:changed', { reason: 'remove' });
     appEvents.emit('history:changed', { id: null });
     appEvents.emit('favorites:changed', { id: null });

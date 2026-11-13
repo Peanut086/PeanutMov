@@ -360,6 +360,8 @@
   --ease-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
   --ease-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
   --ease-emphasized: cubic-bezier(0.05, 0.7, 0.1, 1);
+  /* 对称呼吸曲线：只有「起来又落回去」的循环动画该用它（`EpisodeList` 的解析中脉冲） */
+  --ease-in-out: ease-in-out;
 
   --transition-color: color var(--duration-fast) var(--ease-standard),
     background-color var(--duration-fast) var(--ease-standard),
