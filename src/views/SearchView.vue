@@ -21,6 +21,7 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import PosterImage from '@/components/common/PosterImage.vue';
 import { IMG_W_INLINE } from '@/shared/imageSize';
 import SearchFailurePanel from '@/components/search/SearchFailurePanel.vue';
+import SearchSkippedDisclosure from '@/components/search/SearchSkippedDisclosure.vue';
 import IconChevron from '@/components/icons/IconChevron.vue';
 import IconClose from '@/components/icons/IconClose.vue';
 import { useLibraryStore } from '@/stores/libraryStore';
@@ -579,15 +580,14 @@ function openSourceManage(): void {
           :busy="isSearching"
           @retry="retryFailed"
         />
-        <!-- SO-02：全局截止未搜索源披露 -->
-        <div v-if="hasSkipped" class="search-skipped-disclosure">
-          <p class="search-skipped-disclosure__text">
-            仅搜索了 {{ library.searchCandidates - library.searchSkippedIds.length }} / {{ library.searchCandidates }} 个源，剩余 {{ library.searchSkippedIds.length }} 个因超时未搜索
-          </p>
-          <button class="btn btn--secondary btn--sm" type="button" :disabled="library.searchRetrying || isSearching" @click="continueSkipped">
-            继续搜索剩余 {{ library.searchSkippedIds.length }} 个源
-          </button>
-        </div>
+        <!-- SO-02 / F5：全局截止未搜索源披露（已抽成组件，结果态同样会渲染） -->
+        <SearchSkippedDisclosure
+          :candidates="library.searchCandidates"
+          :skipped-count="library.searchSkippedIds.length"
+          :retrying="library.searchRetrying"
+          :busy="isSearching"
+          @continue="continueSkipped"
+        />
       </template>
 
       <!-- 结果 -->
@@ -603,6 +603,16 @@ function openSourceManage(): void {
           :retrying="library.searchRetrying"
           :busy="isSearching"
           @retry="retryFailed"
+        />
+
+        <!-- F5：有结果时也要披露「剩余源未搜索」——此前该提示只挂在空结果分支，
+             实测候选 133 个、实际只扇出 18~31 个源，用户完全看不到覆盖缺口 -->
+        <SearchSkippedDisclosure
+          :candidates="library.searchCandidates"
+          :skipped-count="library.searchSkippedIds.length"
+          :retrying="library.searchRetrying"
+          :busy="isSearching"
+          @continue="continueSkipped"
         />
 
         <section class="search-section">

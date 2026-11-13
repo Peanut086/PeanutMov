@@ -10,6 +10,8 @@
  * 因此这两项本质是「尽力而为的配置提示」，设置页已按此口径说明。
  */
 import { useSettingsStore } from '@/stores/settingsStore';
+import { sourceRepo } from '@/db/repositories/sourceRepo';
+import { requiresNetdiskCookie } from '@/services/netdiskPlatforms';
 import { writeCookieFile, readCookieFile } from '@/native/netdiskPlugin';
 import { logger } from '@/shared/logger';
 
@@ -71,4 +73,20 @@ export function formatConfigForSpider(config: NetdiskConfig): string {
     quality: config.quality,
     thread: config.threadCount,
   });
+}
+
+/**
+ * F8：是否已启用「需要网盘 Cookie」的爬虫源。
+ *
+ * 这是唯一不依赖存储权限的判据：`MANAGE_EXTERNAL_STORAGE` 未授予时 cookie 文件根本读不到，
+ * 以「读到 cookie」为前提的提醒在最需要它的场景里必然沉默。查库不涉及外部存储，因此永远可用。
+ * 读取失败按 false 处理——宁可不提醒，也不要在启动期弹无关 Toast。
+ */
+export async function hasEnabledNetdiskSource(): Promise<boolean> {
+  try {
+    const sources = await sourceRepo.listEnabled();
+    return sources.some((source) => source.type === 'spider' && requiresNetdiskCookie(source));
+  } catch {
+    return false;
+  }
 }

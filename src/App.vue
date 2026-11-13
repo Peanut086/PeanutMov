@@ -15,6 +15,8 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { setBackFallback } from '@/native/appLifecycle';
 import { hasAllFilesAccess, readCookieFile } from '@/native/netdiskPlugin';
 import { getAllPlatforms } from '@/services/netdiskPlatforms';
+import { hasEnabledNetdiskSource } from '@/services/netdiskConfig';
+import { isNative } from '@/shared/platform';
 import { reminderService } from '@/services/reminderService';
 import { logger } from '@/shared/logger';
 import type { Reminder } from '@/types';
@@ -140,18 +142,28 @@ onMounted(async () => {
     /* 设置读取失败不阻塞启动；各页会单独展示错误态 */
   }
 
-  // FIX-C：启动时检测 cookie 文件存在但 MANAGE_EXTERNAL_STORAGE 未授予 → 一次性 Toast 提醒
+  /*
+   * FIX-C / F8：缺少「所有文件访问」权限时的一次性提醒。
+   *
+   * 两条判据分开措辞，各说各能证实的事：
+   * - cookie 真读到了内容：只在权限曾被授予、后来被回收时成立；
+   * - 权限缺失时 cookie 必然读不到（`readCookieFile` 静默返回 exists:false），
+   *   所以「从没授权」这一档只能靠已入库的源配置兜底——否则最需要提醒的那次启动恰好什么都看不到。
+   */
   try {
-    const granted = await hasAllFilesAccess();
-    if (!granted) {
-      const platforms = getAllPlatforms();
-      for (const p of platforms) {
+    if (!(await hasAllFilesAccess())) {
+      let guidance: string | null = null;
+      for (const p of getAllPlatforms()) {
         const cookie = await readCookieFile(p.key);
         if (cookie.exists && cookie.content) {
-          toast.error('检测到网盘 Cookie 文件，但缺少「所有文件访问」权限，播放将失败。请前往 网盘账号 页授权。');
+          guidance = '检测到网盘 Cookie 文件，但缺少「所有文件访问」权限，播放将失败。请前往 网盘账号 页授权。';
           break;
         }
       }
+      if (!guidance && isNative() && (await hasEnabledNetdiskSource())) {
+        guidance = '已启用网盘类视频源，但缺少「所有文件访问」权限，网盘 Cookie 无法读取、播放会失败。请前往 网盘账号 页授权。';
+      }
+      if (guidance) toast.error(guidance);
     }
   } catch {
     // 自检失败不阻塞启动

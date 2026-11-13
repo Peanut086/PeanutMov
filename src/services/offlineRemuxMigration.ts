@@ -21,6 +21,7 @@ import { settingsService } from '@/services/settingsService';
 import { appEvents, type OfflineOptimizeSnapshot } from '@/services/events';
 import { getStorageInfo, isMediaToolAvailable, MediaTool } from '@/native/mediaToolPlugin';
 import { stat } from '@/native/fs';
+import { toErrorShape } from '@/shared/errors';
 import { isNative } from '@/shared/platform';
 import { logger } from '@/shared/logger';
 import type { DownloadTask } from '@/types';
@@ -232,8 +233,15 @@ export async function runOfflineRemuxMigration(): Promise<void> {
       logger.info(`离线文件优化结束：${done}/${candidates.length}`);
     }
   } catch (e) {
+    // F11：此前只记 `e.message`——原生插件抛出的非 Error 载荷（Java 侧字符串）与堆栈全部丢失，
+    // 真机上「异常退出」后无从定位是空间、权限还是插件本身。本轮只把现场留全，迁移逻辑不动。
+    const shape = toErrorShape(e);
     logger.warn('离线文件优化任务异常退出（不影响播放）', {
-      error: e instanceof Error ? e.message : String(e),
+      code: shape.code,
+      message: shape.message,
+      detail: shape.detail,
+      kind: e instanceof Error ? e.name : typeof e,
+      stack: e instanceof Error ? e.stack : String(e),
     });
   }
 }

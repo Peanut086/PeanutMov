@@ -24,6 +24,7 @@ import { healthOfError } from '@/sources/base/BaseAdapter';
 import {
   PAGE_SIZE,
   SEARCH_LOCAL_LIMIT,
+  TIMEOUT_SEARCH_LOAD_ALLOWANCE_MS,
   TIMEOUT_SEARCH_MS,
 } from '@/shared/constants';
 import { AppError, isCanceled, toAppError, toErrorShape } from '@/shared/errors';
@@ -92,6 +93,8 @@ export interface LibraryService {
       total: number;
     }) => void;
   }): Promise<SearchResult>;
+  /** F7：批量预热爬虫源（启动后 / 导入完成后）；返回实际加载成功的源数 */
+  warmupSources(opts?: { delayMs?: number }): Promise<number>;
   /**
    * CHG-28：`item` 为调用方已持有的条目（如渐进搜索结果）。条目尚未落库时
    * 以它兜底直接回源刷新，而不是立刻抛 E_NOT_FOUND——修复「渐进搜索期间
@@ -358,6 +361,80 @@ function prewarm(adapter: object, source: Source): void {
   void Promise.resolve(warmup.call(adapter, source)).catch(() => undefined);
 }
 
+/** F7：批量预热并发上限——原生 spider 池是 core 2 / max 8 / queue 32，留出余量给真实请求 */
+const WARMUP_SWEEP_CONCURRENCY = 4;
+/** F7：启动后预热的起跑延迟，避开首屏渲染与下载队列自检那一段最忙的时间 */
+const WARMUP_SWEEP_START_DELAY_MS = 12000;
+
+/** F7：预热扫描在途标记（重复触发直接复用，不并行跑两轮） */
+let warmupSweepRunning = false;
+/** F7：搜索在途计数——预热必须给真实搜索让路，否则反而拖慢搜索 */
+let searchInFlight = 0;
+
+/**
+ * F7：批量预热爬虫源，让 jar 下载 / dex / 防护初始化落在搜索之前而不是搜索里。
+ *
+ * 真机四档实测：启动后 30 秒即搜有 12 个源超时，等后台体检把 spider 加载完之后
+ * 再搜（真首装档，约 3.5 分钟）同一关键词超时数是 0——差别的唯一来源就是"预热做没做"。
+ * 既有 `prewarm` 全在真实请求路径内，没有任何主动批量入口，所以这里补上。
+ *
+ * 两条硬约束：
+ * 1. 并发 ≤4（原生线程池余量）；
+ * 2. 有搜索在途就收手（worker 每取下一个源前检查），因为预热与搜索打满同一个池会把搜索挤进队列。
+ *
+ * `warmup` 内部对同源去重、失败静默，所以本函数可重复调用且不打扰用户。
+ */
+async function warmupSources(opts?: { delayMs?: number }): Promise<number> {
+  if (warmupSweepRunning) return 0;
+  warmupSweepRunning = true;
+  try {
+    // 缺省给启动场景的起跑延迟；调用方可显式缩短（导入完成后不需要等这么久）
+    await new Promise<void>((resolve) => setTimeout(resolve, opts?.delayMs ?? WARMUP_SWEEP_START_DELAY_MS));
+    if (!isOnline()) return 0;
+
+    const all = await sourceRepo.list();
+    const targets = all
+      .filter((source) => source.enabled && source.type === 'spider' && searchCandidate(source))
+      .sort((a, b) => {
+        const tierA = HEALTH_TIER_ORDER[healthTierOf(a.health, healthService.latencyOf(a.id))];
+        const tierB = HEALTH_TIER_ORDER[healthTierOf(b.health, healthService.latencyOf(b.id))];
+        if (tierA !== tierB) return tierA - tierB;
+        return a.sort - b.sort;
+      });
+
+    let cursor = 0;
+    let warmed = 0;
+    const workers: Promise<void>[] = [];
+    for (let i = 0; i < Math.min(WARMUP_SWEEP_CONCURRENCY, targets.length); i++) {
+      workers.push(
+        (async () => {
+          while (cursor < targets.length) {
+            // 让路：真实搜索在途时立刻停止领取新源
+            if (searchInFlight > 0) return;
+            const source = targets[cursor++];
+            if (!source) continue;
+            try {
+              const adapter = await adapterFor(source);
+              await adapter.warmup?.(source);
+              warmed += 1;
+            } catch {
+              /* 预热失败静默：真实调用时再报对症错误 */
+            }
+          }
+        })(),
+      );
+    }
+    await Promise.all(workers);
+    if (warmed > 0) logger.debug('爬虫源批量预热结束', `共加载 ${warmed} 个`);
+    return warmed;
+  } catch (e) {
+    logger.debug('爬虫源批量预热失败（忽略）', { error: toErrorShape(e) });
+    return 0;
+  } finally {
+    warmupSweepRunning = false;
+  }
+}
+
 /**
  * P0-1：底层「未知异常」→ 可读的源侧错误。
  *
@@ -403,28 +480,42 @@ async function searchOneSource(
   pageSize: number,
 ): Promise<MediaItem[]> {
   const adapter = await adapterFor(source);
-  // P1-6：搜索扇出前预热（爬虫源 jar 加载与搜索并发；warmup 内部对同源去重）
+  // P1-6：搜索扇出前预热，让 jar 加载尽早开始。
+  // 注意 warmup 与 search 并不并发——search 内部必须 await 同一条去重后的 load promise，
+  // 所以它的价值只是把加载的起跑线往前挪，真正把加载时间从搜索预算里剥出来的是下面的 F10。
   prewarm(adapter, source);
   const controller = new AbortController();
   // SO-05：source.ext.timeout（秒）作为单源覆盖，优先于 adapter 默认值
   const extTimeoutMs = readExtTimeoutMs(source);
   const baseMs = extTimeoutMs ?? adapter.searchTimeoutMs ?? TIMEOUT_SEARCH_MS;
   // OPT-04：单源预算可配置（standard = 既有行为；fast/patient 按倍率缩放后钳制）
-  const budgetMs = resolveSearchTimeoutMs(baseMs, await searchBudgetPreset());
+  const preset = await searchBudgetPreset();
+  const budgetMs = resolveSearchTimeoutMs(baseMs, preset);
+  // F10：冷爬虫源给一段独立的加载余量（按同一档位缩放）。
+  // 适配器内部的 `ensureLoaded` 与真实请求各自计时，加载时间只在**外层**这一笔被记进搜索预算——
+  // 真机实测「启动后 30 秒即搜」12 个源全卡在 jar 加载却被写成「搜索超时（20 秒）」，正是这里。
+  // 热句柄与非爬虫源的余量为 0，与既有行为逐字节一致。
+  const coldAtStart = adapter.isSourceCold?.(source) === true;
+  const loadAllowanceMs = coldAtStart ? resolveSearchTimeoutMs(TIMEOUT_SEARCH_LOAD_ALLOWANCE_MS, preset) : 0;
+  const umbrellaMs = budgetMs + loadAllowanceMs;
   // SO-01：区分「预算到期」与「用户取消」——预算到期抛 E_TIMEOUT（计入失败/触发退避），
   // 用户取消仍走 E_ABORTED（静默）。之前两者都 abort 同一个 controller，超时被 isCanceled 吞掉。
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, budgetMs);
+  }, umbrellaMs);
   const onAbort = (): void => controller.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
     return await adapter.search({ source, keyword, page: 1, pageSize, signal: controller.signal, budgetMs });
   } catch (e) {
     if (timedOut) {
-      throw new AppError('E_TIMEOUT', `搜索超时（${Math.round(budgetMs / 1000)} 秒）`, { detail: source.name });
+      // F10：到期时还没拿到句柄说明卡在加载阶段，文案对准真实瓶颈，不再一律记「搜索超时」
+      const loadBound = coldAtStart && adapter.isSourceCold?.(source) === true;
+      throw new AppError('E_TIMEOUT', `${loadBound ? '源加载超时' : '搜索超时'}（${Math.round(umbrellaMs / 1000)} 秒）`, {
+        detail: source.name,
+      });
     }
     throw e;
   } finally {
@@ -447,8 +538,28 @@ async function hideDemoEnabled(): Promise<boolean> {
 }
 
 /**
+ * F4：直播类源判定。
+ *
+ * 判定依据来自真机抓包的实际 `ext.api` 取值，不靠源名猜：`csp_AllliveGuard`（聚合斗鱼/虎牙/YY
+ * 直播）在四档实测中都参与了「绝命毒师」的剧集搜索。这类源没有剧集库，参与扇出只会白占一路预算
+ * 并返回直播房间当结果。同批实测的 30+ 个爬虫类名（Bili/Dm84/T4/Libvio/Auete/…）都不含 `live`，
+ * 所以类名匹配在这个生态里是精确的。
+ *
+ * 名称兜底只认明确的直播平台名，且排除「回放/点播/剧集」字样，避免误杀有 VOD 的源。
+ */
+const LIVE_SPIDER_API = /live/i;
+const LIVE_SOURCE_NAME = /直播|斗鱼|虎牙/;
+const VOD_SOURCE_NAME = /回放|点播|剧集|影视/;
+
+function isLiveSource(source: Source): boolean {
+  const api = (source.ext as { api?: unknown } | null)?.api;
+  if (typeof api === 'string' && LIVE_SPIDER_API.test(api)) return true;
+  return LIVE_SOURCE_NAME.test(source.name) && !VOD_SOURCE_NAME.test(source.name);
+}
+
+/**
  * 搜索扇出前过滤：跳过「确定失效」的源（体检结论；timeout 保留——可能是瞬时网络慢）、
- * 关闭搜索的源（`ext.searchable === false`）。
+ * 关闭搜索的源（`ext.searchable === false`）、直播类源（F4）。
  * 订阅导入动辄上百源、大半已死，全部扇出是「搜索特别慢」的主因之一。
  * （CHG-16：drpy JS 爬虫已由内置引擎执行，不再排除）
  */
@@ -462,6 +573,7 @@ function searchCandidate(source: Source): boolean {
   }
   const ext = (source.ext ?? {}) as { kind?: string; searchable?: boolean };
   if (ext.searchable === false) return false;
+  if (isLiveSource(source)) return false;
   return true;
 }
 
@@ -652,6 +764,8 @@ export const libraryService: LibraryService = {
     return ranked[0] ?? null;
   },
 
+  warmupSources,
+
   async search(params): Promise<SearchResult> {
     const keyword = params.keyword.trim();
     if (keyword.length === 0) return { items: [], sourceIds: [], failed: [], candidates: 0, filteredOut: 0, skippedSourceIds: [] };
@@ -739,7 +853,13 @@ export const libraryService: LibraryService = {
           })(),
         );
       }
-      await Promise.all(workers);
+      // F7：扇出期间占住爬虫池——批量预热每取下一个源前检查该计数并立即收手
+      searchInFlight += 1;
+      try {
+        await Promise.all(workers);
+      } finally {
+        searchInFlight -= 1;
+      }
       launched = cursor;
     } else {
       for (const source of enabled) {

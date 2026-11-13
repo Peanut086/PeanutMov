@@ -214,6 +214,15 @@ public class SpiderPlugin extends Plugin {
     private final Map<String, File> jarCache = new ConcurrentHashMap<>();
     /** jar 文件 → dex 输出目录，避免重复解包 */
     private final Map<String, File> dexCache = new ConcurrentHashMap<>();
+    /**
+     * F2：jar 文件名 → 下载互斥锁。
+     *
+     * 多个源常共用同一个 jar（实测一份 fan.txt 被大量源引用），而 `downloadJar` 的临时文件
+     * 路径只由 jar 名决定（`<name>.tmp`）。并发下载同一个 URL 会互踩：真机抓到同一 URL 出现
+     * 两次 `downloaded jar`，并伴随 `.jar.tmp` 的 ENOENT；交错写入还可能把半截内容
+     * rename 成正式 jar 长期缓存。锁按 jar 名加，不同 jar 仍然并行。
+     */
+    private final Map<String, Object> jarLocks = new ConcurrentHashMap<>();
     /** P0-5: jar 文件 → DexClassLoader 池，复用避免重复加载 */
     private final Map<String, dalvik.system.DexClassLoader> loaderCache = new ConcurrentHashMap<>();
     private int handleSeq = 0;
@@ -1073,7 +1082,9 @@ public class SpiderPlugin extends Plugin {
         File dexDir = dexCache.get(jarFile.getName());
         if (dexDir == null) {
             dexDir = new File(context.getFilesDir(), "spider-dex/" + jarFile.getName());
-            if (!dexDir.exists() && !dexDir.mkdirs()) {
+            // F1：与 spider-jars 同型的非原子 check-then-act，按同样的容忍口径复查。
+            // 说明：四处抓包都没有复现过这一处（0 次），属于防御性收口，不是已证实的故障。
+            if (!dexDir.exists() && !dexDir.mkdirs() && !dexDir.exists()) {
                 throw new IllegalStateException("cannot create dex dir");
             }
             dexCache.put(jarFile.getName(), dexDir);
@@ -2194,9 +2205,21 @@ public class SpiderPlugin extends Plugin {
     private File ensureJarFile(Context context, String url, String expectedMd5) throws Exception {
         String name = md5Of(url) + ".jar";
         File dir = new File(context.getFilesDir(), "spider-jars");
-        if (!dir.exists() && !dir.mkdirs()) {
+        // F1：`!exists() && !mkdirs()` 是非原子的 check-then-act。并发扇出下另一个线程
+        // 可能刚把目录建好，本线程的 mkdirs() 因此返回 false —— 真机实测真首装这里抛出 4 次，
+        // 而竞争线程 5.2 秒后成功建好目录。抛出点又在下载重试循环之外，一次竞态就把源判死。
+        // 参照 prepareGuardWorkDirs 的容忍口径：mkdirs 失败后复查 exists()，仍不存在才算失败。
+        if (!dir.exists() && !dir.mkdirs() && !dir.exists()) {
             throw new IllegalStateException("cannot create spider-jars dir");
         }
+        // F2：同一 jar 的「查缓存 → 下载 → rename」整段串行，见 jarLocks 注释
+        synchronized (jarLocks.computeIfAbsent(name, key -> new Object())) {
+            return ensureJarFileLocked(context, url, expectedMd5, dir, name);
+        }
+    }
+
+    /** F2：`ensureJarFile` 的临界区（调用方必须已持有该 jar 名的锁） */
+    private File ensureJarFileLocked(Context context, String url, String expectedMd5, File dir, String name) throws Exception {
         File jar = new File(dir, name);
         if (jar.exists() && jar.length() > 0) {
             // P0-B: 缓存命中也要验 ZIP magic。死域名常返回 HTML 跳转页（实测 114 字节），
@@ -2244,6 +2267,8 @@ public class SpiderPlugin extends Plugin {
         conn.setReadTimeout(READ_TIMEOUT_MS);
         conn.setInstanceFollowRedirects(true);
         conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) PeanutMov");
+        // F2：temp 名带唯一后缀——即便有锁之外的入口或上一版本的历史残留，也不会互踩同一个文件
+        File temp = new File(dir, name + "." + System.nanoTime() + ".tmp");
         try {
             int status = conn.getResponseCode();
             if (status < 200 || status >= 300) {
@@ -2252,7 +2277,6 @@ public class SpiderPlugin extends Plugin {
             if (conn.getContentLength() > MAX_JAR_BYTES) {
                 throw new IllegalStateException("jar too large");
             }
-            File temp = new File(dir, name + ".tmp");
             try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(temp)) {
                 byte[] buffer = new byte[16384];
                 long total = 0;
@@ -2287,6 +2311,10 @@ public class SpiderPlugin extends Plugin {
             }
         } finally {
             conn.disconnect();
+            // F2：rename 成功后 temp 已不在；还存在说明这次尝试中途失败，清掉避免在 filesDir 堆积
+            if (temp.exists() && !temp.delete()) {
+                Log.w(TAG, "cannot remove leftover temp jar: " + temp.getName());
+            }
         }
     }
 

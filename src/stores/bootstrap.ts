@@ -19,6 +19,7 @@ import { runOfflineRemuxMigration } from '@/services/offlineRemuxMigration';
 import { subscriptionLifecycleService } from '@/services/subscriptionLifecycleService';
 import { appEvents } from '@/services/events';
 import { lineHealthService } from '@/services/lineHealthService';
+import { libraryService } from '@/services/libraryService';
 import { configureDoubanRuntime } from '@/sources/douban/doubanRuntime';
 import { useUiStore } from '@/stores/uiStore';
 import { toAppError } from '@/shared/errors';
@@ -117,6 +118,18 @@ export function initDoubanRuntime(): void {
 export function initSubscriptionAutoRefresh(): void {
   void subscriptionLifecycleService.autoRefreshIfDue('startup');
   subscriptionLifecycleService.bindAutoRefresh();
+}
+
+/**
+ * F7 / FR-51：启动后批量预热爬虫源（fire-and-forget，不阻塞启动）。
+ *
+ * 既有的 `prewarm` 全部挂在真实请求路径上，所以「装完 / 重启后的第一次搜索」必然把
+ * jar 下载 + dex + 防护初始化算进单源搜索超时——真机实测启动后 30 秒即搜有 12 个源
+ * 因此被记成「搜索超时」，等后台体检加载完再搜同一关键词则超时数为 0。
+ * 这里补上主动起跑点；扫描内部并发 ≤4，且一旦有搜索在途立即让路。
+ */
+export function initSpiderWarmup(): void {
+  void libraryService.warmupSources();
 }
 
 let unbindToasts: (() => void) | null = null;

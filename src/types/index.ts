@@ -1014,6 +1014,13 @@ export interface SourceAdapter {
   readonly type: SourceType;
   /** 单源搜索超时（CHG-15）。缺省 5s；需预热或链路更长的源（jar/drpy）应更长 */
   readonly searchTimeoutMs?: number;
+  /**
+   * F10：该源此刻是否仍在「加载阶段」（jar/规则句柄尚未就绪）。
+   *
+   * 只有存在加载阶段的适配器需要实现；调用方据此给冷源追加一段加载预算，
+   * 并把超时文案区分成「源加载超时」与「搜索超时」。未实现视为不冷（行为与既有一致）。
+   */
+  isSourceCold?(source: Source): boolean;
   testConnection(source: Source, signal?: AbortSignal): Promise<ConnectionResult>;
   /** CHG-15：后台预热（加载 jar/规则拿句柄），实现方自行吞错、失败静默 */
   warmup?(source: Source): Promise<void>;

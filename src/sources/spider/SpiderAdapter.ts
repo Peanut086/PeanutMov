@@ -53,6 +53,7 @@ import { selectEpisodeInDetail } from '@/sources/mapping/EpisodeMappingService';
 import { titleMatches, titleMatchScore } from '@/sources/mapping/TitleNormalizer';
 import { isPlayPageUrl, resolvePlayPage } from '@/sources/site/playPageResolver';
 import { getNetdiskConfig, formatConfigForSpider } from '@/services/netdiskConfig';
+import { isNetdiskSource } from '@/services/netdiskPlatforms';
 import type { EpisodeLookupMatch } from '@/services/UnifiedEpisodeService';
 import type {
   BrowseParams,
@@ -109,17 +110,6 @@ function vodIdHasValue(vod: TvboxVod): boolean {
   if (id === null || id === undefined) return false;
   if (typeof id === 'string' && id.trim().length === 0) return false;
   return true;
-}
-
-/**
- * P4-3: 判断是否为网盘源
- * 通过 initExt 或 baseUrl 中的关键词识别
- */
-function isNetdiskSource(source: Source): boolean {
-  const ext = extOf(source);
-  const keywords = ['netdisk', 'pan', 'quark', 'uc', '123', 'tianyi', 'ali', '网盘'];
-  const searchText = `${ext.initExt} ${source.baseUrl ?? ''}`.toLowerCase();
-  return keywords.some(kw => searchText.includes(kw.toLowerCase()));
 }
 
 /**
@@ -500,6 +490,14 @@ export class SpiderAdapter extends BaseAdapter {
     const hit = this.jarVariants.get(source.id);
     if (hit) out.unshift(hit);
     return out;
+  }
+
+  /**
+   * F10：句柄不在内存 = 这次调用还要走 jar 下载 / dex / 防护初始化（drpy 则是规则加载）。
+   * 搜索扇出据此给冷源追加一段加载预算，避免加载时间把搜索预算吃干。
+   */
+  override isSourceCold(source: Source): boolean {
+    return !this.handles.has(source.id);
   }
 
   /**

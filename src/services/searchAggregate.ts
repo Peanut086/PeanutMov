@@ -130,9 +130,40 @@ function sortGroupItems(
 }
 
 /**
+ * F6：非正片内容形态——字面命中关键词、但不是剧集的内容。
+ *
+ * 真机四档实测（关键词「绝命毒师」）：正片始终排第一（第五季 88 来源），所以症状
+ * 「只返回 B 站解说/网盘资源」不是排序压制了正片，而是这批条目混在结果尾部：
+ * `【第1次补档】…【非AI真人语音解说】`(560分鐘)、`【黑屏·弹幕版】一口气24小时看完…`(1536分鐘)、
+ * `【加急点播-…reaction】`、`【yuwapeach ASMR】绝命毒师乐高收藏`、`跟经典美剧《绝命毒师》学英语-001`、
+ * `王橹杰最新微博视频re：…`，以及网盘源的垃圾命名 `绝命毒师的搜索有80条`。
+ *
+ * `scoreRelevance` 只看标题包含、`isKeywordIgnored` 又要求整批相关度全 0，两者都抓不到它们，
+ * 所以单列一个形态维度。词表只收实测出现过的形态，不预防性地扩张（避免误杀真实片名）。
+ *
+ * 注意：这里只降权、不删除；且不动 `stripTitleNoise`——那个函数服务于豆瓣跨源借播放地址，
+ * 把「解说」剥掉会让解说条目匹配到正片地址，属于制造错误播放。
+ */
+const NON_FEATURE_PATTERN =
+  /(解说|reaction|asmr|学英语|一口气.{0,10}(看完|解读)|补档|黑屏|弹幕版|乐高|微博视频)/i;
+
+/** 网盘源的垃圾结果名（把"搜索结果条数"当成片名返回） */
+const NETDISK_JUNK_TITLE = /的搜索有\d+条$/;
+
+/**
+ * 是否为非正片内容。
+ *
+ * `keyword` 参与判定做自卫：用户主动搜「绝命毒师 解说」时不该把这些内容再压下去。
+ */
+export function isNonFeatureContent(title: string, keyword = ''): boolean {
+  if (NON_FEATURE_PATTERN.test(keyword)) return false;
+  return NON_FEATURE_PATTERN.test(title) || NETDISK_JUNK_TITLE.test(title.trim().toLowerCase());
+}
+
+/**
  * 聚合分组（v2.0）：年份宽容归组 + 可播性优先排序。
  *
- * 组间排序：**相关度 → 已确认有集 → 健康 tier → 延迟 → 来源数 → 首次出现顺序**。
+ * 组间排序：**相关度 → 是否非正片 → 已确认有集 → 健康 tier → 延迟 → 来源数 → 首次出现顺序**。
  */
 export function groupSearchResults(
   items: MediaItem[],
@@ -151,7 +182,7 @@ export function groupSearchResults(
     });
   }
 
-  type RankTuple = [number, number, number, number, number];
+  type RankTuple = [number, number, number, number, number, number];
   const rankOf = (group: (typeof list)[number]): RankTuple => {
     const rep = group.items[0];
     const pRank = rep ? playabilityRank(playabilityOf(rep.id)) : 1;
@@ -160,7 +191,9 @@ export function groupSearchResults(
       : HEALTH_TIER_ORDER.unknown;
     const latency = rep ? latencyOf(rep.sourceId) : null;
     const latencyRank = latency === null || !Number.isFinite(latency) ? Number.POSITIVE_INFINITY : latency;
-    return [-scoreRelevance(group.title, keyword), pRank, tier, latencyRank, -group.items.length];
+    // F6：非正片（解说/reaction/ASMR/网盘垃圾命名）整组沉到正片之后，但不删除
+    const nonFeature = isNonFeatureContent(group.title, keyword) ? 1 : 0;
+    return [-scoreRelevance(group.title, keyword), nonFeature, pRank, tier, latencyRank, -group.items.length];
   };
 
   return list
@@ -278,6 +311,7 @@ export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
   safe_mode: '安全模式暂停',
   quarantined: '爬虫被隔离',
   spider_mismatch: '爬虫类缺失',
+  jar_conflict: 'jar 依赖冲突',
   auth: '需要登录',
   keyword_ignored: '源忽略关键词',
   unknown: '原因未知',

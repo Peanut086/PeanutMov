@@ -9,7 +9,7 @@ import { createPinia } from 'pinia';
 
 import App from '@/App.vue';
 import router, { setComplianceGate } from '@/router';
-import { bindAppToasts, complianceGate, ensureDemoData, initDoubanRuntime, initDownloads, initLineHealth, initSettings, initSubscriptionAutoRefresh } from '@/stores/bootstrap';
+import { bindAppToasts, complianceGate, ensureDemoData, initDoubanRuntime, initDownloads, initLineHealth, initSettings, initSpiderWarmup, initSubscriptionAutoRefresh } from '@/stores/bootstrap';
 
 import '@/styles/global.css';
 import '@/styles/player.css';
@@ -62,6 +62,10 @@ async function bootstrap(): Promise<void> {
 
   // v1.7/CHG-19：订阅自动刷新（24h TTL，fire-and-forget，不阻塞启动）
   initSubscriptionAutoRefresh();
+
+  // F7：延迟一段时间后批量预热爬虫源，让「装完/重启后第一次搜索」不必现场加载 jar
+  // （内部并发 ≤4，搜索一在途就自动让路）
+  initSpiderWarmup();
 
   app.use(router);
   await router.isReady();

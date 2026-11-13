@@ -84,6 +84,14 @@ export const TIMEOUT_SEARCH_SITE_MS = 8000;
 /** 爬虫源搜索超时（CHG-15）：冷启动需 jar 下载+dex+init，5s 必超时；
  * 预热（warmup）命中热句柄后多数 <1s 返回，20s 只兜冷路径 */
 export const TIMEOUT_SEARCH_SPIDER_MS = 20000;
+/**
+ * F10：冷爬虫源的加载余量。
+ *
+ * jar 下载 → dex → 防护初始化在适配器内部与搜索请求串在同一条 await 链上，
+ * 真机实测「启动后 30 秒即搜」有 12 个源被记成「搜索超时（20 秒）」，实际全部卡在加载阶段。
+ * 冷源据此把预算拆成「加载 + 搜索」两段；命中热句柄时不追加，与既有行为完全一致。
+ */
+export const TIMEOUT_SEARCH_LOAD_ALLOWANCE_MS = 45000;
 /** 播放器 loadedmetadata 等待（9.7） */
 export const TIMEOUT_LOAD_METADATA_MS = 15000;
 /** 播放网络错误自动重试间隔（FR-25） */

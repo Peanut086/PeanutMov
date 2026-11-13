@@ -11,6 +11,7 @@
 import { TIMEOUT_SEARCH_MS, TIMEOUT_TEST_CONNECTION_MS } from '@/shared/constants';
 import { AppError, toErrorShape } from '@/shared/errors';
 import { mediaIdOf } from '@/shared/id';
+import { classifySourceFailure } from '@/shared/sourceFailure';
 import type {
   BrowseParams,
   Category,
@@ -46,6 +47,14 @@ export abstract class BaseAdapter implements SourceAdapter {
   /** CHG-15：默认无预热；需预热的子类（spider/drpy）覆盖为加载句柄 */
   async warmup(_source: Source): Promise<void> {
     /* 无需预热 */
+  }
+
+  /**
+   * F10：默认没有加载阶段（HTTP 类适配器请求即业务），搜索预算因此与既有行为完全一致。
+   * 有 jar/规则加载开销的子类覆盖为「句柄未就绪即为冷」。
+   */
+  isSourceCold(_source: Source): boolean {
+    return false;
   }
 
   /** 探活：成功返回条目数；失败 **抛 AppError**（由 testConnection 捕获并归类） */
@@ -200,6 +209,9 @@ export abstract class BaseAdapter implements SourceAdapter {
 
 /** 错误码 → 源健康状态（AC-15/AC-16） */
 export function healthOfError(error: AppError): SourceHealth {
+  // F9：jar 依赖冲突在进程内每次必现，属于配置级故障。按错误码它会落到 unreachable/unknown，
+  // 于是永远进不了 bad_config、也就永远不会被 searchCandidate 排除——每次搜索都得重付一遍失败代价。
+  if (classifySourceFailure(error.toShape()) === 'jar_conflict') return 'bad_config';
   switch (error.code) {
     case 'E_AUTH':
     case 'E_HTTP_401':

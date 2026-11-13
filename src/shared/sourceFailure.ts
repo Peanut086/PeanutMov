@@ -23,6 +23,7 @@ export type SourceFailureKind =
   | 'safe_mode'
   | 'quarantined'
   | 'spider_mismatch'
+  | 'jar_conflict'
   | 'auth'
   | 'keyword_ignored'
   | 'unknown';
@@ -58,6 +59,8 @@ export const SAFE_MODE_MESSAGE = '安全模式保护中：爬虫源已暂停';
 export const QUARANTINE_MESSAGE = '该爬虫因连续崩溃被隔离';
 /** 订阅 api 类名与 jar 内容不匹配 */
 export const SPIDER_MISMATCH_MESSAGE = '爬虫类缺失，源配置与 jar 不匹配';
+/** 爬虫 jar 之间的依赖冲突（同一 dex 里同类名不同签名） */
+export const JAR_CONFLICT_MESSAGE = '爬虫 jar 依赖冲突，无法加载';
 /** 源返回了结果但全部与关键词无关（典型：采集站关闭搜索，返回最新目录） */
 export const KEYWORD_IGNORED_MESSAGE = '源忽略了关键词';
 
@@ -105,8 +108,30 @@ export function isSourceInternalMessage(raw: string | null | undefined): boolean
 }
 
 /**
+ * 判定是否 jar 依赖冲突（F9）。
+ *
+ * 真机实测（光影源，进程内每次调用必现）：
+ * `IncompatibleClassChangeError: org.slf4j.impl.AndroidLoggerFactory does not implement
+ * com.github.catvod.spider.merge.Pu`
+ * ——多份 guard jar 各自携带同名 slf4j binding，合入同一 DexClassLoader 后签名互不兼容。
+ *
+ * 只收 `LinkageError` 家族（`IncompatibleClassChangeError` / `NoClassDefFoundError` /
+ * `UnsatisfiedLinkError`）与显式的 `does not implement` / `could not initialize class`，
+ * **故意不含** `ExceptionInInitializerError`：它常见于 jar 静态块里的瞬时网络失败，
+ * 归到确定性故障会误伤。同一故障在第二次调用后必然以 `NoClassDefFoundError` 现形，届时再归类。
+ */
+export function isJarLinkageMessage(raw: string | null | undefined): boolean {
+  if (typeof raw !== 'string' || raw.length === 0) return false;
+  return (
+    /\b(IncompatibleClassChangeError|LinkageError|NoClassDefFoundError|UnsatisfiedLinkError)\b/.test(raw) ||
+    /does not implement [a-z][\w.$]*|could not initialize class /i.test(raw)
+  );
+}
+
+/**
  * 用户可见文案收敛：
  * - 脚本内部异常 → 「规则脚本异常（源站问题）」
+ * - jar 依赖冲突 → 「爬虫 jar 依赖冲突，无法加载」
  * - 爬虫/插件内部异常 → 「源侧执行异常（源站问题）」
  * - 其它原样返回；空串返回空串（调用方自行回退到 `ERROR_MESSAGES`）
  */
@@ -115,6 +140,7 @@ export function sanitizeSourceMessage(raw: string | null | undefined): string {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return '';
   if (isRuleScriptMessage(trimmed)) return RULE_SCRIPT_MESSAGE;
+  if (isJarLinkageMessage(trimmed)) return JAR_CONFLICT_MESSAGE;
   if (isSourceInternalMessage(trimmed)) return SOURCE_INTERNAL_MESSAGE;
   return trimmed;
 }
@@ -136,6 +162,8 @@ export function classifySourceFailure(error: AppErrorShape | null | undefined): 
   if (error.message === SAFE_MODE_MESSAGE || text.includes('safe mode active')) return 'safe_mode';
   if (error.message === QUARANTINE_MESSAGE || /quarantined/i.test(text)) return 'quarantined';
   if (error.message === SPIDER_MISMATCH_MESSAGE) return 'spider_mismatch';
+  // F9：jar 依赖冲突是进程内确定性的，必须先于「脚本/内部异常」判定，否则会被归成可重试的 source_internal
+  if (isJarLinkageMessage(text) || error.message === JAR_CONFLICT_MESSAGE) return 'jar_conflict';
   if (isRuleScriptMessage(text) || error.message === RULE_SCRIPT_MESSAGE) return 'rule_script';
   if (isSourceInternalMessage(text) || error.message === SOURCE_INTERNAL_MESSAGE) return 'source_internal';
 
@@ -206,6 +234,11 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
     hint: '订阅里写的爬虫类名与 jar 内容不符（源配置过期）。单蜘蛛 jar 会自动自愈；仍失败请更新订阅或换源。',
     actions: ['switch-source', 'edit-source'],
   },
+  jar_conflict: {
+    title: JAR_CONFLICT_MESSAGE,
+    hint: '多份爬虫 jar 装了同名的底层库但版本不兼容（源站侧问题），重试无效。建议换源；长期无效可在源管理停用该源。',
+    actions: ['switch-source', 'health-check', 'edit-source'],
+  },
   auth: {
     title: '源鉴权失败',
     hint: '账号、Token 或访问权限失效。请到源管理更新凭据后重试。',
@@ -228,7 +261,7 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
  *
  * 适用场景：guard jar 惰性初始化失败（首次 NPE，第二次热路径成功）、
  * 解析页偶发空结果（E_NO_PLAY_URL）、源站瞬时 5xx/超时。
- * 不适用：鉴权、磁力、DRM、安全模式、隔离、类名不匹配——这些重试无意义。
+ * 不适用：鉴权、磁力、DRM、安全模式、隔离、类名不匹配、jar 依赖冲突——这些重试无意义。
  */
 export function isTransientFailure(kind: SourceFailureKind): boolean {
   return kind === 'source_internal'

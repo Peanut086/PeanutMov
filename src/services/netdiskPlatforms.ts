@@ -9,6 +9,8 @@
  *   该等级的卡片必须展示 `capabilityNote`，且不得出现会员/容量等未实现能力入口。
  */
 
+import type { Source } from '@/types';
+
 /** 平台能力等级 */
 export type NetdiskCapabilityLevel = 'full-api' | 'cookie-only';
 
@@ -125,4 +127,39 @@ export function getAllPlatforms(): NetdiskPlatform[] {
  */
 export function supportsAccountApi(platform: NetdiskPlatform): boolean {
   return platform.capabilityLevel === 'full-api' && Boolean(platform.accountApi);
+}
+
+/* ---------- 网盘源识别（P4-3 口径 + F8 启动引导口径） ---------- */
+
+/** 宽口径关键词：只要 initExt / baseUrl 命中就按网盘源下发画质与线程配置 */
+const NETDISK_CONFIG_KEYWORDS = ['netdisk', 'pan', 'quark', 'uc', '123', 'tianyi', 'ali', '网盘'];
+
+/** 网盘平台的无歧义标识（专名与域名；不含 `uc` / `pan` / `ali` 这类会误伤的短词） */
+const NETDISK_SIGNATURE = /网盘|云盘|netdisk|quark|123pan|pan123|alipan|aliyundrive|tianyi|drive\.uc\.cn/i;
+
+function initExtOf(source: Source): string {
+  const ext = (source.ext ?? {}) as { initExt?: unknown };
+  return typeof ext.initExt === 'string' ? ext.initExt : '';
+}
+
+/**
+ * P4-3：是否为网盘源（原 `SpiderAdapter` 私有口径，上移到服务层供其它模块复用）。
+ *
+ * 口径刻意偏宽：误判的代价只是多下发一段「尽力而为」的配置提示。
+ * 用户可见的提醒请改用更严的 `requiresNetdiskCookie`。
+ */
+export function isNetdiskSource(source: Source): boolean {
+  const searchText = `${initExtOf(source)} ${source.baseUrl ?? ''}`.toLowerCase();
+  return NETDISK_CONFIG_KEYWORDS.some((kw) => searchText.includes(kw.toLowerCase()));
+}
+
+/**
+ * F8：该源是否真的依赖 App 管理的网盘 Cookie。
+ *
+ * 判据只看已入库的源配置，不碰外部存储——缺 `MANAGE_EXTERNAL_STORAGE` 时
+ * cookie 文件本身就读不到，「先读到 cookie 再提醒」会在最需要提醒的那次启动上自锁。
+ * 比 `isNetdiskSource` 严：那里误判只是多下发一段配置，这里误判是每次启动弹 Toast。
+ */
+export function requiresNetdiskCookie(source: Source): boolean {
+  return NETDISK_SIGNATURE.test(`${source.name ?? ''} ${initExtOf(source)} ${source.baseUrl ?? ''}`);
 }

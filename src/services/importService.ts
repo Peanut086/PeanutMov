@@ -985,6 +985,15 @@ async function importWithDiagnosticImpl(
     }
   }
 
+  // F7：导入完成即后台预热爬虫源——让首次搜索不再承担 jar 下载 / dex / 防护初始化。
+  // 真机实测「启动后 30 秒即搜」的 12 个超时源全部卡在加载阶段，起跑点就在这里。
+  // 动态 import 规避循环依赖，与上一段同口径。
+  if (importResult.success > 0) {
+    void import('@/services/libraryService')
+      .then(({ libraryService }) => libraryService.warmupSources({ delayMs: 3000 }))
+      .catch(() => undefined);
+  }
+
   const sources = await sourceRepo.list();
   const alive = summarizeAliveSources(sources);
   const failures = buildFailureItems({

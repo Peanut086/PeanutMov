@@ -4,8 +4,11 @@ import type { AppErrorShape } from '@/types';
 import {
   classifySourceFailure,
   guidanceOf,
+  isJarLinkageMessage,
   isMagnetUrl,
   isRuleScriptMessage,
+  isTransientFailure,
+  JAR_CONFLICT_MESSAGE,
   magnetUrlOf,
   RULE_SCRIPT_MESSAGE,
   sanitizeSourceMessage,
@@ -91,6 +94,35 @@ describe('classifySourceFailure（P0-1）', () => {
         shape('E_SOURCE_UNAVAILABLE', '爬虫调用失败: NullPointerException: Attempt to invoke virtual method'),
       ),
     ).toBe('source_internal');
+  });
+});
+
+describe('jar 依赖冲突（F9）', () => {
+  /** 真机光影源原文：进程内每次调用必现，此前被归成 unknown 反复重试 */
+  const LINKAGE =
+    '爬虫加载失败: java.lang.IncompatibleClassChangeError: org.slf4j.impl.AndroidLoggerFactory does not implement com.github.catvod.spider.merge.Pu';
+
+  it('依赖冲突原文收敛成人话', () => {
+    expect(sanitizeSourceMessage(LINKAGE)).toBe(JAR_CONFLICT_MESSAGE);
+  });
+
+  it('归为 jar_conflict，且收敛后的文案同样能归类', () => {
+    expect(classifySourceFailure(shape('E_SOURCE_UNAVAILABLE', LINKAGE))).toBe('jar_conflict');
+    expect(classifySourceFailure(shape('E_UNKNOWN', JAR_CONFLICT_MESSAGE))).toBe('jar_conflict');
+  });
+
+  it('确定性故障不进自动重试，瞬态类仍然重试', () => {
+    expect(isTransientFailure('jar_conflict')).toBe(false);
+    expect(isTransientFailure('source_internal')).toBe(true);
+  });
+
+  it('脚本异常、Java 空指针与瞬时初始化异常都不误判为依赖冲突', () => {
+    expect(isJarLinkageMessage("expecting ';'")).toBe(false);
+    expect(isJarLinkageMessage('NullPointerException: Attempt to invoke virtual method')).toBe(false);
+    expect(isJarLinkageMessage('ExceptionInInitializerError')).toBe(false);
+    expect(isJarLinkageMessage('NoClassDefFoundError: Could not initialize class com.github.catvod.spider.Init')).toBe(
+      true,
+    );
   });
 });
 
