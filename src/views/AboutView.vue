@@ -3,8 +3,10 @@
  * 关于（页面蓝图 §15）
  *
  * LOGO + 版本 + 合规/开源许可/投屏说明/反馈；连点版本号 7 次展开调试信息。
+ * F3 彩蛋：连点版本号 5 次（2s 窗口）触发「NG 场记板」，与 7 次调试共用计数器，
+ * 受设置「趣味彩蛋」开关 gate，reduced-motion 仅静态文案。
  */
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { APP_NAME, APP_VERSION, BUILD_TIME, DB_VERSION } from '@/shared/constants';
@@ -18,16 +20,28 @@ import SettingsRow from '@/components/settings/SettingsRow.vue';
 import logoUrl from '@/assets/logo.svg';
 import { useToast } from '@/composables/useToast';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
+import { useHaptic } from '@/composables/useHaptic';
+import { prefersReducedMotion } from '@/composables/useSpring';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { playClack } from '@/services/sfxService';
 
 const router = useRouter();
 const toast = useToast();
 const { isOffline } = useOnlineStatus();
+const { haptic } = useHaptic();
+const settings = useSettingsStore();
 
 const taps = ref(0);
 const tapTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const debugVisible = ref(false);
 const licensesOpen = ref(false);
 const castOpen = ref(false);
+
+/* F3：NG 场记板 overlay 状态 */
+const clapperOpen = ref(false);
+const clapperClack = ref(false);
+const clapperReduced = ref(false);
+let clapperTimers: ReturnType<typeof setTimeout>[] = [];
 
 const versionText = computed(() => (APP_VERSION === '未知版本' ? '未知版本' : `版本 ${APP_VERSION}`));
 /** 构建日期由 `vite define: __BUILD_TIME__` 注入（REV-19）；未注入时不展示，避免显示假日期 */
@@ -47,23 +61,60 @@ const platformText = computed(() => {
   }
 });
 
-onMounted(() => {
-  // 只读展示，无副作用
-});
-
 function onVersionTap(): void {
   if (tapTimer.value !== null) clearTimeout(tapTimer.value);
   taps.value += 1;
+  // 2s 窗口（F3 规格）：比旧 1.2s 更宽松，7 次调试路径不受影响
   tapTimer.value = setTimeout(() => {
     taps.value = 0;
     tapTimer.value = null;
-  }, 1200);
+  }, 2000);
+  // 5 次彩蛋：不重置计数，仍可继续点到 7 次调试
+  if (taps.value === 5) triggerClapper();
   if (taps.value >= 7) {
     taps.value = 0;
+    dismissClapper();
     debugVisible.value = !debugVisible.value;
     toast.info(debugVisible.value ? '已展开调试信息' : '已收起调试信息');
   }
 }
+
+/* ---------- F3：NG 场记板 ----------
+ * 合板（clack）→ 板身 shake → 「NG! 再来一条」盖章；haptic("heavy") + clack 音效
+ * 在合板瞬间触发。reduced-motion 下所有动画时长被全局规则压到 0，直接呈现静态终态。
+ * overlay 自动消散 + 可点跳过，不阻塞关于页阅读。
+ */
+function clearClapperTimers(): void {
+  for (const t of clapperTimers) clearTimeout(t);
+  clapperTimers = [];
+}
+
+function dismissClapper(): void {
+  clearClapperTimers();
+  clapperOpen.value = false;
+  clapperClack.value = false;
+}
+
+function triggerClapper(): void {
+  if (!settings.easterEggsEnabled || clapperOpen.value) return;
+  clapperReduced.value = prefersReducedMotion();
+  clapperOpen.value = true;
+  clapperClack.value = false;
+  const clackDelay = clapperReduced.value ? 0 : 220;
+  clapperTimers.push(
+    setTimeout(() => {
+      clapperClack.value = true;
+      haptic('heavy');
+      playClack();
+    }, clackDelay),
+  );
+  clapperTimers.push(setTimeout(dismissClapper, clapperReduced.value ? 1500 : 1750));
+}
+
+onBeforeUnmount(() => {
+  clearClapperTimers();
+  if (tapTimer.value !== null) clearTimeout(tapTimer.value);
+});
 
 function go(path: string): void {
   void router.push(path);
@@ -151,6 +202,37 @@ function onFeedback(): void {
         <li>浏览器环境通常不支持系统投屏，会提示「当前平台不支持」。</li>
       </ul>
     </BottomSheet>
+
+    <!-- F3：NG 场记板彩蛋（连点版本号 5 次） -->
+    <Teleport to="body">
+      <div
+        v-if="clapperOpen"
+        class="clapper"
+        :class="{ 'clapper--clack': clapperClack, 'clapper--reduced': clapperReduced }"
+        role="presentation"
+        @click="dismissClapper"
+      >
+        <div class="clapper__board">
+          <div class="clapper__stick">
+            <span class="clapper__stripes"></span>
+          </div>
+          <div class="clapper__slate">
+            <div class="clapper__row">
+              <span class="clapper__field">PROD</span>
+              <span class="clapper__value">{{ APP_NAME }}</span>
+            </div>
+            <div class="clapper__row">
+              <span class="clapper__field">SCENE</span>
+              <span class="clapper__value">关于</span>
+              <span class="clapper__field">TAKE</span>
+              <span class="clapper__value">{{ APP_VERSION }}</span>
+            </div>
+            <div class="clapper__ng">NG! 再来一条</div>
+          </div>
+        </div>
+        <p class="clapper__hint">轻触跳过</p>
+      </div>
+    </Teleport>
   </main>
 </template>
 
@@ -291,5 +373,189 @@ function onFeedback(): void {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
   line-height: 1.6;
+}
+
+/* ---------- F3：NG 场记板 ---------- */
+.clapper {
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-toast) + 10);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  background-color: rgba(3, 4, 7, 0.82);
+  backdrop-filter: blur(3px);
+  cursor: pointer;
+  animation: clapper-in 180ms var(--ease-decelerate) both;
+}
+
+.clapper__board {
+  position: relative;
+  width: min(80vw, 300px);
+  filter: drop-shadow(0 18px 40px rgba(0, 0, 0, 0.55));
+}
+
+.clapper--clack .clapper__board {
+  animation: clapper-shake 320ms var(--ease-standard) 110ms both;
+}
+
+.clapper__stick {
+  position: relative;
+  height: 26px;
+  border-radius: 6px 6px 0 0;
+  background-color: #1b1d22;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transform-origin: left bottom;
+  transform: rotate(-24deg);
+  overflow: hidden;
+}
+
+.clapper--clack .clapper__stick {
+  animation: stick-snap 150ms cubic-bezier(0.3, 0.7, 0.4, 1) both;
+}
+
+.clapper__stripes,
+.clapper__slate::before {
+  background-image: repeating-linear-gradient(
+    -55deg,
+    var(--color-brand) 0 14px,
+    #14161b 14px 28px
+  );
+}
+
+.clapper__stripes {
+  position: absolute;
+  inset: 0;
+}
+
+.clapper__slate {
+  position: relative;
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border-radius: 0 0 10px 10px;
+  background: linear-gradient(180deg, #23262d, #15171c);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: none;
+  overflow: hidden;
+}
+
+.clapper__slate::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 12px;
+  opacity: 0.9;
+}
+
+.clapper__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.clapper__field {
+  font: var(--text-caption);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--color-text-tertiary);
+}
+
+.clapper__value {
+  font: var(--text-label-strong);
+  color: var(--color-text-primary);
+}
+
+.clapper__ng {
+  margin-top: var(--space-4);
+  text-align: center;
+  font: var(--font-weight-semibold) 26px / 1.1 var(--font-family-base);
+  letter-spacing: var(--letter-spacing-tight);
+  color: var(--color-danger);
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+}
+
+.clapper--clack .clapper__ng {
+  animation: ng-stamp 240ms var(--ease-decelerate) 200ms both;
+}
+
+.clapper__hint {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+@keyframes clapper-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes stick-snap {
+  0% {
+    transform: rotate(-24deg);
+  }
+  60% {
+    transform: rotate(3deg);
+  }
+  100% {
+    transform: rotate(0);
+  }
+}
+
+@keyframes clapper-shake {
+  0%,
+  100% {
+    transform: translateX(0) rotate(0);
+  }
+  20% {
+    transform: translateX(-5px) rotate(-1.1deg);
+  }
+  40% {
+    transform: translateX(5px) rotate(1.1deg);
+  }
+  60% {
+    transform: translateX(-3px) rotate(-0.6deg);
+  }
+  80% {
+    transform: translateX(3px) rotate(0.6deg);
+  }
+}
+
+@keyframes ng-stamp {
+  0% {
+    opacity: 0;
+    transform: scale(1.5) rotate(-6deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(0.94) rotate(-2deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(-2deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clapper,
+  .clapper__board,
+  .clapper__stick,
+  .clapper__ng {
+    animation: none !important;
+  }
+  .clapper__stick {
+    transform: rotate(0);
+  }
+  .clapper__ng {
+    opacity: 1;
+    transform: rotate(-2deg);
+  }
 }
 </style>

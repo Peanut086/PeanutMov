@@ -6,12 +6,13 @@
  * 容量治理：`queueRemaining` 为队列剩余容量，超出部分置灰并给出原因（不静默丢弃）。
  * 清晰度：仅 HLS 源展示（最高 / 1080P / 720P），直链由 `lineQuality` 文案说明线路画质。
  */
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, useTemplateRef, watch } from 'vue';
 
 import type { Episode, HlsQuality } from '@/types';
 
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import { useHaptic } from '@/composables/useHaptic';
 
 const QUALITY_OPTIONS: Array<{ value: HlsQuality; label: string }> = [
   { value: 'max', label: '最高' },
@@ -147,6 +148,165 @@ function confirm(): void {
   emit('confirm', [...selected.value], props.quality);
   emit('update:modelValue', false);
 }
+
+/* ---------- E3：磁吸拖选 ----------
+ * 状态机 idle → deciding → dragging。触屏按方向判定：横向主导进入拖选，
+ * 纵向交回 sheet 原生滚动（touch-action: pan-y）；鼠标/笔任意方向均可拖选。
+ * 每进入一个 chip 命中区 toggle 一次，pointerToggled 防同一 chip 重复 toggle。
+ * 拖到滚动容器上下边缘时程序化自动滚动（不与原生 pan 冲突）。
+ */
+const { haptic } = useHaptic();
+const gridEl = useTemplateRef<HTMLElement>('grid');
+const dragging = ref(false);
+
+let dragPointerId: number | null = null;
+let dragTouch = false;
+let decided = false;
+let startX = 0;
+let startY = 0;
+let lastPointerY = 0;
+let startEp: Episode | null = null;
+let suppressClick = false;
+let scrollParent: HTMLElement | null = null;
+let autoScrollRaf = 0;
+const pointerToggled = new Set<string>();
+
+function findScrollParent(el: HTMLElement | null): HTMLElement | null {
+  let node: HTMLElement | null = el?.parentElement ?? null;
+  while (node) {
+    const oy = getComputedStyle(node).overflowY;
+    if ((oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+function chipFromPoint(x: number, y: number): Episode | null {
+  const el = document.elementFromPoint(x, y)?.closest<HTMLElement>('.picker-chip');
+  const id = el?.dataset.epId;
+  if (!id) return null;
+  return sorted.value.find((e) => e.id === id) ?? null;
+}
+
+function dragToggle(ep: Episode | null): void {
+  if (!ep || pointerToggled.has(ep.id) || isDisabled(ep)) return;
+  pointerToggled.add(ep.id);
+  toggle(ep);
+  haptic('light');
+}
+
+function autoScrollLoop(): void {
+  if (!dragging.value) {
+    autoScrollRaf = 0;
+    return;
+  }
+  const sc = scrollParent;
+  if (sc) {
+    const r = sc.getBoundingClientRect();
+    const EDGE = 48;
+    const SPEED = 9;
+    if (lastPointerY < r.top + EDGE) sc.scrollTop -= SPEED;
+    else if (lastPointerY > r.bottom - EDGE) sc.scrollTop += SPEED;
+  }
+  autoScrollRaf = requestAnimationFrame(autoScrollLoop);
+}
+
+function beginDrag(): void {
+  dragging.value = true;
+  decided = true;
+  suppressClick = true;
+  scrollParent = findScrollParent(gridEl.value);
+  if (dragPointerId !== null) {
+    try {
+      gridEl.value?.setPointerCapture(dragPointerId);
+    } catch {
+      /* 捕获失败不影响命中检测 */
+    }
+  }
+  haptic('light');
+  dragToggle(startEp);
+  if (autoScrollRaf === 0) autoScrollRaf = requestAnimationFrame(autoScrollLoop);
+}
+
+function endDrag(): void {
+  if (autoScrollRaf !== 0) {
+    cancelAnimationFrame(autoScrollRaf);
+    autoScrollRaf = 0;
+  }
+  if (dragPointerId !== null) {
+    try {
+      gridEl.value?.releasePointerCapture(dragPointerId);
+    } catch {
+      /* 已释放 */
+    }
+  }
+  window.removeEventListener('pointermove', onDragMove);
+  window.removeEventListener('pointerup', onDragEnd);
+  window.removeEventListener('pointercancel', onDragEnd);
+  dragPointerId = null;
+  dragging.value = false;
+  decided = false;
+  startEp = null;
+  pointerToggled.clear();
+}
+
+function onDragMove(e: PointerEvent): void {
+  if (e.pointerId !== dragPointerId) return;
+  lastPointerY = e.clientY;
+  if (!decided) {
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+    // 触屏纵向主导：放弃拖选，交回原生滚动
+    if (dragTouch && Math.abs(dy) > Math.abs(dx)) {
+      decided = true;
+      endDrag();
+      return;
+    }
+    beginDrag();
+  }
+  if (dragging.value) {
+    e.preventDefault();
+    dragToggle(chipFromPoint(e.clientX, e.clientY));
+  }
+}
+
+function onDragEnd(e: PointerEvent): void {
+  if (e.pointerId !== dragPointerId) return;
+  endDrag();
+}
+
+function onChipPointerDown(e: PointerEvent, ep: Episode): void {
+  if (dragPointerId !== null || !e.isPrimary) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  if (isDisabled(ep)) return;
+  suppressClick = false;
+  dragPointerId = e.pointerId;
+  dragTouch = e.pointerType === 'touch';
+  dragging.value = false;
+  decided = false;
+  startX = e.clientX;
+  startY = e.clientY;
+  lastPointerY = e.clientY;
+  startEp = ep;
+  pointerToggled.clear();
+  window.addEventListener('pointermove', onDragMove, { passive: false });
+  window.addEventListener('pointerup', onDragEnd);
+  window.addEventListener('pointercancel', onDragEnd);
+}
+
+/** 点按 / 键盘 Space·Enter：拖选刚结束时吞掉合成 click，避免重复 toggle */
+function onChipClick(ep: Episode): void {
+  if (suppressClick) {
+    suppressClick = false;
+    return;
+  }
+  toggle(ep);
+}
+
+onBeforeUnmount(() => {
+  endDrag();
+});
 </script>
 
 <template>
@@ -189,7 +349,7 @@ function confirm(): void {
       <span class="picker-quality__value">{{ lineQuality }}</span>
     </div>
 
-    <div class="picker-grid">
+    <div ref="grid" class="picker-grid" :class="{ 'picker-grid--dragging': dragging }">
       <button
         v-for="ep in sorted"
         :key="ep.id"
@@ -199,10 +359,12 @@ function confirm(): void {
           'picker-chip--disabled': isDisabled(ep),
         }"
         type="button"
+        :data-ep-id="ep.id"
         :disabled="isDisabled(ep)"
         :aria-pressed="selected.includes(ep.id)"
         :aria-label="`第 ${ep.number} 集${chipReason(ep)}`"
-        @click="toggle(ep)"
+        @pointerdown="onChipPointerDown($event, ep)"
+        @click="onChipClick(ep)"
       >
         {{ ep.number }}
       </button>
@@ -305,6 +467,15 @@ function confirm(): void {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
   gap: var(--space-2);
+  /* E3：纵向留给 sheet 原生滚动，横向拖选由指针状态机接管 */
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.picker-grid--dragging,
+.picker-grid--dragging .picker-chip {
+  cursor: grabbing;
 }
 
 .picker-chip {
@@ -315,6 +486,7 @@ function confirm(): void {
   border: 1.5px solid transparent;
   color: var(--color-text-primary);
   font: var(--text-label-strong);
+  touch-action: pan-y;
   transition: var(--transition-color);
 }
 
@@ -322,11 +494,31 @@ function confirm(): void {
   border-color: var(--color-brand);
   background-color: var(--color-brand-soft);
   color: var(--color-brand-text);
+  /* E3：选中态翻转 150ms（每次进入选中播一遍） */
+  animation: chip-flip 150ms var(--ease-standard);
+}
+
+@keyframes chip-flip {
+  0% {
+    transform: perspective(220px) rotateX(0);
+  }
+  50% {
+    transform: perspective(220px) rotateX(-82deg);
+  }
+  100% {
+    transform: perspective(220px) rotateX(0);
+  }
 }
 
 .picker-chip--disabled {
   color: var(--color-text-disabled);
   background-color: var(--color-overlay-subtle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .picker-chip--selected {
+    animation: none;
+  }
 }
 
 .picker-actions {

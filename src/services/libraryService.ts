@@ -34,6 +34,7 @@ import { resolveSearchTimeoutMs } from '@/shared/searchBudget';
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { classifySourceFailure, isTransientFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { isKeywordIgnored } from '@/services/searchAggregate';
+import { recordSearchPerf, type SearchPerfSource } from '@/services/searchPerf';
 import { isLocalArtifactUrl, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
@@ -50,6 +51,7 @@ import type {
   SubtitleTrack,
   PageResult,
   PlaybackSource,
+  SearchPhasePerf,
   SearchResult,
   Source,
 } from '@/types';
@@ -478,6 +480,7 @@ async function searchOneSource(
   keyword: string,
   signal: AbortSignal | undefined,
   pageSize: number,
+  perf?: SearchPhasePerf,
 ): Promise<MediaItem[]> {
   const adapter = await adapterFor(source);
   // P1-6：搜索扇出前预热，让 jar 加载尽早开始。
@@ -496,6 +499,7 @@ async function searchOneSource(
   // 真机实测「启动后 30 秒即搜」12 个源全卡在 jar 加载却被写成「搜索超时（20 秒）」，正是这里。
   // 热句柄与非爬虫源的余量为 0，与既有行为逐字节一致。
   const coldAtStart = adapter.isSourceCold?.(source) === true;
+  if (perf) perf.cold = coldAtStart;
   const loadAllowanceMs = coldAtStart ? resolveSearchTimeoutMs(TIMEOUT_SEARCH_LOAD_ALLOWANCE_MS, preset) : 0;
   const umbrellaMs = budgetMs + loadAllowanceMs;
   // SO-01：区分「预算到期」与「用户取消」——预算到期抛 E_TIMEOUT（计入失败/触发退避），
@@ -508,7 +512,7 @@ async function searchOneSource(
   const onAbort = (): void => controller.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
-    return await adapter.search({ source, keyword, page: 1, pageSize, signal: controller.signal, budgetMs });
+    return await adapter.search({ source, keyword, page: 1, pageSize, signal: controller.signal, budgetMs, perf });
   } catch (e) {
     if (timedOut) {
       // F10：到期时还没拿到句柄说明卡在加载阶段，文案对准真实瓶颈，不再一律记「搜索超时」
@@ -772,8 +776,17 @@ export const libraryService: LibraryService = {
     const pageSize = params.pageSize ?? SEARCH_LOCAL_LIMIT;
     const hideDemo = await hideDemoEnabled();
 
+    // PERF-0：搜索性能埋点（纯观测）
+    const perfT0 = performance.now();
+    const online = isOnline();
+    let firstResultAt: number | null = null;
+    const perSource: SearchPerfSource[] = [];
+
+    const localT0 = performance.now();
     const localRaw = await mediaRepo.searchByTitle(keyword, SEARCH_LOCAL_LIMIT);
+    const localMs = performance.now() - localT0;
     const local = hideDemo ? localRaw.filter((item) => !item.isDemo) : localRaw;
+    const mediaCount = await mediaRepo.count();
 
     const allSources = await sourceRepo.list();
     const eligible = allSources.filter(
@@ -792,7 +805,7 @@ export const libraryService: LibraryService = {
     const remoteResults: Array<MediaItem[] | null> = [];
     let launched = 0;
 
-    if (isOnline()) {
+    if (online) {
       const total = enabled.length;
       let done = 0;
       // P0-4：全局搜索截止时间——避免个别慢源拖住整体响应
@@ -800,8 +813,22 @@ export const libraryService: LibraryService = {
       const searchStartedAt = Date.now();
       /** 单源完成即通知（CHG-12 渐进搜索）；取消的源不计入失败、不回调 */
       const settleOne = async (source: Source, index: number): Promise<void> => {
+        // PERF-0：单源计时与分段（纯观测）
+        const sourceT0 = performance.now();
+        const phase: SearchPhasePerf = {};
+        const recordSource = (outcome: string): void => {
+          perSource.push({
+            id: source.id,
+            name: source.name,
+            ms: Math.round(performance.now() - sourceT0),
+            outcome,
+            cold: phase.cold === true,
+            loadMs: phase.loadMs,
+            searchMs: phase.searchMs,
+          });
+        };
         try {
-          const items = await searchOneSource(source, keyword, params.signal, pageSize);
+          const items = await searchOneSource(source, keyword, params.signal, pageSize, phase);
           // P0-1：识别"源忽略关键词"（采集站关闭搜索，返回目录页冒充结果）
           // 命中则不上屏、不落库、不判活，记一条 keyword_ignored 失败
           if (isKeywordIgnored(items, keyword)) {
@@ -810,6 +837,7 @@ export const libraryService: LibraryService = {
             }).toShape();
             failed.push({ sourceId: source.id, error: shape });
             done += 1;
+            recordSource('ignored');
             params.onPartial?.({ sourceId: source.id, items: [], error: shape, done, total });
             return;
           }
@@ -818,6 +846,7 @@ export const libraryService: LibraryService = {
           const visible = hideDemo ? items.filter((item) => !item.isDemo) : items;
           remoteResults[index] = visible;
           done += 1;
+          if (visible.length > 0 && firstResultAt === null) firstResultAt = performance.now() - perfT0;
           // CHG-28：单源结果先落库再上屏——渐进结果立即可点，详情不再因
           // 「等全部源 settle 才批量落库」的窗口报 E_NOT_FOUND（真机 P1）
           if (visible.length > 0) {
@@ -825,13 +854,18 @@ export const libraryService: LibraryService = {
               logger.warn('搜索结果即时落库失败（不影响上屏）', { sourceId: source.id, error: toErrorShape(e) });
             });
           }
+          recordSource(visible.length > 0 ? 'ok' : 'empty');
           params.onPartial?.({ sourceId: source.id, items: visible, error: null, done, total });
         } catch (e) {
           done += 1;
-          if (isCanceled(e)) return;
+          if (isCanceled(e)) {
+            recordSource('aborted');
+            return;
+          }
           // P0-1：搜索失败同样走可读化（E_UNKNOWN → 具体源侧原因），否则明细只有「操作失败，请重试」
           const shape = readableSourceError(e).toShape();
           failed.push({ sourceId: source.id, error: shape });
+          recordSource(shape.code);
           params.onPartial?.({ sourceId: source.id, items: [], error: shape, done, total });
         }
       };
@@ -867,6 +901,28 @@ export const libraryService: LibraryService = {
       }
       launched = enabled.length;
     }
+
+    // PERF-0：workers 全部 settle 后统一记录（在线/离线两分支都覆盖，下方全失败 throw 不丢记录）
+    recordSearchPerf({
+      at: Date.now(),
+      keyword,
+      mode: params.sourceIds === undefined ? 'full' : 'subset',
+      forceAll: params.forceAll === true,
+      online,
+      candidates: enabled.length,
+      filteredOut,
+      launched,
+      skipped: enabled.length - launched,
+      failed: failed.length,
+      ignored: failed.filter((f) => f.error.code === 'E_KEYWORD_IGNORED').length,
+      localMs: Math.round(localMs),
+      localCount: local.length,
+      mediaCount,
+      firstResultMs: firstResultAt === null ? null : Math.round(firstResultAt),
+      totalMs: Math.round(performance.now() - perfT0),
+      aborted: params.signal?.aborted === true,
+      sources: perSource,
+    });
 
     const remote = remoteResults
       .filter((rows): rows is MediaItem[] => Array.isArray(rows))

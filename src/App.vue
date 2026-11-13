@@ -12,6 +12,7 @@ import { useToast } from '@/composables/useToast';
 import { useEdgeBackSwipe } from '@/composables/useEdgeBackSwipe';
 import { finishSharedCoverRewind, sharedCoverActive } from '@/composables/useSharedElement';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useAchievementStore } from '@/stores/achievementStore';
 import { setBackFallback } from '@/native/appLifecycle';
 import { hasAllFilesAccess, readCookieFile } from '@/native/netdiskPlugin';
 import { getAllPlatforms } from '@/services/netdiskPlatforms';
@@ -90,8 +91,19 @@ const fatal = ref<Error | null>(null);
 
 const theme = useTheme();
 const settings = useSettingsStore();
+const achievements = useAchievementStore();
 const toast = useToast();
 useOnlineStatus();
+
+/**
+ * F2：离开播放页（player → 非 player）时复位连看会话。
+ * 逐集切换是 player → player，不触发复位，连看计数得以跨集累积。
+ */
+router.afterEach((to, from) => {
+  if (from.name === 'player' && to.name !== 'player') {
+    achievements.resetBingeSession();
+  }
+});
 
 /** REV-10：提醒自动对账的清理函数（卸载时调用，避免监听泄漏） */
 let stopReminderAutoReconcile: (() => void) | null = null;

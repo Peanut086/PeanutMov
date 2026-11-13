@@ -289,11 +289,20 @@ export interface BrowseParams extends PageQuery {
   filters: LibraryFilters;
 }
 
+/** PERF-0：单源搜索分段耗时（适配器回填，纯观测） */
+export interface SearchPhasePerf {
+  cold?: boolean;
+  loadMs?: number;
+  searchMs?: number;
+}
+
 export interface SearchParams extends PageQuery {
   source: Source;
   keyword: string;
   /** SO-05：计算后的单源预算（ms），透传给 crawl/invoke 内部超时 */
   budgetMs?: number;
+  /** PERF-0：调用方持有引用，适配器回填加载/搜索分段耗时 */
+  perf?: SearchPhasePerf;
 }
 
 export interface GetDetailParams {
@@ -665,6 +674,8 @@ export interface AppSettings {
   pauseHistoryRecording?: boolean;
   /** OPT-03：触觉反馈开关（默认开） */
   hapticEnabled?: boolean;
+  /** 彩蛋池：趣味彩蛋总开关（NG 场记板 / 爆米花桶里程碑，默认开） */
+  easterEggsEnabled?: boolean;
   /** OPT-06：自动进入画中画（页面不可见且正在播放时，默认关） */
   pipAutoEnter?: boolean;
   /**

@@ -14,6 +14,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import CountdownRing from '@/components/common/CountdownRing.vue';
 import { useHaptic } from '@/composables/useHaptic';
 
 const props = withDefaults(
@@ -118,7 +119,7 @@ function onTouchEnd(): void {
 
   if (pullDistance.value >= props.threshold && !props.loading) {
     triggered.value = true; // 先锁定，防止重复触发（REV-03）
-    const indicatorHeight = 48;
+    const indicatorHeight = 60;
     pullDistance.value = indicatorHeight;
     haptic('light');
     emit('refresh');
@@ -151,6 +152,25 @@ const iconRotation = computed(() => {
   if (props.loading || triggered.value) return 180;
   return (pullDistance.value / props.threshold) * 180;
 });
+
+/** F4：下拉进度环 —— 复用 B-06 环形，ratio = pullDistance / threshold */
+const showRing = computed(() => !props.loading && !triggered.value && pullDistance.value > 4);
+const ringTotal = computed(() => props.threshold);
+const ringCountdown = computed(() => {
+  if (props.loading || triggered.value) return props.threshold;
+  // reduced-motion：环静态满/空（过阈值满，否则空），不做连续收放
+  if (reducedMotion.value) return pullDistance.value >= props.threshold ? props.threshold : 0;
+  return Math.min(props.threshold, pullDistance.value);
+});
+/** 过阈值「即将刷新」态 */
+const ready = computed(
+  () => !props.loading && !triggered.value && pullDistance.value >= props.threshold,
+);
+const ptrLabel = computed(() => {
+  if (props.loading || triggered.value) return '正在刷新';
+  if (pullDistance.value >= props.threshold) return '释放刷新';
+  return '下拉刷新';
+});
 </script>
 
 <template>
@@ -164,22 +184,41 @@ const iconRotation = computed(() => {
   >
     <!-- 下拉指示器 -->
     <div class="ptr-indicator" :style="indicatorStyle" aria-hidden="true">
-      <div class="ptr-indicator__inner" :class="{ 'ptr-indicator__inner--active': isActive }">
+      <div
+        class="ptr-indicator__inner"
+        :class="{ 'ptr-indicator__inner--active': isActive, 'ptr-indicator__inner--ready': ready }"
+      >
         <LoadingSpinner v-if="loading || triggered" :size="20" />
-        <svg
-          v-else
-          class="ptr-indicator__arrow"
-          :style="{ transform: `rotate(${iconRotation}deg)` }"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M12 5v14M5 12l7 7 7-7" />
-        </svg>
+        <template v-else>
+          <CountdownRing
+            class="ptr-indicator__ring"
+            :class="{ 'ptr-indicator__ring--show': showRing }"
+            :countdown="ringCountdown"
+            :total="ringTotal"
+            :instant="true"
+          />
+          <span
+            class="ptr-indicator__cross"
+            :class="{ 'ptr-indicator__cross--show': showRing }"
+          />
+          <svg
+            class="ptr-indicator__arrow"
+            :class="{ 'ptr-indicator__arrow--hide': showRing }"
+            :style="{ transform: `rotate(${iconRotation}deg)` }"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 5v14M5 12l7 7 7-7" />
+          </svg>
+        </template>
       </div>
+      <span class="ptr-indicator__label" :class="{ 'ptr-indicator__label--ready': ready }">
+        {{ ptrLabel }}
+      </span>
     </div>
 
     <!-- 无障碍状态播报（REV-06） -->
@@ -204,19 +243,22 @@ const iconRotation = computed(() => {
 
 .ptr-indicator {
   position: absolute;
-  top: -48px;
+  top: -64px;
   left: 0;
   right: 0;
-  height: 48px;
+  height: 64px;
   display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  padding-bottom: var(--space-3);
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  padding-bottom: var(--space-2);
   z-index: 10;
   pointer-events: none;
 }
 
 .ptr-indicator__inner {
+  position: relative;
   width: 32px;
   height: 32px;
   display: flex;
@@ -228,7 +270,8 @@ const iconRotation = computed(() => {
   color: var(--color-text-tertiary);
   opacity: 0.6;
   transition: opacity var(--duration-fast) var(--ease-standard),
-    background-color var(--duration-fast) var(--ease-standard);
+    background-color var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-fast) var(--ease-standard);
 }
 
 .ptr-indicator__inner--active {
@@ -236,10 +279,79 @@ const iconRotation = computed(() => {
   color: var(--color-brand);
 }
 
+/* F4：过阈值「即将刷新」—— 品牌光晕提示 */
+.ptr-indicator__inner--ready {
+  box-shadow: 0 0 0 3px var(--color-brand-soft);
+}
+
+/* F4：进度环与箭头交叉淡入（150ms），叠在 32px 圆心 */
+.ptr-indicator__ring {
+  position: absolute;
+  inset: 3px;
+  opacity: 0;
+  transition: opacity 150ms var(--ease-standard);
+}
+
+.ptr-indicator__ring--show {
+  opacity: 1;
+}
+
+/* 片头倒计时十字准星（academy leader 意象） */
+.ptr-indicator__cross {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  opacity: 0;
+  transition: opacity 150ms var(--ease-standard);
+}
+
+.ptr-indicator__cross--show {
+  opacity: 0.55;
+}
+
+.ptr-indicator__cross::before,
+.ptr-indicator__cross::after {
+  content: '';
+  position: absolute;
+  background-color: var(--color-brand);
+}
+
+.ptr-indicator__cross::before {
+  left: 50%;
+  top: 0;
+  width: 1.5px;
+  height: 100%;
+  transform: translateX(-50%);
+}
+
+.ptr-indicator__cross::after {
+  top: 50%;
+  left: 0;
+  height: 1.5px;
+  width: 100%;
+  transform: translateY(-50%);
+}
+
 .ptr-indicator__arrow {
   width: 18px;
   height: 18px;
-  transition: transform var(--duration-fast) var(--ease-standard);
+  transition: transform var(--duration-fast) var(--ease-standard),
+    opacity 150ms var(--ease-standard);
+}
+
+.ptr-indicator__arrow--hide {
+  opacity: 0;
+}
+
+.ptr-indicator__label {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+
+.ptr-indicator__label--ready {
+  color: var(--color-brand-text);
+  font-weight: var(--font-weight-semibold);
 }
 
 /* 无障碍：视觉隐藏但屏幕阅读器可读 */
@@ -257,7 +369,11 @@ const iconRotation = computed(() => {
 
 /* Reduced motion: 禁用箭头旋转动画 */
 @media (prefers-reduced-motion: reduce) {
-  .ptr-indicator__arrow {
+  .ptr-indicator__arrow,
+  .ptr-indicator__ring,
+  .ptr-indicator__cross,
+  .ptr-indicator__label,
+  .ptr-indicator__inner {
     transition: none;
   }
 

@@ -100,6 +100,10 @@ import { pickPlayCandidates } from '@/sources/douban/playMatch';
 import { healthService } from '@/services/healthService';
 import { appEvents } from '@/services/events';
 import PlayLoadingBar from '@/components/player/PlayLoadingBar.vue';
+import BingeCelebration from '@/components/player/BingeCelebration.vue';
+import { useAchievementStore } from '@/stores/achievementStore';
+import { useHaptic } from '@/composables/useHaptic';
+import { playDing } from '@/services/sfxService';
 
 const route = useRoute();
 const router = useRouter();
@@ -111,6 +115,8 @@ const settings = useSettingsStore();
 const sources = useSourceStore();
 const ui = useUiStore();
 const toast = useToast();
+const achievements = useAchievementStore();
+const { haptic } = useHaptic();
 
 const mediaId = computed(() => (typeof route.params.mediaId === 'string' ? route.params.mediaId : ''));
 const episodeIdParam = computed(() =>
@@ -464,6 +470,50 @@ watch(remoteEpisodeTarget, (targetId) => {
   const ep = episodes.value.find((e) => e.id === targetId);
   acknowledgeRemoteEpisode();
   if (ep) chooseEpisode(ep);
+});
+
+/* ---------- F2：连看里程碑爆米花桶 ----------
+ * 计数在 achievementStore（跨逐集重建存活）。达到 3 集即落徽章 + 置 pending；
+ * 仪式择「暂停」或「片尾倒计时」播放，绝不干扰正在播放的画面。
+ * 片尾触发时先停自动连播，仪式结束再续播下一集，保留连播体验。
+ */
+const bingeShow = ref(false);
+const bingeHasPlayed = ref(false);
+let bingeSuspendedNext = false;
+
+function fireBinge(atEnded: boolean): void {
+  if (bingeShow.value || !settings.easterEggsEnabled) return;
+  achievements.clearBingePending();
+  if (atEnded) {
+    cancelAutoNext();
+    bingeSuspendedNext = true;
+  }
+  bingeShow.value = true;
+  haptic('medium');
+  playDing();
+}
+
+function dismissBinge(): void {
+  bingeShow.value = false;
+  if (bingeSuspendedNext) {
+    bingeSuspendedNext = false;
+    goToNextEpisode();
+  }
+}
+
+watch(
+  () => player.playing,
+  (playing) => {
+    if (playing) {
+      bingeHasPlayed.value = true;
+    } else if (achievements.bingePending && bingeHasPlayed.value) {
+      fireBinge(false);
+    }
+  },
+);
+
+watch(countdown, (val) => {
+  if (val !== null && achievements.bingePending) fireBinge(true);
 });
 
 /** B2：后台播放开关——立即生效并写回设置（纯音频模式隐含后台播放，见 composable） */
@@ -1099,7 +1149,11 @@ async function initPlaybackLevels(): Promise<void> {
 onMounted(async () => {
   void detectCastSupport();
   // REV-24：sources 用于详情失败时判断源是否存在
-  await Promise.all([settings.load(), history.load(), favorites.load(), downloads.load(), sources.load()]);
+  await Promise.all([settings.load(), history.load(), favorites.load(), downloads.load(), sources.load(), achievements.load()]);
+  // F2：连看计数（彩蛋开关 gate）。播放页逐集重建，计数落在 store 才能跨集累积。
+  if (settings.easterEggsEnabled) {
+    achievements.noteEpisodeEntry(mediaId.value, episodeIdParam.value, item.value?.title ?? null);
+  }
   // P1-4 + API-12：亮度/音量起点（必须在 createController 之前，决定引擎倍率的初值）
   await initPlaybackLevels();
 
@@ -3061,6 +3115,9 @@ onBeforeUnmount(() => {
       @select="onSelectAudioTrack"
       @retry="refreshEmbeddedTracks"
     />
+
+    <!-- F2：连看里程碑爆米花桶仪式（暂停 / 片尾触发，不干扰播放） -->
+    <BingeCelebration :show="bingeShow" :title="item ? item.title : null" @dismiss="dismissBinge" />
   </main>
 </template>
 

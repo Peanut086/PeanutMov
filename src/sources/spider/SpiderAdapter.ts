@@ -66,6 +66,7 @@ import type {
   PlayLine,
   ResolvePlayParams,
   SearchParams,
+  SearchPhasePerf,
   Source,
   SourceType,
 } from '@/types';
@@ -656,10 +657,15 @@ export class SpiderAdapter extends BaseAdapter {
     signal?: AbortSignal,
     /** SO-05：调用方传入的预算超时，覆盖默认 NATIVE_INVOKE_TIMEOUT_MS */
     timeoutMs?: number,
+    /** PERF-0：分段耗时回填（纯观测，仅搜索传入） */
+    perf?: SearchPhasePerf,
   ) {
     signal?.throwIfAborted();
+    const loadT0 = performance.now();
     const handle = await this.ensureLoaded(source, signal);
+    if (perf) perf.loadMs = Math.round(performance.now() - loadT0);
     const effectiveTimeout = timeoutMs ?? NATIVE_INVOKE_TIMEOUT_MS;
+    const invokeT0 = performance.now();
     try {
       let result: { json: string | null; logs?: string[] };
       if (extOf(source).kind === 'js') {
@@ -686,6 +692,8 @@ export class SpiderAdapter extends BaseAdapter {
       if (e instanceof AppError) throw e;
       logger.warn('爬虫调用失败', source.name, method, e);
       throw nativeErrorOf(e, new AppError('E_SOURCE_UNAVAILABLE', '爬虫执行失败'));
+    } finally {
+      if (perf) perf.searchMs = Math.round(performance.now() - invokeT0);
     }
   }
 
@@ -745,7 +753,7 @@ export class SpiderAdapter extends BaseAdapter {
     // 原生侧已做 null 回退（P2-9），但主动传 3 参可避免一次无效反射调用。
     const args: Array<string | number | boolean> =
       extOf(source).kind === 'js' ? [kw, true, params.page ?? 1] : [kw, true];
-    const response = await this.invoke(source, 'searchContent', args, undefined, params.signal, params.budgetMs);
+    const response = await this.invoke(source, 'searchContent', args, undefined, params.signal, params.budgetMs, params.perf);
     return (response.list ?? []).slice(0, params.pageSize).map((vod) => this.toItem(source, vod));
   }
 

@@ -158,6 +158,8 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
     },
     /* OPT-03：触觉反馈开关（默认开启） */
     hapticEnabled: true,
+    /* 彩蛋池：趣味彩蛋总开关（默认开启） */
+    easterEggsEnabled: true,
     /* OPT-06：自动进入画中画（默认关闭，避免用户误触） */
     pipAutoEnter: false,
     /* OPT-04：搜索超时预算（standard = 既有 5s/8s/20s 单源超时） */
@@ -313,6 +315,7 @@ function sanitize(input: AppSettings): AppSettings {
     showRecommendedSubscriptions: input.showRecommendedSubscriptions === undefined ? true : Boolean(input.showRecommendedSubscriptions),
     experimentalNativePlayer: Boolean(input.experimentalNativePlayer),
     hapticEnabled: input.hapticEnabled === undefined ? true : Boolean(input.hapticEnabled),
+    easterEggsEnabled: input.easterEggsEnabled === undefined ? true : Boolean(input.easterEggsEnabled),
     pipAutoEnter: input.pipAutoEnter === undefined ? false : Boolean(input.pipAutoEnter),
     // OPT-04：未知档位回落标准（旧设置/手改数据不会让搜索卡在非法预算上）
     searchBudget: isSearchBudgetPreset(input.searchBudget) ? input.searchBudget : SEARCH_BUDGET_DEFAULT,

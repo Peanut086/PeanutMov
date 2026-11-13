@@ -22,12 +22,17 @@ import PosterCard from '@/components/media/PosterCard.vue';
 import ContinueWatchingRow from '@/components/media/ContinueWatchingRow.vue';
 import SkeletonPoster from '@/components/media/SkeletonPoster.vue';
 import PullToRefresh from '@/components/common/PullToRefresh.vue';
+import BingeCelebration from '@/components/player/BingeCelebration.vue';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useHistoryStore } from '@/stores/historyStore';
 import { useLibraryStore } from '@/stores/libraryStore';
 import { useSourceStore } from '@/stores/sourceStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useAchievementStore } from '@/stores/achievementStore';
 import { useToast } from '@/composables/useToast';
+import { useHaptic } from '@/composables/useHaptic';
+import { playDing } from '@/services/sfxService';
 import { appEvents } from '@/services/events';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { beginSharedCover } from '@/composables/useSharedElement';
@@ -43,6 +48,22 @@ const downloads = useDownloadStore();
 const favorites = useFavoriteStore();
 const toast = useToast();
 const { isOffline } = useOnlineStatus();
+const settings = useSettingsStore();
+const achievements = useAchievementStore();
+const { haptic } = useHaptic();
+
+/* F2：连看成就徽章入口（彩蛋开关 gate；点按重温仪式） */
+const bingeBadge = computed(() =>
+  settings.easterEggsEnabled ? achievements.latestBingeBadge : null,
+);
+const badgeCelebrationShow = ref(false);
+
+function replayBadge(): void {
+  if (!settings.easterEggsEnabled || badgeCelebrationShow.value) return;
+  badgeCelebrationShow.value = true;
+  haptic('medium');
+  playDing();
+}
 
 const localError = ref<string | null>(null);
 const pullRefreshing = ref(false);
@@ -96,7 +117,7 @@ async function load(): Promise<void> {
   localError.value = null;
   try {
     // REV-24：sources 用于 continuePlay 判断源是否存在
-    await Promise.all([history.load(), downloads.load(), favorites.load(), sources.load()]);
+    await Promise.all([history.load(), downloads.load(), favorites.load(), sources.load(), settings.load(), achievements.load()]);
     await library.loadHome();
     lastLoadTime = now;
     isDirty = false;
@@ -112,6 +133,41 @@ onActivated(() => {
 
 function openDetail(item: MediaItem): void {
   void router.push({ name: 'detail', params: { mediaId: item.id }, query: { sourceId: item.sourceId } });
+}
+
+/* M4 场记快捷盘：收藏 / 下载 / 分享 */
+async function quickFavorite(item: MediaItem): Promise<void> {
+  try {
+    const added = await favorites.toggle({
+      sourceId: item.sourceId,
+      mediaId: item.id,
+      title: item.title,
+      posterUrl: item.posterUrl,
+      type: item.type,
+      year: item.year,
+    });
+    toast.success(added ? '已收藏' : '已取消收藏');
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
+}
+
+function quickDownload(item: MediaItem): void {
+  openDetail(item);
+}
+
+async function quickShare(item: MediaItem): Promise<void> {
+  const text = `${item.title}${item.year ? `（${item.year}）` : ''} · PeanutMov`;
+  try {
+    if (typeof navigator.share === 'function') {
+      await navigator.share({ title: item.title, text });
+      return;
+    }
+    await navigator.clipboard.writeText(text);
+    toast.success('已复制分享文本');
+  } catch {
+    toast.error('分享不可用');
+  }
 }
 
 /** REV-24：判断该历史记录的源是否已被移除 */
@@ -228,6 +284,25 @@ async function onPullRefresh(): Promise<void> {
 
       <!-- success -->
       <template v-else>
+        <!-- F2：连看成就徽章入口 -->
+        <section v-if="bingeBadge" class="home-section home-badge-section">
+          <button class="home-badge" type="button" @click="replayBadge">
+            <span class="home-badge__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="22" height="22">
+                <path
+                  fill="currentColor"
+                  d="M7 22h10l1.5-9h-13L7 22zm12.1-11H4.9c-.3-1.6.6-3 2-3.4.2-1.5 1.5-2.6 3-2.6.5 0 1 .1 1.4.4.6-1 1.7-1.6 2.9-1.4 1.2.2 2.1 1.1 2.3 2.3 1.3.2 2.3 1.3 2.3 2.7 0 .7-.3 1.4-.7 2z"
+                />
+              </svg>
+            </span>
+            <span class="home-badge__text">
+              <span class="home-badge__title">连看 {{ bingeBadge.count }} 集</span>
+              <span class="home-badge__desc">{{ bingeBadge.title ? `${bingeBadge.title} · ` : '' }}观影成就 · 点按重温</span>
+            </span>
+            <span class="home-badge__arrow" aria-hidden="true">›</span>
+          </button>
+        </section>
+
         <!-- 继续观看：紧凑水平条模式（OPT-04） -->
         <section v-if="continueItems.length > 0" class="home-section" aria-labelledby="home-continue">
           <div class="home-section__head">
@@ -257,7 +332,11 @@ async function onPullRefresh(): Promise<void> {
               <PosterCard
                 :item="item"
                 :downloaded="downloadedIds.includes(item.id)"
+                quick-actions
                 @select="openDetail"
+                @quick-favorite="quickFavorite"
+                @quick-download="quickDownload"
+                @quick-share="quickShare"
               />
             </div>
           </div>
@@ -285,6 +364,14 @@ async function onPullRefresh(): Promise<void> {
       </template>
     </div>
     </PullToRefresh>
+
+    <!-- F2：徽章重温仪式 -->
+    <BingeCelebration
+      :show="badgeCelebrationShow"
+      :count="bingeBadge?.count ?? 3"
+      :title="bingeBadge?.title ?? null"
+      @dismiss="badgeCelebrationShow = false"
+    />
   </SafeArea>
 </template>
 
@@ -483,6 +570,68 @@ async function onPullRefresh(): Promise<void> {
   flex: 0 0 auto;
   font: var(--font-weight-semibold) 20px / 1 var(--font-family-number);
   color: var(--color-text-tertiary);
+}
+
+/* ---------- F2：连看成就徽章入口 ---------- */
+.home-badge-section {
+  margin-bottom: var(--space-2);
+}
+
+.home-badge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 60px;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-card);
+  background: linear-gradient(135deg, var(--color-brand-soft) 0%, rgba(240, 168, 46, 0.16) 100%);
+  border: 1px solid var(--color-brand);
+  text-align: left;
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.home-badge:active {
+  transform: scale(0.985);
+}
+
+.home-badge__icon {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--color-brand), var(--color-brand-strong));
+  color: #2a1c04;
+}
+
+.home-badge__text {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.home-badge__title {
+  font: var(--font-weight-semibold) 14px / 1.3 var(--font-family-base);
+  color: var(--color-brand-text);
+}
+
+.home-badge__desc {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-badge__arrow {
+  flex: 0 0 auto;
+  font: var(--font-weight-semibold) 20px / 1 var(--font-family-number);
+  color: var(--color-brand-text);
 }
 
 /* 错误文案的兜底：无 error.message 时使用映射 */

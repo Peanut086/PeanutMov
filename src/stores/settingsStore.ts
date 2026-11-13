@@ -47,6 +47,9 @@ export const useSettingsStore = defineStore('settings', () => {
   let unsubscribe: (() => void) | null = null;
   let backupSchedulerBootstrapped = false;
 
+  /** 彩蛋池总开关（缺省开）：NG 场记板 / 爆米花桶里程碑都受它 gate */
+  const easterEggsEnabled = computed(() => settings.value?.easterEggsEnabled ?? true);
+
   /**
    * EXT-05：借 App 启动（`App.vue` 在 onMounted 调 `load()`）拉起备份调度器。
    *
@@ -142,6 +145,7 @@ export const useSettingsStore = defineStore('settings', () => {
     download,
     netdisk,
     backup,
+    easterEggsEnabled,
     load,
     update,
     updateBackup,

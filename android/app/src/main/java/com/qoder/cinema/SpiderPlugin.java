@@ -40,7 +40,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import com.google.gson.Gson;
@@ -103,10 +103,11 @@ public class SpiderPlugin extends Plugin {
      * Capacitor 的插件方法全部走 bridge 的单一 taskHandler 线程（Bridge.java post 到
      * 同一个 Handler），同步执行会串行阻塞所有 JS→原生调用（搜索、播放、网络派发
      * 全部排队），表现为「搜索极慢 / 播放超时 / 首页永远骨架屏」。
-     * OPT-21: 有界线程池（core 2 / max 8 / queue 32），防突发并发线程爆炸
+     * OPT-21/E1: 有界线程池（core 8 / max 8 / queue 32）。LinkedBlockingQueue 要队列满才扩线程，
+     * core 必须直接对齐 JS 侧搜索并发 8，否则实测退化为 2 线程串行（PERF-0：排队最高 13s）
      */
-    private final ExecutorService spiderExecutor = new java.util.concurrent.ThreadPoolExecutor(
-            2, 8, 60L, java.util.concurrent.TimeUnit.SECONDS,
+    private final ThreadPoolExecutor spiderExecutor = new java.util.concurrent.ThreadPoolExecutor(
+            8, 8, 60L, java.util.concurrent.TimeUnit.SECONDS,
             new java.util.concurrent.LinkedBlockingQueue<>(32),
             r -> {
                 Thread t = new Thread(r, "spider-worker");
@@ -115,11 +116,14 @@ public class SpiderPlugin extends Plugin {
             },
             new java.util.concurrent.ThreadPoolExecutor.AbortPolicy()
     );
+    { spiderExecutor.allowCoreThreadTimeOut(true); }
     /** 看门狗：超时后先给 JS 侧回错，避免调用方无限等待（任务线程本身无法强中断） */
     private final Handler watchdog = new Handler(Looper.getMainLooper());
     private static final long LOAD_TIMEOUT_MS = 75_000;
     private static final long INVOKE_TIMEOUT_MS = 30_000;
     private static final long PROXY_TIMEOUT_MS = 25_000;
+    /** E2：排队等待上限——超过则视为僵尸任务（JS 侧预算早已放弃），不再执行 */
+    private static final long MAX_QUEUE_WAIT_MS = 30_000;
 
     /** 后台任务接口（允许抛异常，统一转 call.reject） */
     private interface SpiderTask {
@@ -133,16 +137,34 @@ public class SpiderPlugin extends Plugin {
     private void runSpider(PluginCall call, String op, long timeoutMs, SpiderTask task) {
         final AtomicBoolean settled = new AtomicBoolean(false);
         final String label = "爬虫" + op;
+        // PERF-0：排队/执行分段计时（纯观测）
+        final long submittedAt = android.os.SystemClock.elapsedRealtime();
+        final AtomicBoolean started = new AtomicBoolean(false);
         
         final Runnable timeoutTask = () -> {
             if (settled.compareAndSet(false, true)) {
-                Log.w(TAG, op + " timeout after " + timeoutMs + "ms");
+                Log.w(TAG, op + " timeout after " + timeoutMs + "ms, started=" + started.get()
+                        + ", waited=" + (android.os.SystemClock.elapsedRealtime() - submittedAt) + "ms");
                 call.reject(label + "超时（" + (timeoutMs / 1000) + " 秒），请重试或更换源");
             }
         };
-        watchdog.postDelayed(timeoutTask, timeoutMs);
+        // E2：提交时只挂兜底表（防永不执行/线程挂死）；执行表在任务真正开始时重挂
+        watchdog.postDelayed(timeoutTask, timeoutMs + MAX_QUEUE_WAIT_MS);
         try {
             spiderExecutor.execute(() -> {
+                started.set(true);
+                final long startedAt = android.os.SystemClock.elapsedRealtime();
+                if (settled.get()) return;
+                if (startedAt - submittedAt > MAX_QUEUE_WAIT_MS) {
+                    if (settled.compareAndSet(false, true)) {
+                        watchdog.removeCallbacks(timeoutTask);
+                        Log.w(TAG, op + " queue wait " + (startedAt - submittedAt) + "ms exceeds cap, skip");
+                        call.reject(label + "排队超时，请重试");
+                    }
+                    return;
+                }
+                watchdog.removeCallbacks(timeoutTask);
+                watchdog.postDelayed(timeoutTask, timeoutMs);
                 // 爬虫内壳子系（AppTT 等）会同步请求 127.0.0.1:9978，执行前确保本地代理活着
                 SpiderProxyServer.ensureAlive();
                 try {
@@ -156,6 +178,12 @@ public class SpiderPlugin extends Plugin {
                         Log.w(TAG, op + " failed", e);
                         call.reject(label + "失败: " + describeFailure(e));
                     }
+                } finally {
+                    // PERF-0：queue=排队等待 exec=实际执行；E1 后 active 应能到 8、queue≈0
+                    long perfNow = android.os.SystemClock.elapsedRealtime();
+                    Log.i(TAG, op + " queue=" + (startedAt - submittedAt) + "ms exec=" + (perfNow - startedAt)
+                            + "ms pool=" + spiderExecutor.getPoolSize() + " active=" + spiderExecutor.getActiveCount()
+                            + " queued=" + spiderExecutor.getQueue().size());
                 }
             });
         } catch (java.util.concurrent.RejectedExecutionException rex) {

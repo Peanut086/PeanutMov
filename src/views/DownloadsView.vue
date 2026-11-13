@@ -580,7 +580,7 @@ function goLibrary(): void {
               @retry="retryBatch(group.batchId)"
               @delete-completed="deleteBatchCompleted(group.batchId)"
             />
-            <ul class="downloads-list">
+            <TransitionGroup tag="ul" name="dl-flip" class="downloads-list">
               <li v-for="task in group.tasks" :key="task.id">
                 <DownloadItem
                   :task="task"
@@ -597,7 +597,7 @@ function goLibrary(): void {
                   @toggle-select="toggleSelect"
                 />
               </li>
-            </ul>
+            </TransitionGroup>
           </div>
         </div>
 
@@ -793,6 +793,11 @@ function goLibrary(): void {
   margin-top: var(--space-2);
 }
 
+/* E2：队列 reorder FLIP —— 排序变化时行体平滑位移（200ms） */
+.dl-flip-move {
+  transition: transform 200ms var(--ease-standard);
+}
+
 .downloads-refreshing {
   padding: var(--space-3);
   text-align: center;
@@ -914,6 +919,10 @@ function goLibrary(): void {
 @media (prefers-reduced-motion: reduce) {
   .optimizing-hint__spinner {
     animation: none;
+  }
+
+  .dl-flip-move {
+    transition: none;
   }
 }
 

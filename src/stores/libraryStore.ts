@@ -21,6 +21,7 @@ import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
 import { PAGE_SIZE, SEARCH_LOCAL_LIMIT } from '@/shared/constants';
 import { AppError, isCanceled, toErrorShape } from '@/shared/errors';
+import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
 import type { PlayabilityStatus } from '@/services/playabilityService';
 import type {
@@ -79,13 +80,23 @@ export const useLibraryStore = defineStore('library', () => {
   /** 聚合分组（v2.0：可播性 → 健康 tier → 延迟排序） */
   const searchGroups = computed<SearchResultGroup[]>(() => {
     if (searchResultsAll.value.length === 0) return [];
-    return groupSearchResults(
+    // PERF-0：聚合重算耗时（>8ms 才记，防渐进回调刷屏）
+    const aggregateT0 = performance.now();
+    const groups = groupSearchResults(
       searchResultsAll.value,
       searchKeyword.value,
       (sourceId) => sourceStore.sources.find((s) => s.id === sourceId)?.health ?? 'unknown',
       (sourceId) => sourceStore.latencyOf(sourceId),
       playabilityOf,
     );
+    const aggregateMs = performance.now() - aggregateT0;
+    if (aggregateMs > 8) {
+      logger.scope('searchPerf').info('aggregate', {
+        ms: Math.round(aggregateMs),
+        items: searchResultsAll.value.length,
+      });
+    }
+    return groups;
   });
 
   /** 平铺视图：每组的代表条目（可播优先），computed 实时派生 */

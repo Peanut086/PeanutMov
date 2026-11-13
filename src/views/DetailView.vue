@@ -8,7 +8,7 @@
  * 记录集号已超出当前源范围时显示「看到第 N 集（已下线）」并从第 1 集开始（AC-68）。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 
 import type { Episode, MediaItem, PlayLine } from '@/types';
 import { formatClock } from '@/shared/time';
@@ -49,7 +49,9 @@ import { useSmartPreload } from '@/composables/useSmartPreload';
 import { useScopedPalette } from '@/composables/useScopedPalette';
 import { useScrollNarrative } from '@/composables/useScrollNarrative';
 import { accentFor, pageBackground } from '@/services/paletteService';
-import { beginSharedCover } from '@/composables/useSharedElement';
+import { beginSharedCover, cancelSharedCover, finishSharedCover, rewindSharedCover } from '@/composables/useSharedElement';
+import { useHaptic } from '@/composables/useHaptic';
+import { animateSpring, prefersReducedMotion, SPRING_DEFAULT } from '@/composables/useSpring';
 import { toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { hasAllFilesAccess, readCookieFile } from '@/native/netdiskPlugin';
@@ -126,9 +128,60 @@ const pickerOpen = ref(false);
 const moreOpen = ref(false);
 const lineId = ref<string | null>(null);
 const manualLineId = ref<string | null>(null); // 用户手动选择的线路（会话内不再自动覆盖）
-const favoriteBump = ref(false);
 /** 收藏写库在飞：双击会让「读存在性 → 写/删」交错，按钮期间禁用 */
 const favoritePending = ref(false);
+
+/* M1 爆米花追剧：弹簧 + 粒子 + 计数滚动 + 触感 */
+const { haptic } = useHaptic();
+const favBtnRef = ref<HTMLButtonElement | null>(null);
+const favCount = computed(() => favorites.items.length);
+const countDir = ref<'up' | 'down'>('up');
+let stopFavSpring: (() => void) | null = null;
+
+function spawnPopcorn(btn: HTMLElement): void {
+  const layer = document.createElement('span');
+  layer.className = 'fav-burst';
+  layer.setAttribute('aria-hidden', 'true');
+  const n = 8 + Math.floor(Math.random() * 5); // 8–12 颗
+  for (let i = 0; i < n; i++) {
+    const p = document.createElement('i');
+    p.className = 'fav-burst__p' + (Math.random() < 0.5 ? ' fav-burst__p--cream' : '');
+    const angle = (Math.PI * 2 * i) / n + Math.random() * 0.5;
+    const dist = 28 + Math.random() * 28; // 28–56px
+    p.style.setProperty('--dx', `${Math.cos(angle) * dist}px`);
+    p.style.setProperty('--dy', `${Math.sin(angle) * dist}px`);
+    p.style.setProperty('--rot', `${(Math.random() * 2 - 1) * 160}deg`);
+    p.addEventListener('animationend', () => p.remove(), { once: true });
+    layer.appendChild(p);
+  }
+  btn.appendChild(layer);
+  setTimeout(() => layer.remove(), 800); // 兜底清理，防泄漏
+}
+
+function playFavoriteSpring(): void {
+  const btn = favBtnRef.value;
+  if (!btn) return;
+  stopFavSpring?.();
+  if (prefersReducedMotion()) {
+    btn.style.transform = '';
+    return;
+  }
+  btn.style.transition = 'none';
+  btn.style.transform = 'scale(0.92)';
+  stopFavSpring = animateSpring({
+    from: 0.92,
+    target: 1,
+    config: SPRING_DEFAULT,
+    onFrame: (v) => {
+      btn.style.transform = `scale(${v})`;
+    },
+    onSettle: () => {
+      btn.style.transform = '';
+      btn.style.transition = '';
+      stopFavSpring = null;
+    },
+  });
+}
 
 const loading = computed(() => library.detailState === 'loading' || library.detailState === 'idle');
 const isError = computed(() => library.detailState === 'error');
@@ -540,6 +593,25 @@ onMounted(async () => {
   void detectCastSupport();
   await Promise.all([history.load(), favorites.load(), downloads.load()]);
   await load(false);
+  // E4：列表卡封面飞入详情 hero（去程收尾）。无进行中的转场时是空操作。
+  await nextTick();
+  void finishSharedCover(posterRef.value);
+});
+
+/**
+ * E4：返程共享元素 key —— 与列表卡 `card:${sourceId}:${id}` 对齐。
+ * 详情→列表时把 hero 封面收回到原卡片当前位置；查不到卡片则原地淡出。
+ */
+const listCoverKey = computed(() =>
+  item.value ? `card:${item.value.sourceId}:${item.value.id}` : null,
+);
+
+onBeforeRouteLeave((to) => {
+  // 去播放页：去程由 playEpisode 的 beginSharedCover 接管，这里不做返程
+  if (to.name === 'player') return;
+  // 离开到非播放页：先撤掉尚未接上的去程浮层（用户中途返回），再反向收回卡片
+  cancelSharedCover();
+  rewindSharedCover(posterRef.value, listCoverKey.value, item.value?.posterUrl ?? null);
 });
 
 watch(mediaId, () => {
@@ -556,6 +628,8 @@ watch(mediaId, () => {
 
 onBeforeUnmount(() => {
   detailToken += 1;
+  stopFavSpring?.();
+  stopFavSpring = null;
 });
 
 // P1: 切换线路时重置不可用集列表，避免旧线路的失败状态污染新线路
@@ -814,10 +888,14 @@ async function toggleFavorite(): Promise<void> {
       type: it.type,
       year: it.year,
     });
-    favoriteBump.value = true;
-    setTimeout(() => {
-      favoriteBump.value = false;
-    }, 320);
+    if (added) {
+      countDir.value = 'up';
+      haptic('light');
+      playFavoriteSpring();
+      if (!prefersReducedMotion() && favBtnRef.value) spawnPopcorn(favBtnRef.value);
+    } else {
+      countDir.value = 'down';
+    }
     toast.success(added ? '已收藏' : '已取消收藏');
   } catch (e) {
     toast.error(toErrorShape(e).message);
@@ -1209,8 +1287,9 @@ function openCompliance(): void {
           {{ playingNavigate ? '正在打开播放页…' : primaryLabel }}
         </button>
         <button
-          class="detail-actions__icon"
-          :class="{ 'detail-actions__icon--bump': favoriteBump, 'detail-actions__icon--on': isFavorite }"
+          ref="favBtnRef"
+          class="detail-actions__icon detail-actions__fav"
+          :class="{ 'detail-actions__icon--on': isFavorite }"
           type="button"
           :disabled="favoritePending"
           :aria-label="isFavorite ? '取消收藏' : '收藏'"
@@ -1218,6 +1297,9 @@ function openCompliance(): void {
           @click="toggleFavorite"
         >
           <IconHeart :size="22" :filled="isFavorite" />
+          <span class="pm-count" :class="`pm-count--${countDir}`" aria-hidden="true">
+            <span :key="favCount" class="pm-count__val">{{ favCount }}</span>
+          </span>
         </button>
         <button
           class="detail-actions__icon"
@@ -1556,15 +1638,88 @@ function openCompliance(): void {
   pointer-events: none;
 }
 
-.detail-actions__icon--bump {
-  animation: heart-bump 320ms var(--ease-standard);
-}@keyframes heart-bump {
-  0%,
-  100% {
-    transform: scale(1);
+/* M1 爆米花追剧：弹簧由 JS 驱动 inline transform；粒子层与计数徽章 */
+.detail-actions__fav {
+  position: relative;
+}
+
+.fav-burst {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.fav-burst__p {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: var(--color-brand-strong);
+  animation: fav-pop 600ms var(--ease-decelerate) forwards;
+}
+
+.fav-burst__p--cream {
+  background: #fff6e8;
+}
+
+@keyframes fav-pop {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 1;
   }
-  40% {
-    transform: scale(1.15);
+  100% {
+    transform: translate(var(--dx), var(--dy)) rotate(var(--rot));
+    opacity: 0;
+  }
+}
+
+.pm-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-brand);
+  color: var(--color-brand-ink);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.pm-count__val {
+  display: block;
+}
+
+.pm-count--up .pm-count__val {
+  animation: count-up 240ms var(--ease-standard);
+}
+
+.pm-count--down .pm-count__val {
+  animation: count-down 240ms var(--ease-standard);
+}
+
+@keyframes count-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes count-down {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(0);
   }
 }
 
@@ -1856,6 +2011,12 @@ function openCompliance(): void {
 @media (prefers-reduced-motion: reduce) {
   .detail__backdrop-img,
   .detail-hero__meta {
+    animation: none;
+  }
+  .fav-burst {
+    display: none;
+  }
+  .pm-count__val {
     animation: none;
   }
 }

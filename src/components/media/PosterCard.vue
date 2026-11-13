@@ -8,15 +8,18 @@
  * C-08：鼠标悬停时卡片随指针 3D 倾斜 + 镜面高光；触屏没有 hover，主反馈落在
  * 长按那一刻的抬升（与既有长按菜单同一次触发，不另起一套）。
  */
-import { computed, onBeforeUnmount, useTemplateRef } from 'vue';
+import { computed, onBeforeUnmount, ref, useTemplateRef } from 'vue';
 
 import type { MediaItem } from '@/types';
 
 import PosterImage from '@/components/common/PosterImage.vue';
 import IconCheck from '@/components/icons/IconCheck.vue';
+import IconHeart from '@/components/icons/IconHeart.vue';
+import IconDownload from '@/components/icons/IconDownload.vue';
 import { mediaTypeLabel } from '@/components/common/format';
 import { useHaptic } from '@/composables/useHaptic';
 import { prefersReducedMotion } from '@/composables/useSpring';
+import { beginSharedCover } from '@/composables/useSharedElement';
 import { isLowEndDevice } from '@/shared/deviceTier';
 import { IMG_W_CARD } from '@/shared/imageSize';
 import { liftPose, restPose, tiltPose } from '@/shared/posterTilt';
@@ -34,11 +37,19 @@ const props = withDefaults(
     downloaded?: boolean;
     /** 是否显示副标题（年份 · 类型） */
     showMeta?: boolean;
+    /** M4：长按弹出扇形快捷盘（收藏/下载/分享），关闭时沿用 longpress 事件 */
+    quickActions?: boolean;
   }>(),
-  { progress: 0, badge: '', demo: false, downloaded: false, showMeta: true },
+  { progress: 0, badge: '', demo: false, downloaded: false, showMeta: true, quickActions: false },
 );
 
-const emit = defineEmits<{ (e: 'select', item: MediaItem): void; (e: 'longpress', item: MediaItem): void }>();
+const emit = defineEmits<{
+  (e: 'select', item: MediaItem): void;
+  (e: 'longpress', item: MediaItem): void;
+  (e: 'quick-favorite', item: MediaItem): void;
+  (e: 'quick-download', item: MediaItem): void;
+  (e: 'quick-share', item: MediaItem): void;
+}>();
 
 const { haptic } = useHaptic();
 
@@ -51,9 +62,75 @@ const ariaLabel = computed(() =>
 
 const progressPercent = computed(() => Math.round(Math.min(1, Math.max(0, props.progress)) * 100));
 
+/**
+ * E4：共享元素 key。用 `card:` 前缀与详情 hero 的 mediaId key 区分，
+ * 返程（详情→列表）按它重新定位卡片，不会误落到详情 hero 或播放舞台。
+ */
+const coverKey = computed(() => `card:${props.item.sourceId}:${props.item.id}`);
+
 let pressTimer: ReturnType<typeof setTimeout> | null = null;
 /** 长按已触发：随后的 click 需要被吞掉，避免误导航 */
 let longPressFired = false;
+
+// M4 场记快捷盘：长按 450ms 弹扇形（收藏/下载/分享）
+const radialOpen = ref(false);
+const radialX = ref(0);
+const radialY = ref(0);
+let pressX = 0;
+let pressY = 0;
+
+const RADIAL_RADIUS = 56;
+const radialActions = computed(() => {
+  const angles = [-150, -90, -30];
+  const keys = ['favorite', 'download', 'share'] as const;
+  const labels = ['收藏', '下载', '分享'];
+  return keys.map((k, i) => {
+    const rad = (angles[i]! * Math.PI) / 180;
+    return {
+      key: k,
+      label: labels[i]!,
+      dx: Math.cos(rad) * RADIAL_RADIUS,
+      dy: Math.sin(rad) * RADIAL_RADIUS,
+      delay: i * 30,
+    };
+  });
+});
+
+function openRadial(): void {
+  const card = cardEl.value;
+  if (!card) return;
+  const r = card.getBoundingClientRect();
+  radialX.value = Math.min(Math.max(r.left + r.width / 2, 70), window.innerWidth - 70);
+  radialY.value = Math.max(r.top + r.height * 0.45, 80);
+  radialOpen.value = true;
+  document.addEventListener('keydown', onRadialKey);
+}
+
+function closeRadial(): void {
+  if (!radialOpen.value) return;
+  radialOpen.value = false;
+  document.removeEventListener('keydown', onRadialKey);
+  cardEl.value?.focus();
+}
+
+function onRadialKey(ev: KeyboardEvent): void {
+  if (ev.key === 'Escape') closeRadial();
+}
+
+function quick(key: 'favorite' | 'download' | 'share'): void {
+  closeRadial();
+  if (key === 'favorite') emit('quick-favorite', props.item);
+  else if (key === 'download') emit('quick-download', props.item);
+  else emit('quick-share', props.item);
+}
+
+function onCardKeydown(ev: KeyboardEvent): void {
+  if (props.quickActions && ev.key === 'Enter') {
+    ev.preventDefault();
+    haptic('medium');
+    openRadial();
+  }
+}
 
 const cardEl = useTemplateRef<HTMLElement>('card');
 const sheenEl = useTemplateRef<HTMLElement>('sheen');
@@ -128,6 +205,10 @@ function onPointerEnter(ev: PointerEvent): void {
 }
 
 function onPointerMove(ev: PointerEvent): void {
+  // M4：长按判定期间移动 >10px 视为滚动/滑动，取消长按防误触
+  if (pressTimer !== null && Math.hypot(ev.clientX - pressX, ev.clientY - pressY) > 10) {
+    clearPressTimer();
+  }
   if (!tilting) return;
   // 一帧只算一次：快速划过海报墙时不排队重算
   pendingX = ev.clientX;
@@ -158,12 +239,18 @@ function clearPressTimer(): void {
   }
 }
 
-function onPointerDown(): void {
+function onPointerDown(ev: PointerEvent): void {
   longPressFired = false;
+  pressX = ev.clientX;
+  pressY = ev.clientY;
   pressTimer = setTimeout(() => {
     pressTimer = null;
     longPressFired = true;
     haptic('medium');
+    if (props.quickActions) {
+      openRadial();
+      return;
+    }
     if (canLift()) {
       resetPose();
       lifted = true;
@@ -176,7 +263,7 @@ function onPointerDown(): void {
       applyPose(liftPose(), false);
     }
     emit('longpress', props.item);
-  }, 500);
+  }, 450);
 }
 
 function cancelPress(): void {
@@ -191,12 +278,17 @@ function onClick(): void {
     longPressFired = false;
     return;
   }
+  // E4：去程共享元素 —— 把本卡封面克隆进浮层，详情 hero 挂载后接上形变。
+  // 单例守卫（pending 已存在则跳过）保证快速连点不叠 clone；动效关闭/图未加载静默跳过。
+  beginSharedCover(cardEl.value?.querySelector('.poster-image') ?? null);
   emit('select', props.item);
 }
 
 onBeforeUnmount(() => {
   cancelPress();
   resetPose();
+  radialOpen.value = false;
+  document.removeEventListener('keydown', onRadialKey);
 });
 </script>
 
@@ -214,9 +306,10 @@ onBeforeUnmount(() => {
     @pointercancel="cancelPress"
     @contextmenu.prevent
     @click="onClick"
+    @keydown="onCardKeydown"
   >
     <div class="poster-card__frame">
-      <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_CARD" />
+      <PosterImage :src="item.posterUrl" :alt="item.title" :cover-key="coverKey" :width-px="IMG_W_CARD" />
 
       <!-- C-08：跟随指针的镜面高光，只在倾斜期间点亮 -->
       <span ref="sheen" class="poster-card__sheen" aria-hidden="true" />
@@ -249,6 +342,38 @@ onBeforeUnmount(() => {
       {{ item.year ?? '未知年份' }} · {{ mediaTypeLabel(item.type) }}
     </span>
   </button>
+
+  <!-- M4：扇形快捷盘（Teleport 到 body，避免按钮嵌套与网格裁切） -->
+  <Teleport to="body">
+    <div v-if="radialOpen" class="qc-radial">
+      <div class="qc-radial__scrim" @click="closeRadial" />
+      <div
+        class="qc-radial__fan"
+        :style="{ left: `${radialX}px`, top: `${radialY}px` }"
+        role="menu"
+        :aria-label="`${item.title} 快捷操作`"
+      >
+        <button
+          v-for="a in radialActions"
+          :key="a.key"
+          class="qc-radial__btn"
+          :class="`qc-radial__btn--${a.key}`"
+          :style="{ '--dx': `${a.dx}px`, '--dy': `${a.dy}px`, '--qd': `${a.delay}ms` }"
+          type="button"
+          role="menuitem"
+          @click="quick(a.key)"
+        >
+          <IconHeart v-if="a.key === 'favorite'" :size="18" />
+          <IconDownload v-else-if="a.key === 'download'" :size="18" />
+          <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
+            <path d="M8.6 10.5l6.8-4M8.6 13.5l6.8 4" />
+          </svg>
+          <span class="qc-radial__label">{{ a.label }}</span>
+        </button>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -361,5 +486,71 @@ onBeforeUnmount(() => {
 .poster-card__meta {
   font: var(--font-weight-regular) 11px / 1.3 var(--font-family-number);
   color: var(--color-text-tertiary);
+}
+
+/* M4 场记快捷盘 */
+.qc-radial {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+}
+
+.qc-radial__scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--color-bg-overlay-soft);
+}
+
+.qc-radial__fan {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+.qc-radial__btn {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-full);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: var(--color-bg-glass-strong);
+  border: 1px solid var(--color-border-glass);
+  color: var(--color-text-primary);
+  box-shadow: var(--shadow-3);
+  transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy)));
+  animation: qc-pop 300ms cubic-bezier(0.34, 1.56, 0.64, 1) var(--qd, 0ms) both;
+}
+
+.qc-radial__btn--favorite {
+  color: var(--color-brand-text);
+}
+
+.qc-radial__label {
+  font-size: 10px;
+  line-height: 1;
+  color: var(--color-text-secondary);
+}
+
+@keyframes qc-pop {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: translate(calc(-50% + var(--dx)), calc(-50% + var(--dy))) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qc-radial__btn {
+    animation: none;
+  }
 }
 </style>

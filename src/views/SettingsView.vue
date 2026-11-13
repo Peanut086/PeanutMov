@@ -154,6 +154,7 @@ const displayModeLabel = computed(() => {
 const seekStepSecLabel = computed(() => String(settings.settings?.player.seekStepSec ?? 10));
 const longPressRateLabel = computed(() => String(settings.settings?.player.longPressRate ?? 2));
 const hapticEnabled = computed(() => settings.settings?.hapticEnabled ?? true);
+const easterEggsEnabled = computed(() => settings.settings?.easterEggsEnabled ?? true);
 const pipAutoEnter = computed(() => settings.settings?.pipAutoEnter ?? false);
 
 // EXT-04：下载设置标签
@@ -284,6 +285,11 @@ async function setLongPressRate(value: number): Promise<void> {
 
 async function setHapticEnabled(value: boolean): Promise<void> {
   await update({ hapticEnabled: value }, value ? '触觉反馈已开启' : '触觉反馈已关闭');
+}
+
+// 彩蛋池：趣味彩蛋总开关
+async function setEasterEggsEnabled(value: boolean): Promise<void> {
+  await update({ easterEggsEnabled: value }, value ? '趣味彩蛋已开启' : '趣味彩蛋已关闭');
 }
 
 // OPT-06：自动进入画中画
@@ -707,6 +713,12 @@ async function exportLogs(): Promise<void> {
             description="隐藏内置公开版权样片"
             :switch-value="settings.settings?.hideDemoContent ?? false"
             @update:switch-value="setHideDemo"
+          />
+          <SettingsRow
+            label="趣味彩蛋"
+            description="关于页连点版本号、连看里程碑等隐藏小惊喜"
+            :switch-value="easterEggsEnabled"
+            @update:switch-value="setEasterEggsEnabled"
           />
         </SettingsGroup>
 

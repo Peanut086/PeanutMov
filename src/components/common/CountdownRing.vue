@@ -17,8 +17,10 @@ const props = withDefaults(
     total?: number;
     /** 描边色，默认跟随品牌色 */
     stroke?: string;
+    /** 即时跟随（无 1s 过渡）：下拉进度环逐帧跟手，不能用秒级过渡 */
+    instant?: boolean;
   }>(),
-  { total: 3, stroke: 'var(--color-brand)' },
+  { total: 3, stroke: 'var(--color-brand)', instant: false },
 );
 
 const dashOffset = computed(() => {
@@ -42,6 +44,7 @@ const dashOffset = computed(() => {
       :stroke-dashoffset="dashOffset"
       transform="rotate(-90 18 18)"
       class="countdown-ring__fill"
+      :class="{ 'countdown-ring__fill--instant': instant }"
     />
   </svg>
 </template>
@@ -55,5 +58,9 @@ const dashOffset = computed(() => {
 
 .countdown-ring__fill {
   transition: stroke-dashoffset 1s linear;
+}
+
+.countdown-ring__fill--instant {
+  transition: none;
 }
 </style>

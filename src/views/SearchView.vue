@@ -39,6 +39,8 @@ import { getSearchSuggestions, getHotSearchTags } from '@/services/suggestServic
 // 功能扩展-7：来源切换弹层
 import SourceSwitchSheet from '@/components/media/SourceSwitchSheet.vue';
 import { buildSourceCandidates, type SourceCandidate } from '@/components/media/sourceCandidates';
+// E1 结果显影：stagger + blur-up 入场指令
+import { reveal as vReveal } from '@/directives/reveal';
 
 defineOptions({ name: 'SearchView' });
 
@@ -657,7 +659,7 @@ function openSourceManage(): void {
           <!-- 聚合视图：同片跨源归并，点行进详情换源 -->
           <template v-if="library.searchViewMode === 'grouped'">
             <ul class="result-list">
-              <li v-for="group in relevantGroups" :key="group.key">
+              <li v-for="(group, i) in relevantGroups" :key="group.key" v-reveal="i">
                 <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
                   <span class="result-row__poster">
                     <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" :width-px="IMG_W_INLINE" />
@@ -713,7 +715,7 @@ function openSourceManage(): void {
                 <IconChevron :size="14" class="other-groups-toggle__arrow" :class="{ 'other-groups-toggle__arrow--open': otherGroupsExpanded }" />
               </button>
               <ul v-if="otherGroupsExpanded" class="result-list result-list--muted">
-                <li v-for="group in otherGroups" :key="group.key">
+                <li v-for="(group, i) in otherGroups" :key="group.key" v-reveal="i">
                   <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
                     <span class="result-row__poster">
                       <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" :width-px="IMG_W_INLINE" />
@@ -752,7 +754,7 @@ function openSourceManage(): void {
           <!-- 平铺视图：按相关度分流，无关项折叠 -->
           <template v-else>
             <ul class="result-list">
-              <li v-for="item in relevantFlat" :key="item.id">
+              <li v-for="(item, i) in relevantFlat" :key="item.id" v-reveal="i">
                 <button class="result-row" type="button" @click="openDetail(item)">
                   <span class="result-row__poster">
                     <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_INLINE" />
@@ -790,7 +792,7 @@ function openSourceManage(): void {
                 <IconChevron :size="14" class="other-groups-toggle__arrow" :class="{ 'other-groups-toggle__arrow--open': otherFlatExpanded }" />
               </button>
               <ul v-if="otherFlatExpanded" class="result-list result-list--muted">
-                <li v-for="item in otherFlat" :key="item.id">
+                <li v-for="(item, i) in otherFlat" :key="item.id" v-reveal="i">
                   <button class="result-row" type="button" @click="openDetail(item)">
                     <span class="result-row__poster">
                       <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_INLINE" />
@@ -1226,6 +1228,22 @@ function openSourceManage(): void {
   flex-direction: column;
   /* 行按压反馈铺满整屏宽 */
   margin: 0 calc(var(--layout-page-padding-x) * -1);
+}
+
+/* E1 结果显影：stagger + blur-up 入场（IO 仅首次 reveal） */
+.result-list > li[data-reveal] {
+  opacity: 0;
+  transform: translateY(12px);
+  filter: blur(6px);
+  transition: opacity 200ms var(--ease-decelerate) var(--rv-delay, 0ms),
+    transform 200ms var(--ease-decelerate) var(--rv-delay, 0ms),
+    filter 200ms var(--ease-decelerate) var(--rv-delay, 0ms);
+}
+
+.result-list > li[data-reveal='in'] {
+  opacity: 1;
+  transform: none;
+  filter: none;
 }
 
 .skeleton-row {
@@ -1777,5 +1795,13 @@ function openSourceManage(): void {
 .sheet-fade-enter-from .source-select-sheet__panel,
 .sheet-fade-leave-to .source-select-sheet__panel {
   transform: translateY(100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .result-list > li[data-reveal] {
+    transform: none;
+    filter: none;
+    transition: opacity 200ms linear;
+  }
 }
 </style>

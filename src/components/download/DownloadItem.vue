@@ -104,6 +104,45 @@ watch(
   },
   { immediate: true },
 );
+
+/** E2：速度 sparkline —— 最近 20 个速度采样的环形缓冲，反映瞬时速度波动 */
+const SPEED_SAMPLE_MAX = 20;
+const speedSamples = ref<number[]>([]);
+
+watch(
+  () => [props.task.speedBps, props.task.status] as const,
+  ([bps, status]) => {
+    if (status !== 'downloading') {
+      if (speedSamples.value.length > 0) speedSamples.value = [];
+      return;
+    }
+    const next = speedSamples.value.concat(bps);
+    speedSamples.value =
+      next.length > SPEED_SAMPLE_MAX ? next.slice(next.length - SPEED_SAMPLE_MAX) : next;
+  },
+  { immediate: true },
+);
+
+const showSparkline = computed(
+  () => props.task.status === 'downloading' && speedSamples.value.length >= 2,
+);
+
+const sparklinePath = computed(() => {
+  const samples = speedSamples.value;
+  if (samples.length < 2) return '';
+  const w = 44;
+  const h = 14;
+  const pad = 1.5;
+  const max = Math.max(...samples, 1);
+  const stepX = (w - pad * 2) / (samples.length - 1);
+  return samples
+    .map((v, i) => {
+      const x = pad + i * stepX;
+      const y = h - pad - (v / max) * (h - pad * 2);
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+});
 </script>
 
 <template>
@@ -153,7 +192,25 @@ watch(
           <template v-if="task.episodeNumber !== null"> · 第 {{ task.episodeNumber }} 集</template>
         </span>
 
-        <span class="download-item__status">{{ statusText }}</span>
+        <span class="download-item__status-row">
+          <span class="download-item__status">{{ statusText }}</span>
+          <svg
+            v-if="showSparkline"
+            class="download-item__spark"
+            viewBox="0 0 44 14"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <path
+              :d="sparklinePath"
+              fill="none"
+              stroke="var(--color-brand)"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </span>
         <span class="download-item__size">
           {{ sizeText }}
           <template v-if="task.status === 'downloading' || task.status === 'paused'"> · {{ percent }}%</template>
@@ -162,7 +219,7 @@ watch(
       </span>
     </button>
 
-    <!-- OPT-13: 卡片底部 3px 进度条 -->
+    <!-- E2：胶片进度条（16px 齿孔 filmstrip，进度填充品牌色） -->
     <div
       class="download-item__progress"
       role="progressbar"
@@ -237,7 +294,7 @@ watch(
   display: flex;
   align-items: flex-start;
   gap: var(--space-2);
-  padding: var(--space-3) 0;
+  padding: var(--space-3) 0 20px;
   border-bottom: 1px solid var(--color-divider);
   position: relative;
 }
@@ -278,23 +335,46 @@ watch(
   color: var(--color-text-primary);
 }
 
-/* OPT-13: 卡片底部 3px 进度条 */
+/* E2：胶片进度条 —— 16px 高，上下齿孔（repeating-gradient），进度填充品牌色 */
 .download-item__progress {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  height: 3px;
-  background-color: var(--color-overlay-track);
+  height: 16px;
+  background-color: #0b0d11;
   border-radius: 0 0 var(--radius-card) var(--radius-card);
   overflow: hidden;
+}
+
+/* 齿孔：沿上下边缘的浅色穿孔，压在填充与非填充区之上 */
+.download-item__progress::before,
+.download-item__progress::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2.5px;
+  z-index: 2;
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.5) 0 3px,
+    transparent 3px 9px
+  );
+}
+
+.download-item__progress::before {
+  top: 2.5px;
+}
+
+.download-item__progress::after {
+  bottom: 2.5px;
 }
 
 .download-item__progress-bar {
   height: 100%;
   background: linear-gradient(90deg, var(--color-brand), var(--color-brand-strong));
   transition: width 0.3s ease;
-  border-radius: inherit;
 }
 
 .download-item__progress-bar--danger {
@@ -303,6 +383,21 @@ watch(
 
 .download-item__progress-bar--success {
   background: var(--color-success);
+}
+
+/* E2：状态文案 + 速度 sparkline 同行 */
+.download-item__status-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.download-item__spark {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 14px;
+  opacity: 0.85;
 }
 
 /* OPT-13: 下载中卡片微弱呼吸动画 */
@@ -429,6 +524,8 @@ watch(
 }
 
 .download-item__status {
+  flex: 1 1 auto;
+  min-width: 0;
   font: var(--text-caption);
   color: var(--color-text-secondary);
   overflow-wrap: anywhere;
@@ -477,9 +574,13 @@ watch(
 .download-item--batch {
   background-color: var(--color-bg-surface);
   border-radius: var(--radius-md);
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-3) 20px;
   margin-bottom: var(--space-2);
   transition: background-color 0.15s ease;
+}
+
+.download-item--batch .download-item__progress {
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
 }
 
 .download-item--selected {
@@ -506,5 +607,20 @@ watch(
 .download-item__checkbox svg {
   width: 24px;
   height: 24px;
+}
+
+/* E2：reduced-motion —— 静态 bar + 文本，去掉呼吸/进度过渡与速度折线 */
+@media (prefers-reduced-motion: reduce) {
+  .download-item--downloading {
+    animation: none;
+  }
+
+  .download-item__progress-bar {
+    transition: none;
+  }
+
+  .download-item__spark {
+    display: none;
+  }
 }
 </style>
