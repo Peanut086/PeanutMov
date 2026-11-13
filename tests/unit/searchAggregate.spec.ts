@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { buildTailSuggestions, groupSearchResults, isKeywordIgnored, normalizeSearchKeyword, scoreRelevance, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
+import { buildTailSuggestions, groupSearchResults, isKeywordIgnored, isNonFeatureContent, normalizeSearchKeyword, scoreRelevance, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
 import type { MediaItem } from '@/types';
 
 function makeItem(overrides: Partial<MediaItem> & { sourceId: string; title: string }): MediaItem {
@@ -192,6 +192,63 @@ describe('groupSearchResults 组间排序（v1.8 修订：相关度第一优先�
     ];
     const groups = groupSearchResults(items, keyword);
     expect(groups.map((g) => scoreRelevance(g.title, keyword))).toEqual([4, 3, 2, 1]);
+  });
+});
+
+describe('isNonFeatureContent（F6：非正片形态降权）', () => {
+  it('真机两轮实测到的非正片形态全部命中', () => {
+    const titles = [
+      // 第一轮：关键词「绝命毒师」
+      '【第1次补档】绝命毒师【非AI真人语音解说】',
+      '【黑屏·弹幕版】一口气24小时看完绝命毒师',
+      '【yuwapeach ASMR】绝命毒师乐高收藏',
+      '跟经典美剧《绝命毒师》学英语-001',
+      '王橹杰最新微博视频re：绝命毒师',
+      '绝命毒师的搜索有80条',
+      // 第二轮：关键词「庆余年」
+      '有声书《庆余年》完整版全集',
+      '【庆余年｜李沁&张若昀】混剪合集',
+      '庆余年 片尾曲《借过一下》完整版剧情MV！',
+      '【余年】古筝（纯筝）庆余年主题曲',
+      '绝命毒师第四季幕后纪实',
+      '庆余年 定档预告',
+    ];
+    for (const title of titles) {
+      expect(isNonFeatureContent(title), title).toBe(true);
+    }
+  });
+
+  it('刻意不收的词不误杀真实片名', () => {
+    // 纪录片 / 合集 / 全集 / 特别篇 / 特别版 / 剪辑 / 钢琴 均不在词表内
+    const titles = [
+      '庆余年 第一季特别篇',
+      '庆余年 第一季特别版',
+      '银翼杀手 导演剪辑版',
+      '海上钢琴师',
+      '太阳雨 纪实录',
+      '绝命毒师 1-5季全集 电影',
+      '庆余年 S01-S05 4K 高码率 未删减',
+    ];
+    for (const title of titles) {
+      expect(isNonFeatureContent(title), title).toBe(false);
+    }
+  });
+
+  it('用户主动搜该形态时不再降权', () => {
+    expect(isNonFeatureContent('【第1次补档】绝命毒师【非AI真人语音解说】', '绝命毒师 解说')).toBe(false);
+    expect(isNonFeatureContent('庆余年混剪', '混剪')).toBe(false);
+    expect(isNonFeatureContent('庆余年混剪', '庆余年')).toBe(true);
+  });
+
+  it('同分时正片组排在非正片组前（rankOf 第二键）', () => {
+    const items = [
+      makeItem({ sourceId: 'bilibili', title: '庆余年 有声剧全集', year: 2021 }),
+      makeItem({ sourceId: 'vod', title: '庆余年 第一季', year: 2019 }),
+    ];
+    // 两者同为「前缀」档（3 分），组顺序只能由非正片判定决定
+    expect(scoreRelevance(items[0]!.title, '庆余年')).toBe(scoreRelevance(items[1]!.title, '庆余年'));
+    const groups = groupSearchResults(items, '庆余年');
+    expect(groups.map((g) => g.title)).toEqual(['庆余年 第一季', '庆余年 有声剧全集']);
   });
 });
 
