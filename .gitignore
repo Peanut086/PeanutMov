@@ -74,6 +74,9 @@ tmp2/
 scripts/screen*.png
 scripts/ui.xml
 
+# 图像生成产物（logo/图标草稿，未被代码引用，不入库）
+vibe_images/
+
 # drpy 源扫描产物（含第三方订阅地址，同上不入库）
 .drpy-scan/
 
