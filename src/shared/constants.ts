@@ -123,6 +123,8 @@ export const GESTURE_TAP_MAX_MOVE_PX = 8;
 export const GESTURE_TAP_MAX_DURATION_MS = 300;
 export const GESTURE_DOUBLE_TAP_INTERVAL_MS = 250;
 export const GESTURE_LONG_PRESS_MS = 500;
+/** 呼出手势帮助的按住时长：必须明显长于倍速长按，两者才不互相抢手势 */
+export const GESTURE_HELP_LONG_PRESS_MS = 3000;
 export const GESTURE_DIRECTION_RATIO = 1.5;
 export const GESTURE_SEEK_MAX_SEC = 90;
 export const GESTURE_SENSITIVITY_FACTOR = {

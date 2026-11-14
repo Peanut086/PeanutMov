@@ -18,7 +18,7 @@ import { appEvents } from '@/services/events';
 import { danmakuService } from '@/services/danmakuService';
 import { DownloadQueue, transition } from '@/services/downloadQueue';
 import { createDownloadEngine, setDownloadEngine } from '@/services/downloadEngine';
-import { nativeFilePathOf, readBlob } from '@/services/downloadSink';
+import { nativeFilePathOf, nativePartPathOf, readBlob } from '@/services/downloadSink';
 import { deleteFile, stat, toPlayableUrl } from '@/native/fs';
 import { currentNetworkType, isOnline, onNetworkChange } from '@/native/network';
 import { onAppStateChange, type AppLifecycleState } from '@/native/appLifecycle';
@@ -177,6 +177,77 @@ async function summaryOf(): Promise<DownloadSummary> {
 async function emitQueueSummary(): Promise<void> {
   emitDownload({ type: 'queue', summary: await summaryOf() });
   appEvents.emit('downloads:changed', { id: null });
+}
+
+/**
+ * FIX-D9：直链失效类错误码。源站直链带时效签名，过期后返回的是
+ * 「缺少 xxx 头」之类的错误页而不是清单/分片——拿同一个死链再 retry
+ * 只会再撞一次墙，用户看到的就是"无法继续下载"。
+ */
+const STALE_LINK_CODES = new Set<string>([
+  'E_SOURCE_UNAVAILABLE',
+  'E_PARSE',
+  'E_HTTP_403',
+  'E_HTTP_404',
+  'E_AUTH',
+]);
+
+/** 去掉签名查询串：同一资源换了 token 仍算同一资源，已下载的字节可以继续用 */
+function resourcePathOf(url: string): string {
+  return url.split(/[?#]/, 1)[0] ?? url;
+}
+
+/**
+ * 失败重试前重新解析直链与请求头（解析失败则沿用原地址，不阻断重试）。
+ *
+ * 资源路径变了就是换了一份清单：旧的 `.part` 与分片序号不能再拼上去，
+ * 否则得到的是能"完成"却播不动的损坏文件（FIX-D8 同类）。
+ */
+async function refreshStaleLink(task: DownloadTask): Promise<void> {
+  try {
+    // 动态引入：libraryService 静态依赖 downloadService，顶层 import 会成环
+    const { libraryService } = await import('@/services/libraryService');
+    const play = await libraryService.resolvePlay({
+      mediaId: task.mediaId,
+      episodeId: task.episodeId,
+      lineId: task.lineId ?? null,
+      prefer: 'network',
+    });
+    if (!play.url || isLocalArtifactUrl(play.url)) return;
+
+    const resourceChanged = resourcePathOf(play.url) !== resourcePathOf(task.url);
+    const next: DownloadTask = {
+      ...task,
+      url: play.url,
+      headers: play.headers ?? task.headers,
+      format: play.format,
+      ...(resourceChanged
+        ? {
+            downloadedBytes: 0,
+            totalBytes: null,
+            completedSegments: [],
+            hlsTotalSegments: 0,
+            resumable: false,
+            filePath: null,
+            blobKey: null,
+          }
+        : {}),
+      updatedAt: Date.now(),
+    };
+    // 扩展名随地址变化时 .part 路径也变了，sink 清不到旧文件，这里显式删
+    if (resourceChanged && task.sink === 'filesystem') {
+      const oldPart = nativePartPathOf(task);
+      if (oldPart !== nativePartPathOf(next)) await deleteFile(oldPart).catch(() => undefined);
+    }
+    await persist(next);
+    logger.info('失败任务已刷新直链', {
+      taskId: task.id,
+      errorCode: task.errorCode,
+      resourceChanged,
+    });
+  } catch (e) {
+    logger.warn('刷新直链失败，沿用原地址重试', { taskId: task.id, error: toAppError(e).message });
+  }
 }
 
 /**
@@ -510,6 +581,7 @@ async function runCreate(
     mediaId: input.mediaId,
     episodeId: input.episodeId,
     episodeNumber: input.episodeNumber,
+    lineId: input.lineId ?? null,
     title: input.title,
     episodeTitle: input.episodeTitle,
     posterUrl: input.posterUrl,
@@ -845,6 +917,11 @@ export const downloadService = {
     // completed/canceled 无法 retry：先重置为 queued（内部方法，AN-78 重新下载）
     if (task.status === 'completed' || task.status === 'canceled') {
       return this.redownload(id);
+    }
+    // FIX-D9：直链过期类失败先换新地址/请求头，再入队（必须在 q.retry 之前落库，
+    // 队列会从库里重新读任务）
+    if (task.status === 'failed' && task.errorCode && STALE_LINK_CODES.has(task.errorCode)) {
+      await refreshStaleLink(task);
     }
     const next = await q.retry(id);
     await emitQueueSummary();

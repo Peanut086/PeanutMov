@@ -12,6 +12,7 @@ import { GestureRecognizer, type GestureContext, type GestureIntent } from '@/pl
  * - 水平位移 > 1.5×垂直 → 快进/快退；松手才提交 seek
  * - 垂直位移主导 → 左亮度、右音量
  * - 长按 500ms → 长按开始，松手结束
+ * - 长按 3000ms 且 ctx 允许 → 先结束倍速再派发帮助，本次长按被消费掉
  * - 拖动音量/亮度以起点值为基准，并在 0~100 钳制
  */
 const WIDTH = 360;
@@ -194,6 +195,49 @@ describe('GestureRecognizer', () => {
     recognizer.pointerMove({ pointerId: 1, clientX: 240, clientY: 322 }, ctx);
     vi.advanceTimersByTime(500);
     expect(intents.some((i) => i.type === 'long-press-start')).toBe(false);
+  });
+
+  it('未开启帮助资格时，长按多久都只走倍速（AC 长按帮助不抢手势）', () => {
+    const { recognizer, intents } = makeRecognizer();
+    recognizer.pointerDown({ pointerId: 1, clientX: 180, clientY: 320 }, makeCtx());
+    vi.advanceTimersByTime(10_000);
+    expect(intents).toEqual([{ type: 'long-press-start' }]);
+  });
+
+  it('开启帮助资格后按住 3 秒：先结束倍速再派发帮助，且本次长按不再产生别的 intent', () => {
+    const { recognizer, intents } = makeRecognizer();
+    recognizer.pointerDown({ pointerId: 1, clientX: 180, clientY: 320 }, makeCtx({ longPressHelpEnabled: true }));
+    vi.advanceTimersByTime(3_000);
+    expect(intents).toEqual([
+      { type: 'long-press-start' },
+      { type: 'long-press-end' },
+      { type: 'long-press-help' },
+    ]);
+
+    // 长按已被帮助消费：松手不该再派发单击或 seek-cancel
+    recognizer.pointerUp({ pointerId: 1, clientX: 180, clientY: 320 });
+    vi.advanceTimersByTime(400);
+    expect(intents.filter((i) => i.type === 'single-tap' || i.type === 'seek-cancel')).toHaveLength(0);
+  });
+
+  it('帮助阈值前松手只算倍速，不弹帮助', () => {
+    const { recognizer, intents } = makeRecognizer();
+    recognizer.pointerDown({ pointerId: 1, clientX: 180, clientY: 320 }, makeCtx({ longPressHelpEnabled: true }));
+    vi.advanceTimersByTime(1_200);
+    recognizer.pointerUp({ pointerId: 1, clientX: 180, clientY: 320 });
+    expect(intents).toEqual([{ type: 'long-press-start' }, { type: 'long-press-end' }]);
+    vi.advanceTimersByTime(5_000);
+    expect(intents.some((i) => i.type === 'long-press-help')).toBe(false);
+  });
+
+  it('按住期间移动超过 8px，帮助计时器一并作废', () => {
+    const { recognizer, intents } = makeRecognizer();
+    const ctx = makeCtx({ longPressHelpEnabled: true });
+    recognizer.pointerDown({ pointerId: 1, clientX: 180, clientY: 320 }, ctx);
+    vi.advanceTimersByTime(2_000);
+    recognizer.pointerMove({ pointerId: 1, clientX: 260, clientY: 322 }, ctx);
+    vi.advanceTimersByTime(5_000);
+    expect(intents.some((i) => i.type === 'long-press-help')).toBe(false);
   });
 
   it('多指：第二根手指按下被忽略', () => {

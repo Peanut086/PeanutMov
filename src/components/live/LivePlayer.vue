@@ -131,8 +131,10 @@ function engineEvents(url: string, seq: number): VideoEngineEvents {
 }
 
 // 与点播 AC-53 同口径：连接中/播放中保屏，暂停、失败、未选台交还系统超时
+// 令牌用于归属判定：本页卸载晚于下一页挂载时，不能清掉别人刚拿到的锁
+const keepAwakeOwner = {};
 watch(state, (s) => {
-  void deviceService.keepAwake(s === 'loading' || s === 'playing');
+  void deviceService.keepAwake(s === 'loading' || s === 'playing', keepAwakeOwner);
 });
 
 /**
@@ -314,7 +316,7 @@ onBeforeUnmount(() => {
   releaseUnderlay?.();
   releaseUnderlay = null;
   // 卸载时 state 仍可能是 playing（watcher 不会再跑），显式释放避免常亮泄漏到其它页面
-  void deviceService.keepAwake(false);
+  void deviceService.keepAwake(false, keepAwakeOwner);
   fullscreenController.destroy();
   void orientationController.lock('portrait');
 });

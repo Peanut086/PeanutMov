@@ -64,7 +64,11 @@ export interface DeviceService {
   readVolume(): Promise<number | null>;
   lockOrientation(orientation: 'portrait' | 'landscape' | null): Promise<void>;
   setStatusBarVisible(visible: boolean): Promise<void>;
-  keepAwake(on: boolean): Promise<void>;
+  /**
+   * 屏幕常亮（AC-53）。`owner` 是持锁者令牌（每个播放页实例一个）：
+   * Vue 先挂新页再卸旧页，旧页的释放不能把新页刚拿到的锁清掉。
+   */
+  keepAwake(on: boolean, owner?: object): Promise<void>;
   getNetworkStatus(): Promise<NetworkStatus>;
   onNetworkChange(cb: (s: NetworkStatus) => void): () => void;
   /** App 退后台/回前台（Web 用 visibilitychange 兜底） */
@@ -74,7 +78,27 @@ export interface DeviceService {
   exitApp(): void;
 }
 
+/**
+ * 常亮锁的期望态。真实状态以原生窗口 flag 为准——Activity 重建
+ * （MainActivity 在 WebView 渲染进程崩溃时会 recreate）会把 flag 清掉，
+ * 而 JS 侧缓存仍以为亮着，于是播放中永久熄屏。
+ */
 let awakeActive = false;
+let awakeOwner: object | null = null;
+let awakeCheckedAt = 0;
+let awakeWatchdog: ReturnType<typeof setInterval> | null = null;
+
+/** 期望态未变时，距上次核对超过这个间隔就重新问一次原生 */
+const AWAKE_RECHECK_MS = 20_000;
+/** 持锁期间的复核周期：flag 掉了（重建/ROM 清理/跨页释放）也能自愈 */
+const AWAKE_WATCHDOG_MS = 30_000;
+
+function stopAwakeWatchdog(): void {
+  if (awakeWatchdog !== null) {
+    clearInterval(awakeWatchdog);
+    awakeWatchdog = null;
+  }
+}
 
 /** 非法值一律不落到系统：写坏用户的全局音量比不写严重得多 */
 function clampVolumePercent(percent: number): number | null {
@@ -139,16 +163,34 @@ export const deviceService: DeviceService = {
     }
   },
 
-  async keepAwake(on: boolean): Promise<void> {
+  async keepAwake(on: boolean, owner?: object): Promise<void> {
     if (!isNative()) {
       awakeActive = on;
       return;
     }
-    if (on === awakeActive) return;
+    if (on) {
+      awakeOwner = owner ?? null;
+    } else if (owner && awakeOwner && awakeOwner !== owner) {
+      // 锁已被别的页面接手，这次释放属于过期请求
+      return;
+    }
+    if (on === awakeActive && Date.now() - awakeCheckedAt < AWAKE_RECHECK_MS) return;
     try {
-      if (on) await KeepAwake.keepAwake();
-      else await KeepAwake.allowSleep();
+      const { isKeptAwake } = await KeepAwake.isKeptAwake();
+      if (isKeptAwake !== on) {
+        if (on) await KeepAwake.keepAwake();
+        else await KeepAwake.allowSleep();
+      }
       awakeActive = on;
+      awakeCheckedAt = Date.now();
+      if (!on) {
+        awakeOwner = null;
+        stopAwakeWatchdog();
+      } else if (awakeWatchdog === null) {
+        awakeWatchdog = setInterval(() => {
+          void deviceService.keepAwake(true, awakeOwner ?? undefined);
+        }, AWAKE_WATCHDOG_MS);
+      }
     } catch (e) {
       logger.warn('常亮切换失败（忽略）', e);
     }

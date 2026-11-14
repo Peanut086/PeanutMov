@@ -28,6 +28,7 @@ import { emptyEmbeddedTracks, type EmbeddedTrackState } from '@/player/PlayerCon
 import { shouldIgnoreShortcut } from '@/player/shortcutGuard';
 import { formatClock } from '@/shared/time';
 import { toErrorShape, isCanceled, AppError } from '@/shared/errors';
+import { logger } from '@/shared/logger';
 import { danmakuPerf } from '@/shared/danmakuPerf';
 import { guidanceOf, magnetUrlOf } from '@/shared/sourceFailure';
 import { IMG_W_BLUR, sizedImage } from '@/shared/imageSize';
@@ -76,9 +77,10 @@ import { useSkipIntro } from '@/composables/useSkipIntro';
 import { useDanmakuPick } from '@/composables/useDanmakuPick';
 import { prefersReducedMotion } from '@/composables/useSpring';
 import type { AmbilightBlockReason } from '@/composables/useAmbilight';
-import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
+import { findEpisodeOwnerLineId, offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
 import { DanmakuOverlay } from '@/player/DanmakuOverlay';
 import type { GestureIntent } from '@/player/GestureRecognizer';
+import { canShowGestureHelp, markGestureHelpShown } from '@/player/gestureHelpPolicy';
 import { danmakuService } from '@/services/danmakuService';
 import DanmakuSettingsSheet from '@/components/player/DanmakuSettingsSheet.vue';
 import DanmakuStylePanel from '@/components/player/DanmakuStylePanel.vue';
@@ -124,6 +126,18 @@ const episodeIdParam = computed(() =>
 );
 const lineIdParam = computed(() => (typeof route.query.lineId === 'string' ? route.query.lineId : null));
 const restart = computed(() => route.query.restart === '1');
+
+/**
+ * 本地优先起播（`?local=1`）时锁定的真实播放身份，来自匹配上的那条下载任务。
+ *
+ * 之后详情才在后台加载完，`currentEpisode` 会随网络剧集列表变化；画面放的仍是本地这一集，
+ * 标题、选集高亮、片头标记与进度写回都必须以这里为准，否则会把第 2 集记成第 1 集。
+ * null = 当前播放内容来自在线解析。
+ */
+const localIdentity = ref<{ episodeId: string; episodeNumber: number | null } | null>(null);
+
+/** 常亮锁持锁者令牌（本页实例唯一，交给 deviceService 判归属） */
+const keepAwakeOwner = {};
 
 /* ---------- 页面数据 ---------- */
 const detailReady = ref(false);
@@ -175,7 +189,23 @@ const rootRef = ref<HTMLElement | null>(null);
 useScopedPalette(rootRef, computed(() => item.value?.posterUrl ?? null));
 const lines = computed(() => library.detail?.lines ?? []);
 const lineId = ref<string | null>(null);
-const currentLineId = computed(() => lineId.value ?? lineIdParam.value ?? lines.value[0]?.id ?? null);
+
+/**
+ * 线路优先级：用户显式切换 > 路由里这一集真正所属的线路 > 路由 query 带的线路 > 首条。
+ *
+ * 第二条是关键——不同线路的剧集 id 各不相同，默认落到首条线路时路由里的 id 往往不在
+ * 该线路的选集列表内，于是解析不到目标集并回退第 1 集（"下载的第 2 集播成了第 1 集"）。
+ */
+const currentLineId = computed(() => {
+  if (lineId.value) return lineId.value;
+  const ownerLineId = findEpisodeOwnerLineId(
+    library.detail?.episodes ?? [],
+    lines.value.map((line) => line.id),
+    episodeIdParam.value,
+  );
+  if (ownerLineId) return ownerLineId;
+  return lineIdParam.value ?? lines.value[0]?.id ?? null;
+});
 const currentLine = computed(() => lines.value.find((l) => l.id === currentLineId.value) ?? null);
 
 const episodes = computed<Episode[]>(() => {
@@ -189,21 +219,37 @@ const episodes = computed<Episode[]>(() => {
 const currentEpisode = computed<Episode | null>(() => {
   const list = episodes.value;
   if (list.length === 0) return null;
-  if (!episodeIdParam.value) return list[0] ?? null;
+  const wanted = episodeIdParam.value;
+  if (!wanted) return list[0] ?? null;
   // 精确匹配当前线路
-  const byId = list.find((ep) => ep.id === episodeIdParam.value);
+  const byId = list.find((ep) => ep.id === wanted);
   if (byId) return byId;
-  // 跨线路回退：用历史记录的 episodeNumber 匹配（不同线路同集号）
-  const rec = history.items.find((r) => r.mediaId === mediaId.value);
+  // 跨线路回退：只用**这一集自己**的历史记录按集号重映射。
+  // 取该媒体的第一条记录会拿到别的集的集号，把用户送到完全不相干的一集。
+  const rec = history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === wanted);
   if (rec?.episodeNumber != null) {
     const resolved = resolveTargetEpisode({
-      recordedEpisodeId: episodeIdParam.value,
+      recordedEpisodeId: wanted,
       recordedNumber: rec.episodeNumber,
       episodes: list,
     });
     if (resolved.episode) return resolved.episode;
   }
+  logger.warn('路由集号在当前线路无匹配，回退首集', {
+    mediaId: mediaId.value,
+    episodeId: wanted,
+    lineId: currentLineId.value,
+    episodeCount: list.length,
+  });
   return list[0] ?? null;
+});
+
+/** 正在播放的真实身份：本地优先起播以本地任务为准，在线解析以解析出的当前集为准。 */
+const playingIdentity = computed<{ episodeId: string; episodeNumber: number | null } | null>(() => {
+  const local = localIdentity.value;
+  if (local) return local;
+  const ep = currentEpisode.value;
+  return ep ? { episodeId: ep.id, episodeNumber: ep.number } : null;
 });
 
 /** 批次1：线路健康状态 Map（供 LineSelector 显示状态点） */
@@ -337,9 +383,10 @@ const playerCtl = usePlayerController({
       .then((m) => m.setPlayerImmersive(on))
       .catch(() => undefined),
   // AC-53：播放时保持屏幕常亮；Web 下 no-op。
+  // 带本页令牌：路由切换时新页先挂、旧页后卸，旧页的释放不该清掉新页的锁。
   setKeepAwake: (on) =>
     import('@/services/deviceService')
-      .then((m) => m.deviceService.keepAwake(on))
+      .then((m) => m.deviceService.keepAwake(on, keepAwakeOwner))
       .catch(() => undefined),
   // API-12 二期：亮度写窗口背光、音量写媒体流档位。
   // 原生能力缺失时这些方法返回 false/null，播放器整体退回「遮罩 + 播放器倍率」。
@@ -371,13 +418,14 @@ const playerCtl = usePlayerController({
     // 页面卸载后不再写回进度，避免死实例拿错上下文污染历史记录
     if (!pageAlive) return null;
     const it = item.value;
-    const ep = currentEpisode.value;
+    // 用「正在播的这一集」而不是详情列表解析出的当前集：写错集号会让历史记录自增殖
+    const identity = playingIdentity.value;
     if (!it) return null;
     return {
       sourceId: it.sourceId,
       mediaId: it.id,
-      episodeId: ep?.id ?? null,
-      episodeNumber: ep?.number ?? null,
+      episodeId: identity?.episodeId ?? null,
+      episodeNumber: identity?.episodeNumber ?? null,
       title: it.title,
       posterUrl: it.posterUrl,
       totalEpisodes: episodes.value.length > 0 ? episodes.value.length : null,
@@ -563,6 +611,20 @@ const downloading = ref(false);
 // OPT-10：手势帮助浮层
 const gestureHelpVisible = ref(false);
 
+/**
+ * 长按升级成帮助的资格：播放中的长按归倍速手势，只有非播放态才允许按住不动呼出帮助。
+ * 是否真的弹出还要过 `gestureHelpPolicy` 的会话/冷却判定（见 `maybeShowGestureHelp`）。
+ */
+const gestureHelpEnabled = computed(() => !player.playing);
+
+/** 长按自动触发：受策略约束，同一个会话内不重复弹。 */
+function maybeShowGestureHelp(): void {
+  if (!canShowGestureHelp()) return;
+  markGestureHelpShown();
+  gestureHelpVisible.value = true;
+}
+
+/** 主动触发（「更多 → 手势说明」）：用户要找它，就不设门槛。 */
 function showGestureHelp(): void {
   gestureHelpVisible.value = true;
 }
@@ -665,8 +727,8 @@ watch(
 /* ---------- 跳过片头 / 片尾（B-06） ---------- */
 
 const skipMarkOpen = ref(false);
-/** 提示记录要按「正在播的这一集」算；换集参数没变时退回当前集对象 */
-const playingEpisodeId = computed(() => currentEpisode.value?.id ?? episodeIdParam.value ?? '');
+/** 片头/片尾标记按「正在播的这一集」存取；本地起播时不能被详情列表带偏 */
+const playingEpisodeId = computed(() => playingIdentity.value?.episodeId ?? episodeIdParam.value ?? '');
 
 const skipIntro = useSkipIntro({
   mediaId,
@@ -916,8 +978,11 @@ async function loadLocalPlay(
   playback: PlaybackSource,
   title: string,
   posterUrl: string | null,
-  episodeId: string,
+  identity: { episodeId: string; episodeNumber: number | null },
 ): Promise<void> {
+  const episodeId = identity.episodeId;
+  // 起播即锁定身份：后台详情加载完成后 currentEpisode 会跟着网络列表变化，这里不跟着漂
+  localIdentity.value = identity;
   pageLoading.value = true;
   loadError.value = null;
   startLoadingProgress();
@@ -978,7 +1043,10 @@ async function tryPlayLocalFirst(episodeId: string): Promise<boolean> {
 
   const playback = await downloadService.taskToPlayback(localTask);
   if (!playback || !pageAlive) return false;
-  await loadLocalPlay(playback, localTask.title, localTask.posterUrl, episodeId);
+  await loadLocalPlay(playback, localTask.title, localTask.posterUrl, {
+    episodeId,
+    episodeNumber: localTask.episodeNumber ?? record?.episodeNumber ?? null,
+  });
   bindEmbeddedTracks();
   return true;
 }
@@ -990,6 +1058,8 @@ async function tryPlayLocalFirst(episodeId: string): Promise<boolean> {
  */
 async function resolveAndLoad(): Promise<boolean> {
   const epoch = ++loadEpoch;
+  // 一旦走在线解析，画面就不再是本地下载任务那一集——身份必须交还给 currentEpisode
+  localIdentity.value = null;
   const it = item.value;
   const ep = currentEpisode.value;
   if (!it || !ep) {
@@ -1228,10 +1298,15 @@ const titleText = computed(() => fallbackTitle.value);
 /** 音频模式的背景层只是 `blur(28px)` 的色底，按原图请求纯属浪费 */
 const audioBlurSrc = computed(() => sizedImage(item.value?.posterUrl ?? null, IMG_W_BLUR));
 const episodeLabel = computed(() => {
+  const identity = playingIdentity.value;
+  if (!identity) return '';
   const ep = currentEpisode.value;
-  if (!ep) return '';
+  const number = identity.episodeNumber ?? (ep?.id === identity.episodeId ? ep.number : null);
+  if (number === null) return '';
   if (!hasEpisodeNav.value && episodes.value.length <= 1) return '';
-  return `第 ${ep.number} 集${ep.title && ep.title !== `第 ${ep.number} 集` ? ` · ${ep.title}` : ''}`;
+  // 副标题只有当详情里的这一集正是正在播的这一集时才可信
+  const sub = ep && ep.number === number && ep.title && ep.title !== `第 ${number} 集` ? ` · ${ep.title}` : '';
+  return `第 ${number} 集${sub}`;
 });
 const qualityLabel = computed(() => (resolvedQuality.value === QUALITY_AUTO ? '自动' : resolvedQuality.value));
 
@@ -1239,6 +1314,7 @@ const qualityLabel = computed(() => (resolvedQuality.value === QUALITY_AUTO ? '�
 
 /**
  * 返回键 / 顶栏返回（AC-52 返回键分层）：
+ * - 第 1 次：帮助浮层打开 → 只关浮层；
  * - 第 1 次：全屏中 → 只退全屏，保持播放页与播放状态；
  * - 第 2 次：退出播放页 → 先 `flushProgress()` 写回进度，再回详情。
  *
@@ -1246,6 +1322,11 @@ const qualityLabel = computed(() => (resolvedQuality.value === QUALITY_AUTO ? '�
  * 走完全相同的分支。
  */
 function goBack(): void {
+  // 帮助浮层打开时，返回键先撤浮层（与全屏同一套分层，AC-52）
+  if (gestureHelpVisible.value) {
+    closeGestureHelp();
+    return;
+  }
   if (player.fullscreen) {
     void exitFullscreen();
     return;
@@ -2213,6 +2294,11 @@ function onDanmakuLike(): void {
  * 没点中则一切照旧——互动开关关掉时 `tapAt` 直接返回 false，链路与升级前完全一致。
  */
 function onStageIntent(intent: GestureIntent): void {
+  // 长按帮助不进 onGesture：它不是播放控制，且要过弹出策略
+  if (intent.type === 'long-press-help') {
+    maybeShowGestureHelp();
+    return;
+  }
   if (intent.type === 'single-tap' && danmakuPick.tapAt(intent.x, intent.y)) return;
   onGesture(intent);
 }
@@ -2286,6 +2372,8 @@ function clearLockReveal(): void {
 function toggleScreenLock(): void {
   screenLocked.value = !screenLocked.value;
   if (screenLocked.value) {
+    // 锁屏会吃掉画面上的所有交互层，浮层必须真关掉而不是被隐藏，否则解锁后它又冒出来
+    closeGestureHelp();
     setControlsVisible(false);
     revealLockPill();
     ui.toast('已锁定屏幕，轻触画面可解锁', 'info', 2000);
@@ -2342,7 +2430,8 @@ function onKeydown(ev: KeyboardEvent): void {
       void toggleFullscreen();
       break;
     case 'Escape':
-      if (player.fullscreen) void exitFullscreen();
+      if (gestureHelpVisible.value) closeGestureHelp();
+      else if (player.fullscreen) void exitFullscreen();
       break;
     default:
       break;
@@ -2641,16 +2730,16 @@ onBeforeUnmount(() => {
             v-if="!pageLoading && !loadError && !player.error && !screenLocked"
             :seek-max-sec="gestureSettings.seekMaxSec"
             :sensitivity="gestureSettings.sensitivity"
+            :long-press-help-enabled="gestureHelpEnabled"
             @intent="onStageIntent"
             @pointer-down="onGesturePointerDown"
-            @long-press-help="showGestureHelp"
           />
 
           <!-- P1-1：手势引导（首次进入自动显示） -->
           <GestureGuide v-if="!pageLoading && !loadError && !player.error && !screenLocked" />
 
-          <!-- OPT-10：手势帮助浮层（长按触发） -->
-          <GestureHelpOverlay :visible="gestureHelpVisible && !screenLocked" @close="closeGestureHelp" />
+          <!-- OPT-10：手势帮助浮层（暂停态长按 3 秒 / 「更多 → 手势说明」） -->
+          <GestureHelpOverlay :visible="gestureHelpVisible" @close="closeGestureHelp" />
 
           <PlayerHud
             :kind="hud.kind"
@@ -2972,7 +3061,7 @@ onBeforeUnmount(() => {
           </div>
           <EpisodeList
             :episodes="episodes"
-            :current-id="currentEpisode?.id ?? null"
+            :current-id="playingIdentity?.episodeId ?? null"
             :downloaded-ids="downloadedIds"
             @select="chooseEpisode"
           />
@@ -3028,7 +3117,7 @@ onBeforeUnmount(() => {
     <BottomSheet v-model="episodeOpen" title="选集">
       <EpisodeList
         :episodes="episodes"
-        :current-id="currentEpisode?.id ?? null"
+        :current-id="playingIdentity?.episodeId ?? null"
         @select="chooseEpisode"
       />
     </BottomSheet>
@@ -3073,6 +3162,11 @@ onBeforeUnmount(() => {
             label="纯音频模式"
             @change="setAudioOnly"
           />
+        </li>
+        <li>
+          <button class="sheet-list__item" type="button" @click="moreOpen = false; showGestureHelp()">
+            手势说明
+          </button>
         </li>
       </ul>
     </BottomSheet>

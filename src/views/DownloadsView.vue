@@ -465,7 +465,9 @@ function onPlay(task: DownloadTask): void {
   void router.push({
     name: 'player',
     params: { mediaId: task.mediaId, episodeId: task.episodeId },
-    query: { local: '1' },
+    // 带上任务当初解析到的线路：本地文件缺失时才会退回在线播放，
+    // 没有这个提示就只能落到第一条线路，而那一线路未必有这一集
+    query: { local: '1', ...(task.lineId ? { lineId: task.lineId } : {}) },
   });
 }
 

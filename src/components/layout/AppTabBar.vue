@@ -9,9 +9,10 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, useTemplateRef, wa
 import { useRoute, useRouter } from 'vue-router';
 
 import { useDownloadStore } from '@/stores/downloadStore';
-import { useUiStore, type TabKey } from '@/stores/uiStore';
+import type { TabKey } from '@/stores/uiStore';
 import { useHaptic } from '@/composables/useHaptic';
 import { animateSpring, prefersReducedMotion } from '@/composables/useSpring';
+import { logger } from '@/shared/logger';
 import { scrollToTop } from '@/shared/scroll';
 
 interface TabItem {
@@ -30,7 +31,6 @@ const tabs: TabItem[] = [
 
 const route = useRoute();
 const router = useRouter();
-const ui = useUiStore();
 const downloads = useDownloadStore();
 const { haptic } = useHaptic();
 
@@ -43,11 +43,17 @@ onMounted(() => {
   if (downloads.state === 'idle') void downloads.load().catch(() => undefined);
 });
 
-const activeTab = computed<string>(() => {
-  const metaTab = typeof route.meta.tab === 'string' ? route.meta.tab : null;
-  if (metaTab) return metaTab;
-  const matched = route.matched.find((r) => typeof r.meta.tab === 'string')?.meta.tab;
-  return typeof matched === 'string' ? matched : 'home';
+function isTabKey(value: unknown): value is TabKey {
+  return typeof value === 'string' && tabs.some((tab) => tab.key === value);
+}
+
+/** 选中态唯一来源是路由 `meta.tab`，不再另存一份 store 状态（两处不同步必然错高亮）。 */
+const activeTab = computed<TabKey>(() => {
+  const raw = route.meta.tab ?? route.matched.find((r) => typeof r.meta.tab === 'string')?.meta.tab;
+  if (raw === undefined) return 'home';
+  if (isTabKey(raw)) return raw;
+  logger.warn('路由 meta.tab 与底部 Tab 不匹配，按首页处理', { tab: raw, path: route.path });
+  return 'home';
 });
 
 /** 未完成任务数（进行中 + 等待 + 暂停） */
@@ -59,7 +65,6 @@ const badgeText = computed(() => (pendingCount.value > 99 ? '99+' : String(pendi
 
 function go(tab: TabItem): void {
   haptic('light');
-  ui.setActiveTab(tab.key);
   if (route.path === tab.to) {
     // 点击当前 Tab：滚动内层容器回顶（window.scrollTo 对内层 overflow 容器无效）
     scrollToTop();

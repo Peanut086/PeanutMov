@@ -463,6 +463,12 @@ export interface DownloadTask {
   mediaId: string;
   episodeId: string;
   episodeNumber: number | null;
+  /**
+   * 资源实际来源线路（取自解析结果的 `PlaybackSource.lineId`）。
+   * 下载列表入口据此回选线路，避免"下载的是第 2 集、在线解析落到第 1 集"。
+   * 可选：老任务没有该字段，读取时按 null 处理，不做回填。
+   */
+  lineId?: string | null;
   title: string;
   episodeTitle: string | null;
   posterUrl: string | null;
@@ -527,6 +533,8 @@ export interface CreateDownloadInput {
   mediaId: string;
   episodeId: string;
   episodeNumber: number | null;
+  /** 资源来源线路；由 `toDownloadInputs` 从解析结果透传，缺省 null */
+  lineId?: string | null;
   title: string;
   episodeTitle: string | null;
   posterUrl: string | null;

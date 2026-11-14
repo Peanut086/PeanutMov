@@ -7,7 +7,8 @@
  *
  * 由于 recognizer 是纯类，本组件保持"薄"：无业务判断，便于调试与替换。
  *
- * OPT-10：增加长按 2 秒触发帮助浮层的能力，以及触摸视觉反馈（光晕）。
+ * OPT-10：增加触摸视觉反馈（光晕）。长按（含升级为帮助浮层）的时序统一由
+ * `GestureRecognizer` 裁决，本层不再自建第二份长按计时器。
  */
 import { ref, onBeforeUnmount } from 'vue';
 
@@ -17,8 +18,6 @@ import { clampBrightness } from '@/player/brightness';
 
 const emit = defineEmits<{
   (e: 'intent', intent: GestureIntent): void;
-  /** OPT-10：长按 2 秒触发帮助 */
-  (e: 'long-press-help'): void;
   /** 按下瞬间：父级用它刷新可能已被实体音量键改动的基准值 */
   (e: 'pointer-down'): void;
 }>();
@@ -30,22 +29,16 @@ const props = withDefaults(
     sensitivity?: 'low' | 'medium' | 'high';
     /** OPT-10：是否启用触摸光晕反馈 */
     touchGlow?: boolean;
+    /** 允许把「按住不动」升级为手势帮助 */
+    longPressHelpEnabled?: boolean;
   }>(),
-  { seekMaxSec: 90, sensitivity: 'medium', touchGlow: true },
+  { seekMaxSec: 90, sensitivity: 'medium', touchGlow: true, longPressHelpEnabled: false },
 );
 
 const player = usePlayerStore();
 const layerRef = ref<HTMLElement | null>(null);
 
 let recognizer: GestureRecognizer | null = null;
-
-// OPT-10：长按检测
-const LONG_PRESS_MS = 2000;
-let longPressTimer: ReturnType<typeof setTimeout> | null = null;
-let longPressTriggered = false;
-let longPressStartX = 0;
-let longPressStartY = 0;
-const LONG_PRESS_MOVE_THRESHOLD = 10; // 移动超过此距离取消长按
 
 // OPT-10：触摸光晕
 const touchGlowVisible = ref(false);
@@ -63,6 +56,7 @@ function ctx(): GestureContext {
     brightness: clampBrightness(player.brightness),
     seekMaxSec: props.seekMaxSec,
     sensitivity: props.sensitivity,
+    longPressHelpEnabled: props.longPressHelpEnabled,
   };
 }
 
@@ -84,20 +78,6 @@ function onPointerDown(ev: PointerEvent): void {
   emit('pointer-down');
   ensureRecognizer().pointerDown({ pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY }, ctx());
 
-  // OPT-10：启动长按检测
-  longPressTriggered = false;
-  longPressStartX = ev.clientX;
-  longPressStartY = ev.clientY;
-  if (longPressTimer) clearTimeout(longPressTimer);
-  longPressTimer = setTimeout(() => {
-    if (!longPressTriggered) {
-      longPressTriggered = true;
-      // REV-09 修复：2000ms 帮助浮层触发时，主动取消 recognizer 的长按倍速手势
-      recognizer?.cancelActiveGesture();
-      emit('long-press-help');
-    }
-  }, LONG_PRESS_MS);
-
   // OPT-10：触摸光晕
   if (props.touchGlow) {
     const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect();
@@ -107,30 +87,8 @@ function onPointerDown(ev: PointerEvent): void {
   }
 }
 
-function clearLongPressTimer(): void {
-  if (longPressTimer) {
-    clearTimeout(longPressTimer);
-    longPressTimer = null;
-  }
-}
-
 function onPointerMove(ev: PointerEvent): void {
   ensureRecognizer().pointerMove({ pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY }, ctx());
-
-  // REV-10：如果 recognizer 已进入确定手势模式，取消长按帮助计时器
-  if (recognizer && recognizer.getMode() !== 'undetermined' && recognizer.getMode() !== 'none') {
-    clearLongPressTimer();
-  }
-
-  // OPT-10：移动超过阈值取消长按
-  if (longPressTimer && !longPressTriggered) {
-    const dx = ev.clientX - longPressStartX;
-    const dy = ev.clientY - longPressStartY;
-    if (Math.sqrt(dx * dx + dy * dy) > LONG_PRESS_MOVE_THRESHOLD) {
-      clearTimeout(longPressTimer);
-      longPressTimer = null;
-    }
-  }
 
   // OPT-10：更新光晕位置
   if (props.touchGlow && touchGlowVisible.value) {
@@ -143,32 +101,18 @@ function onPointerMove(ev: PointerEvent): void {
 function onPointerUp(ev: PointerEvent): void {
   (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId);
   ensureRecognizer().pointerUp({ pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY });
-
-  // OPT-10：清理长按计时器
-  if (longPressTimer) {
-    clearTimeout(longPressTimer);
-    longPressTimer = null;
-  }
   touchGlowVisible.value = false;
 }
 
 function onPointerCancel(ev: PointerEvent): void {
   ensureRecognizer().pointerCancel({ pointerId: ev.pointerId });
-
-  // OPT-10：清理
-  if (longPressTimer) {
-    clearTimeout(longPressTimer);
-    longPressTimer = null;
-  }
   touchGlowVisible.value = false;
 }
 
-// OPT-10：组件卸载时清理
+// REV-12：卸载时销毁 recognizer，避免残留计时器把 intent 打到已卸载实例
 onBeforeUnmount(() => {
-  if (longPressTimer) {
-    clearTimeout(longPressTimer);
-    longPressTimer = null;
-  }
+  recognizer?.destroy();
+  recognizer = null;
 });
 
 defineExpose({ destroy: () => recognizer?.destroy() });

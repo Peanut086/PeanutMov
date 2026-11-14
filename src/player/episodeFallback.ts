@@ -7,6 +7,9 @@
  * 2. 集号已超出当前源范围（如记录第 30 集、源只剩 20 集）→ 回退首集，
  *    并把 `offlineNumber` 交给调用方提示「看到第 N 集（已下线）」（AC-68）。
  *
+ * 附带的 `findEpisodeOwnerLineId` 解决同一类"id 对不上线路"的问题：
+ * 一个媒体里每集的 id 只属于它所在的那条线路，拿 id 反查线路比拿首条线路靠谱。
+ *
  * 纯函数，不依赖 store/router，便于单测。
  */
 export interface EpisodeLike {
@@ -62,4 +65,21 @@ export function resolveTargetEpisode<T extends EpisodeLike>(
       : null;
 
   return { episode: first, offlineNumber };
+}
+
+/**
+ * 按剧集 id 反查它真正所属、且仍在可选线路列表里的那条线路。
+ *
+ * 详情尚未加载、该集不属于任何线路、或所属线路已被过滤掉时返回 null，
+ * 由调用方决定下一步（而不是拿首条线路硬套——那会让目标集的 id 落在列表外，
+ * 最终回退到第 1 集）。
+ */
+export function findEpisodeOwnerLineId(
+  episodes: readonly { id: string; lineId: string }[],
+  lineIds: readonly string[],
+  episodeId: string | null,
+): string | null {
+  if (!episodeId) return null;
+  const ownerLineId = episodes.find((ep) => ep.id === episodeId)?.lineId;
+  return ownerLineId && lineIds.includes(ownerLineId) ? ownerLineId : null;
 }

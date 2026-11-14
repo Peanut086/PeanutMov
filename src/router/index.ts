@@ -133,7 +133,7 @@ const routes: RouteRecordRaw[] = [
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),
-    meta: { requiresLayout: true, tab: 'settings', depth: 0, title: '我的' },
+    meta: { requiresLayout: true, tab: 'me', depth: 0, title: '我的' },
   },
   {
     path: '/settings/sources/import',

@@ -2,10 +2,11 @@
 /**
  * OPT-10：手势帮助浮层
  *
- * 长按触发，显示所有手势操作的图示与说明。
- * 与 GestureGuide 的区别：
- * - GestureGuide：首次进入自动显示，5 秒后自动消失
- * - GestureHelpOverlay：用户主动触发（长按），手动关闭
+ * 显示所有手势操作的图示与说明，手动关闭。
+ * 触发入口有两个，弹出策略不同（见 `player/gestureHelpPolicy`）：
+ * - 暂停时长按 3 秒自动呼出：同一会话内最多 1 次，之后进入冷却
+ * - 「更多 → 手势说明」：用户主动行为，始终可弹
+ * 与 GestureGuide 的区别：GestureGuide 首次进入自动显示，5 秒后自动消失。
  */
 withDefaults(
   defineProps<{
@@ -126,8 +127,8 @@ function onClose(): void {
               </svg>
             </div>
             <div class="gesture-help-item__text">
-              <span class="gesture-help-item__label">长按 2 秒</span>
-              <span class="gesture-help-item__desc">随时呼出本帮助面板</span>
+              <span class="gesture-help-item__label">暂停时长按 3 秒</span>
+              <span class="gesture-help-item__desc">呼出本帮助面板，也可用「更多 → 手势说明」</span>
             </div>
           </div>
         </div>

@@ -11,7 +11,7 @@
  *     <div class="scroll-container">...</div>
  *   </PullToRefresh>
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch, type CSSProperties } from 'vue';
 
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import CountdownRing from '@/components/common/CountdownRing.vue';
@@ -50,8 +50,15 @@ const triggered = ref(false);
 
 /** 根元素引用，用于检测可滚动子容器 */
 const rootRef = ref<HTMLElement | null>(null);
-/** 实际滚动容器（插槽内第一个可滚动子元素） */
+/** 实际滚动容器（插槽内或祖先里真正在滚的那个）；null 表示滚的是文档 */
 let scrollEl: HTMLElement | null = null;
+/** 文档滚动模式：指示器必须钉在视口上，否则会随页面滚出屏幕 */
+const documentScroll = ref(false);
+/** 文档模式下指示器的视口锚点（内容区上沿，即顶栏/筛选条下方） */
+const anchorTop = ref(0);
+
+/** 指示器盒子高度，与 .ptr-indicator 的 height 同步 */
+const INDICATOR_HEIGHT = 64;
 
 /** 是否处于激活状态（下拉超过阈值或正在刷新） */
 const isActive = computed(() => pullDistance.value >= props.threshold || props.loading || triggered.value);
@@ -72,29 +79,59 @@ onMounted(() => {
   onBeforeUnmount(() => {
     mediaQuery?.removeEventListener('change', handler);
   });
+});
 
-  // 查找插槽内第一个可滚动子元素（REV-02）
+/** 用户能滚的容器：overflow-y 允许滚动，且内容确实溢出了 */
+function isScrollable(el: HTMLElement): boolean {
+  const overflowY = window.getComputedStyle(el).overflowY;
+  const canScroll = overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay';
+  return canScroll && el.scrollHeight > el.clientHeight + 1;
+}
+
+/**
+ * 找出真正在滚的容器（REV-02 + 11-14 #4）。
+ *
+ * 只在挂载时找一次是不够的：数据回来后内容才撑高。更要紧的是本 App 的骨架
+ * `min-height:100%` 没有确定高度，内层 body 的 `overflow-y:auto` 从不溢出，
+ * **滚的是文档**——找不到容器时必须按文档处理，而不是当成"永远在顶部"。
+ */
+function resolveScroller(): void {
+  scrollEl = null;
   const root = rootRef.value;
-  if (root) {
-    for (let i = 0; i < root.children.length; i++) {
-      const child = root.children[i] as HTMLElement;
-      if (child.scrollHeight > child.clientHeight) {
-        scrollEl = child;
-        break;
-      }
+  if (!root) return;
+  for (let i = 0; i < root.children.length; i += 1) {
+    const child = root.children[i];
+    if (child instanceof HTMLElement && isScrollable(child)) {
+      scrollEl = child;
+      return;
     }
   }
-});
+  let node = root.parentElement;
+  while (node && node !== document.body) {
+    if (isScrollable(node)) {
+      scrollEl = node;
+      return;
+    }
+    node = node.parentElement;
+  }
+}
 
 /** 判断滚动容器是否位于顶部 */
 function isAtTop(): boolean {
-  return (scrollEl?.scrollTop ?? 0) <= 0;
+  if (scrollEl) return scrollEl.scrollTop <= 0;
+  return (window.scrollY || document.documentElement.scrollTop || 0) <= 0;
 }
 
 function onTouchStart(e: TouchEvent): void {
   if (props.loading || triggered.value) return;
+  resolveScroller();
   /* 只在滚动容器位于顶部时响应下拉 */
   if (!isAtTop()) return;
+  documentScroll.value = scrollEl === null;
+  if (documentScroll.value) {
+    // 内容区上沿此刻在视口里的位置：指示器从这里往下滑出，不会盖住顶栏
+    anchorTop.value = Math.max(0, Math.round(rootRef.value?.getBoundingClientRect().top ?? 0));
+  }
   touching.value = true;
   startY.value = e.touches[0].clientY;
 }
@@ -140,12 +177,26 @@ function onLoadingChange(): void {
 watch(() => props.loading, onLoadingChange);
 
 /** 指示器位移（跟随 pullDistance） */
-const indicatorStyle = computed(() => ({
-  transform: `translateY(${pullDistance.value}px)`,
-  transition: touching.value ? 'none' : reducedMotion.value
-    ? 'transform 0.1s ease'
-    : 'transform 0.3s cubic-bezier(0.2, 0, 0, 1)',
-}));
+const indicatorStyle = computed<CSSProperties>(() => {
+  const transition = touching.value
+    ? 'none'
+    : reducedMotion.value
+      ? 'transform 0.1s ease'
+      : 'transform 0.3s cubic-bezier(0.2, 0, 0, 1)';
+  if (!documentScroll.value) {
+    return { transform: `translateY(${pullDistance.value}px)`, transition };
+  }
+  // 文档在滚：absolute 会跟着页面滚走，且被 .pull-to-refresh 的 overflow:hidden 裁掉。
+  // fixed 脱离裁剪，钉在内容区上沿；空闲时透明，避免常驻盖在顶栏/筛选条上。
+  const shown = pullDistance.value > 0 || props.loading || triggered.value;
+  return {
+    position: 'fixed',
+    top: `${anchorTop.value - INDICATOR_HEIGHT}px`,
+    transform: `translateY(${pullDistance.value}px)`,
+    opacity: shown ? 1 : 0,
+    transition: touching.value ? 'none' : `${transition}, opacity 150ms var(--ease-standard)`,
+  };
+});
 
 /** 箭头/ spinner 旋转 */
 const iconRotation = computed(() => {
@@ -195,6 +246,7 @@ const ptrLabel = computed(() => {
             :class="{ 'ptr-indicator__ring--show': showRing }"
             :countdown="ringCountdown"
             :total="ringTotal"
+            track="var(--color-overlay-track)"
             :instant="true"
           />
           <span

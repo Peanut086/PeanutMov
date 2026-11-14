@@ -10,12 +10,17 @@
  * - 水平拖动：|dx| > 8 且 |dx| > 1.5|dy|
  * - 垂直拖动：|dy| > 8 且 |dy| > 1.5|dx|；右半区音量、左半区亮度
  * - 长按：500ms 无位移 → 临时倍速
+ * - 长按帮助：3000ms 无位移 → `long-press-help`（仅 ctx 允许时启用，触发前先结束倍速）
+ *
+ * 所有长按时序都由本类的两个计时器裁决：调用方不要再自己起一份长按计时器，
+ * 否则同一根手指会既进倍速又弹帮助。
  *
  * 本类**不接触 DOM**（只接收数字与回调），因此可在 Node 中直接单测。
  */
 import {
   GESTURE_DIRECTION_RATIO,
   GESTURE_DOUBLE_TAP_INTERVAL_MS,
+  GESTURE_HELP_LONG_PRESS_MS,
   GESTURE_LONG_PRESS_MS,
   GESTURE_SENSITIVITY_FACTOR,
   GESTURE_TAP_MAX_DURATION_MS,
@@ -33,6 +38,8 @@ export type GestureIntent =
   | { type: 'brightness'; value: number; delta: number }
   | { type: 'long-press-start' }
   | { type: 'long-press-end' }
+  /** 按住超过帮助阈值且未移动（仅 `ctx.longPressHelpEnabled` 时派发），消费掉本次手势 */
+  | { type: 'long-press-help' }
   /** x/y 为按下点视口坐标（CSS px）：B-04 用它做弹幕命中测试，其余消费方只关心 side */
   | { type: 'single-tap'; side: 'left' | 'right'; x: number; y: number };
 
@@ -49,6 +56,8 @@ export interface GestureContext {
   /** 水平满屏拖动的最大秒数 */
   seekMaxSec: number;
   sensitivity: Sensitivity;
+  /** 本次长按是否允许在超过帮助阈值后呼出帮助浮层（缺省不允许） */
+  longPressHelpEnabled?: boolean;
 }
 
 export interface GestureCallbacks {
@@ -71,6 +80,7 @@ export class GestureRecognizer {
   private sample: PointerSample | null = null;
   private mode: DragMode = 'none';
   private longPressTimer: ReturnType<typeof setTimeout> | null = null;
+  private longPressHelpTimer: ReturnType<typeof setTimeout> | null = null;
   private lastTapAt = 0;
   private pendingTapTimer: ReturnType<typeof setTimeout> | null = null;
   private longPressActive = false;
@@ -119,6 +129,23 @@ export class GestureRecognizer {
       this.longPressActive = true;
       this.callbacks.onIntent({ type: 'long-press-start' });
     }, GESTURE_LONG_PRESS_MS);
+
+    if (ctx.longPressHelpEnabled === true) {
+      this.longPressHelpTimer = setTimeout(() => {
+        this.longPressHelpTimer = null;
+        if (this.sample === null || this.mode !== 'undetermined') return;
+        if (distance(this.sample) > GESTURE_TAP_MAX_MOVE_PX) return;
+        if (this.longPressActive) {
+          // 帮助浮层不该压在倍速手势上：按松手处理，先把倍速恢复掉
+          this.longPressActive = false;
+          this.callbacks.onIntent({ type: 'long-press-end' });
+        }
+        // 本次长按已被帮助消费：丢弃样本，松手不再派发 tap / seek-cancel
+        this.sample = null;
+        this.mode = 'none';
+        this.callbacks.onIntent({ type: 'long-press-help' });
+      }, GESTURE_HELP_LONG_PRESS_MS);
+    }
   }
 
   pointerMove(ev: { pointerId: number; clientX: number; clientY: number }, ctx: GestureContext): void {
@@ -240,25 +267,6 @@ export class GestureRecognizer {
     }
   }
 
-  /** 取消当前正在进行的长按倍速手势（供帮助浮层等外部逻辑调用） */
-  cancelActiveGesture(): void {
-    this.cancelLongPress();
-    if (this.longPressActive) {
-      this.longPressActive = false;
-      this.callbacks.onIntent({ type: 'long-press-end' });
-    }
-    this.sample = null;
-    this.mode = 'none';
-    this.pendingTarget = null;
-    this.pendingVolume = null;
-    this.pendingBrightness = null;
-  }
-
-  /** 返回当前手势模式，供外部判断是否已进入确定手势 */
-  getMode(): DragMode {
-    return this.mode;
-  }
-
   /** 组件卸载时清理定时器，防止回调打到已卸载实例 */
   destroy(): void {
     this.cancelLongPress();
@@ -302,6 +310,10 @@ export class GestureRecognizer {
     if (this.longPressTimer !== null) {
       clearTimeout(this.longPressTimer);
       this.longPressTimer = null;
+    }
+    if (this.longPressHelpTimer !== null) {
+      clearTimeout(this.longPressHelpTimer);
+      this.longPressHelpTimer = null;
     }
   }
 }

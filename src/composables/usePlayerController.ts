@@ -286,9 +286,13 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   /** 记录当前 keep-awake 状态，避免重复调用 */
   let awakeActive = false;
 
-  function syncKeepAwake(): void {
+  /**
+   * 同步常亮锁。`force` 用于回前台：本地缓存可能还记着「亮着」，
+   * 而窗口 flag 已在后台被清掉，此时必须重新落到原生而不是提前返回。
+   */
+  function syncKeepAwake(force = false): void {
     const shouldAwake = player.playing || player.waiting;
-    if (shouldAwake === awakeActive) return;
+    if (!force && shouldAwake === awakeActive) return;
     awakeActive = shouldAwake;
     options.setKeepAwake?.(shouldAwake);
   }
@@ -296,7 +300,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   // 播放/缓冲状态变化时同步 keep-awake
   watch(
     () => player.playing || player.waiting,
-    syncKeepAwake,
+    () => syncKeepAwake(),
   );
 
   /** 创建并挂载控制器 */
@@ -739,7 +743,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       }
       void c.flushProgress();
     } else {
-      syncKeepAwake();
+      syncKeepAwake(true);
     }
   }
 

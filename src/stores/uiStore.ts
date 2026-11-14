@@ -1,8 +1,11 @@
 /**
  * UI Store（PKG-A 自有）
  *
- * 只承载纯界面状态：Toast 队列、离线标记、当前 Tab、确认对话框请求。
+ * 只承载纯界面状态：Toast 队列、离线标记、确认对话框请求。
  * 契约见技术方案 API-14 的 `uiStore` 部分；不读写 IndexedDB。
+ *
+ * 底部导航选中态不在这里：它由路由 `meta.tab` 单点决定（见 AppTabBar），
+ * 存第二份只会带来不同步。
  */
 import { defineStore } from 'pinia';
 import { computed, ref, shallowRef } from 'vue';
@@ -18,7 +21,6 @@ const TOAST_DURATION = { info: 2400, error: 2400, success: 1800 } as const;
 export const useUiStore = defineStore('ui', () => {
   const toasts = ref<ToastMessage[]>([]);
   const isOffline = ref(false);
-  const activeTab = ref<TabKey>('home');
   const confirmState = ref<ConfirmState | null>(null);
 
   /** 全局页面级 loading（仅欢迎页等少数场景使用） */
@@ -66,10 +68,6 @@ export const useUiStore = defineStore('ui', () => {
     isOffline.value = v;
   }
 
-  function setActiveTab(tab: TabKey): void {
-    activeTab.value = tab;
-  }
-
   function setGlobalState(state: LoadState): void {
     globalState.value = state;
   }
@@ -114,14 +112,12 @@ export const useUiStore = defineStore('ui', () => {
   return {
     toasts,
     isOffline,
-    activeTab,
     confirmState,
     globalState,
     hasToasts,
     toast,
     dismiss,
     setOffline,
-    setActiveTab,
     setGlobalState,
     confirm,
     resolveConfirm,

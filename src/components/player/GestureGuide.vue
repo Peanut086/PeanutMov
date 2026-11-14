@@ -136,7 +136,7 @@ defineExpose({ show });
             <circle cx="12" cy="12" r="10" />
             <path d="M12 16v-4M12 8h.01" />
           </svg>
-          长按屏幕 2 秒可随时查看手势帮助
+          暂停时长按 3 秒可再次呼出手势帮助
         </p>
         <p class="gesture-guide__hint">点击任意处关闭</p>
       </div>

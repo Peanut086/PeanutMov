@@ -45,7 +45,8 @@ declare module '*.jpg' {
 declare module 'vue-router' {
   interface RouteMeta {
     requiresLayout?: boolean;
-    tab?: string;
+    /** 必须与 uiStore 的 TabKey 对齐：底部导航靠它判定选中态，写错会导致 Tab 不高亮 */
+    tab?: import('@/stores/uiStore').TabKey;
     depth?: number;
     immersive?: boolean;
     title?: string;

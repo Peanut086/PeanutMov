@@ -17,10 +17,12 @@ const props = withDefaults(
     total?: number;
     /** 描边色，默认跟随品牌色 */
     stroke?: string;
+    /** 底轨色：播放器 HUD 恒为深色底，浅色主题下的页面需自行传入 */
+    track?: string;
     /** 即时跟随（无 1s 过渡）：下拉进度环逐帧跟手，不能用秒级过渡 */
     instant?: boolean;
   }>(),
-  { total: 3, stroke: 'var(--color-brand)', instant: false },
+  { total: 3, stroke: 'var(--color-brand)', track: 'rgba(255, 255, 255, 0.2)', instant: false },
 );
 
 const dashOffset = computed(() => {
@@ -31,7 +33,7 @@ const dashOffset = computed(() => {
 
 <template>
   <svg class="countdown-ring" viewBox="0 0 36 36" aria-hidden="true">
-    <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(255,255,255,0.2)" stroke-width="3" />
+    <circle cx="18" cy="18" r="15" fill="none" :stroke="track" stroke-width="3" />
     <circle
       cx="18"
       cy="18"

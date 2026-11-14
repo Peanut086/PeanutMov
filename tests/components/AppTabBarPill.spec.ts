@@ -4,6 +4,9 @@
  * 验收红线：进场不许看到胶囊从最左边飞过来；切 Tab 要走弹簧而不是瞬移；
  * 位置必须量真实按钮矩形（安全区/不等宽都不能错位）；连点不叠加动画；
  * 系统「减少动态效果」时退化成瞬时吸附；卸载后不留帧回调。
+ *
+ * 另锁一条路由契约：5 个 Tab 路由的 `meta.tab` 必须与 AppTabBar 的 TabKey 一一对应——
+ * 配错的值不会报错，只会让那个 Tab 永远不高亮、胶囊卡住不动。
  */
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia } from 'pinia';
@@ -11,9 +14,11 @@ import { createMemoryHistory, createRouter, type Router } from 'vue-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import AppTabBar from '@/components/layout/AppTabBar.vue';
+import { routes } from '@/router';
+import type { TabKey } from '@/stores/uiStore';
 
 const NAV_LEFT = 16;
-const TAB_ROUTES = [
+const TAB_ROUTES: Array<{ path: string; tab: TabKey }> = [
   { path: '/', tab: 'home' },
   { path: '/library', tab: 'library' },
   { path: '/live', tab: 'live' },
@@ -189,5 +194,40 @@ describe('AppTabBar 滑动胶囊', () => {
     wrapper?.unmount();
     wrapper = null;
     expect(queue).toHaveLength(0);
+  });
+
+  it.each(TAB_ROUTES)('停在 $path 时只有对应按钮是选中态', async ({ path }) => {
+    await mountAt(path);
+    const items = wrapper?.findAll('.tabbar__item') ?? [];
+    const index = TAB_ROUTES.findIndex((r) => r.path === path);
+    const activeIndexes = items
+      .map((item, i) => (item.classes().includes('tabbar__item--active') ? i : -1))
+      .filter((i) => i >= 0);
+    expect(activeIndexes).toEqual([index]);
+    expect(items[index]?.attributes('aria-current')).toBe('page');
+    expect(pillX()).toBe(widths.slice(0, index).reduce((sum, w) => sum + w, 0));
+  });
+});
+
+/** 选中态的唯一来源是路由元数据，这里把「TabKey ↔ 路由」的对应关系钉死。 */
+describe('路由 meta.tab 契约', () => {
+  const expectedByPath: Record<string, TabKey> = {
+    '/': 'home',
+    '/library': 'library',
+    '/live': 'live',
+    '/downloads': 'downloads',
+    '/settings': 'me',
+  };
+
+  it('每个带布局的一级路由都声明了正确的 meta.tab', () => {
+    const actual = routes
+      .filter((r) => r.meta?.requiresLayout === true)
+      .map((r) => [r.path, r.meta?.tab] as const);
+    expect(new Map(actual)).toEqual(new Map(Object.entries(expectedByPath)));
+  });
+
+  it('TabKey 全部有路由承载，也不存在路由指向未知 Tab', () => {
+    const declared = routes.map((r) => r.meta?.tab).filter((tab): tab is TabKey => tab !== undefined);
+    expect([...new Set(declared)].sort()).toEqual(Object.values(expectedByPath).sort());
   });
 });

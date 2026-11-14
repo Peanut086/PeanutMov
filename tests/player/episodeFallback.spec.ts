@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
+import {
+  findEpisodeOwnerLineId,
+  offlineEpisodeMessage,
+  resolveTargetEpisode,
+} from '@/player/episodeFallback';
 
 /**
  * 历史集号超出源范围（AC-68 / REV-26 / BUG-18）
@@ -110,5 +114,42 @@ describe('resolveTargetEpisode：已下线判定（AC-68）', () => {
 describe('offlineEpisodeMessage（AC-68 文案）', () => {
   it('按 AC 措辞输出「看到第 N 集（已下线），已从第 1 集开始」', () => {
     expect(offlineEpisodeMessage(30)).toBe('看到第 30 集（已下线），已从第 1 集开始');
+  });
+});
+
+/**
+ * 下载第 2 集却播成第 1 集（11-14 #2）
+ *
+ * 现场：下载列表点已完成的第 2 集 → 路由只带 `episodeId`，不带线路 →
+ * 线路落到首条 → 该 id 不在这条线路的选集里 → 回退第 1 集。
+ * 断言线路由「这一集真正属于哪条」决定，且拿不到归属时交出 null 让调用方兜底。
+ */
+describe('findEpisodeOwnerLineId：按集 id 反查所属线路', () => {
+  const lines = ['L1', 'L2'];
+  const episodes = [
+    { id: 'L1:e1', lineId: 'L1' },
+    { id: 'L1:e2', lineId: 'L1' },
+    { id: 'L2:e1', lineId: 'L2' },
+    { id: 'L2:e2', lineId: 'L2' },
+  ];
+
+  it('目标集只属于次条线路 → 返回次条线路，而不是首条', () => {
+    expect(findEpisodeOwnerLineId(episodes, lines, 'L2:e2')).toBe('L2');
+  });
+
+  it('目标集在首条线路 → 返回首条（不因顺序偏好出错）', () => {
+    expect(findEpisodeOwnerLineId(episodes, lines, 'L1:e2')).toBe('L1');
+  });
+
+  it('详情尚未加载（空列表）→ null，交回调用方按路由/首条兜底', () => {
+    expect(findEpisodeOwnerLineId([], lines, 'L2:e2')).toBeNull();
+  });
+
+  it('该集所属线路不在可选线路列表内 → null（不能选一条已消失的线路）', () => {
+    expect(findEpisodeOwnerLineId(episodes, ['L1'], 'L2:e2')).toBeNull();
+  });
+
+  it('无 episodeId（未指定目标集）→ null', () => {
+    expect(findEpisodeOwnerLineId(episodes, lines, null)).toBeNull();
   });
 });

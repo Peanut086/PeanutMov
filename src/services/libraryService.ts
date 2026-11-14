@@ -1280,6 +1280,8 @@ export const libraryService: LibraryService = {
           mediaId: item.id,
           episodeId,
           episodeNumber: episode?.number ?? null,
+          // 线路以解析结果为准：请求指定线路可能内部回退到了另一条
+          lineId: play.lineId || params.lineId || null,
           title: item.title,
           episodeTitle: episode?.title ?? null,
           posterUrl: item.posterUrl,

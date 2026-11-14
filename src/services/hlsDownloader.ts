@@ -105,6 +105,8 @@ interface ManifestDocument {
   text: string;
   /** 解析相对引用应使用的基线地址（302 落地地址；取不到时为请求地址） */
   baseUrl: string;
+  /** 响应 content-type：200 的错误页靠它识别（正文嗅探只是兜底） */
+  contentType: string | null;
 }
 
 /** 并行下载控制 */
@@ -119,14 +121,43 @@ const MANIFEST_KEY_TIMEOUT_MS = 15_000;
 const STALL_TIMEOUT_MS = 60_000;
 
 /**
+ * 源侧返回的不是清单，而是网页 / 接口错误体（防盗链、限流、直链过期）。
+ *
+ * 这类响应常年带 200，重试同一个地址只会拿到同一张错误页；但它本质是**源侧暂时拒绝**，
+ * 不是「清单格式坏了」。归到可重试的 E_SOURCE_UNAVAILABLE 并说人话，
+ * 而不是把 `<!DOCTYPE html>` 原文塞进「缺少 #EXTM3U 头」里让用户无从下手。
+ */
+export function nonManifestBodyError(text: string, contentType?: string | null): AppError | null {
+  const type = (contentType ?? '').toLowerCase();
+  const head = text.trimStart().slice(0, 512).toLowerCase();
+  const isHtml =
+    type.includes('text/html') ||
+    head.startsWith('<!doctype html') ||
+    head.startsWith('<html') ||
+    head.includes('<head') ||
+    head.includes('<body');
+  const isJson = type.includes('application/json') || head.startsWith('{') || head.startsWith('[');
+  if (!isHtml && !isJson) return null;
+  return new AppError(
+    'E_SOURCE_UNAVAILABLE',
+    isHtml
+      ? '源返回了网页而不是视频清单（直链可能过期或被限流），请稍后重试或换线路'
+      : '源返回了接口错误而不是视频清单（直链可能过期或被限流），请稍后重试或换线路',
+    { detail: text.trim().slice(0, 120) },
+  );
+}
+
+/**
  * 解析 m3u8 清单
  *
  * 验证：有效的 m3u8 必须以 `#EXTM3U` 开头（HLS 规范）。
- * 如果返回 HTML 或纯文本，抛 E_PARSE 避免把错误页面当分片列表。
+ * 如果返回 HTML 或纯文本，抛错避免把错误页面当分片列表。
  */
-export function parseM3u8(manifest: string, baseUrl: string): HlsPlaylist {
+export function parseM3u8(manifest: string, baseUrl: string, contentType?: string | null): HlsPlaylist {
   const trimmed = manifest.trim();
   if (!trimmed.startsWith('#EXTM3U')) {
+    const sourceError = nonManifestBodyError(trimmed, contentType);
+    if (sourceError) throw sourceError;
     const preview = trimmed.substring(0, 100);
     throw new AppError('E_PARSE', `无效的 m3u8 清单（缺少 #EXTM3U 头）：${preview}...`);
   }
@@ -468,7 +499,7 @@ export class HlsDownloader {
       const document = await this.fetchManifestText(task.url, task.headers, proxyBase, fetchImpl, signal, '获取 m3u8 清单失败');
       assertSupportedKeyMethods(document.text);
       // 相对引用按拉取到清单时的落地地址解析（302 后目录可能已变）
-      playlist = parseM3u8(document.text, document.baseUrl);
+      playlist = parseM3u8(document.text, document.baseUrl, document.contentType);
       unwrapPlaylistUrls(playlist, proxyBase);
     } catch (e) {
       if (e instanceof AppError) throw e;
@@ -491,7 +522,7 @@ export class HlsDownloader {
         const document = await this.fetchManifestText(selected.url, task.headers, proxyBase, fetchImpl, signal, '获取 media playlist 失败');
         assertSupportedKeyMethods(document.text);
         // 相对地址以「拉取到子清单的落地地址」为基准解析（代理返回的清单可能被改写成回环地址）
-        playlist = parseM3u8(document.text, document.baseUrl);
+        playlist = parseM3u8(document.text, document.baseUrl, document.contentType);
         unwrapPlaylistUrls(playlist, proxyBase);
       } catch (e) {
         if (e instanceof AppError) throw e;
@@ -677,6 +708,16 @@ export class HlsDownloader {
               }
 
               let data = new Uint8Array(await response.arrayBuffer());
+              // 200 的错误页不能当分片写进文件——那会产出「任务完成但播不了」的坏产物。
+              // 只认 content-type：加密分片的首字节是随机的，正文嗅探会误杀。
+              const segmentType = (response.headers.get('content-type') ?? '').toLowerCase();
+              if (segmentType.includes('text/html') || segmentType.includes('application/json')) {
+                throw new AppError(
+                  'E_SOURCE_UNAVAILABLE',
+                  '源返回了错误页而不是视频分片（直链可能过期或被限流），请稍后重试或换线路',
+                  { detail: seg.segment.url },
+                );
+              }
 
               if (seg.segment.key && seg.segment.key.method === 'AES-128') {
                 const key = keyCache.get(seg.segment.key.uri);
@@ -695,7 +736,10 @@ export class HlsDownloader {
           } catch (e) {
             lastError = e;
             if (signal.aborted) throw toAppError(e, 'E_ABORTED');
-            if (e instanceof AppError) throw e;
+            // 可重试的 AppError（5xx / 429 / 超时 / 源侧暂时拒绝）必须走退避重试。
+            // 之前「只要是 AppError 就立即抛」让 MAX_SEGMENT_RETRIES 形同虚设：
+            // 一次网络抖动就整任务失败，用户看到的就是「偶发中断后再也下不动」。
+            if (e instanceof AppError && !e.retryable) throw e;
             if (attempt < MAX_SEGMENT_RETRIES) {
               const backoff = RETRY_BACKOFF_MS[attempt] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]!;
               logger.warn('分片下载失败，重试中', { attempt: attempt + 1, backoff, url: seg.segment.url, error: e });
@@ -932,7 +976,11 @@ export class HlsDownloader {
             cache: 'no-store',
           });
           if (response.ok) {
-            return { text: await response.text(), baseUrl: manifestBaseUrl(response.url, url) };
+            return {
+              text: await response.text(),
+              baseUrl: manifestBaseUrl(response.url, url),
+              contentType: response.headers.get('content-type'),
+            };
           }
           logger.warn('清单代理请求返回非 2xx，回退直连', { url, status: response.status });
         } finally {
@@ -962,7 +1010,11 @@ export class HlsDownloader {
       signal.removeEventListener('abort', onDirectAbort);
     }
     if (!response.ok) throw this.mapHttpError(response.status, label);
-    return { text: await response.text(), baseUrl: manifestBaseUrl(response.url, url) };
+    return {
+      text: await response.text(),
+      baseUrl: manifestBaseUrl(response.url, url),
+      contentType: response.headers.get('content-type'),
+    };
   }
 
   /**
@@ -1051,6 +1103,8 @@ export class HlsDownloader {
       status === 401 ? 'E_AUTH' :
       status === 403 ? 'E_HTTP_403' :
       status === 404 ? 'E_HTTP_404' :
+      // 限流是可重试的：之前落到 E_HTTP_400（不可重试），一被限流就整任务判死
+      status === 429 ? 'E_HTTP_429' :
       status >= 500 ? 'E_HTTP_5XX' :
       'E_HTTP_400';
     return new AppError(code, `${message}：HTTP ${status}`);
