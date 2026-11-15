@@ -430,6 +430,9 @@ export type DownloadStatus =
 
 export type DownloadSinkKind = 'filesystem' | 'idb-blob';
 
+/** 暂停来源（OPT-01）：用户手动 / 仅WiFi策略强制 / 切后台冻结 */
+export type DownloadPausedBy = 'user' | 'network' | 'background';
+
 /* ---------- 功能扩展-4：下载增强（EXT-04） ---------- */
 
 /** 下载清晰度档位（FR-62；`max` 取最高变体，其余按 RESOLUTION 高度封顶） */
@@ -477,6 +480,13 @@ export interface DownloadTask {
   format: MediaFormat;
   quality: string | null;
   status: DownloadStatus;
+  /**
+   * 暂停来源（OPT-01）：仅在 status 为 'paused' 时有意义。
+   * 回前台/启动的自动恢复只复活 `'background'` 与旧记录（无此字段），
+   * 不复活 `'user'`/`'network'`，避免唤醒用户主动暂停或在移动网络偷跑流量。
+   * 可选：老任务没有该字段，读取时按 undefined 处理（视为可自动恢复）。
+   */
+  pausedBy?: DownloadPausedBy;
   /** 队列优先级，值小优先；默认 createdAt */
   priority: number;
   totalBytes: number | null;

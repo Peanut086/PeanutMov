@@ -454,17 +454,23 @@ async function clearCache(): Promise<void> {
 async function resetAll(): Promise<void> {
   const ok = await ui.confirm({
     title: '清空全部数据？',
-    message: `将删除源、收藏、历史与下载记录${keepDemo.value ? '（保留演示源）' : ''}。此操作不可恢复。`,
+    message: `将停止全部下载并删除已下载的视频文件，同时清空源、收藏、历史、下载记录与弹幕/EPG 缓存、节目提醒${keepDemo.value ? '（保留演示源）' : ''}。此操作不可恢复。`,
     confirmText: '清空',
     danger: true,
   });
   if (!ok) return;
   clearing.value = true;
   try {
+    // OPT-02：先停队列 + 删真实文件，再清表——否则在飞下载会把已删任务写回，且磁盘遗留孤儿大文件
+    const { filesLeftBehind } = await downloads.stopAndDeleteFiles();
     await settings.resetAllData(keepDemo.value);
     await Promise.all([sources.load(), favorites.load(), history.load(), downloads.load()]);
     clearDataOpen.value = false;
-    toast.success('已清空全部数据');
+    toast.success(
+      filesLeftBehind > 0
+        ? `已清空全部数据（${filesLeftBehind} 个文件未能删除，请手动清理下载目录）`
+        : '已清空全部数据',
+    );
     await router.replace('/');
   } catch (e) {
     toast.error(toErrorShape(e).message);

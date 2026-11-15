@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getDb } from '@/db/index';
 import { blobRepo } from '@/db/repositories/blobRepo';
+import { cacheRepo } from '@/db/repositories/cacheRepo';
 import { categoryRepo } from '@/db/repositories/categoryRepo';
 import { downloadRepo } from '@/db/repositories/downloadRepo';
 import { episodeRepo } from '@/db/repositories/episodeRepo';
@@ -10,14 +11,15 @@ import { historyRepo } from '@/db/repositories/historyRepo';
 import { kvRepo } from '@/db/repositories/kvRepo';
 import { lineRepo } from '@/db/repositories/lineRepo';
 import { mediaRepo } from '@/db/repositories/mediaRepo';
-import { STORE_NAMES, type StoreName } from '@/db/schema';
+import { STORE_NAMES, type ChannelPrefsRecord, type DanmakuCacheRecord, type EpgSourceRecord, type ReminderRecord, type StoreName } from '@/db/schema';
 import { DEMO_SOURCE_ID, seedDemoData } from '@/data/demo/demoSeed';
 import { DEMO_ITEM_COUNT } from '@/data/demo/demoCatalog';
+import { downloadService } from '@/services/downloadService';
 import { settingsService } from '@/services/settingsService';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { AppError } from '@/shared/errors';
 import { KV_KEY_SETTINGS } from '@/shared/constants';
-import type { DownloadTask, FavoriteRecord, HistoryRecord, Source } from '@/types';
+import type { DownloadTask, FavoriteRecord, HistoryRecord, LiveRecord, Source } from '@/types';
 
 import { resetAll } from './helpers';
 
@@ -302,5 +304,94 @@ describe('REV-02 settingsService.resetAllData', () => {
     expect(counts.favorites).toBe(0);
     expect(counts.sources).toBe(0);
     expect(counts.media).toBe(0);
+  });
+});
+
+/**
+ * OPT-02：「清空全部数据」现在按语义一并清除弹幕/EPG 缓存与节目提醒，
+ * 但保留配置类 store（直播清单 lives、EPG 源配置 epgSources、频道偏好 channelPrefs）。
+ */
+async function countStore(name: StoreName): Promise<number> {
+  const db = await getDb();
+  return db.count(name);
+}
+
+async function seedCacheAndConfig(): Promise<void> {
+  const db = await getDb();
+  await db.put(STORE_NAMES.danmakuCache, { key: 'demo:m1:1', match: {}, fetchedAt: NOW } as unknown as DanmakuCacheRecord);
+  await cacheRepo.putEpg('epgv2:demo:ch:2026-01-01', []);
+  await db.put(STORE_NAMES.reminders, { id: 'r-1', notifyAt: NOW } as unknown as ReminderRecord);
+  // 配置类 store：不应被清空
+  await db.put(STORE_NAMES.lives, { id: 'live-1' } as unknown as LiveRecord);
+  await db.put(STORE_NAMES.epgSources, { id: 'epg-1' } as unknown as EpgSourceRecord);
+  await db.put(STORE_NAMES.channelPrefs, {
+    liveSourceId: 'ls-1', groups: [], assignments: {}, orders: {}, updatedAt: NOW,
+  } as unknown as ChannelPrefsRecord);
+}
+
+describe('OPT-02 settingsService.resetAllData 缓存/提醒与配置边界', () => {
+  beforeEach(async () => {
+    await resetAll();
+    await seedBusinessData();
+    await seedCacheAndConfig();
+  });
+
+  it('前置：弹幕/EPG 缓存与提醒均有数据', async () => {
+    expect(await countStore(STORE_NAMES.danmakuCache)).toBeGreaterThan(0);
+    expect(await countStore(STORE_NAMES.epgCache)).toBeGreaterThan(0);
+    expect(await countStore(STORE_NAMES.reminders)).toBeGreaterThan(0);
+  });
+
+  it('清空后弹幕/EPG 缓存与提醒归零，配置类 store 原样保留', async () => {
+    const livesBefore = await countStore(STORE_NAMES.lives);
+    const epgSourcesBefore = await countStore(STORE_NAMES.epgSources);
+    const prefsBefore = await countStore(STORE_NAMES.channelPrefs);
+
+    await settingsService.resetAllData({ keepDemo: false });
+
+    expect(await countStore(STORE_NAMES.danmakuCache)).toBe(0);
+    expect(await countStore(STORE_NAMES.epgCache)).toBe(0);
+    expect(await countStore(STORE_NAMES.reminders)).toBe(0);
+    // 不在清空范围：直播清单 / EPG 源配置 / 频道偏好
+    expect(await countStore(STORE_NAMES.lives)).toBe(livesBefore);
+    expect(await countStore(STORE_NAMES.epgSources)).toBe(epgSourcesBefore);
+    expect(await countStore(STORE_NAMES.channelPrefs)).toBe(prefsBefore);
+  });
+});
+
+/**
+ * OPT-02：清空前的停止队列 + 删除已下载文件链路。
+ * Web 测试环境 isNative()=false，原生文件删除分支跳过；此处验证下载记录与 blob 被真正清除、
+ * removed 计数正确，且调用后队列为空（已销毁重建），不会把已删任务写回。
+ */
+describe('OPT-02 downloadService.stopAndDeleteAllFiles', () => {
+  beforeEach(async () => {
+    await resetAll();
+  });
+
+  it('删除全部下载任务与 Blob，并报告 removed 计数', async () => {
+    await seedBusinessData();
+    // 追加一条"下载中"任务（filesystem sink，无 blob）
+    await downloadRepo.save({
+      ...makeTask('task-2'),
+      status: 'downloading',
+      sink: 'filesystem',
+      blobKey: null,
+      filePath: '/data/user/0/app/files/downloads/a.mp4',
+    } as DownloadTask);
+    const beforeCount = (await downloadRepo.listAll()).length;
+    expect(beforeCount).toBeGreaterThanOrEqual(2);
+    expect(await blobRepo.count()).toBeGreaterThan(0);
+
+    const result = await downloadService.stopAndDeleteAllFiles();
+
+    expect(result.removed).toBe(beforeCount);
+    expect(await downloadRepo.listAll()).toHaveLength(0);
+    expect(await blobRepo.count()).toBe(0);
+  });
+
+  it('队列为空时安全返回 removed=0', async () => {
+    const result = await downloadService.stopAndDeleteAllFiles();
+    expect(result).toEqual({ removed: 0, filesLeftBehind: 0 });
   });
 });

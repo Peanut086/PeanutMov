@@ -112,7 +112,7 @@ describe('下载设置生效链路', () => {
 
     hoisted.netType = 'cellular';
     fireNetworkChange();
-    await vi.waitFor(() => expect(pauseAll).toHaveBeenCalledWith('user'));
+    await vi.waitFor(() => expect(pauseAll).toHaveBeenCalledWith('network'));
     pauseAll.mockRestore();
   });
 

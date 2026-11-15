@@ -203,6 +203,13 @@ export const useDownloadStore = defineStore('download', () => {
     return result;
   }
 
+  /** OPT-02：「清空全部数据」前置——停止在飞下载并删除全部已下载文件（含原生成品/分块） */
+  async function stopAndDeleteFiles(): Promise<{ removed: number; filesLeftBehind: number }> {
+    const result = await downloadService.stopAndDeleteAllFiles();
+    await refresh();
+    return result;
+  }
+
   /** 功能扩展-10：存储占用 */
   async function calculateStorageUsage(): Promise<{ totalBytes: number; fileCount: number }> {
     return downloadService.calculateStorageUsage();
@@ -323,6 +330,7 @@ export const useDownloadStore = defineStore('download', () => {
     resumeAll,
     clearCompleted,
     clearFailed,
+    stopAndDeleteFiles,
     calculateStorageUsage,
     preflight,
     preflightBatch,

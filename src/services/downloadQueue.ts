@@ -21,7 +21,7 @@
  */
 import { AppError } from '@/shared/errors';
 import { DOWNLOAD_DEFAULT_CONCURRENCY, DOWNLOAD_MAX_RETRIES, DOWNLOAD_RETRY_BACKOFF_MS } from '@/shared/constants';
-import type { DownloadStatus, DownloadTask } from '@/types';
+import type { DownloadPausedBy, DownloadStatus, DownloadTask } from '@/types';
 
 export type DownloadAction = 'start' | 'pause' | 'resume' | 'done' | 'fail' | 'cancel' | 'retry' | 'remove';
 
@@ -86,6 +86,7 @@ export function transition(
       break;
     case 'resume':
       next.speedBps = 0;
+      delete next.pausedBy;
       break;
     case 'done':
       next.speedBps = 0;
@@ -425,12 +426,13 @@ export class DownloadQueue {
   }
 
   /** 暂停：abort 正在进行的下载（下载中）或标记等待（queued 不合法） */
-  async pause(id: string): Promise<DownloadTask> {
+  async pause(id: string, reason: DownloadPausedBy = 'user'): Promise<DownloadTask> {
     return this.withTaskLock(id, async () => {
       const task = await this.opts.load(id);
       if (!task) throw new AppError('E_NOT_FOUND');
       const now = this.opts.now ?? Date.now;
       const next = transition(task, 'pause', now());
+      next.pausedBy = reason;
       this.pausedSet.add(id);
       const entry = this.active.get(id);
       // P0-1: 传递 pause reason，让 downloadEngine 区分暂停与取消
@@ -485,13 +487,13 @@ export class DownloadQueue {
   }
 
   /** 全部暂停（切后台，AC-72） */
-  async pauseAll(): Promise<DownloadTask[]> {
+  async pauseAll(reason: DownloadPausedBy = 'user'): Promise<DownloadTask[]> {
     const ids = [...this.active.keys(), ...this.pending.map((entry) => entry.id)];
     const out: DownloadTask[] = [];
     for (const id of ids) {
       try {
         const task = await this.opts.load(id);
-        if (task && task.status === 'downloading') out.push(await this.pause(id));
+        if (task && task.status === 'downloading') out.push(await this.pause(id, reason));
       } catch {
         // 单条失败不影响其它任务
       }

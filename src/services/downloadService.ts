@@ -54,6 +54,7 @@ import { markOfflineFileInUse } from '@/services/offlineRemuxMigration';
 import { isLocalArtifactUrl, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import type {
   CreateDownloadInput,
+  DownloadPausedBy,
   DownloadSpeedLimit,
   DownloadStatus,
   DownloadSubtitlePolicy,
@@ -267,7 +268,8 @@ async function syncNativeConcurrency(n: number): Promise<void> {
  *
  * preflight 只拦新任务：Wi-Fi 切到移动网络时正在下的任务仍然跑完，
  * 所以设置页那句「移动网络下载将二次确认」此前对运行中任务并不成立。
- * 只暂停、不自动恢复——自动恢复会把用户手工暂停的任务一起唤醒。
+ * 只暂停并标 `pausedBy:'network'`——回前台/启动的自动恢复（`requeuePending('auto')`）
+ * 不复活 `network`/`user` 来源，切回 Wi-Fi 或用户手动前不会偷跑移动流量（OPT-01）。
  */
 async function enforceWifiOnlyOnCellular(): Promise<void> {
   if (currentNetworkType() !== 'cellular') return;
@@ -279,7 +281,7 @@ async function enforceWifiOnlyOnCellular(): Promise<void> {
   }
   const inFlight = await downloadRepo.listByStatus(['downloading', 'queued']);
   if (inFlight.length === 0) return;
-  await downloadService.pauseAll('user');
+  await downloadService.pauseAll('network');
   appEvents.emit('toast', {
     text: `已切到移动网络，${inFlight.length} 个下载按「仅 Wi-Fi」暂停`,
     type: 'info',
@@ -369,16 +371,23 @@ async function ensureQueue(): Promise<DownloadQueue> {
   return queue;
 }
 
-/** 启动时把可恢复的任务重新入队（AC-72 回前台自动恢复） */
-async function requeuePending(): Promise<void> {
+/**
+ * 启动/回前台把可恢复的任务重新入队（AC-72）。
+ *
+ * `mode`（OPT-01）：
+ * - `'none'`：只入队 queued——`autoResume` 关闭时的启动/回前台，不动任何 paused。
+ * - `'auto'`：入队 queued + 后台冻结暂停，但**跳过**用户手动/网络策略暂停——回前台自动恢复。
+ * - `'all'`：入队 queued + 全部 paused，不论来源——用户主动「继续全部」。
+ */
+async function requeuePending(mode: 'none' | 'auto' | 'all' = 'none'): Promise<void> {
   const q = await ensureQueue();
-  const settings = await settingsService.get();
-  const resumableStatuses: DownloadStatus[] = ['queued'];
-  if (settings.download.autoResume) resumableStatuses.push('paused');
+  const resumableStatuses: DownloadStatus[] = mode === 'none' ? ['queued'] : ['queued', 'paused'];
 
   const tasks = await downloadRepo.listByStatus(resumableStatuses);
   for (const task of tasks) {
     if (task.status === 'paused') {
+      // 自动恢复不复活用户主动暂停/仅WiFi强制暂停；旧记录无 pausedBy 视为后台冻结照常恢复。
+      if (mode === 'auto' && (task.pausedBy === 'user' || task.pausedBy === 'network')) continue;
       const next = transition(task, 'resume');
       await persist(next);
       emitDownload({ type: 'status', task: next, previous: 'paused' });
@@ -892,7 +901,7 @@ export const downloadService = {
 
   async pause(id: string): Promise<DownloadTask> {
     const q = await ensureQueue();
-    const task = await q.pause(id);
+    const task = await q.pause(id, 'user');
     await emitQueueSummary();
     return task;
   },
@@ -1379,7 +1388,8 @@ export const downloadService = {
     }
     if (!isOnline()) return;
     bootstrapped = true;
-    await requeuePending();
+    const resumeMode: 'auto' | 'none' = (await settingsService.get()).download.autoResume ? 'auto' : 'none';
+    await requeuePending(resumeMode);
   },
 
   /** EXT-04/FR-64：释放已下载字幕的 ObjectURL（Web；离开播放页/卸载时调用） */
@@ -1587,21 +1597,22 @@ export const downloadService = {
       } else {
         void stopForegroundServiceSafe().catch(() => undefined);
       }
-      void downloadService.resumeAll().catch((e: unknown) => {
+      void downloadService.autoResumeFromBackground().catch((e: unknown) => {
         logger.warn('回前台恢复下载失败', toAppError(e));
       });
     });
   },
 
-  async pauseAll(reason: 'background' | 'user'): Promise<void> {
+  async pauseAll(reason: DownloadPausedBy): Promise<void> {
     const q = await ensureQueue();
-    await q.pauseAll();
+    await q.pauseAll(reason);
     // 队列里没有的"下载中"任务（如后台被系统冻结后队列已清空）也要落成"已暂停"，
-    // 保证 AC-72「所有下载中 → 已暂停且进度保留」不留漏网任务。
+    // 保证 AC-72「所有下载中 → 已暂停且进度保留」不留漏网任务。同样落 pausedBy 来源。
     const leftover = await downloadRepo.listByStatus(['downloading']);
     for (const task of leftover) {
       try {
         const next = transition(task, 'pause');
+        next.pausedBy = reason;
         await downloadRepo.save(next);
         emitDownload({ type: 'status', task: next, previous: task.status });
       } catch (e) {
@@ -1614,10 +1625,47 @@ export const downloadService = {
     await emitQueueSummary();
   },
 
+  /** 用户主动「继续全部」：复活全部暂停任务，不论来源，也不受 autoResume 设置约束 */
   async resumeAll(): Promise<void> {
+    await requeuePending('all');
+  },
+
+  /**
+   * 回前台自动恢复：仅当 `autoResume` 开启，且不复活用户手动/网络策略暂停的任务（OPT-01）。
+   * 与 `resumeAll`（「继续全部」按钮）分开——后者表达的是用户明确的一次性恢复意图。
+   */
+  async autoResumeFromBackground(): Promise<void> {
     const settings = await settingsService.get();
     if (!settings.download.autoResume) return;
-    await requeuePending();
+    await requeuePending('auto');
+  },
+
+  /**
+   * 「清空全部数据」前置：停止队列并删除全部已下载文件（OPT-02）。
+   *
+   * 此前 `resetAllData` 只在 IndexedDB 层清 downloads/blobs 两张表：既不取消在飞下载
+   * （内存队列会继续跑，甚至把已删任务写回库里），也不删原生下载目录里的真实视频，
+   * 留下看不见的孤儿大文件。这里按「清空全部」语义逐条 `remove`（取消 + 删 blob + 删成品文件），
+   * 再销毁内存队列（active/pending/pausedSet 全清），后续操作由 `ensureQueue` 重建空队列。
+   *
+   * 仅删除本 App 下载目录下的成品与未完成分块（*.part），绝不触碰 /sdcard/TVBox 等外部路径。
+   */
+  async stopAndDeleteAllFiles(): Promise<{ removed: number; filesLeftBehind: number }> {
+    const all = await downloadRepo.listAll();
+    let filesLeftBehind = 0;
+    for (const task of all) {
+      const result = await this.remove(task.id, { deleteFile: true });
+      if (result.fileLeftBehind) filesLeftBehind += 1;
+      // 在飞/暂停任务的未完成分块不在 filePath 里，需按 sink 规则显式清理（best-effort）
+      if (isNative() && task.status !== 'completed' && task.status !== 'canceled') {
+        await deleteFile(nativePartPathOf(task)).catch(() => undefined);
+      }
+    }
+    // 丢弃内存队列：清空后不得再有在飞下载，也不得残留 pausedSet 让任务"复活"
+    queue?.dispose();
+    queue = null;
+    await emitQueueSummary();
+    return { removed: all.length, filesLeftBehind };
   },
 
   /**

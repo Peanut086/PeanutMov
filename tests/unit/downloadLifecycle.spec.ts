@@ -186,6 +186,74 @@ describe('REV-22 切后台暂停下载（AC-72）', () => {
 
     const task = await downloadRepo.get('orphan');
     expect(task?.status).toBe('paused');
+    expect(task?.pausedBy).toBe('background');
     expect(task?.downloadedBytes).toBe(400);
+  });
+
+  // ---------- OPT-01：回前台自动恢复不复活用户主动/网络策略暂停 ----------
+
+  it('OPT-01：pauseAll 落 pausedBy 来源标记（user）', async () => {
+    await downloadRepo.save(makeTask({ id: 'stamp', mediaId: 'demo:m10', episodeId: 'demo:m10:e1' }));
+    await downloadService.bootstrap();
+    await downloadService.pauseAll('user');
+
+    const task = await downloadRepo.get('stamp');
+    expect(task?.status).toBe('paused');
+    expect(task?.pausedBy).toBe('user');
+  });
+
+  it('OPT-01：autoResume=true 回前台不复活用户手动暂停', async () => {
+    await settingsService.update({ download: { autoResume: true } });
+    await downloadRepo.save(makeTask({ id: 'keep-user', mediaId: 'demo:m11', episodeId: 'demo:m11:e1' }));
+    await downloadService.bootstrap();
+    await downloadService.pauseAll('user');
+    expect((await downloadRepo.get('keep-user'))?.pausedBy).toBe('user');
+
+    await downloadService.autoResumeFromBackground();
+
+    const task = await downloadRepo.get('keep-user');
+    expect(task?.status).toBe('paused');
+    expect(task?.pausedBy).toBe('user');
+  });
+
+  it('OPT-01：autoResume=true 回前台不复活仅WiFi强制暂停（network）', async () => {
+    await settingsService.update({ download: { autoResume: true } });
+    await downloadRepo.save(makeTask({ id: 'keep-net', mediaId: 'demo:m12', episodeId: 'demo:m12:e1' }));
+    await downloadService.bootstrap();
+    await downloadService.pauseAll('network');
+
+    await downloadService.autoResumeFromBackground();
+
+    const task = await downloadRepo.get('keep-net');
+    expect(task?.status).toBe('paused');
+    expect(task?.pausedBy).toBe('network');
+  });
+
+  it('OPT-01：autoResume=true 回前台复活后台冻结暂停（background）', async () => {
+    await settingsService.update({ download: { autoResume: true } });
+    await downloadRepo.save(makeTask({ id: 'revive-bg', mediaId: 'demo:m13', episodeId: 'demo:m13:e1' }));
+    await downloadService.bootstrap();
+    await downloadService.pauseAll('background');
+    expect((await downloadRepo.get('revive-bg'))?.pausedBy).toBe('background');
+
+    await downloadService.autoResumeFromBackground();
+
+    const task = await downloadRepo.get('revive-bg');
+    expect(task?.status).not.toBe('paused');
+    expect(task?.pausedBy).toBeUndefined();
+    expect(task?.downloadedBytes).toBe(400);
+  });
+
+  it('OPT-01：用户「继续全部」覆盖过滤，复活手动暂停（即使 autoResume=false）', async () => {
+    await settingsService.update({ download: { autoResume: false } });
+    await downloadRepo.save(makeTask({ id: 'manual-all', mediaId: 'demo:m14', episodeId: 'demo:m14:e1' }));
+    await downloadService.bootstrap();
+    await downloadService.pauseAll('user');
+
+    await downloadService.resumeAll();
+
+    const task = await downloadRepo.get('manual-all');
+    expect(task?.status).not.toBe('paused');
+    expect(task?.pausedBy).toBeUndefined();
   });
 });

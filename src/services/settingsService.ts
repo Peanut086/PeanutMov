@@ -483,15 +483,22 @@ export const settingsService = {
   },
 
   /**
-   * 清空业务数据（源/媒体/线路/剧集/分类/历史/收藏/下载/Blob），可选保留演示源与演示条目。
+   * 清空业务数据（源/媒体/线路/剧集/分类/历史/收藏/下载/Blob + 弹幕/EPG 缓存 + 节目提醒），
+   * 可选保留演示源与演示条目。
    * 设置本身（主题、搜索历史、合规状态）保留；`keepDemo` 为 true 时重新种入演示数据。
    *
-   * 9 张表在**同一个事务**内清空：所有 repo 必须传 `tx`，否则内部自开事务会让外层事务
+   * 「清空全部」语义（OPT-02）：连弹幕/EPG 缓存与节目提醒一并清除，避免旧源数据残留被新订阅误命中。
+   * 直播清单（lives）、EPG 源配置（epgSources）、频道偏好（channelPrefs）属于用户配置，不在清空范围。
+   *
+   * 所有表在**同一个事务**内清空：所有 repo 必须传 `tx`，否则内部自开事务会让外层事务
    * 提前提交，后续写入抛 `InvalidStateError` 并留下"半清空"数据（REV-02）。
    */
   async resetAllData(opts: { keepDemo: boolean }): Promise<void> {
     await withTx(
-      ['sources', 'media', 'lines', 'episodes', 'categories', 'history', 'favorites', 'downloads', 'blobs'],
+      [
+        'sources', 'media', 'lines', 'episodes', 'categories', 'history', 'favorites',
+        'downloads', 'blobs', 'danmakuCache', 'epgCache', 'reminders',
+      ],
       'readwrite',
       async (tx) => {
         await sourceRepo.clear(tx);
@@ -502,8 +509,11 @@ export const settingsService = {
         await historyRepo.clear(tx);
         await favoriteRepo.clear(tx);
         await downloadRepo.clear(tx);
-        // blobs 也在此事务内（tx 已包含该 store）
+        // blobs / 缓存 / 提醒也在此事务内（tx 已包含这些 store）
         await tx.objectStore('blobs').clear();
+        await tx.objectStore('danmakuCache').clear();
+        await tx.objectStore('epgCache').clear();
+        await tx.objectStore('reminders').clear();
       },
     ).catch((e: unknown) => {
       throw e instanceof AppError ? e : new AppError('E_DB', undefined, { detail: String(e) });
