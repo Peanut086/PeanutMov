@@ -13,7 +13,7 @@ import { logger } from '@/shared/logger';
 import { DOWNLOAD_PROGRESS_PERSIST_MS, DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/shared/constants';
 import { isLocalArtifactUrl, isM3u8Url, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import { createSink, nativeFilePathOf, type DownloadSink } from '@/services/downloadSink';
-import { createHlsDownloader } from '@/services/hlsDownloader';
+import { createHlsDownloader, type PostProcessNotifier } from '@/services/hlsDownloader';
 import { appEvents } from '@/services/events';
 import { settingsService } from '@/services/settingsService';
 import { downloadRateLimiter } from '@/services/downloadRateLimiter';
@@ -42,6 +42,8 @@ export interface DownloadEngineDeps {
   persistIntervalMs?: number;
   /** 当前时间戳（测试注入） */
   now?: () => number;
+  /** EXT-04/FR-60：后处理阶段（转封装发生在 HLS 下载器内部，需要把阶段状态带到 UI） */
+  onPostProcess?: PostProcessNotifier;
 }
 
 export interface DownloadProgressEvent {
@@ -278,6 +280,7 @@ export class DownloadEngine {
       now: this.deps.now,
       parallelSegments,
       quality,
+      onPostProcess: this.deps.onPostProcess,
     });
     await hlsDownloader.run(task, signal);
   }

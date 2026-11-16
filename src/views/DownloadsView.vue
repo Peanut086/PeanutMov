@@ -47,6 +47,21 @@ const detailTask = ref<DownloadTask | null>(null);
 const detailOpen = ref(false);
 const refreshing = ref(false);
 
+/**
+ * OPT-05：任务详情说明转封装结果。此前只有成功才落库，失败/跳过完全无痕迹——
+ * 用户只会看到「开了转封装但文件一直是 .ts」，分不清是没生效、跳过了还是出了错。
+ */
+function remuxDetailText(remux: NonNullable<DownloadTask['remux']>): string {
+  if (remux.status === 'done') {
+    return `已转封装为 MP4（耗时 ${((remux.durationMs ?? 0) / 1000).toFixed(1)}s）`;
+  }
+  if (remux.status === 'failed') return `转封装失败${remux.reason ? `（${remux.reason}）` : ''}，文件保留为 TS`;
+  if (remux.status === 'skipped') return `转封装已跳过${remux.reason ? `（${remux.reason}）` : ''}`;
+  return '';
+}
+
+const detailRemuxText = computed(() => (detailTask.value?.remux ? remuxDetailText(detailTask.value.remux) : ''));
+
 /** 功能扩展-10：批量模式 */
 const batchMode = ref(false);
 const selectedIds = ref<Set<string>>(new Set());
@@ -590,6 +605,7 @@ function goLibrary(): void {
                   :batch-mode="batchMode"
                   :selected="selectedIds.has(task.id)"
                   :celebrate="task.id === celebrateId"
+                  :postprocess="downloads.postprocess[task.id] ?? null"
                   @play="onPlay"
                   @pause="onPause"
                   @resume="onResume"
@@ -649,6 +665,7 @@ function goLibrary(): void {
           集号：{{ detailTask.episodeNumber !== null ? `第 ${detailTask.episodeNumber} 集` : '单片' }}
         </p>
         <p class="task-detail__line">状态：{{ detailTask.status }}</p>
+        <p v-if="detailRemuxText" class="task-detail__line">{{ detailRemuxText }}</p>
         <p v-if="detailTask.errorMessage" class="task-detail__line task-detail__line--error">
           {{ detailTask.errorMessage }}
         </p>

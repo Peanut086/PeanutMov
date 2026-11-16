@@ -18,6 +18,18 @@ import { findProtectedKeyEvidence } from '@/player/sourceGuard';
 import { createSink, type DownloadSink } from '@/services/downloadSink';
 import type { DownloadTask } from '@/types';
 
+/**
+ * 后处理阶段回调（EXT-04/FR-60）：转封装发生在分片写完之后，但任务状态要到
+ * runner 整体返回才迁移为 `completed`——进度条已 100% 而界面仍写「下载中…」，
+ * 长视频转封装能持续几分钟。阶段状态由这里带出，UI 据此显示「转封装中」。
+ */
+export type PostProcessNotifier = (
+  task: DownloadTask,
+  stage: 'remux' | 'subtitles',
+  state: 'start' | 'progress' | 'done' | 'skipped' | 'failed',
+  extra?: { progress?: number; reason?: string },
+) => void;
+
 export interface HlsDownloaderDeps {
   load: (id: string) => Promise<DownloadTask | null>;
   saveProgress: (id: string, patch: Partial<DownloadTask>) => Promise<void>;
@@ -28,6 +40,7 @@ export interface HlsDownloaderDeps {
   parallelSegments?: number;
   /** P1-6: 下载质量选择（max=最高, 1080p=1080p封顶, 720p=720p封顶, auto=按网络） */
   quality?: 'max' | '1080p' | '720p' | 'auto';
+  onPostProcess?: PostProcessNotifier;
 }
 
 /** HLS 变体流（master playlist 中的选项） */
@@ -893,6 +906,25 @@ export class HlsDownloader {
         const inputPath = result.filePath;
         const outputPath = inputPath.replace(/\.ts$/, '.mp4');
         if (outputPath !== inputPath) {
+          const notify = (state: 'start' | 'done' | 'skipped' | 'failed', reason?: string): void => {
+            this.deps.onPostProcess?.(task, 'remux', state, reason ? { reason } : undefined);
+          };
+          /*
+           * OPT-05：跳过/失败也要落库。此前只有成功才写 `remux`，任务停在 `remux: null`，
+           * UI 分不清「没开转封装 / 转封装失败 / 还在转」，用户只能看到文件一直是 .ts。
+           * 落库失败只记日志——转封装的任何问题都不该把已下好的视频判成下载失败。
+           */
+          const record = async (status: 'skipped' | 'failed', reason?: string): Promise<void> => {
+            try {
+              await this.deps.saveProgress(task.id, {
+                remux: reason ? { status, reason } : { status },
+                updatedAt: now(),
+              });
+            } catch (persistErr) {
+              logger.warn('转封装状态落库失败', { taskId: task.id, error: toAppError(persistErr).message });
+            }
+          };
+          notify('start');
           try {
             logger.debug('开始转封装 TS → MP4', { taskId: task.id, inputPath, outputPath });
             const remuxResult = await MediaTool.remuxMp4({
@@ -917,13 +949,22 @@ export class HlsDownloader {
                 updatedAt: now(),
               });
               logger.info('转封装完成', { taskId: task.id, outputBytes });
+              notify('done');
             } else if (remuxResult.skipped) {
               logger.debug('转封装跳过', { taskId: task.id, reason: remuxResult.reason });
+              await record('skipped', remuxResult.reason);
+              notify('skipped', remuxResult.reason);
             } else {
               logger.warn('转封装失败，保留 .ts', { taskId: task.id, code: remuxResult.code, reason: remuxResult.reason });
+              await record('failed', remuxResult.reason ?? remuxResult.code);
+              notify('failed', remuxResult.reason ?? remuxResult.code);
             }
           } catch (remuxErr) {
-            logger.warn('转封装异常，保留 .ts', { taskId: task.id, error: toAppError(remuxErr).message });
+            /* reason 是给支持者看的技术线索：`toAppError` 会把无码异常统一洗成「操作失败，请重试」 */
+            const message = remuxErr instanceof Error ? remuxErr.message || String(remuxErr) : String(remuxErr);
+            logger.warn('转封装异常，保留 .ts', { taskId: task.id, error: message });
+            await record('failed', message);
+            notify('failed', message);
           }
         }
       }

@@ -313,6 +313,9 @@ async function ensureQueue(): Promise<DownloadQueue> {
   const engine = createDownloadEngine({
     load: (id) => downloadRepo.get(id),
     saveProgress,
+    // EXT-04/FR-60：转封装/字幕阶段的进度出口（HLS 收尾在下载器内部完成，走不到 status 迁移）
+    onPostProcess: (task, stage, state, extra) =>
+      emitDownload({ type: 'postprocess', task, stage, state, progress: extra?.progress, reason: extra?.reason }),
   });
   setDownloadEngine(engine);
 

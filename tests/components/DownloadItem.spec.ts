@@ -183,3 +183,46 @@ describe('DownloadItem · C-11 完成收尾仪式', () => {
     expect(burstMock).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * OPT-05：转封装阶段的行内文案
+ *
+ * 分片写完之后还有 TS→MP4 收尾，任务状态要到 runner 整体返回才迁移为 completed，
+ * 长视频这中间可以有好几分钟——进度 100% + 「下载中…」看起来就是卡死。
+ */
+describe('OPT-05 转封装阶段文案', () => {
+  const finished = (overrides: Partial<DownloadTask> = {}) =>
+    makeTask({ status: 'completed', downloadedBytes: 285 * 1024 * 1024, totalBytes: 285 * 1024 * 1024, speedBps: 0, ...overrides });
+
+  it('分片已写完但仍在转封装：显示「转封装中」而不是一直「下载中…」', () => {
+    const wrapper = mount(DownloadItem, {
+      props: {
+        task: makeTask({ downloadedBytes: 200 * 1024 * 1024, speedBps: 0 }),
+        postprocess: { stage: 'remux', state: 'start' },
+      },
+    });
+    expect(wrapper.find('.download-item__status').text()).toBe('转封装中…');
+  });
+
+  it('转封装上报结束后瞬态不再粘在行上', () => {
+    const wrapper = mount(DownloadItem, {
+      props: { task: makeTask({ speedBps: 2 * 1024 * 1024 }), postprocess: { stage: 'remux', state: 'done' } },
+    });
+    expect(wrapper.find('.download-item__status').text()).toContain('剩余');
+
+    const idle = mount(DownloadItem, {
+      props: { task: makeTask({ speedBps: 0 }), postprocess: { stage: 'remux', state: 'skipped' } },
+    });
+    expect(idle.find('.download-item__status').text()).toBe('下载中…');
+  });
+
+  it('失败落库后：完成文案点明文件仍是 TS', () => {
+    const wrapper = mount(DownloadItem, {
+      props: { task: finished({ remux: { status: 'failed', reason: 'E_FFMPEG_EXIT' } }) },
+    });
+    expect(wrapper.find('.download-item__status').text()).toContain('转封装失败，仍为 TS');
+
+    const done = mount(DownloadItem, { props: { task: finished({ remux: { status: 'done', durationMs: 900 } }) } });
+    expect(done.find('.download-item__status').text()).not.toContain('转封装');
+  });
+});

@@ -29,6 +29,13 @@ const props = defineProps<{
   selected?: boolean;
   /** 刚刚完成（由下载页编排，批量完成时恒为假） */
   celebrate?: boolean;
+  /**
+   * EXT-04/FR-60 后处理阶段（下载页从 store 取该任务的最新一次上报）。
+   * 只用于「转封装中」这一进行态——转封装发生在分片写完之后，任务状态要到
+   * runner 整体返回才迁移，长视频可持续几分钟，期间进度条已 100% 却仍写「下载中…」。
+   * 终态（成功/失败/跳过）走持久化的 `task.remux`，不依赖这个瞬态映射。
+   */
+  postprocess?: { stage: 'remux' | 'subtitles'; state: 'start' | 'progress' | 'done' | 'skipped' | 'failed' } | null;
 }>();
 
 const emit = defineEmits<{
@@ -58,18 +65,29 @@ const sizeText = computed(() => {
   return formatBytes(downloadedBytes);
 });
 
+const remuxing = computed(() => {
+  const stage = props.postprocess;
+  if (!stage || stage.stage !== 'remux' || stage.state !== 'start') return false;
+  return props.task.status === 'downloading' || props.task.status === 'queued';
+});
+
 const statusText = computed(() => {
   switch (props.task.status) {
     case 'queued':
       return props.offline ? '等待网络' : '等待下载';
     case 'downloading':
+      if (remuxing.value) return '转封装中…';
       return props.task.speedBps > 0
         ? `${formatSpeed(props.task.speedBps)} · 剩余 ${formatEta((props.task.totalBytes ?? 0) - props.task.downloadedBytes, props.task.speedBps) || '未知'}`
         : '下载中…';
     case 'paused':
       return props.offline ? '已暂停 · 等待网络' : '已暂停';
-    case 'completed':
-      return `已完成 · ${formatBytes(props.task.totalBytes ?? props.task.downloadedBytes)}`;
+    case 'completed': {
+      const size = formatBytes(props.task.totalBytes ?? props.task.downloadedBytes);
+      // OPT-05：失败/跳过此前不落库，用户只知道"文件一直是 .ts"，不知道是转封装出了问题
+      if (props.task.remux?.status === 'failed') return `已完成 · ${size} · 转封装失败，仍为 TS`;
+      return `已完成 · ${size}`;
+    }
     case 'failed':
       return props.task.errorMessage ?? '下载失败';
     case 'canceled':
