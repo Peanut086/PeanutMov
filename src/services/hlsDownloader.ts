@@ -106,6 +106,8 @@ export interface HlsPlaylist {
   segments: HlsSegment[];
   initSegment?: HlsInitSegment;
   endList?: boolean;
+  /** FIX-PLAY-D1: #EXT-X-DISCONTINUITY 边界数（归因元数据，不参与下载行为） */
+  discontinuityCount?: number;
 }
 
 /**
@@ -239,6 +241,13 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
   let mediaSequence = 0;
   let initSegment: HlsInitSegment | undefined;
   let endList = false;
+  // FIX-PLAY-D2：BYTERANGE 是「作用于下一条 URL」的局部状态。旧实现把它挂在
+  // parseMediaPlaylist 函数对象上——两次解析之间会残留串话，且偏移缺省时一律当 0，
+  // 而规范（RFC 8216 §4.3.6）要求缺省偏移从「上一个 range 的终点」隐式续接。
+  let pendingByteRange: HlsSegment['byteRange'];
+  let lastRangeEnd: number | undefined;
+  // FIX-PLAY-D1：DISCONTINUITY 边界计数只做归因元数据，不改变拼接行为
+  let discontinuityCount = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -247,11 +256,16 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
       targetDuration = parseInt(line.substring('#EXT-X-TARGETDURATION:'.length), 10);
     } else if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
       mediaSequence = parseInt(line.substring('#EXT-X-MEDIA-SEQUENCE:'.length), 10);
+    } else if (line.startsWith('#EXT-X-DISCONTINUITY')) {
+      discontinuityCount += 1;
     } else if (line.startsWith('#EXT-X-KEY:')) {
       const attrs = parseAttributes(line.substring('#EXT-X-KEY:'.length));
-      if (attrs['METHOD'] && attrs['METHOD'] !== 'NONE') {
+      // FIX-PLAY-D3：METHOD 归一为大写——`method="aes-128"` 这类源侧变体
+      // 此前会同时逃过「非 NONE」判定与下载侧的 AES-128 解密分支（密文当明文拼接）。
+      const method = (attrs['METHOD'] ?? '').toUpperCase();
+      if (method && method !== 'NONE') {
         currentKey = {
-          method: attrs['METHOD'],
+          method,
           uri: resolveUrl(attrs['URI'] || '', baseUrl),
           iv: attrs['IV'],
         };
@@ -270,20 +284,20 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
       }
     } else if (line.startsWith('#EXT-X-BYTERANGE:')) {
       // 字节范围（下一行的 URL 使用）
-      const match = line.match(/#EXT-X-BYTERANGE:(\d+)@?(\d*)/);
+      const match = line.match(/#EXT-X-BYTERANGE:(\d+)(?:@(\d+))?/);
       if (match) {
-        const length = parseInt(match[1], 10);
-        const offset = match[2] ? parseInt(match[2], 10) : 0;
-        // 存储到临时变量，等下一行 URL 时使用
-        (parseMediaPlaylist as any)._pendingByteRange = { offset, length };
+        const length = parseInt(match[1]!, 10);
+        const offset = match[2] !== undefined ? parseInt(match[2], 10) : (lastRangeEnd ?? 0);
+        pendingByteRange = { offset, length };
+        lastRangeEnd = offset + length;
       }
     } else if (line.startsWith('#EXT-X-ENDLIST')) {
       endList = true;
     } else if (line && !line.startsWith('#')) {
       // 分片 URL
       const url = resolveUrl(line, baseUrl);
-      const byteRange = (parseMediaPlaylist as any)._pendingByteRange;
-      delete (parseMediaPlaylist as any)._pendingByteRange;
+      const byteRange = pendingByteRange;
+      pendingByteRange = undefined;
 
       segments.push({
         url,
@@ -306,6 +320,7 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
     segments,
     initSegment,
     endList,
+    discontinuityCount,
   };
 }
 
@@ -907,6 +922,7 @@ export class HlsDownloader {
               updatedAt: currentTime,
               completedSegments,
               hlsTotalSegments: totalSegments,
+              hlsDiscontinuities: playlist.discontinuityCount ?? 0,
             });
           }
         }
@@ -963,6 +979,7 @@ export class HlsDownloader {
           updatedAt: now(),
           completedSegments,
           hlsTotalSegments: totalSegments,
+          hlsDiscontinuities: playlist.discontinuityCount ?? 0,
         });
         throw new AppError(
           'E_NETWORK',
@@ -991,9 +1008,16 @@ export class HlsDownloader {
         // hlsTotalSegments，被 checkCorruptedHlsTasks 误判成"假完成"。
         completedSegments,
         hlsTotalSegments: totalSegments,
+        hlsDiscontinuities: playlist.discontinuityCount ?? 0,
       });
 
-      logger.debug('HLS 下载完成', { taskId: task.id, size: result.size, segments: completedCount });
+      logger.debug('HLS 下载完成', {
+        taskId: task.id,
+        size: result.size,
+        segments: completedCount,
+        // FIX-PLAY-D1：边界数进日志，坏件归因时能直接看出这条流拼过几段
+        discontinuities: playlist.discontinuityCount ?? 0,
+      });
 
       // D-06: HLS 下载完成后转封装 TS → MP4（无损，不重编码），让 WebView 原生播放器可播。
       // 转封装失败不阻断下载——保留 .ts 文件，播放时由 PlayerController 走原生引擎。

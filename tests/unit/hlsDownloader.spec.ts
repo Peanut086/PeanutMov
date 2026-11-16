@@ -458,4 +458,48 @@ describe('HLS 下载（Phase 2）', () => {
       expect(blob == null || blob.size < 564).toBe(true);
     }, 15_000);
   });
+
+  describe('FIX-PLAY-D1/D2：BYTERANGE 续接与 DISCONTINUITY 元数据（下载侧）', () => {
+    it('缺省偏移隐式续接上一个 range；完成落库带 hlsDiscontinuities', async () => {
+      const playlist = `#EXTM3U
+#EXT-X-TARGETDURATION:10
+#EXTINF:9,
+#EXT-X-BYTERANGE:188@0
+https://cdn.example.com/big.ts
+#EXTINF:9,
+#EXT-X-BYTERANGE:188
+https://cdn.example.com/big.ts
+#EXT-X-DISCONTINUITY
+#EXTINF:9,
+#EXT-X-BYTERANGE:188@564
+https://cdn.example.com/big.ts
+#EXT-X-ENDLIST`;
+      const ranges: Array<string | null> = [];
+      const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.endsWith('.m3u8')) {
+          return new Response(playlist, {
+            status: 200,
+            headers: { 'content-type': 'application/vnd.apple.mpegurl' },
+          });
+        }
+        ranges.push(new Headers(init?.headers).get('range'));
+        return new Response(tsSegment(1), { status: 206, headers: { 'content-type': 'video/mp2t' } });
+      });
+      const patches: Array<Record<string, unknown>> = [];
+      const downloader = createHlsDownloader({
+        load: async () => task(),
+        saveProgress: async (_id, patch) => {
+          patches.push(patch as Record<string, unknown>);
+        },
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      await downloader.run(task(), new AbortController().signal);
+
+      expect(ranges).toEqual(['bytes=0-187', 'bytes=188-375', 'bytes=564-751']);
+      const finalPatch = patches[patches.length - 1]!;
+      expect(finalPatch.hlsTotalSegments).toBe(3);
+      expect(finalPatch.hlsDiscontinuities).toBe(1);
+    }, 15_000);
+  });
 });

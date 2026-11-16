@@ -525,6 +525,8 @@ export interface DownloadTask {
   completedSegments?: number[];
   /** FIX-D8: HLS 总分片数（用于启动自检，检测假完成记录） */
   hlsTotalSegments?: number;
+  /** FIX-PLAY-D1: 清单里 #EXT-X-DISCONTINUITY 边界数（归因元数据：边界多的流时间轴/转封装更易出问题） */
+  hlsDiscontinuities?: number;
   errorMessage: string | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
