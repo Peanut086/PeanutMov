@@ -17,6 +17,7 @@ const routerBack = vi.fn();
 vi.mock('vue-router', () => ({
   useRoute: () => ({ params: { mediaId: 'netdisk:m1' }, query: {} }),
   useRouter: () => ({ push: routerPush, replace: routerReplace, back: routerBack }),
+  onBeforeRouteLeave: () => undefined,
 }));
 
 vi.mock('@/services/castService', () => ({

@@ -31,6 +31,7 @@ let loadCall = 0;
 vi.mock('vue-router', () => ({
   useRoute: () => routeState,
   useRouter: () => ({ push: vi.fn(), replace: routerReplace, back: vi.fn() }),
+  onBeforeRouteLeave: () => undefined,
 }));
 
 vi.mock('@/services/castService', () => ({
