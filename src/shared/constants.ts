@@ -94,6 +94,12 @@ export const TIMEOUT_SEARCH_SPIDER_MS = 20000;
  * 冷源据此把预算拆成「加载 + 搜索」两段；命中热句柄时不追加，与既有行为完全一致。
  */
 export const TIMEOUT_SEARCH_LOAD_ALLOWANCE_MS = 45000;
+/**
+ * 一轮聚合搜索的全局截止（毫秒，P0-4）：到期只是不再启动新源，在途源继续按各自的
+ * 「单源预算 + 冷源加载余量」跑完——真机实测慢源的结果多半落在 30~50s，中途掐掉
+ * 等于把召回换成空列表。OPT-03 起随搜索预算档位缩放，此前写死在 libraryService 里。
+ */
+export const SEARCH_GLOBAL_DEADLINE_MS = 28000;
 /** 播放器 loadedmetadata 等待（9.7） */
 export const TIMEOUT_LOAD_METADATA_MS = 15000;
 /** 播放网络错误自动重试间隔（FR-25） */

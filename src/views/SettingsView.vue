@@ -14,6 +14,7 @@ import {
   SEARCH_BUDGET_DEFAULT,
   SEARCH_BUDGET_LABELS,
   SEARCH_BUDGET_PRESETS,
+  resolveGlobalDeadlineMs,
   resolveSearchTimeoutMs,
 } from '@/shared/searchBudget';
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
@@ -353,17 +354,19 @@ const searchBudgetOpen = ref(false);
 
 const searchBudget = computed<SearchBudgetPreset>(() => settings.settings?.searchBudget ?? SEARCH_BUDGET_DEFAULT);
 
-/** 档位 → 实际单源上限（秒），让用户所见即所得，不用猜「耐心」到底等多久 */
+/** 档位 → 实际单源上限与全局扇出窗口（秒），让用户所见即所得，不用猜「耐心」到底等多久 */
 function budgetHint(preset: SearchBudgetPreset): string {
   const site = resolveSearchTimeoutMs(TIMEOUT_SEARCH_SITE_MS, preset) / 1000;
   const spider = resolveSearchTimeoutMs(TIMEOUT_SEARCH_SPIDER_MS, preset) / 1000;
-  return `站点 ${site}s · 爬虫 ${spider}s`;
+  // OPT-03：窗口决定一轮最多领多少个源，只写单源秒数会让人以为放宽后覆盖也变大了
+  const total = resolveGlobalDeadlineMs(preset) / 1000;
+  return `站点 ${site}s · 爬虫 ${spider}s · 总窗口 ${total}s`;
 }
 
 const searchBudgetLabel = computed(() => SEARCH_BUDGET_LABELS[searchBudget.value]);
 
 const searchBudgetDesc = computed(
-  () => `单源上限 ${budgetHint(searchBudget.value)}，超时源可在搜索结果页单独重试`,
+  () => `预算 ${budgetHint(searchBudget.value)}，超时与未领到的源可在搜索结果页单独重试`,
 );
 
 const searchBudgetOptions = computed(() =>

@@ -12,7 +12,7 @@
  * 约束：无 IO、无 DOM、无 Pinia 依赖；档位值的持久化由 settings 负责
  * （`AppSettings.searchBudget`）。
  */
-import { TIMEOUT_SEARCH_MS } from '@/shared/constants';
+import { SEARCH_GLOBAL_DEADLINE_MS, TIMEOUT_SEARCH_MS } from '@/shared/constants';
 
 /** 搜索预算档位 */
 export type SearchBudgetPreset = 'fast' | 'standard' | 'patient';
@@ -57,4 +57,18 @@ export function resolveSearchTimeoutMs(baseMs: number, preset?: SearchBudgetPres
   const scale = preset && isSearchBudgetPreset(preset) ? SEARCH_BUDGET_SCALE[preset] : 1;
   const scaled = Math.round(base * scale);
   return Math.min(SEARCH_BUDGET_MAX_MS, Math.max(SEARCH_BUDGET_MIN_MS, scaled));
+}
+
+/** 全局截止下限：低于此值连热源的模板请求都收不完 */
+export const SEARCH_GLOBAL_DEADLINE_MIN_MS = 10000;
+
+/**
+ * 一轮聚合搜索的全局截止 = 缺省 28s × 档位倍率（OPT-03）。
+ *
+ * 档位此前只缩放单源超时：选「耐心」时单源放宽到 30s，扇出却仍在 28s 停止领取新源，
+ * 上百源的订阅包照样只搜到前几十个，设置等于半生效。
+ */
+export function resolveGlobalDeadlineMs(preset?: SearchBudgetPreset): number {
+  const scale = preset && isSearchBudgetPreset(preset) ? SEARCH_BUDGET_SCALE[preset] : 1;
+  return Math.max(SEARCH_GLOBAL_DEADLINE_MIN_MS, Math.round(SEARCH_GLOBAL_DEADLINE_MS * scale));
 }

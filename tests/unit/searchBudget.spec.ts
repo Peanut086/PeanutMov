@@ -9,7 +9,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { settingsService } from '@/services/settingsService';
 import { kvRepo } from '@/db/repositories/kvRepo';
-import { KV_KEY_SETTINGS, TIMEOUT_SEARCH_MS, TIMEOUT_SEARCH_SITE_MS, TIMEOUT_SEARCH_SPIDER_MS } from '@/shared/constants';
+import {
+  KV_KEY_SETTINGS,
+  SEARCH_GLOBAL_DEADLINE_MS,
+  TIMEOUT_SEARCH_MS,
+  TIMEOUT_SEARCH_SITE_MS,
+  TIMEOUT_SEARCH_SPIDER_MS,
+} from '@/shared/constants';
 import {
   SEARCH_BUDGET_DEFAULT,
   SEARCH_BUDGET_LABELS,
@@ -18,7 +24,9 @@ import {
   SEARCH_BUDGET_PRESETS,
   SEARCH_BUDGET_SCALE,
   isSearchBudgetPreset,
+  resolveGlobalDeadlineMs,
   resolveSearchTimeoutMs,
+  SEARCH_GLOBAL_DEADLINE_MIN_MS,
 } from '@/shared/searchBudget';
 import { resetAll } from './helpers';
 
@@ -123,5 +131,29 @@ describe('settings.searchBudget（OPT-04 持久化）', () => {
     settingsService.__resetCache();
     const settings = await settingsService.get();
     expect(settings.searchBudget).toBe('standard');
+  });
+});
+
+describe('resolveGlobalDeadlineMs（OPT-03：全局截止随档位缩放）', () => {
+  it('standard 与既有 28s 逐字等价', () => {
+    expect(resolveGlobalDeadlineMs('standard')).toBe(SEARCH_GLOBAL_DEADLINE_MS);
+    expect(resolveGlobalDeadlineMs()).toBe(SEARCH_GLOBAL_DEADLINE_MS);
+  });
+
+  it('快速收紧 / 耐心放宽，按同一倍率', () => {
+    expect(resolveGlobalDeadlineMs('fast')).toBe(Math.round(SEARCH_GLOBAL_DEADLINE_MS * SEARCH_BUDGET_SCALE.fast));
+    expect(resolveGlobalDeadlineMs('patient')).toBe(
+      Math.round(SEARCH_GLOBAL_DEADLINE_MS * SEARCH_BUDGET_SCALE.patient),
+    );
+  });
+
+  it('非法档位回落缺省，任何输入都返回可用毫秒数', () => {
+    for (const bad of [undefined, '', 'STANDARD', 42, null] as never[]) {
+      expect(resolveGlobalDeadlineMs(bad)).toBe(SEARCH_GLOBAL_DEADLINE_MS);
+    }
+  });
+
+  it('下限保护：不让全局截止低于一轮模板请求的收口时间', () => {
+    expect(resolveGlobalDeadlineMs('fast')).toBeGreaterThan(SEARCH_GLOBAL_DEADLINE_MIN_MS);
   });
 });

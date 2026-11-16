@@ -30,7 +30,7 @@ import {
 import { AppError, isCanceled, toAppError, toErrorShape } from '@/shared/errors';
 import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
 import { mediaIdOf } from '@/shared/id';
-import { resolveSearchTimeoutMs } from '@/shared/searchBudget';
+import { resolveGlobalDeadlineMs, resolveSearchTimeoutMs } from '@/shared/searchBudget';
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { classifySourceFailure, isTransientFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { isKeywordIgnored } from '@/services/searchAggregate';
@@ -472,12 +472,18 @@ async function searchBudgetPreset(): Promise<SearchBudgetPreset | undefined> {
   }
 }
 
-/** 单源远程搜索，超时按适配器区分（CHG-15）：site 8s / spider 20s，缺省 5s（AC-24） */
+/**
+ * 单源远程搜索，超时按适配器区分（CHG-15）：site 8s / spider 20s，缺省 5s（AC-24）。
+ *
+ * `preset` 由调用方（一轮扇出）读一次传进来：OPT-03 之前每个源各读一次 settings，
+ * 档位改动落在同一轮搜索的中途会让各源预算不一致。
+ */
 async function searchOneSource(
   source: Source,
   keyword: string,
   signal: AbortSignal | undefined,
   pageSize: number,
+  preset: SearchBudgetPreset | undefined,
 ): Promise<MediaItem[]> {
   const adapter = await adapterFor(source);
   // P1-6：搜索扇出前预热，让 jar 加载尽早开始。
@@ -489,7 +495,6 @@ async function searchOneSource(
   const extTimeoutMs = readExtTimeoutMs(source);
   const baseMs = extTimeoutMs ?? adapter.searchTimeoutMs ?? TIMEOUT_SEARCH_MS;
   // OPT-04：单源预算可配置（standard = 既有行为；fast/patient 按倍率缩放后钳制）
-  const preset = await searchBudgetPreset();
   const budgetMs = resolveSearchTimeoutMs(baseMs, preset);
   // F10：冷爬虫源给一段独立的加载余量（按同一档位缩放）。
   // 适配器内部的 `ensureLoaded` 与真实请求各自计时，加载时间只在**外层**这一笔被记进搜索预算——
@@ -798,12 +803,14 @@ export const libraryService: LibraryService = {
       const total = enabled.length;
       let done = 0;
       // P0-4：全局搜索截止时间——避免个别慢源拖住整体响应
-      const SEARCH_GLOBAL_DEADLINE_MS = 28000;
+      // OPT-03：截止时间随预算档位缩放，否则「耐心」档只放宽单源、扇出照样在 28s 收口
+      const preset = await searchBudgetPreset();
+      const globalDeadlineMs = resolveGlobalDeadlineMs(preset);
       const searchStartedAt = Date.now();
       /** 单源完成即通知（CHG-12 渐进搜索）；取消的源不计入失败、不回调 */
       const settleOne = async (source: Source, index: number): Promise<void> => {
         try {
-          const items = await searchOneSource(source, keyword, params.signal, pageSize);
+          const items = await searchOneSource(source, keyword, params.signal, pageSize, preset);
           // P0-1：识别"源忽略关键词"（采集站关闭搜索，返回目录页冒充结果）
           // 命中则不上屏、不落库、不判活，记一条 keyword_ignored 失败
           if (isKeywordIgnored(items, keyword)) {
@@ -847,7 +854,7 @@ export const libraryService: LibraryService = {
             while (cursor < enabled.length) {
               // P0-4：全局截止时间 + 外部取消 → 不再启动新源
               if (params.signal?.aborted) return;
-              if (Date.now() - searchStartedAt > SEARCH_GLOBAL_DEADLINE_MS) return;
+              if (Date.now() - searchStartedAt > globalDeadlineMs) return;
               const idx = cursor++;
               const source = enabled[idx];
               if (source) await settleOne(source, idx);
