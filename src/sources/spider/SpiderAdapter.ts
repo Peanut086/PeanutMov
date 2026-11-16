@@ -252,6 +252,12 @@ const NATIVE_LOAD_TIMEOUT_MS = 75_000;
 const NATIVE_INVOKE_TIMEOUT_MS = TIMEOUT_SPIDER_PLAY_COLD_MS;
 const NATIVE_INVOKE_TIMEOUT_HOT_MS = TIMEOUT_SPIDER_PLAY_HOT_MS;
 const NATIVE_PROXY_TIMEOUT_MS = 25_000;
+/**
+ * F3：僵尸原生调用的冷却窗口。JS 侧 raceNative 超时只是放弃等待，原生任务还会跑
+ * 到自身看门狗/HTTP 超时（最长 ≈ INVOKE_TIMEOUT_MS 30s）；窗口内对同一源的重试
+ * 会被直接拒绝，避免"重试失败源"往还在执行的实例上撞（原生侧另有 F1 同实例锁兜底）。
+ */
+const ZOMBIE_COOLDOWN_MS = 30_000;
 
 /**
  * 原生调用竞速：正常结果 / 外部取消 / 超时三者先到先出。
@@ -371,6 +377,8 @@ export class SpiderAdapter extends BaseAdapter {
   private readonly warmingUp = new Set<string>();
   /** P1-6：正在加载中的 sourceId → 加载 Promise（预热与真实调用共用一次加载） */
   private readonly loading = new Map<string, Promise<string>>();
+  /** F3：sourceId → 冷却截止时间戳（上一次原生调用被放弃但僵尸仍在跑，jar 爬虫专用） */
+  private readonly invokeCooldown = new Map<string, number>();
 
   /* ---------------- 探活与加载 ---------------- */
 
@@ -583,17 +591,36 @@ export class SpiderAdapter extends BaseAdapter {
       if (tried.has(candidate)) continue;
       tried.add(candidate);
       try {
-        const result = await raceNative(
-          () =>
-            SpiderNative.load({
-              jarUrl: `${candidate}${md5Suffix}`,
-              api: ext.api ?? '',
-              initExt,
-              userAgent: source.headers['User-Agent'] ?? source.headers['user-agent'] ?? null,
-            }),
-          signal,
-          NATIVE_LOAD_TIMEOUT_MS,
+        // F4：竞速失败（超时/取消）后原生可能仍完成加载并返回句柄——那时句柄无人认领、
+        // 也永远不会被 unload（实例+jar 状态滞留）。保留 promise 引用，迟到回执时回收。
+        let delivered = false;
+        const loadPromise = Promise.resolve().then(() =>
+          SpiderNative.load({
+            jarUrl: `${candidate}${md5Suffix}`,
+            api: ext.api ?? '',
+            initExt,
+            userAgent: source.headers['User-Agent'] ?? source.headers['user-agent'] ?? null,
+          }),
         );
+        void loadPromise.then(
+          (late) => {
+            if (!late?.handle) return;
+            // 宏任务再判定：成功路径的 delivered/handles 写入都发生在微任务里，
+            // 同步检查会把"刚创建的正牌句柄"误判成孤儿。
+            setTimeout(() => {
+              if (!delivered && this.handles.get(source.id) !== late.handle) {
+                logger.warn('jar 加载迟到回执，回收孤儿句柄', source.name, late.handle);
+                // Promise.resolve 包裹：mock/Web 代理可能不返回 thenable，不可直接 .catch
+                void Promise.resolve(SpiderNative.unload({ handle: late.handle })).catch(() => {});
+              }
+            }, 0);
+          },
+          () => {
+            /* 失败路径无需回收（没有句柄产生） */
+          },
+        );
+        const result = await raceNative(() => loadPromise, signal, NATIVE_LOAD_TIMEOUT_MS);
+        delivered = true;
         this.jarVariants.set(source.id, candidate);
         this.handles.set(source.id, result.handle);
         return result.handle;
@@ -658,12 +685,16 @@ export class SpiderAdapter extends BaseAdapter {
     timeoutMs?: number,
   ) {
     signal?.throwIfAborted();
+    // F3：上一次调用还在原生线程里跑（僵尸）时，不再对同一实例发第二次并发调用
+    this.assertNotCoolingDown(source);
     const handle = await this.ensureLoaded(source, signal);
     const effectiveTimeout = timeoutMs ?? NATIVE_INVOKE_TIMEOUT_MS;
+    const isJar = extOf(source).kind !== 'js';
     try {
       let result: { json: string | null; logs?: string[] };
-      if (extOf(source).kind === 'js') {
-        // CHG-16：drpy 路由——TVBox 方法名映射为编排方法，位置参数拼成单参 JSON
+      if (!isJar) {
+        // CHG-16：drpy 路由——TVBox 方法名映射为编排方法，位置参数拼成单参 JSON。
+        // drpy 运行时自带引擎单线程队列，不存在并发重入，冷却逻辑不适用。
         result = await raceNative(
           () =>
             DrpyNative.invoke({
@@ -675,11 +706,35 @@ export class SpiderAdapter extends BaseAdapter {
           effectiveTimeout,
         );
       } else {
-        result = await raceNative(
-          () => SpiderNative.invoke({ handle, method, args, arrayArgs }),
-          signal,
-          effectiveTimeout,
+        // Promise.resolve().then 包装：mock/Web 代理可能**同步**抛错，直接取值会绕过 promise 轨道
+        const callPromise = Promise.resolve().then(() =>
+          SpiderNative.invoke({ handle, method, args, arrayArgs }),
         );
+        // 僵尸真正结束时提前解除冷却（raceNative 的放弃 ≠ 原生任务的结束）。
+        // finally 的返回 promise 会原样转发拒绝，必须再 catch 兜住，否则 unhandled。
+        let callSettled = false;
+        void callPromise
+          .finally(() => {
+            callSettled = true;
+            this.invokeCooldown.delete(source.id);
+          })
+          .catch(() => {});
+        try {
+          result = await raceNative(() => callPromise, signal, effectiveTimeout);
+        } catch (e) {
+          if (isJar && this.isZombieSignal(e, callSettled)) {
+            this.invokeCooldown.set(source.id, Date.now() + ZOMBIE_COOLDOWN_MS);
+            if (!(e instanceof AppError)) {
+              // 原生忙拒绝（F1 锁）：文案对准真实状态，别让 nativeErrorOf 收敛成"执行失败"
+              throw new AppError(
+                'E_SOURCE_UNAVAILABLE',
+                '该源上一次调用仍在原生侧执行，本次已跳过，请稍候再试',
+                { detail: source.name, cause: e },
+              );
+            }
+          }
+          throw e;
+        }
       }
       return parseSpiderJson(result.json, method, source.name);
     } catch (e) {
@@ -687,6 +742,36 @@ export class SpiderAdapter extends BaseAdapter {
       logger.warn('爬虫调用失败', source.name, method, e);
       throw nativeErrorOf(e, new AppError('E_SOURCE_UNAVAILABLE', '爬虫执行失败'));
     }
+  }
+
+  /**
+   * F3：判定"上一次原生调用还在跑"。超时/取消都必须以底层 promise 未落定为前提
+   * （完成与到期同刻竞走时不应记冷却——僵尸已经没了）。原生忙拒绝（F1）恒为真：
+   * 它报告的是"另一个调用"还在跑。
+   */
+  private isZombieSignal(e: unknown, callSettled: boolean): boolean {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('源正忙')) return true;
+    if (e instanceof AppError) {
+      if (!callSettled && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED')) return true;
+    }
+    return false;
+  }
+
+  /** F3：冷却窗口内直接快速失败，并给出剩余等待秒数 */
+  private assertNotCoolingDown(source: Source): void {
+    const until = this.invokeCooldown.get(source.id);
+    if (until === undefined) return;
+    const remainMs = until - Date.now();
+    if (remainMs <= 0) {
+      this.invokeCooldown.delete(source.id);
+      return;
+    }
+    throw new AppError(
+      'E_SOURCE_UNAVAILABLE',
+      `该源上一次调用仍在原生侧执行，约 ${Math.ceil(remainMs / 1000)} 秒后可重试`,
+      { detail: source.name },
+    );
   }
 
   /* ---------------- 数据方法 ---------------- */

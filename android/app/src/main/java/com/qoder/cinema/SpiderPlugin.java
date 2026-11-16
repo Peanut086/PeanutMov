@@ -135,6 +135,15 @@ public class SpiderPlugin extends Plugin {
      * 成功路径在任务内部 resolve；失败或超时由这里统一 reject（二选一，不重复回调）。
      */
     private void runSpider(PluginCall call, String op, long timeoutMs, SpiderTask task) {
+        runSpider(call, op, timeoutMs, null, task);
+    }
+
+    /**
+     * F4：`abandoned`（可空）由调用方持有——看门狗超时回执时置位。任务随后完成时
+     * 据此判断"回执已发给谁"，丢弃本该成为孤儿的结果（如加载出的新句柄）。
+     */
+    private void runSpider(PluginCall call, String op, long timeoutMs,
+                           AtomicBoolean abandoned, SpiderTask task) {
         final AtomicBoolean settled = new AtomicBoolean(false);
         final String label = "爬虫" + op;
         // PERF-0：排队/执行分段计时（纯观测）
@@ -143,6 +152,7 @@ public class SpiderPlugin extends Plugin {
         
         final Runnable timeoutTask = () -> {
             if (settled.compareAndSet(false, true)) {
+                if (abandoned != null) abandoned.set(true);
                 Log.w(TAG, op + " timeout after " + timeoutMs + "ms, started=" + started.get()
                         + ", waited=" + (android.os.SystemClock.elapsedRealtime() - submittedAt) + "ms");
                 call.reject(label + "超时（" + (timeoutMs / 1000) + " 秒），请重试或更换源");
@@ -381,6 +391,13 @@ public class SpiderPlugin extends Plugin {
         final String api;
         final File dexDir;
         final String jarMd5;
+        /**
+         * F1：同实例串行锁。看门狗超时只放弃 JS 侧回执，原生任务继续跑（僵尸），
+         * 此时重试/再次搜索会并发重入同一 Spider 实例——TVBox 爬虫不保证线程安全，
+         * guard jar 内部还有 native 状态，并发进入是偶发 SIGSEGV 的头号嫌疑。
+         */
+        final java.util.concurrent.locks.ReentrantLock invokeLock =
+                new java.util.concurrent.locks.ReentrantLock();
 
         LoadedSpider(Spider spider, String api, File dexDir, String jarMd5) {
             this.spider = spider;
@@ -606,13 +623,22 @@ public class SpiderPlugin extends Plugin {
             return;
         }
 
-        runSpider(call, "加载", LOAD_TIMEOUT_MS, () -> {
+        // F4：JS 侧可能已通过 raceNative 超时/取消放弃本调用（原生看门狗兜底回执），
+        // 任务照常完成并登记句柄 → 该句柄永远不会被 unload，实例与 jar 状态滞留。
+        // 用 abandoned 标记在收尾时丢弃；更常见的 JS 侧迟到回执由前端 unload 兜底。
+        final AtomicBoolean abandoned = new AtomicBoolean(false);
+        runSpider(call, "加载", LOAD_TIMEOUT_MS, abandoned, () -> {
             // 首次加载爬虫时拉起 127.0.0.1:9978 本地代理：壳子系爬虫（AppTT 等）在
             // playerContent 内部会同步请求它换直链，晚了就会 ECONNREFUSED 降级
             SpiderProxyServer.start(this::routeProxy);
             LoadedSpider result = loadSpider(getContext(), jarUrl, api, initExt, userAgent);
             String handle = "sp-" + (++handleSeq);
             loaded.put(handle, result);
+            if (abandoned.get()) {
+                loaded.remove(handle);
+                Log.w(TAG, "orphan handle discarded (JS 侧已放弃本次加载): " + handle + " api=" + api);
+                return;
+            }
             JSObject ret = new JSObject();
             ret.put("handle", handle);
             call.resolve(ret);
@@ -698,7 +724,26 @@ public class SpiderPlugin extends Plugin {
                 return null;
             }
             method.setAccessible(true);
-            Object result = method.invoke(target.spider, params);
+            // F2：代理路径哨兵。播放期 ExoPlayer 哨兵在 prepare 成功即清除，爬虫 proxy()
+            // 是当时唯一活跃的 jar 代码——此前 native 崩在这里不留任何归因（无哨兵、
+            // 不计隔离、不进安全模式），坏 jar 永远隔离不掉。签名沿用 spider:jarMd5:api，
+            // 首崩即隔离（与 load/invoke 同策略）。
+            String token = null;
+            try {
+                JSONObject sentinelDetails = new JSONObject();
+                sentinelDetails.put("jarMd5", target.jarMd5 != null ? target.jarMd5 : "");
+                sentinelDetails.put("api", target.api);
+                sentinelDetails.put("method", "proxy:" + doParam);
+                token = CrashSentinel.begin("spider.proxy", sentinelDetails);
+            } catch (Exception e) {
+                Log.w(TAG, "failed to write proxy sentinel", e);
+            }
+            Object result;
+            try {
+                result = method.invoke(target.spider, params);
+            } finally {
+                CrashSentinel.end(token);
+            }
             if (result instanceof Object[]) {
                 Object[] arr = (Object[]) result;
                 if (arr.length > 0 && arr[0] != null && String.valueOf(arr[0]).trim().length() > 0) {
@@ -731,6 +776,12 @@ public class SpiderPlugin extends Plugin {
         // 参数转换较轻量，先在桥接线程做完，重活（爬虫执行）进线程池
         Object[] javaArgs = toJavaArgs(args, arrayArgs);
         runSpider(call, "调用", INVOKE_TIMEOUT_MS, () -> {
+            // F1：拿不到锁 = 上一次调用（可能已被看门狗放弃）还在跑，直接拒，
+            // 让 JS 侧快速失败而不是并发重入。锁由在途任务结束时释放；
+            // 若爬虫线程真挂死，该实例持续 busy——宁可对这一个源报错，也不并发重入。
+            if (!target.invokeLock.tryLock()) {
+                throw new IllegalStateException("源正忙（上一次调用仍在原生线程执行），请稍后重试");
+            }
             // REV-24 / B2：哨兵包裹爬虫调用——native crash 时下次启动可检测到
             String token = null;
             try {
@@ -752,6 +803,8 @@ public class SpiderPlugin extends Plugin {
             } catch (Exception e) {
                 CrashSentinel.end(token);
                 throw e;
+            } finally {
+                target.invokeLock.unlock();
             }
         });
     }
