@@ -20,7 +20,7 @@ import { lineHealthService } from '@/services/lineHealthService';
 import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
 import { PAGE_SIZE, SEARCH_LOCAL_LIMIT } from '@/shared/constants';
-import { AppError, isCanceled, toErrorShape } from '@/shared/errors';
+import { AppError, isCanceled, toAppError, toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
 import type { PlayabilityStatus } from '@/services/playabilityService';
@@ -501,6 +501,15 @@ export const useLibraryStore = defineStore('library', () => {
       searchFailed.value = [];
       searchState.value = 'error';
       error.value = toErrorShape(e);
+      // OPT-13：全源失败时服务层是「抛错」而不是返回结果，未启动的源/candidates 会随
+      // 结果一起丢——错误态下「继续搜索剩余」就永远没数据。从异常的 meta 里捞回来。
+      const meta = toAppError(e).meta;
+      const skipped = meta?.skippedSourceIds;
+      if (Array.isArray(skipped)) {
+        searchSkippedIds.value = skipped.filter((id): id is string => typeof id === 'string');
+      }
+      if (typeof meta?.candidates === 'number') searchCandidates.value = meta.candidates;
+      if (typeof meta?.filteredOut === 'number') searchFilteredOut.value = meta.filteredOut;
     } finally {
       if (searchController === controller) searchController = null;
       searchProgress.value = null;

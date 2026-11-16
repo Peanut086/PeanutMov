@@ -892,9 +892,16 @@ export const libraryService: LibraryService = {
     if (merged.length === 0 && realFailures.length > 0 && realFailures.length + skippedSourceIds.length === enabled.length && enabled.length > 0) {
       const first = realFailures[0];
       if (first) {
+        // OPT-13：抛错也要把「没试过的源」带出去，否则错误态下「继续搜索」入口永远没数据
         throw new AppError(first.error.code, first.error.message, {
           detail: first.error.detail,
           httpStatus: first.error.httpStatus,
+          meta: {
+            skippedSourceIds,
+            candidates: enabled.length,
+            filteredOut,
+            failedSourceIds: failed.map((f) => f.sourceId),
+          },
         });
       }
     }

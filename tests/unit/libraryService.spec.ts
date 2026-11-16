@@ -17,6 +17,7 @@ import { sourceRegistry } from '@/sources/registry';
 import { categoryIdFor } from '@/sources/base/normalize';
 import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { mediaIdOf } from '@/shared/id';
+import { AppError } from '@/shared/errors';
 import { PAGE_SIZE } from '@/shared/constants';
 import type { Episode, LibraryFilters, MediaItem, MediaType, PlayLine } from '@/types';
 
@@ -270,9 +271,17 @@ describe('search 空结果诊断（CHG-15）', () => {
     expect(result.candidates).toBe(3);
     expect(result.filteredOut).toBe(0);
     // 全部参与的源都失败 → 抛第一个错误（而不是静默空结果）
-    await expect(
-      libraryService.search({ keyword: '战狼', sourceIds: [a, b], forceAll: true }),
-    ).rejects.toBeDefined();
+    const thrown = await libraryService
+      .search({ keyword: '战狼', sourceIds: [a, b], forceAll: true })
+      .catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(AppError);
+    // OPT-13：抛错时把「覆盖缺口」放进 meta，否则错误态下 store 拿不到 skipped/candidates
+    const meta = (thrown as AppError).meta as Record<string, unknown>;
+    expect(meta.candidates).toBe(2);
+    expect(meta.filteredOut).toBe(0);
+    expect(meta.skippedSourceIds).toEqual([]);
+    // 并发扇出下 failed 的到达顺序不稳定，按集合比
+    expect([...(meta.failedSourceIds as string[])].sort()).toEqual([a, b].sort());
   });
 });
 

@@ -7,7 +7,7 @@
  * - 仅对"可重试"的失败重试：网络错误、超时、429、5xx；4xx 直接抛出。
  * - 不在此层做鉴权注入，headers 由各适配器按源配置拼装。
  */
-import { AppError, httpStatusToErrorCode, toAppError } from '@/shared/errors';
+import { AppError, httpStatusToErrorCode, isCanceled, toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 
 export interface HttpRequestOptions {
@@ -127,7 +127,10 @@ function mapFetchError(e: unknown, timeoutMs: number, timedOut: boolean): AppErr
   return base;
 }
 
-function mapStatusError(status: number, statusText: string): AppError {
+/**
+ * 非 2xx → AppError（OPT-08：原生通路与 Web 通路共用同一份映射，避免两边语义漂移）
+ */
+export function mapStatusError(status: number, statusText: string): AppError {
   const code = httpStatusToErrorCode(status);
   // AC-39 / REV-16：401 才是"需要登录"（E_AUTH），403 是"无权限访问"（E_HTTP_403），
   // 不能合并，否则浏览/播放链路 403 文案会退化为「认证失败」。
@@ -156,8 +159,14 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     signal?.addEventListener('abort', onAbort, { once: true });
   });
 
-/** 单次 fetch（带超时与外部取消） */
-async function fetchOnce(url: string, options: HttpRequestOptions): Promise<Response> {
+/**
+ * 单次尝试：请求 + 读体共用一个截止时间（OPT-08）。
+ *
+ * 此前定时器在拿到响应头后即清除，只有首字节受超时保护；服务端「回了头就开始吊 body」
+ * 时 `response.text()` 会永久挂起，外部没有传 signal 就一直等。把 `readBody` 挪进同一个
+ * controller 作用域后，到期 abort 会连带中断未完成的响应体流，语义变成「整请求 N 秒」。
+ */
+async function attemptOnce<T>(url: string, options: HttpRequestOptions): Promise<HttpResponse<T>> {
   const { method = 'GET', headers = {}, body = null, signal, redirect = 'follow', throwOnHttpError = true } = options;
   const timeoutMs = effectiveTimeoutMs(url, options);
 
@@ -183,7 +192,8 @@ async function fetchOnce(url: string, options: HttpRequestOptions): Promise<Resp
       cache: 'no-store',
     });
     if (throwOnHttpError && !response.ok) throw mapStatusError(response.status, response.statusText);
-    return response;
+    const data = await readBody<T>(response, options.responseType);
+    return { data, status: response.status, headers: response.headers };
   } catch (e) {
     throw mapFetchError(e, timeoutMs, timedOut);
   } finally {
@@ -218,6 +228,10 @@ async function readBody<T>(response: Response, responseType: HttpRequestOptions[
     }
   } catch (e) {
     if (e instanceof AppError) throw e;
+    // OPT-08：响应体被取消/超时打断时，abort 信号是从 `readBody` 里冒出来的。
+    // 这里原样上抛，交给 attemptOnce 按同一份预算归类；包成 E_PARSE 会把「请求超时」
+    // 说成「响应解析失败」，调用方（弹幕 XML、详情刷新）也就看不到重试语义了。
+    if (isCanceled(e)) throw e;
     throw new AppError('E_PARSE', undefined, { detail: toAppError(e, 'E_PARSE').message, cause: e });
   }
 }
@@ -243,9 +257,7 @@ export async function httpRequestWithMeta<T>(
   let attempt = 0;
   for (;;) {
     try {
-      const response = await fetchOnce(url, options);
-      const data = await readBody<T>(response, options.responseType);
-      return { data, status: response.status, headers: response.headers };
+      return await attemptOnce<T>(url, options);
     } catch (e) {
       const error = toAppError(e);
       if (error.code === 'E_ABORTED' && options.signal?.aborted) throw error;

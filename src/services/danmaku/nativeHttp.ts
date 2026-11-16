@@ -12,7 +12,8 @@
  */
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 
-import { httpClient, type HttpRequestOptions } from '@/sources/base/httpClient';
+import { httpClient, mapStatusError, type HttpRequestOptions } from '@/sources/base/httpClient';
+import { AppError } from '@/shared/errors';
 
 /** 原生/网页两通路统一的响应结构；headers 键名统一小写 */
 export interface HttpResponse<T> {
@@ -21,24 +22,48 @@ export interface HttpResponse<T> {
   headers: Record<string, string>;
 }
 
+/**
+ * 取消联动（OPT-08）：`CapacitorHttp` 没有 signal 形参，此前弹幕 Provider 传下来的
+ * `query.signal` 在真机通路上被整条忽略——取消/超时后 JS 侧还在等，弹幕面板收不起来。
+ *
+ * 这里用 race 保证**调用方**不再被挂住的请求拖住；底层请求本身仍会跑完它自己的
+ * connect/read 超时（原生插件不支持中断，这是 Capacitor 的限制，不是本层的取舍）。
+ */
+function withCancel<T>(start: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) return Promise.reject(new AppError('E_ABORTED'));
+  const promise = start();
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new AppError('E_ABORTED'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
+}
+
+/** 两通路统一的非 2xx 处理：抛 `mapStatusError`（E_HTTP_403 / E_AUTH / …），Web 通路已由 httpClient 给出同样语义 */
+function assertOk(status: number): void {
+  if (status < 200 || status >= 300) throw mapStatusError(status, '');
+}
+
 export async function requestWithHeaders<T>(
   url: string,
   options: HttpRequestOptions & { responseType: 'json' | 'text' },
 ): Promise<T> {
   if (!Capacitor.isNativePlatform()) return httpClient.request<T>(url, options);
   const timeout = options.timeoutMs ?? 10_000;
-  const response = await CapacitorHttp.request({
-    url,
-    method: options.method ?? 'GET',
-    headers: options.headers ?? {},
-    data: options.body ?? undefined,
-    responseType: options.responseType,
-    connectTimeout: timeout,
-    readTimeout: timeout,
-  });
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`HTTP ${response.status}`);
-  }
+  const response = await withCancel(
+    () => CapacitorHttp.request({
+      url,
+      method: options.method ?? 'GET',
+      headers: options.headers ?? {},
+      data: options.body ?? undefined,
+      responseType: options.responseType,
+      connectTimeout: timeout,
+      readTimeout: timeout,
+    }),
+    options.signal,
+  );
+  assertOk(response.status);
   return response.data as T;
 }
 
@@ -70,18 +95,19 @@ export async function requestResponse<T>(
     return { data: response.data, status: response.status, headers: pairs };
   }
   const timeout = options.timeoutMs ?? 10_000;
-  const response = await CapacitorHttp.request({
-    url,
-    method: options.method ?? 'GET',
-    headers: options.headers ?? {},
-    data: options.body ?? undefined,
-    responseType: options.responseType,
-    connectTimeout: timeout,
-    readTimeout: timeout,
-  });
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`HTTP ${response.status}`);
-  }
+  const response = await withCancel(
+    () => CapacitorHttp.request({
+      url,
+      method: options.method ?? 'GET',
+      headers: options.headers ?? {},
+      data: options.body ?? undefined,
+      responseType: options.responseType,
+      connectTimeout: timeout,
+      readTimeout: timeout,
+    }),
+    options.signal,
+  );
+  assertOk(response.status);
   return { data: response.data as T, status: response.status, headers: lowerHeaders(response.headers) };
 }
 
@@ -92,18 +118,19 @@ export async function requestBytes(url: string, options: HttpRequestOptions = {}
     return new Uint8Array(buffer);
   }
   const timeout = options.timeoutMs ?? 10_000;
-  const response = await CapacitorHttp.request({
-    url,
-    method: options.method ?? 'GET',
-    headers: options.headers ?? {},
-    data: options.body ?? undefined,
-    responseType: 'arraybuffer',
-    connectTimeout: timeout,
-    readTimeout: timeout,
-  });
-  if (response.status < 200 || response.status >= 300) {
-    throw new Error(`HTTP ${response.status}`);
-  }
+  const response = await withCancel(
+    () => CapacitorHttp.request({
+      url,
+      method: options.method ?? 'GET',
+      headers: options.headers ?? {},
+      data: options.body ?? undefined,
+      responseType: 'arraybuffer',
+      connectTimeout: timeout,
+      readTimeout: timeout,
+    }),
+    options.signal,
+  );
+  assertOk(response.status);
   return base64ToBytes(String(response.data ?? ''));
 }
 

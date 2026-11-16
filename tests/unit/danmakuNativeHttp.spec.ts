@@ -7,6 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { httpClient } from '@/sources/base/httpClient';
+import { AppError } from '@/shared/errors';
 import { base64ToBytes, requestBytes, requestResponse, requestWithHeaders } from '@/services/danmaku/nativeHttp';
 
 const env = vi.hoisted(() => ({ native: true }));
@@ -17,7 +18,9 @@ vi.mock('@capacitor/core', () => ({
   CapacitorHttp: capHttp,
 }));
 
-vi.mock('@/sources/base/httpClient', () => ({
+// 只桩掉 httpClient 的请求入口，保留 mapStatusError 等错误映射（原生通路共用，OPT-08）
+vi.mock('@/sources/base/httpClient', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/sources/base/httpClient')>()),
   httpClient: { request: vi.fn(), requestWithMeta: vi.fn() },
 }));
 
@@ -71,15 +74,19 @@ describe('nativeHttp 原生通路', () => {
   it('请求参数按 Capacitor 约定映射（headers/data/双超时），非 2xx 抛 HTTP 错误', async () => {
     capHttp.request.mockResolvedValueOnce({ data: 'x', status: 403, headers: {} });
 
-    await expect(
-      requestWithHeaders<string>('https://api.bilibili.com/x/v1/dm/list.so?aid=1', {
-        method: 'POST',
-        headers: { Referer: 'https://www.bilibili.com' },
-        body: 'a=1',
-        responseType: 'text',
-        timeoutMs: 6000,
-      }),
-    ).rejects.toThrow('HTTP 403');
+    const thrown = await requestWithHeaders<string>('https://api.bilibili.com/x/v1/dm/list.so?aid=1', {
+      method: 'POST',
+      headers: { Referer: 'https://www.bilibili.com' },
+      body: 'a=1',
+      responseType: 'text',
+      timeoutMs: 6000,
+    }).catch((e: unknown) => e);
+
+    // OPT-08：原生通路此前抛裸 Error('HTTP 403')，调用方拿不到 code/httpStatus
+    expect(thrown).toBeInstanceOf(AppError);
+    expect((thrown as AppError).code).toBe('E_HTTP_403');
+    expect((thrown as AppError).httpStatus).toBe(403);
+    expect((thrown as AppError).detail).toBe('HTTP 403');
 
     expect(capHttp.request).toHaveBeenCalledWith({
       url: 'https://api.bilibili.com/x/v1/dm/list.so?aid=1',
@@ -106,7 +113,40 @@ describe('nativeHttp 原生通路', () => {
     expect(await requestBytes('https://cmts.iqiyi.com/bullet/x.br')).toHaveLength(0);
 
     capHttp.request.mockResolvedValueOnce({ data: '', status: 302, headers: {} });
-    await expect(requestBytes('https://cmts.iqiyi.com/bullet/x.br')).rejects.toThrow('HTTP 302');
+    const thrown = await requestBytes('https://cmts.iqiyi.com/bullet/x.br').catch((e: unknown) => e);
+    expect(thrown).toBeInstanceOf(AppError);
+    expect((thrown as AppError).detail).toBe('HTTP 302');
+    expect((thrown as AppError).httpStatus).toBe(302);
+  });
+
+  it('外部 signal 已取消：不发请求，直接 E_ABORTED（OPT-08）', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      requestWithHeaders<string>('https://api.bilibili.com/x/v2/dm/web/seg.so?oid=1', {
+        responseType: 'text',
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(AppError);
+    expect(capHttp.request).not.toHaveBeenCalled();
+  });
+
+  it('请求在飞时取消：调用方立刻解脱，不再等原生超时（OPT-08）', async () => {
+    let pending: ReturnType<typeof setTimeout> | undefined;
+    capHttp.request.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          pending = setTimeout(() => resolve({ data: 'late', status: 200, headers: {} }), 5_000);
+        }),
+    );
+    const controller = new AbortController();
+    const call = requestBytes('https://cmts.iqiyi.com/bullet/x.br', { signal: controller.signal });
+    controller.abort();
+
+    const thrown = await call.catch((e: unknown) => e);
+    expect((thrown as AppError).code).toBe('E_ABORTED');
+    clearTimeout(pending);
   });
 });
 
@@ -142,6 +182,23 @@ describe('nativeHttp Web 通路', () => {
 
     expect(Array.from(bytes)).toEqual([1, 2, 3]);
     expect(httpClient.request).toHaveBeenCalledWith('https://cmts.iqiyi.com/bullet/x.br', { timeoutMs: 4000, responseType: 'arrayBuffer' });
+  });
+
+  it('Web 通路原样透传 signal / headers（原生通路靠 withCancel，Web 交给 httpClient）', async () => {
+    const controller = new AbortController();
+    vi.mocked(httpClient.request).mockResolvedValueOnce('<d></d>');
+
+    await requestWithHeaders<string>('https://api.bilibili.com/x/v1/dm/list.so?oid=1', {
+      responseType: 'text',
+      headers: { Referer: 'https://www.bilibili.com' },
+      signal: controller.signal,
+    });
+
+    expect(httpClient.request).toHaveBeenCalledWith(
+      'https://api.bilibili.com/x/v1/dm/list.so?oid=1',
+      expect.objectContaining({ signal: controller.signal, responseType: 'text' }),
+    );
+    expect(capHttp.request).not.toHaveBeenCalled();
   });
 });
 

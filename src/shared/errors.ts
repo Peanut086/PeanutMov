@@ -79,6 +79,13 @@ export interface AppErrorExtra {
   detail?: string | null;
   retryable?: boolean;
   httpStatus?: number | null;
+  /**
+   * 结构化补充信息，供调用方决定「下一步动作」。
+   *
+   * 只挂在 AppError 实例上、不进 `AppErrorShape`：形状会落库/进日志，而这类字段
+   * （如搜索全失败时未启动的源 id）只在一次 catch 里有意义。
+   */
+  meta?: Record<string, unknown> | null;
   /** 保留原始异常，仅用于日志，不进入 AppErrorShape */
   cause?: unknown;
 }
@@ -92,6 +99,7 @@ export class AppError extends Error {
   readonly detail: string | null;
   readonly retryable: boolean;
   readonly httpStatus: number | null;
+  readonly meta: Record<string, unknown> | null;
 
   constructor(code: ErrorCode, message?: string, extra?: AppErrorExtra) {
     super(message ?? ERROR_MESSAGES[code]);
@@ -100,6 +108,7 @@ export class AppError extends Error {
     this.detail = extra?.detail ?? null;
     this.retryable = extra?.retryable ?? RETRYABLE_CODES.has(code);
     this.httpStatus = extra?.httpStatus ?? null;
+    this.meta = extra?.meta ?? null;
     if (extra?.cause !== undefined) {
       (this as { cause?: unknown }).cause = extra.cause;
     }

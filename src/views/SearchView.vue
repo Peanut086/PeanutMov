@@ -525,13 +525,23 @@ function openSourceManage(): void {
       </div>
 
       <!-- 错误 -->
-      <ErrorState
-        v-else-if="showError"
-        :error="library.error ?? { code: 'E_UNKNOWN', message: '搜索失败', detail: null, retryable: true, httpStatus: null }"
-        back-text="返回"
-        @retry="retry"
-        @back="goBack"
-      />
+      <template v-else-if="showError">
+        <ErrorState
+          :error="library.error ?? { code: 'E_UNKNOWN', message: '搜索失败', detail: null, retryable: true, httpStatus: null }"
+          back-text="返回"
+          @retry="retry"
+          @back="goBack"
+        />
+        <!-- OPT-13：全源失败是「抛错」返回的，此前错误态没有任何覆盖缺口披露，
+             用户看不到「还有 N 个源根本没试」，也没有对应的下一步动作 -->
+        <SearchSkippedDisclosure
+          :candidates="library.searchCandidates"
+          :skipped-count="library.searchSkippedIds.length"
+          :retrying="library.searchRetrying"
+          :busy="isSearching"
+          @continue="continueSkipped"
+        />
+      </template>
 
       <!-- 空结果 -->
       <template v-else-if="showEmpty">
