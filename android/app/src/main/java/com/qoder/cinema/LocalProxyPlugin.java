@@ -27,7 +27,6 @@ import java.util.concurrent.TimeUnit;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
-import okhttp3.ResponseBody;
 
 /**
  * LocalProxy —— 带 Referer/UA 注入的本地回环 HTTP 代理（MP4 防盗链）
@@ -310,20 +309,48 @@ public class LocalProxyPlugin extends Plugin {
         }
 
         OutputStream out = client.getOutputStream();
+        // FIX-PLAY-B1：清单判定只认「路径后缀 + Content-Type」。
+        // 旧的 url.contains(".m3u8") 会把查询串里带 .m3u8 的视频分片当清单，
+        // 二进制按 UTF-8 解码重写后落盘即坏件（播放中途 MediaCodec 报错的来源之一）。
+        boolean isM3u8 = looksLikeManifest(url) || looksLikeManifest(target.url) || isMpegurl(response);
+
+        // A-1/B1：清单先完整读入内存再一次性 UTF-8 解码 + 重写 + 带 Content-Length 回写。
+        // 旧实现边读边 append(new String(chunk)) 会在 32KB 边界截断多字节字符；
+        // 读失败时也不再可能产出「无长度宣告的半截清单」。
+        byte[] manifestPayload = null;
+        boolean streamBody = false;
+        boolean bodyPresent = response.body() != null && status != 204 && status != 304;
+        if (isM3u8 && status < 400) {
+            if (bodyPresent) {
+                try {
+                    java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                    byte[] peek = new byte[32 * 1024];
+                    int peeked;
+                    InputStream manifestIn = response.body().byteStream();
+                    while ((peeked = manifestIn.read(peek)) != -1) bos.write(peek, 0, peeked);
+                    String rewritten = rewriteM3u8(
+                            new String(bos.toByteArray(), StandardCharsets.UTF_8), url, token);
+                    manifestPayload = rewritten.getBytes(StandardCharsets.UTF_8);
+                } catch (Exception e) {
+                    response.close();
+                    throw e;
+                }
+            }
+        } else {
+            streamBody = bodyPresent;
+        }
+
         StringBuilder head = new StringBuilder("HTTP/1.1 ").append(status).append(" ")
                 .append(response.message() == null ? "" : response.message())
                 .append("\r\n");
         boolean hasLength = false;
-        // 原始地址或 302 最终地址任一为 .m3u8 都按清单处理
-        boolean isM3u8 = url.toLowerCase().contains(".m3u8") || target.url.toLowerCase().contains(".m3u8");
-        
         for (String name : response.headers().names()) {
             if (name == null) continue;
             String lower = name.toLowerCase();
             if (lower.equals("transfer-encoding") || lower.equals("connection")) continue;
             // FIX-CORS: 跳过上游 CORS 头，避免与代理自己追加的 ACAO 合并成 "*, *" 被 WebView 拒绝
             if (lower.startsWith("access-control-")) continue;
-            // P0-8: m3u8 重写时删 Content-Length
+            // P0-8: m3u8 重写时删 Content-Length（重写后按真实长度另行下发）
             if (isM3u8 && lower.equals("content-length")) continue;
             for (String value : response.headers(name)) {
                 head.append(name).append(": ").append(value).append("\r\n");
@@ -334,40 +361,102 @@ public class LocalProxyPlugin extends Plugin {
         head.append("Access-Control-Allow-Origin: *\r\n");
         head.append("Access-Control-Allow-Methods: GET, HEAD, Range\r\n");
         head.append("Access-Control-Allow-Headers: *\r\n");
-        if (!hasLength) {
+        boolean chunkedOut = false;
+        if (manifestPayload != null) {
+            head.append("Content-Length: ").append(manifestPayload.length).append("\r\n");
+        } else if (streamBody && !hasLength) {
+            // FIX-PLAY-A1：上游无 Content-Length 时用 chunked 框体转发。
+            // 旧实现「Connection: close + 裸字节」在上游中途断流时，客户端会把它
+            // 当成一次成功的短响应——坏分片就这样静默落盘。chunked 下异常即发不出
+            // 终止块，fetch/ExoPlayer 会报网络错误触发重试，而不是接受截断内容。
+            head.append("Transfer-Encoding: chunked\r\n");
+            chunkedOut = true;
+        }
+        if (manifestPayload == null && !hasLength && !chunkedOut) {
             head.append("Connection: close\r\n");
         }
         head.append("\r\n");
         out.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));
-        
-        try (ResponseBody body = response.body()) {
-            if (body != null) {
-                // v1.8 优化：m3u8 清单需要重写相对 URL
-                if (isM3u8 && status < 400) {
-                    StringBuilder m3u8Body = new StringBuilder();
-                    byte[] buffer = new byte[32 * 1024];
-                    int read;
-                    InputStream in = body.byteStream();
-                    while ((read = in.read(buffer)) != -1) {
-                        m3u8Body.append(new String(buffer, 0, read, StandardCharsets.UTF_8));
+
+        try {
+            if (manifestPayload != null) {
+                out.write(manifestPayload);
+                out.flush();
+            } else if (streamBody) {
+                // FIX-D2：交替读写，client.setSoTimeout 使 write 阻塞时下次 read 超时退出
+                byte[] buffer = new byte[32 * 1024];
+                int read;
+                InputStream in = response.body().byteStream();
+                long expected = -1L;
+                if (hasLength) {
+                    try {
+                        expected = Long.parseLong(response.header("Content-Length"));
+                    } catch (NumberFormatException ignored) {
+                        // 长度头异常值：按未知长度处理，仍靠 chunked/EOF 兜底
                     }
-                    String rewritten = rewriteM3u8(m3u8Body.toString(), url, token);
-                    out.write(rewritten.getBytes(StandardCharsets.UTF_8));
-                } else {
-                    // FIX-D2：交替读写，client.setSoTimeout 使 write 阻塞时下次 read 超时退出
-                    byte[] buffer = new byte[32 * 1024];
-                    int read;
-                    InputStream in = body.byteStream();
-                    while ((read = in.read(buffer)) != -1) {
+                }
+                long sent = 0;
+                while ((read = in.read(buffer)) != -1) {
+                    if (chunkedOut) {
+                        out.write(Integer.toHexString(read).getBytes(StandardCharsets.ISO_8859_1));
+                        out.write('\r');
+                        out.write('\n');
                         out.write(buffer, 0, read);
-                        out.flush();
+                        out.write('\r');
+                        out.write('\n');
+                    } else {
+                        out.write(buffer, 0, read);
                     }
+                    out.flush();
+                    sent += read;
+                }
+                if (chunkedOut) {
+                    out.write("0\r\n\r\n".getBytes(StandardCharsets.ISO_8859_1));
+                    out.flush();
+                } else if (expected >= 0 && sent != expected) {
+                    // A1：宣告了长度却没发满——主动断开，让客户端把这次响应判为失败重试，
+                    // 而不是接受短正文继续往下写。
+                    com.qoder.cinema.AppLog.w(TAG,
+                            "truncated upstream body url=" + url + " sent=" + sent + " expected=" + expected);
+                    response.close();
+                    try {
+                        client.close();
+                    } catch (Exception ignored) {
+                    }
+                    return;
                 }
             }
         } finally {
-            out.flush();
+            try {
+                out.flush();
+            } catch (Exception ignored) {
+                // 断开路径上 socket 可能已关闭，忽略
+            }
             response.close();
         }
+    }
+
+    /** FIX-PLAY-B1：路径后缀判定清单（忽略查询串/片段里的 .m3u8） */
+    private static boolean looksLikeManifest(String rawUrl) {
+        if (rawUrl == null) return false;
+        try {
+            String path = new java.net.URL(rawUrl).getPath().toLowerCase(java.util.Locale.US);
+            return path.endsWith(".m3u8") || path.endsWith(".m3u");
+        } catch (Exception e) {
+            String cut = rawUrl;
+            int q = cut.indexOf('?');
+            if (q >= 0) cut = cut.substring(0, q);
+            int h = cut.indexOf('#');
+            if (h >= 0) cut = cut.substring(0, h);
+            cut = cut.toLowerCase(java.util.Locale.US);
+            return cut.endsWith(".m3u8") || cut.endsWith(".m3u");
+        }
+    }
+
+    /** FIX-PLAY-B1：Content-Type 命中 mpegurl 也按清单处理（覆盖无后缀清单地址） */
+    private static boolean isMpegurl(Response response) {
+        String ct = response.header("Content-Type");
+        return ct != null && ct.toLowerCase(java.util.Locale.US).contains("mpegurl");
     }
 
     private static void writeSimple(Socket client, int status, String message) throws Exception {

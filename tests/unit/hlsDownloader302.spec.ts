@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { resetAll } from './helpers';
+import { resetAll, tsSegment } from './helpers';
 import { blobRepo } from '@/db/repositories/blobRepo';
 import { settingsService } from '@/services/settingsService';
 import { createHlsDownloader } from '@/services/hlsDownloader';
@@ -131,7 +131,7 @@ ${proxied('https://cdn.example.com/v2/seg1.ts')}
         return makeResponse(variantViaProxy, { url: proxied('https://cdn.example.com/v2/720p.m3u8') });
       }
       if (url === proxied('https://cdn.example.com/v2/seg0.ts') || url === proxied('https://cdn.example.com/v2/seg1.ts')) {
-        return makeResponse(new Uint8Array(100));
+        return makeResponse(tsSegment(1));
       }
       return makeResponse('Not Found', { status: 404 });
     });
@@ -154,7 +154,7 @@ ${proxied('https://cdn.example.com/v2/seg1.ts')}
     expect(calls).toContain(proxied('https://cdn.example.com/v2/seg0.ts'));
     expect(calls.some((url) => url.includes('/seg0.ts') && !url.includes('/v2/'))).toBe(false);
 
-    expect((await blobRepo.get('task-302'))?.size).toBe(200);
+    expect((await blobRepo.get('task-302'))?.size).toBe(376);
     const patches = saveProgress.mock.calls.map((call) => call[1] as Partial<DownloadTask>);
     expect(patches.some((patch) => typeof patch.completedAt === 'number')).toBe(true);
   });
@@ -182,7 +182,7 @@ seg1.ts
         return makeResponse(variantRelative, { url: 'https://cdn.example.com/real/dir/720p.m3u8' });
       }
       if (url === 'https://cdn.example.com/real/dir/seg0.ts' || url === 'https://cdn.example.com/real/dir/seg1.ts') {
-        return makeResponse(new Uint8Array(100));
+        return makeResponse(tsSegment(1));
       }
       // 按原始请求地址拼出来的错误路径（旧实现会走到这里）
       return makeResponse('Not Found', { status: 404 });
@@ -201,7 +201,7 @@ seg1.ts
     expect(calls).toContain('https://cdn.example.com/real/dir/seg0.ts');
     expect(calls).not.toContain('https://cdn.example.com/720p.m3u8');
     expect(calls).not.toContain('https://cdn.example.com/seg0.ts');
-    expect((await blobRepo.get('task-302'))?.size).toBe(200);
+    expect((await blobRepo.get('task-302'))?.size).toBe(376);
   });
 
   it('代理原样透传（清单仍含相对引用）：不得把相对地址解析到回环地址上', async () => {
@@ -219,7 +219,7 @@ seg0.ts
         return makeResponse(passthrough, { url: proxied('https://cdn.example.com/master.m3u8') });
       }
       if (url === proxied('https://cdn.example.com/seg0.ts')) {
-        return makeResponse(new Uint8Array(80));
+        return makeResponse(tsSegment(1));
       }
       return makeResponse('Not Found', { status: 404 });
     });
@@ -237,7 +237,7 @@ seg0.ts
     expect(calls).toContain(proxied('https://cdn.example.com/seg0.ts'));
     expect(calls.some((url) => url.startsWith('http://127.0.0.1:45678/p/token-main/seg0.ts'))).toBe(false);
     expect(calls.some((url) => url.startsWith('http://127.0.0.1:45678/seg0.ts'))).toBe(false);
-    expect((await blobRepo.get('task-302'))?.size).toBe(80);
+    expect((await blobRepo.get('task-302'))?.size).toBe(188);
   });
 
   it('代理对清单返回 302：回退直连后下载流程不中断', async () => {
@@ -258,7 +258,7 @@ https://cdn.example.com/seg0.ts
         return makeResponse(media, { url: 'https://cdn.example.com/master.m3u8' });
       }
       if (url === proxied('https://cdn.example.com/seg0.ts')) {
-        return makeResponse(new Uint8Array(64));
+        return makeResponse(tsSegment(1));
       }
       return makeResponse('Not Found', { status: 404 });
     });
@@ -274,7 +274,7 @@ https://cdn.example.com/seg0.ts
     const calls = fetchImpl.mock.calls.map((call) => String(call[0]));
     expect(calls[0]).toBe(proxied('https://cdn.example.com/master.m3u8'));
     expect(calls).toContain('https://cdn.example.com/master.m3u8');
-    expect((await blobRepo.get('task-302'))?.size).toBe(64);
+    expect((await blobRepo.get('task-302'))?.size).toBe(188);
   });
 
   it('302 后的子清单命中 SAMPLE-AES：仍在任何分片请求前抛 E_DRM_PROTECTED（AC-40）', async () => {

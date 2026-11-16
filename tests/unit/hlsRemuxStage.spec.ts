@@ -36,7 +36,7 @@ vi.mock('@/native/localProxy', () => ({
 
 import { createHlsDownloader, type PostProcessNotifier } from '@/services/hlsDownloader';
 import type { DownloadTask } from '@/types';
-import { resetAll } from './helpers';
+import { resetAll, tsSegment } from './helpers';
 
 const MEDIA_PLAYLIST = `#EXTM3U
 #EXT-X-TARGETDURATION:10
@@ -86,7 +86,7 @@ function task(): DownloadTask {
 function mockFetch(): typeof fetch {
   return vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.endsWith('.ts')) return new Response(new Uint8Array(100), { status: 200 });
+    if (url.endsWith('.ts')) return new Response(tsSegment(1), { status: 200 });
     return new Response(MEDIA_PLAYLIST, {
       status: 200,
       headers: { 'content-type': 'application/vnd.apple.mpegurl' },

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { resetAll } from './helpers';
-import { createHlsDownloader } from '@/services/hlsDownloader';
+import { resetAll, tsSegment, fmp4Segment } from './helpers';
+import { createHlsDownloader, screenSegmentBytes } from '@/services/hlsDownloader';
 import { blobRepo } from '@/db/repositories/blobRepo';
 import { settingsService } from '@/services/settingsService';
 import type { DownloadTask } from '@/types';
@@ -117,9 +117,9 @@ describe('HLS 下载（Phase 2）', () => {
       const responses = new Map([
         ['https://cdn.example.com/master.m3u8', { body: MASTER_PLAYLIST }],
         ['https://cdn.example.com/1080p.m3u8', { body: MEDIA_PLAYLIST }],
-        ['https://cdn.example.com/segment0.ts', { body: new Uint8Array(100) }],
-        ['https://cdn.example.com/segment1.ts', { body: new Uint8Array(100) }],
-        ['https://cdn.example.com/segment2.ts', { body: new Uint8Array(100) }],
+        ['https://cdn.example.com/segment0.ts', { body: tsSegment(1) }],
+        ['https://cdn.example.com/segment1.ts', { body: tsSegment(1) }],
+        ['https://cdn.example.com/segment2.ts', { body: tsSegment(1) }],
       ]);
       const fetchImpl = createMockFetch(responses);
 
@@ -143,9 +143,9 @@ describe('HLS 下载（Phase 2）', () => {
     it('解析分片列表并顺序下载', async () => {
       const responses = new Map([
         ['https://cdn.example.com/master.m3u8', { body: MEDIA_PLAYLIST }],
-        ['https://cdn.example.com/segment0.ts', { body: new Uint8Array(100).fill(0) }],
-        ['https://cdn.example.com/segment1.ts', { body: new Uint8Array(100).fill(1) }],
-        ['https://cdn.example.com/segment2.ts', { body: new Uint8Array(100).fill(2) }],
+        ['https://cdn.example.com/segment0.ts', { body: tsSegment(1, 0) }],
+        ['https://cdn.example.com/segment1.ts', { body: tsSegment(1, 1) }],
+        ['https://cdn.example.com/segment2.ts', { body: tsSegment(1, 2) }],
       ]);
       const fetchImpl = createMockFetch(responses);
 
@@ -162,9 +162,9 @@ describe('HLS 下载（Phase 2）', () => {
       expect(fetchImpl).toHaveBeenCalledWith('https://cdn.example.com/segment1.ts', expect.any(Object));
       expect(fetchImpl).toHaveBeenCalledWith('https://cdn.example.com/segment2.ts', expect.any(Object));
 
-      // 检查 blob 大小（3 * 100 = 300）
+      // 检查 blob 大小（3 × 188 = 564）
       const blob = await blobRepo.get('task-hls');
-      expect(blob?.size).toBe(300);
+      expect(blob?.size).toBe(564);
     });
   });
 
@@ -202,8 +202,8 @@ describe('HLS 下载（Phase 2）', () => {
       const responses = new Map([
         ['https://cdn.example.com/master.m3u8', { body: FMP4_PLAYLIST }],
         ['https://cdn.example.com/init.mp4', { body: initData }],
-        ['https://cdn.example.com/segment0.m4s', { body: new Uint8Array(100) }],
-        ['https://cdn.example.com/segment1.m4s', { body: new Uint8Array(100) }],
+        ['https://cdn.example.com/segment0.m4s', { body: fmp4Segment('moof') }],
+        ['https://cdn.example.com/segment1.m4s', { body: fmp4Segment('moof') }],
       ]);
       const fetchImpl = createMockFetch(responses);
 
@@ -221,9 +221,9 @@ describe('HLS 下载（Phase 2）', () => {
       const seg0Idx = calls.indexOf('https://cdn.example.com/segment0.m4s');
       expect(initIdx).toBeLessThan(seg0Idx);
 
-      // 总大小 = init(50) + seg0(100) + seg1(100) = 250
+      // 总大小 = init(50) + seg0(104) + seg1(104) = 258
       const blob = await blobRepo.get('task-hls');
-      expect(blob?.size).toBe(250);
+      expect(blob?.size).toBe(258);
     });
   });
 
@@ -231,9 +231,9 @@ describe('HLS 下载（Phase 2）', () => {
     it('parallelSegments 控制并发数', async () => {
       const responses = new Map([
         ['https://cdn.example.com/master.m3u8', { body: MEDIA_PLAYLIST }],
-        ['https://cdn.example.com/segment0.ts', { body: new Uint8Array(100) }],
-        ['https://cdn.example.com/segment1.ts', { body: new Uint8Array(100) }],
-        ['https://cdn.example.com/segment2.ts', { body: new Uint8Array(100) }],
+        ['https://cdn.example.com/segment0.ts', { body: tsSegment(1) }],
+        ['https://cdn.example.com/segment1.ts', { body: tsSegment(1) }],
+        ['https://cdn.example.com/segment2.ts', { body: tsSegment(1) }],
       ]);
 
       // 使用延迟模拟慢速请求
@@ -268,7 +268,7 @@ describe('HLS 下载（Phase 2）', () => {
     it('signal.aborted 时抛出 E_ABORTED', async () => {
       const responses = new Map([
         ['https://cdn.example.com/master.m3u8', { body: MEDIA_PLAYLIST }],
-        ['https://cdn.example.com/segment0.ts', { body: new Uint8Array(100) }],
+        ['https://cdn.example.com/segment0.ts', { body: tsSegment(1) }],
       ]);
 
       // 慢速 fetch，让取消有机会触发
@@ -334,9 +334,9 @@ describe('HLS 下载（Phase 2）', () => {
     it('每 1 秒上报一次进度', async () => {
       const responses = new Map([
         ['https://cdn.example.com/master.m3u8', { body: MEDIA_PLAYLIST }],
-        ['https://cdn.example.com/segment0.ts', { body: new Uint8Array(100) }],
-        ['https://cdn.example.com/segment1.ts', { body: new Uint8Array(100) }],
-        ['https://cdn.example.com/segment2.ts', { body: new Uint8Array(100) }],
+        ['https://cdn.example.com/segment0.ts', { body: tsSegment(1) }],
+        ['https://cdn.example.com/segment1.ts', { body: tsSegment(1) }],
+        ['https://cdn.example.com/segment2.ts', { body: tsSegment(1) }],
       ]);
 
       let nowValue = 0;
@@ -365,5 +365,97 @@ describe('HLS 下载（Phase 2）', () => {
       // 应该有进度上报
       expect(progressCalls.length).toBeGreaterThan(0);
     });
+  });
+
+  describe('FIX-PLAY-A2/A3：分片落盘校验', () => {
+    it('screenSegmentBytes：合法 TS 原样通过', () => {
+      const data = tsSegment(3, 9);
+      expect(screenSegmentBytes(data, { url: 'https://cdn.example.com/seg0.ts' })).toBe(data);
+    });
+
+    it('screenSegmentBytes：192 包长（带时间码）不再被 188 校验误杀', () => {
+      const data = new Uint8Array(192 * 3);
+      for (let i = 0; i < 3; i++) data[i * 192] = 0x47;
+      expect(screenSegmentBytes(data, { url: 'https://cdn.example.com/seg0.ts' }).length).toBe(192 * 3);
+    });
+
+    it('screenSegmentBytes：尾部残包截掉，保留完整包', () => {
+      const full = tsSegment(2);
+      const data = new Uint8Array(full.length + 77);
+      data.set(full);
+      data[full.length] = 0x47; // 残包头
+      const out = screenSegmentBytes(data, { url: 'https://cdn.example.com/seg0.ts' });
+      expect(out.length).toBe(376);
+    });
+
+    it('screenSegmentBytes：TS 中途错位/污染抛可重试 E_NETWORK', () => {
+      const data = tsSegment(4);
+      data[188 * 2] = 0x00; // 第二个包同步字节被改写
+      expect(() => screenSegmentBytes(data, { url: 'https://cdn.example.com/seg0.ts' })).toThrow(
+        expect.objectContaining({ code: 'E_NETWORK' }),
+      );
+    });
+
+    it('screenSegmentBytes：.ts 正文错位（污染前缀超过定位窗口）必须拒绝', () => {
+      // 模拟图片垃圾响应：整体没有可对齐的 0x47 结构
+      const garbage = new Uint8Array(1024).fill(0x89);
+      expect(() => screenSegmentBytes(garbage, { url: 'https://cdn.example.com/seg0.ts' })).toThrow(
+        expect.objectContaining({ code: 'E_NETWORK' }),
+      );
+    });
+
+    it('screenSegmentBytes：空响应体拒绝（限流常见 200 空包）', () => {
+      expect(() => screenSegmentBytes(new Uint8Array(0), { url: 'https://cdn.example.com/seg0.ts' })).toThrow(
+        expect.objectContaining({ code: 'E_NETWORK' }),
+      );
+    });
+
+    it('screenSegmentBytes：无 TS/fMP4 线索的未知格式维持旧行为不误杀', () => {
+      const data = new Uint8Array(64).fill(0xff); // 形似 ADTS 的裸音频
+      expect(screenSegmentBytes(data, { url: 'https://cdn.example.com/seg0.aac' })).toBe(data);
+    });
+
+    it('screenSegmentBytes：fMP4 box 头谎报超长直接判死', () => {
+      const data = fmp4Segment('moof', 96);
+      new DataView(data.buffer).setUint32(0, 9999); // size 超过实际分片长度
+      expect(() => screenSegmentBytes(data, { url: 'https://cdn.example.com/seg0.m4s' })).toThrow(
+        expect.objectContaining({ code: 'E_NETWORK' }),
+      );
+    });
+
+    it('Content-Length 缺量的分片重试后仍缺 → 任务失败，缺量分片不混入产物', async () => {
+      const responses = new Map<string, { body: string | Uint8Array; status?: number }>([
+        ['https://cdn.example.com/master.m3u8', { body: MEDIA_PLAYLIST }],
+        ['https://cdn.example.com/segment0.ts', { body: tsSegment(1) }],
+        ['https://cdn.example.com/segment1.ts', { body: tsSegment(1) }],
+        ['https://cdn.example.com/segment2.ts', { body: tsSegment(1) }],
+      ]);
+      let seg2Attempts = 0;
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (url === 'https://cdn.example.com/segment2.ts') seg2Attempts += 1;
+        const response = responses.get(url);
+        if (!response) return new Response('Not Found', { status: 404 });
+        // 给 segment2 宣告 376 字节但只回 188：模拟被掐断的短包
+        const headers: Record<string, string> = typeof response.body === 'string'
+          ? { 'content-type': 'application/vnd.apple.mpegurl' }
+          : { 'content-type': 'video/mp2t', 'content-length': url.endsWith('segment2.ts') ? '376' : '188' };
+        return new Response(response.body, { status: response.status ?? 200, headers });
+      });
+
+      const downloader = createHlsDownloader({
+        load: async () => task(),
+        saveProgress: async () => undefined,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+
+      await expect(downloader.run(task(), new AbortController().signal)).rejects.toMatchObject({
+        code: 'E_NETWORK',
+      });
+      // 首试 + MAX_SEGMENT_RETRIES(2) 次退避重试
+      expect(seg2Attempts).toBe(3);
+      // 允许留下可续传的前缀产物，但缺量分片绝不混入、任务绝不进完成态
+      const blob = await blobRepo.get('task-hls');
+      expect(blob == null || blob.size < 564).toBe(true);
+    }, 15_000);
   });
 });

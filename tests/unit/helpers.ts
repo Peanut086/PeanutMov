@@ -39,3 +39,22 @@ export const FIXED_NOW = 1_700_000_000_000;
 export function tick(ms = 1): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/* ---------- HLS 分片夹具（FIX-PLAY-A2） ----------
+ * 下载器落盘前会对分片做 TS/fMP4 结构校验（screenSegmentBytes），
+ * 测试数据必须长成真实分片的样子：TS 每 188 字节一个 0x47 同步头。 */
+
+/** 构造 TS 形态分片：packets 个 188 字节包，同步字节 0x47 按位对齐 */
+export function tsSegment(packets = 1, fill = 0): Uint8Array {
+  const data = new Uint8Array(188 * packets).fill(fill);
+  for (let i = 0; i < packets; i++) data[i * 188] = 0x47;
+  return data;
+}
+
+/** 构造 fMP4 形态分片：合法 box 头（size + type）+ 指定长度的正文 */
+export function fmp4Segment(type = 'moof', payloadBytes = 96): Uint8Array {
+  const data = new Uint8Array(8 + payloadBytes);
+  new DataView(data.buffer).setUint32(0, data.length);
+  for (let i = 0; i < 4; i++) data[4 + i] = type.charCodeAt(i);
+  return data;
+}

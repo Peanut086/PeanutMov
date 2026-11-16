@@ -461,6 +461,86 @@ function stripSegmentPrefix(data: Uint8Array): Uint8Array {
   return data;
 }
 
+/* =========================================================
+ * FIX-PLAY A2/A3：分片写盘前的字节级校验
+ *
+ * 症状：下载「完成」的 .ts 剧集播放中途报 MediaCodecVideoRenderer（format 1/256
+ * 即 TS 的 PID 256）。链路里没有截断的显式失败——旧实现只查 HTTP 状态与
+ * content-type，上游被掐断/污染时短包照样落盘，产物到播放器才暴露。
+ * 这里把坏件拦在写盘之前：校验失败按可重试网络错误走既有退避重试，
+ * 重试用尽则整任务失败（续传点仍在），绝不再产出「任务完成但播不了」的文件。
+ * =======================================================*/
+
+/** 常见 TS 包长：188 为主，个别老流带 4 字节时间码（192） */
+const TS_PACKET_SIZES = [188, 192];
+
+/** 允许出现在媒体分片开头的 fMP4 box（比 stripSegmentPrefix 的集合更宽） */
+const SCREEN_FMP4_TYPES = new Set([...FMP4_BOX_TYPES, 'mdat', 'free', 'emsg', 'skip', 'prft']);
+
+/** 校验失败统一构造可重试错误（E_NETWORK ∈ RETRYABLE_CODES） */
+function segmentIntegrityError(reason: string, url: string): AppError {
+  return new AppError('E_NETWORK', `分片数据异常：${reason}`, { detail: url });
+}
+
+/**
+ * 分片数据落盘前的结构校验。返回可安全写入的字节（可能截掉尾部残包），
+ * 判定为坏件时抛可重试 AppError。
+ *
+ * 判定顺序保守：先按内容特征（首字节/box 类型），再按 URL 与 content-type 线索。
+ * 无任何 TS/fMP4 特征的未知格式分片维持旧行为原样通过，避免误杀小众源。
+ */
+export function screenSegmentBytes(
+  data: Uint8Array,
+  hints: { url: string; contentType?: string | null },
+): Uint8Array {
+  const path = hints.url.split(/[?#]/)[0]?.toLowerCase() ?? '';
+  const contentType = (hints.contentType ?? '').toLowerCase();
+
+  if (data.length === 0) throw segmentIntegrityError('响应体为空', hints.url);
+
+  const firstBox = data.length >= 8 ? String.fromCharCode(data[4], data[5], data[6], data[7]) : '';
+  if (SCREEN_FMP4_TYPES.has(firstBox)) {
+    // box 头：size(4B) + type(4B)。size=0 表示到文件尾、1 表示 64 位 largesize，其余必须 ≥8 且不超界。
+    const size = ((data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]) >>> 0;
+    if (size > 1 && (size < 8 || size > data.length)) {
+      throw segmentIntegrityError(`fMP4 box 头长度异常（size=${size}，分片 ${data.length} 字节）`, hints.url);
+    }
+    return data;
+  }
+
+  // fMP4 分片（.m4s）没有 TS 同步字节可查，且首 box 已在白名单外——维持旧行为。
+  // 真 TS 判据只对有 TS 线索的分片启用，防止把 ADTS/未知容器误杀。
+  const tsLike = data[0] === 0x47 || path.endsWith('.ts') || contentType.includes('mp2t');
+  if (!tsLike) return data;
+
+  for (const packetSize of TS_PACKET_SIZES) {
+    if (data.length < packetSize || data[0] !== 0x47) break;
+    let badAt = -1;
+    for (let i = packetSize; i < data.length; i += packetSize) {
+      if (data[i] !== 0x47) {
+        badAt = i;
+        break;
+      }
+    }
+    if (badAt >= 0) continue; // 该包长对不上：换下一个候选包长再试
+    const remainder = data.length % packetSize;
+    if (remainder === 0) return data;
+    // 同步字节全过、仅尾部不足一个整包：上游被截断时切点通常落在包中间，
+    // 前面的包是完整的。截掉残包保留完整部分，比整体判死更可用。
+    logger.warn('分片尾部存在残缺 TS 包，已截掉', { url: hints.url, droppedBytes: remainder, packetSize });
+    return data.subarray(0, data.length - remainder);
+  }
+
+  // 走到这里：TS 线索成立，但首包非 0x47（stripSegmentPrefix 定位失败/解密错位）
+  // 或所有候选包长的同步扫描都不通过（正文被污染或错位）。
+  throw segmentIntegrityError(
+    data[0] !== 0x47
+      ? 'TS 同步字节错位（首包非 0x47，疑似污染或解密失败）'
+      : 'TS 包同步扫描失败（疑似截断或内容污染）',
+    hints.url,
+  );
+}
+
 /**
  * AES-128 解密（Web Crypto API）
  */
@@ -721,6 +801,20 @@ export class HlsDownloader {
               }
 
               let data = new Uint8Array(await response.arrayBuffer());
+              // FIX-PLAY-A2：上游声明了 Content-Length 就必须足量。
+              // content-encoding 存在时跳过——自动解压后长度对应压缩前，比对必然失败。
+              const declaredLength = Number(response.headers.get('content-length') ?? '');
+              if (
+                Number.isFinite(declaredLength)
+                && declaredLength > 0
+                && !response.headers.get('content-encoding')
+                && data.byteLength !== declaredLength
+              ) {
+                throw segmentIntegrityError(
+                  `正文缺量（${data.byteLength}/${declaredLength} 字节）`,
+                  seg.segment.url,
+                );
+              }
               // 200 的错误页不能当分片写进文件——那会产出「任务完成但播不了」的坏产物。
               // 只认 content-type：加密分片的首字节是随机的，正文嗅探会误杀。
               const segmentType = (response.headers.get('content-type') ?? '').toLowerCase();
@@ -741,7 +835,8 @@ export class HlsDownloader {
                 data = await decryptAes128(data, key, iv);
               }
 
-              return { data: stripSegmentPrefix(data), index: seg.index };
+              // A2/A3：结构校验放在解密与去前缀之后，检查的是最终要落盘的字节
+              return { data: screenSegmentBytes(stripSegmentPrefix(data), { url: seg.segment.url, contentType: segmentType }), index: seg.index };
             } finally {
               clearTimeout(timeoutId);
               signal.removeEventListener('abort', onParentAbort);

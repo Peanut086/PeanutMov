@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { resetAll } from './helpers';
+import { resetAll, tsSegment } from './helpers';
 import { createHlsDownloader, nonManifestBodyError, parseM3u8 } from '@/services/hlsDownloader';
 import { settingsService } from '@/services/settingsService';
 import type { DownloadTask } from '@/types';
@@ -137,7 +137,7 @@ describe('分片重试与坏产物防护（#3）', () => {
   it('分片一次 503 后退避重试成功，不再整任务判死', async () => {
     const { promise, fetchMock } = runDownloader([
       { body: 'busy', status: 503 },
-      { body: new Uint8Array(64) },
+      { body: tsSegment(1) },
     ]);
     await expect(promise).resolves.toBeUndefined();
     expect(fetchMock.calls()).toBe(2);
@@ -146,7 +146,7 @@ describe('分片重试与坏产物防护（#3）', () => {
   it('分片被限流（429）同样重试成功', async () => {
     const { promise, fetchMock } = runDownloader([
       { body: 'slow down', status: 429 },
-      { body: new Uint8Array(64) },
+      { body: tsSegment(1) },
     ]);
     await expect(promise).resolves.toBeUndefined();
     expect(fetchMock.calls()).toBe(2);
