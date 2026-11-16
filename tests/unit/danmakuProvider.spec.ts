@@ -30,7 +30,7 @@ const NO_MATCH: Record<string, unknown> = {
   'mesh.if.iqiyi.com': { code: '0', data: { templates: [] } },
   'search.youku.com': { pageComponentList: [] },
   'so.le.com': '',
-  'api.dandanplay.net': { matched: false },
+  'api.dandanplay.net': { success: true, isMatched: false, matches: [] },
 };
 
 function urlHost(url: string): string {
@@ -83,9 +83,11 @@ describe('danmakuService 回退链（AC-126）', () => {
       if (host(url, 'api.bilibili.com')) return new Error('bilibili down');
       if (host(url, 'pbaccess.video.qq.com')) return new Error('tencent down');
       if (url.includes('/api/v2/match')) {
-        return { matched: true, matches: [{ animeTitle: '庆余年', episodes: [{ episodeId: 42, episodeTitle: '第01集' }] }] };
+        return { success: true, isMatched: true, matches: [{ episodeId: 42, animeTitle: '庆余年', episodeTitle: '第01集', shift: 3 }] };
       }
-      if (url.includes('/api/v2/comment/')) return { count: 1, comments: [[10, 1, 16777215, '前方高能']] };
+      if (url.includes('/api/v2/comment/')) {
+        return { count: 1, comments: [{ cid: 1, p: '10.00,1,16777215,1001', m: '前方高能' }] };
+      }
       return undefined;
     });
 
@@ -93,6 +95,8 @@ describe('danmakuService 回退链（AC-126）', () => {
     expect(first).not.toBeNull();
     expect(first!.provider).toBe('dandanplay');
     expect(first!.comments.length).toBe(1);
+    // ⑤ shift 要穿过服务层交给渲染层（缓存里存原始时间轴）
+    expect(first!.offsetSec).toBe(3);
 
     mockedRequest.mockClear();
     const second = await danmakuService.match('庆余年', 2019, 1);
@@ -125,13 +129,45 @@ describe('danmakuService 回退链（AC-126）', () => {
     expect(urls.some((url) => url.includes('dandanplay'))).toBe(false);
   });
 
+  it('导入本地 xml 直写本集缓存：之后的 match 命中它，不再发请求', async () => {
+    route(() => new Error('任何源都不该被调用'));
+
+    const xml = '<?xml version="1.0" encoding="UTF-8"?><i><d p="5.00,1,16717055,10001">本地弹幕</d></i>';
+    const count = await danmakuService.importLocalXml(
+      '只有本地弹幕的剧',
+      2024,
+      2,
+      new File([xml], 'a.xml', { type: 'text/xml' }),
+    );
+    expect(count).toBe(1);
+
+    const match = await danmakuService.match('只有本地弹幕的剧', 2024, 2);
+    expect(match?.provider).toBe('local-xml');
+    expect(match?.comments[0]?.text).toBe('本地弹幕');
+  });
+
+  it('解析不出弹幕的文件返回 0 条，不写坏缓存', async () => {
+    const count = await danmakuService.importLocalXml(
+      '无法解析的剧',
+      2024,
+      3,
+      new File(['根本不是 xml'], 'a.xml', { type: 'text/xml' }),
+    );
+    expect(count).toBe(0);
+
+    route(() => undefined);
+    expect(await danmakuService.match('无法解析的剧', 2024, 3)).toBeNull();
+  });
+
   it('远端题名与查询片名不符时不采用（防串片）', async () => {
     route((url) => {
       if (host(url, 'api.bilibili.com') || host(url, 'pbaccess.video.qq.com')) return new Error('network down');
       if (url.includes('/api/v2/match')) {
-        return { matched: true, matches: [{ animeTitle: '完全无关的片', episodes: [{ episodeId: 1, episodeTitle: '第01集' }] }] };
+        return { success: true, isMatched: true, matches: [{ episodeId: 1, animeTitle: '完全无关的片', episodeTitle: '第01集', shift: 0 }] };
       }
-      if (url.includes('/api/v2/comment/')) return { count: 1, comments: [[1, 1, 16777215, '弹幕']] };
+      if (url.includes('/api/v2/comment/')) {
+        return { count: 1, comments: [{ cid: 1, p: '1.00,1,16777215,1001', m: '弹幕' }] };
+      }
       return undefined;
     });
 

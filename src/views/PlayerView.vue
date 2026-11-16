@@ -2002,13 +2002,43 @@ async function loadDanmaku(): Promise<boolean> {
   try {
     const match = await danmakuService.match(it.title, it.year, ep.number);
     if (match === null || match.comments.length === 0) return false;
-    const comments = danmakuSettings.value.merge ? danmakuService.dedupe(match.comments) : match.comments;
-    danmakuOverlay.value?.load(comments);
+    const base = danmakuSettings.value.merge ? danmakuService.dedupe(match.comments) : match.comments;
+    // 弹弹play 的 `shift`：缓存里存原始时间轴，偏移只在渲染时叠加（换源/重进不回写缓存）
+    const offset = Number.isFinite(match.offsetSec) ? match.offsetSec : 0;
+    danmakuOverlay.value?.load(
+      offset === 0 ? base : base.map((comment) => ({ ...comment, time: Math.max(0, comment.time + offset) })),
+    );
     return true;
   } catch {
     /* 弹幕失败静默：不影响播放 */
     return false;
   }
+}
+
+/**
+ * 「弹幕设置 → 导入本地弹幕 XML」的落点：解析成功后直接写本集缓存再重载。
+ * 导入即代表用户想用这份文件，所以顺带打开弹幕总开关（否则缓存写了也看不见）。
+ */
+async function importLocalDanmaku(file: File): Promise<void> {
+  const it = item.value;
+  const ep = currentEpisode.value;
+  if (!it || !ep) return;
+  let count = 0;
+  try {
+    count = await danmakuService.importLocalXml(it.title, it.year, ep.number, file);
+  } catch {
+    toast.info('本地弹幕文件读取失败', 2400);
+    return;
+  }
+  if (count === 0) {
+    toast.info('这个文件没有解析出弹幕（需要 B 站格式 xml）', 2800);
+    return;
+  }
+  if (!danmakuSettings.value.enabled) {
+    await settings.update({ danmaku: { ...danmakuSettings.value, enabled: true } });
+  }
+  const loaded = await loadDanmaku();
+  toast.info(loaded ? `已导入本地弹幕 ${count} 条` : '导入成功，重进本集后生效', loaded ? 1800 : 2600);
 }
 
 async function toggleDanmaku(): Promise<void> {
@@ -3069,7 +3099,7 @@ onBeforeUnmount(() => {
 
     <!-- 面板 -->
     <SpeedSheet v-model="speedOpen" :rate="player.rate" @select="setRate" />
-    <DanmakuSettingsSheet v-model:open="danmakuOpen" />
+    <DanmakuSettingsSheet v-model:open="danmakuOpen" :import-xml="importLocalDanmaku" />
     <SkipMarkSheet
       v-model="skipMarkOpen"
       :marks="skipMarks"

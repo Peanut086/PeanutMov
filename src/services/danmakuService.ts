@@ -17,6 +17,7 @@ import { youkuProvider } from '@/services/danmaku/youku';
 import { leshiProvider } from '@/services/danmaku/leshi';
 import { dandanplayProvider, localXmlProvider, type DanmakuQuery } from '@/services/danmaku/provider';
 import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
+import { decodeSubtitle } from '@/player/SrtConverter';
 import { logger } from '@/shared/logger';
 import { DANMAKU_MAX_PER_EPISODE } from '@/shared/constants';
 import type { DanmakuComment, DanmakuMatch } from '@/types';
@@ -46,6 +47,11 @@ export function thinComments(comments: DanmakuComment[]): DanmakuComment[] {
   return out;
 }
 
+/** 一集弹幕的缓存主键：归一化片名 + 年份 + 集号 */
+function danmakuCacheKey(title: string, year: number | null, episode: number): string {
+  return `${normalizeTitleForMatch(title)}:${year ?? 'na'}:${episode}`;
+}
+
 export const danmakuService = {
   /**
    * 匹配一集的弹幕。三级回退；全部失败或都不匹配返回 null。
@@ -55,7 +61,7 @@ export const danmakuService = {
     const query: DanmakuQuery = { title, year, episode };
 
     // ① 缓存
-    const cacheKey = `${normalizeTitleForMatch(title)}:${year ?? 'na'}:${episode}`;
+    const cacheKey = danmakuCacheKey(title, year, episode);
     const cached = await cacheRepo.getDanmaku(cacheKey);
     if (cached) return cached;
 
@@ -77,7 +83,8 @@ export const danmakuService = {
           const match: DanmakuMatch = {
             provider: provider.id,
             matchedTitle: result.matchedTitle,
-            offsetSec: 0,
+            // 偏移随源保存，渲染时再叠加（缓存里存原始时间，换源/重进不必回写缓存）
+            offsetSec: result.offsetSec ?? 0,
             comments: thinComments(result.comments),
           };
           await cacheRepo.putDanmaku(cacheKey, match);
@@ -113,6 +120,26 @@ export const danmakuService = {
       lastByText.set(comment.text, comment);
     }
     return kept;
+  },
+
+  /**
+   * 导入本地 xml 并写进本集缓存（播放页「弹幕设置 → 导入本地弹幕 XML」）。
+   *
+   * 是写缓存而不是把内容交给 `match` 的兜底分支：网络源命中时 `match` 根本走不到 ③，
+   * 手动导入必须能盖过它，否则这个入口点了没反应。返回解析出的条数（0 = 文件无效）。
+   */
+  async importLocalXml(title: string, year: number | null, episode: number, file: File): Promise<number> {
+    // 社区弹幕文件 UTF-8 与 GBK 都有，复用字幕那条编码嗅探链（严格 UTF-8 → GBK → 宽容兜底）
+    const comments = localXmlProvider.parse(decodeSubtitle(await file.arrayBuffer()));
+    if (comments === null) return 0;
+    const thinned = thinComments(comments);
+    await cacheRepo.putDanmaku(danmakuCacheKey(title, year, episode), {
+      provider: 'local-xml',
+      matchedTitle: title,
+      offsetSec: 0,
+      comments: thinned,
+    });
+    return thinned.length;
   },
 
   /**
