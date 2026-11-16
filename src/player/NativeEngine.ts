@@ -131,6 +131,10 @@ type ExoStateData = {
   activeAudioId?: number;
   targetMs?: number;
   latencyMs?: number;
+  /** FIX-PLAY-C1：原生侧补的结构化错误字段（旧插件缺席时回退 message 正则） */
+  errorCodeName?: string;
+  causeChain?: string;
+  positionMs?: number;
 };
 
 /**
@@ -508,7 +512,7 @@ export class NativeEngine implements PlayableEngine {
         break;
       }
       case 'error': {
-        const error = toPlayError(data.message);
+        const error = toPlayError(data);
         if (this.pending) {
           this.pending.reject(error);
           this.pending = null;
@@ -663,14 +667,35 @@ function toLoadError(e: unknown): AppError {
   return new AppError('E_DECODE', '原生引擎加载失败', { cause: e });
 }
 
-/** 播放中错误：网络类（HTTP/超时/连接）归 E_NETWORK 以复用控制器自动重试 */
-function toPlayError(message: string | undefined): AppErrorShape {
-  const text = message ?? '';
-  const isNetwork = /http|network|connect|timeout|source/i.test(text);
+/**
+ * 播放中错误分类：网络类（IO/超时/断连）归 E_NETWORK 以复用控制器自动重试，
+ * 解码/解析/格式类归 E_DECODE 交给控制器的本地容错。
+ *
+ * FIX-PLAY-C1：优先用原生侧新发的 `errorCodeName`（ExoPlayer PlaybackException 枚举名）
+ * 精确分类，缺席时才回退旧的 message 正则；错误码名/cause 链/出错位置拼进 detail，
+ * 「复制错误信息」就能带上全部归因字段。
+ */
+export function toPlayError(data: ExoStateData): AppErrorShape {
+  const text = data.message ?? '';
+  const codeName = data.errorCodeName ?? '';
+  let isNetwork: boolean;
+  if (codeName) {
+    isNetwork = codeName.startsWith('ERROR_CODE_IO_')
+      || codeName === 'ERROR_CODE_NETWORK_ERROR'
+      || codeName === 'ERROR_CODE_TIMEOUT'
+      || codeName === 'ERROR_CODE_BEHIND_LIVE_WINDOW';
+  } else {
+    isNetwork = /http|network|connect|timeout|source/i.test(text);
+  }
+  const extras = [
+    codeName ? `code=${codeName}` : '',
+    data.causeChain ? `cause=${data.causeChain}` : '',
+    typeof data.positionMs === 'number' ? `pos=${(data.positionMs / 1000).toFixed(1)}s` : '',
+  ].filter(Boolean).join(' | ');
   return {
     code: isNetwork ? 'E_NETWORK' : 'E_DECODE',
     message: isNetwork ? '视频加载失败，请检查网络' : '视频播放失败，请尝试切换线路',
-    detail: text || null,
+    detail: [text, extras].filter(Boolean).join('\n') || null,
     retryable: true,
     httpStatus: null,
   };

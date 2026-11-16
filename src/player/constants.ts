@@ -111,3 +111,5 @@ export const STALL_CHECK_INTERVAL_MS = 1000;
 export const STALL_STUCK_MS = 8000;
 /** 推进下限：小于引擎轮询粒度（1s）与 seek 落关键帧误差的合理解释范围 */
 export const STALL_MIN_ADVANCE_SEC = 0.5;
+/** FIX-PLAY-C2：本地播放解码错误时，容错重播向前跳开的秒数（坏件通常局部，跳过可续看） */
+export const LOCAL_DECODE_SKIP_SEC = 10;

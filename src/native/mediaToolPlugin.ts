@@ -54,6 +54,8 @@ export interface MediaToolPlugin {
     maxEdge?: number;
     quality?: number;
   }): Promise<{ frames: Array<{ index: number; timeMs: number; dataUrl: string }> }>;
+  /** FIX-PLAY-C3：离线 TS 文件对齐自检（`path` 同上口径） */
+  scanTs(options: { path: string }): Promise<TsScanResult>;
   /** 转封装进度（≤2 次/秒，按 `inputPath` 归属） */
   addListener(
     eventName: 'remuxProgress',
@@ -156,4 +158,63 @@ export async function extractSeekFrames(
     logger.debug('MediaTool.extractFrames 不可用（忽略）', { error: (e as Error)?.message ?? String(e) });
     return null;
   }
+}
+
+/* ---------- FIX-PLAY-C3：离线 TS 文件自检 ---------- */
+
+export interface TsScanResult {
+  ok: boolean;
+  /** ok=健康；not-ts=找不到 TS 同步结构；corrupt=存在错位/污染包；truncated=尾部残包；prefix=头部混入非 TS 前缀 */
+  verdict: 'ok' | 'not-ts' | 'corrupt' | 'truncated' | 'prefix';
+  fileSize: number;
+  packetSize: number;
+  /** 扫描采用的对齐起点字节（正常应为 0） */
+  alignedStart: number;
+  totalPackets: number;
+  badPackets: number;
+  /** 第一个同步失败包的绝对偏移（-1 表示没有） */
+  firstBadOffset: number;
+  /** 最后一个完整包之后剩余的字节数 */
+  tailBytes: number;
+}
+
+/**
+ * 对已完成下载的 .ts 产物做包级对齐扫描。
+ *
+ * 与 `extractSeekFrames` 不同：这里插件的显式失败（文件缺失/读错误）会向上抛，
+ * 入口是用户主动点「文件自检」，静默吞错只会让人以为文件没问题。
+ * 返回 `null` 仅表示能力不可用（Web / 旧 APK 未注册 `scanTs`）。
+ */
+export async function scanTsFile(path: string): Promise<TsScanResult | null> {
+  if (!isMediaToolAvailable()) return null;
+  try {
+    return await MediaTool.scanTs({ path });
+  } catch (e) {
+    const message = (e as Error)?.message ?? String(e);
+    // 旧 APK 上方法未实现：按能力缺席处理，不冒充文件损坏
+    if (/not implemented|unimplemented|method/i.test(message)) {
+      logger.debug('MediaTool.scanTs 不可用（旧 APK）', { error: message });
+      return null;
+    }
+    throw e;
+  }
+}
+
+/** 自检结论 → 一句人话（数字口径与 `TsScanResult` 字段一致，供 UI 直接展示） */
+export function describeTsScan(r: TsScanResult): string {
+  const size = `${(r.fileSize / 1048576).toFixed(1)} MB`;
+  if (r.verdict === 'ok') {
+    const packet = r.packetSize === 188 ? '' : `，包长 ${r.packetSize} 字节`;
+    return `文件结构健康：${size}，共 ${r.totalPackets} 个 TS 包${packet}`;
+  }
+  if (r.verdict === 'not-ts') {
+    return `没找到 MPEG-TS 同步结构（${size}）——这个文件不是标准 TS 分片数据`;
+  }
+  if (r.verdict === 'corrupt') {
+    return `发现 ${r.badPackets}/${r.totalPackets} 个包同步异常，首处坏包在偏移 ${r.firstBadOffset} 字节（${size}）`;
+  }
+  if (r.verdict === 'truncated') {
+    return `文件被截断：最后一个完整包之后只剩 ${r.tailBytes} 字节（${size}）`;
+  }
+  return `文件头部混入 ${r.alignedStart} 字节非 TS 数据，其余按 TS 对齐正常（${size}）`;
 }

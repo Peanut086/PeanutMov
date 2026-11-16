@@ -33,6 +33,8 @@ export type ErrorCode =
   | 'E_DRM_PROTECTED'
   | 'E_DECODE'
   | 'E_LOCAL_STALL'
+  /** FIX-PLAY-C1：本地文件解码失败（复位跳过后仍失败归此码），指引重新下载而非换线路 */
+  | 'E_LOCAL_CORRUPT'
   | 'E_INVALID_STATE'
   | 'E_STORAGE_QUOTA'
   | 'E_FILE_MISSING'

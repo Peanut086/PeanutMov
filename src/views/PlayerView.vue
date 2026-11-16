@@ -93,6 +93,7 @@ import { BRIGHTNESS_MAX } from '@/player/brightness';
 import { PLAYER_FAILOVER_WINDOW_MS } from '@/shared/constants';
 import { localProxyUrl } from '@/native/localProxy';
 import { pipService } from '@/native/pipService';
+import { describeTsScan, isMediaToolAvailable, scanTsFile } from '@/native/mediaToolPlugin';
 import { onAppStateChange } from '@/native/appLifecycle';
 import { libraryService } from '@/services/libraryService';
 import { sourceService } from '@/services/sourceService';
@@ -858,6 +859,40 @@ async function onRedownload(): Promise<void> {
     redownloading.value = false;
   }
 }
+
+/**
+ * FIX-PLAY-C3：本地播放「文件自检」——对 .ts 产物做包级对齐扫描。
+ *
+ * 入口放在播放页「更多」菜单而不是下载列表：已完成任务点卡片是直接起播，
+ * 详情弹层根本到不了；而怀疑文件坏掉的人本来就站在播放页里。
+ */
+const localScan = ref<{ running: boolean; text: string; path: string } | null>(null);
+const canScanLocalFile = computed(() => {
+  const pb = currentPlayback.value;
+  return Boolean(pb?.isLocal && pb.localPath?.toLowerCase().endsWith('.ts') && isMediaToolAvailable());
+});
+
+async function runLocalFileScan(): Promise<void> {
+  const path = currentPlayback.value?.localPath;
+  if (!path || localScan.value?.running) return;
+  localScan.value = { running: true, text: '', path };
+  try {
+    const result = await scanTsFile(path);
+    localScan.value = {
+      running: false,
+      text: result ? describeTsScan(result) : '当前版本不支持文件自检',
+      path,
+    };
+  } catch (e) {
+    // 读文件/路径类失败是真实故障，不能伪装成结论
+    localScan.value = null;
+    toast.error(toErrorShape(e).message || '文件自检失败');
+  }
+}
+
+watch(currentPlayback, () => {
+  localScan.value = null;
+});
 
 /* ---------- 加载播放源 ---------- */
 /**
@@ -1693,9 +1728,10 @@ watch(
   () => player.error,
   (error) => {
     if (error) {
-      // P0-2：离线文件自身的问题与线路/源无关——不记线路失败、不作废播放地址缓存，
-      // 只挂出"重新下载"出口（E_LOCAL_STALL 不在 FAILOVER_ERROR_CODES 内，不会走换线/换源）
-      if (error.code === 'E_LOCAL_STALL') {
+      // P0-2 / FIX-PLAY-C1：离线文件自身的问题（时间轴停滞、解码损坏）与线路/源无关——
+      // 不记线路失败、不作废播放地址缓存，只挂出"重新下载"出口
+      // （两者都不在 FAILOVER_ERROR_CODES 内，不会走换线/换源）
+      if (error.code === 'E_LOCAL_STALL' || error.code === 'E_LOCAL_CORRUPT') {
         armLocalStallRedownload();
         return;
       }
@@ -2845,13 +2881,15 @@ onBeforeUnmount(() => {
           <PlayerErrorPanel
             v-if="player.error && !pageLoading"
             :error="player.error"
-            :can-switch-line="lines.length > 1"
+            :can-switch-line="lines.length > 1 && currentPlayback?.isLocal !== true"
             :can-switch-source="canSwitchSourceManual"
             :can-health-check="canHealthCheck"
+            :can-redownload="localStallTaskId !== null"
             @retry="retryPanel"
             @switch-line="onSwitchLine"
             @switch-source="onSwitchSource"
             @health-check="goHealthCheck"
+            @redownload="onRedownload"
             @back="openDetail"
             @copy="copyError"
             @open-external="openExternalUrl"
@@ -3004,7 +3042,7 @@ onBeforeUnmount(() => {
           role="status"
           data-test="local-stall"
         >
-          <span class="player-local-missing__text">离线文件时间轴异常，本机播放器无法续读</span>
+          <span class="player-local-missing__text">离线文件异常（时间轴停滞或解码损坏），本机播放器无法续读</span>
           <button
             class="btn btn--secondary btn--sm player-local-missing__btn"
             type="button"
@@ -3149,6 +3187,21 @@ onBeforeUnmount(() => {
       <ul class="sheet-list">
         <li><button class="sheet-list__item" type="button" @click="openDetail">查看详情</button></li>
         <li><button class="sheet-list__item" type="button" @click="pickerOpen = true">下载本集</button></li>
+        <!-- FIX-PLAY-C3：自检只对本机 .ts 产物有意义（转封装成 mp4 后不适用，blob 兜底没有文件可扫） -->
+        <li v-if="canScanLocalFile">
+          <button
+            class="sheet-list__item local-scan__item"
+            type="button"
+            :disabled="localScan?.running"
+            @click="runLocalFileScan"
+          >
+            <span>{{ localScan?.running ? '正在自检文件…' : '文件自检' }}</span>
+            <span class="sheet-list__value">TS 分片对齐诊断</span>
+          </button>
+          <p v-if="localScan && !localScan.running" class="sheet-list__note local-scan__result">
+            {{ localScan.text }}
+          </p>
+        </li>
         <li><button class="sheet-list__item" type="button" @click="skipMarkOpen = true">片头 / 片尾标记</button></li>
         <li>
           <button class="sheet-list__item" type="button" @click="moreOpen = false; sleepOpen = true">
@@ -3717,6 +3770,19 @@ onBeforeUnmount(() => {
 .sheet-list__note {
   color: var(--color-text-secondary);
   font: var(--text-caption);
+}
+
+/* FIX-PLAY-C3：自检结果跟在按钮后，分隔线从按钮挪到结论下方 */
+.local-scan__item {
+  border-bottom: none;
+}
+
+.local-scan__result {
+  display: block;
+  padding: 0 var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-divider);
+  line-height: 1.5;
+  text-align: left;
 }
 
 .picker-desc {

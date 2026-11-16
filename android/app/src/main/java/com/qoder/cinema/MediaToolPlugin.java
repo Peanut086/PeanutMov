@@ -71,6 +71,8 @@ public class MediaToolPlugin extends Plugin {
     private ExecutorService worker;
     /** 抽帧独立线程：与转封装分离，避免后处理跑长任务时进度条预览排在其后 */
     private ExecutorService frameWorker;
+    /** FIX-PLAY-C3：TS 自检扫描线程（纯读文件），同样压最低优先级，不与播放/下载争抢 */
+    private ExecutorService scanWorker;
 
     // ========== 生命周期 ==========
 
@@ -86,6 +88,12 @@ public class MediaToolPlugin extends Plugin {
         // A-03：抽帧是"越小越快越好"的辅助能力，线程优先级压到最低，抢不过播放与下载
         frameWorker = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "seek-frames");
+            thread.setPriority(Thread.MIN_PRIORITY);
+            return thread;
+        });
+        // FIX-PLAY-C3：TS 对齐扫描（文件自检），单线程低优先级
+        scanWorker = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "ts-scan");
             thread.setPriority(Thread.MIN_PRIORITY);
             return thread;
         });
@@ -111,6 +119,10 @@ public class MediaToolPlugin extends Plugin {
             // 中断即让 SeekFrameExtractor 在下一帧检查点退出；未 resolve 的调用由 WebView 回收
             frameWorker.shutdownNow();
             frameWorker = null;
+        }
+        if (scanWorker != null) {
+            scanWorker.shutdownNow();
+            scanWorker = null;
         }
         // shutdownNow 会丢弃尚未开始的任务，它们的 runRemux 不会执行，
         // 因此这里兜底把后处理计数归零，避免前台服务永远停在"转封装中"
@@ -518,6 +530,156 @@ public class MediaToolPlugin extends Plugin {
             notifyListeners(EVENT_PROGRESS, data);
         } catch (Exception ignored) {
             // 事件推送失败不影响转封装
+        }
+    }
+
+    // ========== FIX-PLAY-C3：离线 TS 文件自检 ==========
+
+    /**
+     * TS 对齐扫描：按 188/192 包长全量校验 0x47 同步字节，定位损坏偏移。
+     *
+     * 入参：`path`（相对 Directory.Data，必填）。
+     * 出参：`{ok, verdict, fileSize, packetSize, alignedStart, totalPackets,
+     * badPackets, firstBadOffset, tailBytes}`；verdict ∈
+     * `ok | not-ts | corrupt | truncated | prefix`。
+     *
+     * 「播放到一半报 MediaCodec 解码错误」的产物多数能在扫描里现形：坏包偏移
+     * （corrupt）、尾部残包（truncated）、头部混入非 TS 前缀（prefix）。
+     * 纯文件读计算，不碰解码器；单线程低优先级，不抢播放/下载资源。
+     */
+    @PluginMethod
+    public void scanTs(PluginCall call) {
+        String path = trimToNull(call.getString("path"));
+        if (path == null) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "path required");
+            return;
+        }
+        File file;
+        try {
+            file = resolveInData(getContext().getFilesDir(), path);
+        } catch (IllegalArgumentException e) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, e.getMessage());
+            return;
+        }
+        if (!file.isFile() || file.length() <= 0) {
+            reject(call, MediaRemuxer.CODE_FILE_MISSING, "input missing or empty");
+            return;
+        }
+        ExecutorService executor = scanWorker;
+        if (executor == null || executor.isShutdown()) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "plugin not ready");
+            return;
+        }
+        final File target = file;
+        try {
+            executor.execute(() -> runTsScan(target, call));
+        } catch (RejectedExecutionException e) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "scan executor rejected");
+        }
+    }
+
+    private void runTsScan(File file, PluginCall call) {
+        final int[] candidates = {188, 192};
+        JSObject result = new JSObject();
+        try (java.io.RandomAccessFile raf = new java.io.RandomAccessFile(file, "r")) {
+            long size = raf.length();
+            result.put("fileSize", size);
+            int probeLen = (int) Math.min(size, 2L * 1024 * 1024);
+            byte[] probe = new byte[probeLen];
+            raf.readFully(probe);
+
+            // 对齐起点：前 8KB 内第一个「连续 5 包同步」的 0x47（干净文件即 0）
+            int start = -1;
+            int startPacket = 188;
+            int scanLimit = Math.min(probeLen - 5 * 192, 8192);
+            outer:
+            for (int i = 0; i <= Math.max(scanLimit, 0); i++) {
+                if (probe[i] != 0x47) continue;
+                for (int ps : candidates) {
+                    int hits = 0;
+                    for (int k = 0; k < 5; k++) {
+                        long idx = (long) i + (long) k * ps;
+                        if (idx < probeLen && probe[(int) idx] == 0x47) hits++;
+                    }
+                    if (hits == 5) {
+                        start = i;
+                        startPacket = ps;
+                        break outer;
+                    }
+                }
+            }
+            if (start < 0) {
+                result.put("ok", false);
+                result.put("verdict", "not-ts");
+                result.put("packetSize", 0);
+                result.put("alignedStart", -1);
+                result.put("totalPackets", 0);
+                result.put("badPackets", 0);
+                result.put("firstBadOffset", -1);
+                result.put("tailBytes", size);
+                call.resolve(result);
+                return;
+            }
+
+            // 包长择优：probe 段（起点起）同步命中率高者胜出，起点探测结果作首选
+            int packetSize = startPacket;
+            double bestRatio = -1;
+            for (int ps : candidates) {
+                int total = 0;
+                int hits = 0;
+                for (long p = start; p < probeLen; p += ps) {
+                    total++;
+                    if (probe[(int) p] == 0x47) hits++;
+                }
+                double ratio = total == 0 ? 0 : (double) hits / total;
+                if (ratio > bestRatio) {
+                    bestRatio = ratio;
+                    packetSize = ps;
+                }
+            }
+
+            // 全量扫描：分块读，逐包查同步字节
+            long checked = 0;
+            long bad = 0;
+            long firstBad = -1;
+            int blockSize = packetSize * 512;
+            byte[] block = new byte[blockSize];
+            long pos = start;
+            while (pos + packetSize <= size) {
+                int n = (int) Math.min(blockSize, size - pos);
+                n -= n % packetSize;
+                if (n <= 0) break;
+                raf.seek(pos);
+                raf.readFully(block, 0, n);
+                for (int i = 0; i + packetSize <= n; i += packetSize) {
+                    checked++;
+                    if (block[i] != 0x47) {
+                        bad++;
+                        if (firstBad < 0) firstBad = pos + i;
+                    }
+                }
+                pos += n;
+            }
+            long tail = size - pos;
+            String verdict;
+            if (bad > 0) verdict = "corrupt";
+            else if (tail != 0) verdict = "truncated";
+            else if (start != 0) verdict = "prefix";
+            else verdict = "ok";
+            result.put("ok", "ok".equals(verdict));
+            result.put("verdict", verdict);
+            result.put("packetSize", packetSize);
+            result.put("alignedStart", start);
+            result.put("totalPackets", checked);
+            result.put("badPackets", bad);
+            result.put("firstBadOffset", firstBad);
+            result.put("tailBytes", tail);
+            AppLog.i(TAG, "ts-scan verdict=" + verdict + " bad=" + bad + "/" + checked
+                    + " firstBad=" + firstBad + " tail=" + tail + " size=" + size);
+            call.resolve(result);
+        } catch (Exception e) {
+            AppLog.w(TAG, "ts-scan failed", e);
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "scan failed: " + e.getMessage());
         }
     }
 

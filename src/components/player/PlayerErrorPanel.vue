@@ -21,10 +21,12 @@ const props = withDefaults(
     canSwitchSource?: boolean;
     /** v1.8/CHG-26：是否显示「源体检」入口（错误码指向源健康问题时为真） */
     canHealthCheck?: boolean;
+    /** FIX-PLAY-C1：离线文件损坏时显示「重新下载本集」（本地播放没有可切的线路） */
+    canRedownload?: boolean;
     /** 复制错误信息回调 */
     copyText?: string;
   }>(),
-  { canSwitchLine: true, canSwitchSource: false, canHealthCheck: false, copyText: '' },
+  { canSwitchLine: true, canSwitchSource: false, canHealthCheck: false, canRedownload: false, copyText: '' },
 );
 
 const emit = defineEmits<{
@@ -34,6 +36,8 @@ const emit = defineEmits<{
   (e: 'health-check'): void;
   (e: 'back'): void;
   (e: 'copy'): void;
+  /** FIX-PLAY-C1：对当前集发起重新下载 */
+  (e: 'redownload'): void;
   /** P1-4：磁力等外部 scheme 交给系统 Intent 打开 */
   (e: 'open-external', url: string): void;
 }>();
@@ -71,6 +75,9 @@ const hint = computed(() => {
       return '可能原因：当前编码或封装不受支持。请切换其他线路或清晰度。';
     case 'E_NO_PLAY_URL':
       return '可能原因：该集暂无可用地址。请在详情页切换线路后重试。';
+    case 'E_LOCAL_STALL':
+    case 'E_LOCAL_CORRUPT':
+      return '可能原因：离线文件本身损坏（时间轴或分片数据异常）。重新下载这一集通常可解决，切换线路无效。';
     default:
       return '可能原因：播放过程中出现异常。可重试；若持续失败请返回详情页。';
   }
@@ -111,6 +118,14 @@ const showRetry = computed(() => props.error?.retryable !== false);
           @click="emit('open-external', magnetUrl)"
         >
           用外部应用打开
+        </button>
+        <button
+          v-if="canRedownload"
+          class="btn btn--primary btn--md"
+          type="button"
+          @click="emit('redownload')"
+        >
+          重新下载本集
         </button>
         <button
           v-if="showRetry"

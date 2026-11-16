@@ -35,6 +35,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   E_DECODE: '视频解码失败，请尝试切换线路',
   // P0-2：离线文件能打开、能出首帧，但时间轴不可信导致永不推进——重试无意义，只能重下
   E_LOCAL_STALL: '离线文件时间轴异常，请重新下载这一集',
+  // FIX-PLAY-C1：离线文件能起播但解码中途报错（分片损坏/污染）——同样只能重下，换线路无效
+  E_LOCAL_CORRUPT: '离线文件可能损坏，请重新下载这一集',
   E_INVALID_STATE: '当前状态不允许该操作',
   E_STORAGE_QUOTA: '存储空间不足',
   E_FILE_MISSING: '本地文件不可用，请重新下载',

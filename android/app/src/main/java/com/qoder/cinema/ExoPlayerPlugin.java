@@ -340,6 +340,22 @@ public class ExoPlayerPlugin extends Plugin {
                         JSObject data = new JSObject();
                         data.put("state", "error");
                         data.put("message", error.getMessage());
+                        // FIX-PLAY-C1：JS 侧此前只拿到一句 ExoPlayer 文案，靠正则猜
+                        // 「网络 vs 解码」——离线文件损坏常被误归成通用 E_DECODE，用户也
+                        // 没有可反馈的定位信息。这里补齐错误码名、cause 链与出错位置。
+                        data.put("errorCodeName", error.getErrorCodeName());
+                        data.put("positionMs", player.getCurrentPosition());
+                        StringBuilder causeChain = new StringBuilder();
+                        Throwable cause = error.getCause();
+                        for (int i = 0; i < 3 && cause != null; i++, cause = cause.getCause()) {
+                            if (causeChain.length() > 0) causeChain.append(" ← ");
+                            String causeMsg = cause.getMessage();
+                            causeChain.append(cause.getClass().getSimpleName())
+                                    .append(": ")
+                                    .append(causeMsg == null ? "" : causeMsg.replaceAll("\\s+", " "));
+                            if (causeChain.length() > 600) break;
+                        }
+                        data.put("causeChain", causeChain.toString());
                         notifyListeners("exostate", data);
                     }
 

@@ -27,6 +27,7 @@ import type {
 import {
   CONTROLS_HIDE_DELAY_MS,
   HLS_METADATA_TIMEOUT_MS,
+  LOCAL_DECODE_SKIP_SEC,
   LOAD_METADATA_TIMEOUT_MS,
   NATIVE_METADATA_TIMEOUT_MS,
   NETWORK_RETRY_DELAY_MS,
@@ -176,6 +177,8 @@ export class PlayerController {
   private stallAnchorAt = 0;
   /** 本轮加载是否已经用过"复位重备"这一次机会（每次 load 重置） */
   private stallRecovered = false;
+  /** FIX-PLAY-C2：本轮加载是否还有"解码错误跳过坏段"这一次机会（每次 load 重置） */
+  private localDecodeRecovered = false;
 
   /** m3u8 DRM 预检的取消句柄（AC-40）：切集/重试/销毁时中止上一轮预检 */
   private preflightAbort: AbortController | null = null;
@@ -274,6 +277,8 @@ export class PlayerController {
     // P0-2：停滞自愈按「每次加载」重置（复位机会不得跨集复用）
     this.stopStallWatchdog();
     this.stallRecovered = false;
+    // FIX-PLAY-C2：解码容错机会同样按「每次加载」重置
+    this.localDecodeRecovered = false;
     this.setState('loading');
     this.options = opts;
     this.networkRetries = 0;
@@ -707,6 +712,24 @@ export class PlayerController {
   }
 
   private handleEngineError(error: AppErrorShape): void {
+    // FIX-PLAY-C2：本地产物的解码类错误不走换线/网络重试——离线播放没有"另一条线"，
+    // 报错文案里的"切换线路"对已下载文件是误导。先做一次"跳过坏点复位重播"
+    // （坏分片影响通常局部化），仍失败收口成 E_LOCAL_CORRUPT 指引重新下载。
+    if (error.code === 'E_DECODE' && this.options?.playback.isLocal) {
+      const position = this.engine?.getCurrentTime() ?? 0;
+      this.stopStallWatchdog();
+      if (!this.localDecodeRecovered) {
+        this.localDecodeRecovered = true;
+        logger.warn('本地播放解码错误，跳过坏段复位重播', { position, detail: error.detail });
+        void this.restartLocalPlayback(position, position + LOCAL_DECODE_SKIP_SEC);
+        return;
+      }
+      this.setState('error');
+      this.emit('error', toErrorShape(new AppError('E_LOCAL_CORRUPT', undefined, {
+        detail: `position=${position.toFixed(1)}s${error.detail ? ` | ${error.detail}` : ''}`,
+      })));
+      return;
+    }
     if (error.code === 'E_NETWORK' && this.networkRetries < NETWORK_RETRY_TIMES) {
       this.networkRetries += 1;
       this.emit('statechange', { playing: false, waiting: true });
@@ -816,27 +839,38 @@ export class PlayerController {
   }
 
   /**
-   * 停滞后的唯一一次复位：重新 prepare（等价于用户退出重进），从头起播。
+   * 停滞/解码错误后的唯一一次复位：重新 prepare（等价于用户退出重进）。
    *
    * 复位能救的是"引擎侧一次性状态错乱"；时间轴本身坏掉的产物复位后仍会停滞，
    * 由第二次 tick 收口成 E_LOCAL_STALL。
+   *
+   * FIX-PLAY-C2：`resumeAtSec` 传值时从该位置续播（解码错误跳过坏段），
+   * 不传维持旧行为——按原 playback 的续播位从头起播。
    */
-  private async restartLocalPlayback(stalledAtSec: number): Promise<void> {
+  private async restartLocalPlayback(stalledAtSec: number, resumeAtSec?: number): Promise<void> {
     const opts = this.options;
     if (!opts || this.destroyed) return;
-    this.emit('notice', { message: '离线起播异常，正在重试' });
+    this.emit('notice', {
+      message: resumeAtSec === undefined ? '离线起播异常，正在重试' : '离线解码异常，正在跳过损坏片段',
+    });
+    const playback = resumeAtSec === undefined
+      ? opts.playback
+      : { ...opts.playback, startPositionMs: Math.max(0, Math.round(resumeAtSec * 1000)) };
     try {
-      await this.attachEngine(opts.playback);
+      await this.attachEngine(playback);
     } catch (e) {
       if (!this.destroyed) {
         this.setState('error');
-        this.emit('error', toErrorShape(e, 'E_DECODE'));
+        // 本地产物连重备都失败：文件级异常实锤，直接给"重新下载"归因
+        this.emit('error', toErrorShape(new AppError('E_LOCAL_CORRUPT', undefined, {
+          detail: `recover-prepare failed: ${String(e)}`,
+        })));
       }
       return;
     }
     if (this.destroyed) return;
     this.setState('ready');
-    logger.warn('本地播放停滞，已复位重备', { stalledAtSec, url: opts.playback.url });
+    logger.warn('本地播放复位重备', { stalledAtSec, resumeAtSec, url: opts.playback.url });
     await this.play();
   }
 
