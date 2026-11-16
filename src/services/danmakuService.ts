@@ -4,7 +4,7 @@
  * `danmakuService.match(title, year, episode, localXml)`：
  *   缓存命中 → 直接返回（离线可用）
  *   未命中   → 按「版权覆盖 + 接口稳定性」串行回退（见 `./danmaku/provider` 文件头），
- *              最后落到 dandanplay（需凭据）与 local-xml
+ *              最后落到两个需配置的聚合源（danmu-api 需基址 / dandanplay 需凭据）与 local-xml
  *
  * 结果（含偏移）写 `danmakuCache`；总开关关闭时调用方不得调用本服务（零第三方请求，AC-126）。
  */
@@ -15,7 +15,7 @@ import { mgtvProvider } from '@/services/danmaku/mgtv';
 import { iqiyiProvider } from '@/services/danmaku/iqiyi';
 import { youkuProvider } from '@/services/danmaku/youku';
 import { leshiProvider } from '@/services/danmaku/leshi';
-import { dandanplayProvider, localXmlProvider, type DanmakuQuery } from '@/services/danmaku/provider';
+import { danmuApiProvider, dandanplayProvider, localXmlProvider, type DanmakuQuery } from '@/services/danmaku/provider';
 import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
 import { decodeSubtitle } from '@/player/SrtConverter';
 import { logger } from '@/shared/logger';
@@ -73,6 +73,7 @@ export const danmakuService = {
       iqiyiProvider,
       youkuProvider,
       leshiProvider,
+      danmuApiProvider,
       dandanplayProvider,
     ];
     for (const provider of providers) {

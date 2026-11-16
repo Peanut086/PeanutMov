@@ -2,8 +2,9 @@
  * 弹幕回退链实网冒烟（手动执行，不进 CI）：
  *   npx vite-node tests/manual/danmakuChainSmoke.ts
  *   npx vite-node tests/manual/danmakuChainSmoke.ts -- 狂飙 2023 1
- * 目的：验证「B 站 → 腾讯 → 芒果 → 爱奇艺 → 优酷 → 乐视 → dandanplay → 本地 xml」整条链
+ * 目的：验证「B 站 → 腾讯 → 芒果 → 爱奇艺 → 优酷 → 乐视 → danmu-api → dandanplay → 本地 xml」整条链
  *       在真实接口上的命中源、条数与耗时（含全部落空时的最长路径）。
+ *       danmu-api 需先在「弹幕设置」里填自建聚合服务地址，本机无 localStorage 时该源自动跳过。
  */
 import 'fake-indexeddb/auto';
 

@@ -3,14 +3,20 @@
  * 弹幕设置面板（v1.7 / CHG-22）
  *
  * 设置项：开关 / 字号 / 透明度 / 速度 / 显示区域 / 合并程度 / 底部安全区，
- * 外加弹弹play凭据配置与（播放页调用时）本地弹幕 XML 导入。
+ * 外加自建聚合服务基址、弹弹play凭据配置与（播放页调用时）本地弹幕 XML 导入。
  * 写回 `settingsStore.update({ danmaku })`；关闭开关后渲染层即时清空。
  */
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
-import { getDandanplayCredentials, setDandanplayCredentials } from '@/services/danmaku/provider';
+import {
+  getDandanplayCredentials,
+  getDanmuApiBaseUrl,
+  normalizeDanmuApiBaseUrl,
+  setDandanplayCredentials,
+  setDanmuApiBaseUrl,
+} from '@/services/danmaku/provider';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { DanmakuSettings } from '@/types';
 
@@ -53,6 +59,30 @@ function saveDandanplay(): void {
   // 任一项留空会被清掉，回显跟真实状态对齐，免得显示成「已配置」
   ddp.value = getDandanplayCredentials() ?? { appId: '', secret: '' };
   ddpSaved.value = true;
+}
+
+/* ---------- danmu_api 自建聚合服务基址（localStorage，不进备份） ---------- */
+
+const danmuApiBase = ref(getDanmuApiBaseUrl() ?? '');
+const danmuApiSaved = ref(false);
+const danmuApiInvalid = ref(false);
+
+// 改过内容就收起红描边：无效提示只对「上一次保存尝试」有意义，否则改对了边框还挂着
+watch(danmuApiBase, () => {
+  danmuApiInvalid.value = false;
+});
+
+function saveDanmuApiBase(): void {
+  // 先校验再落库：填错只提示，不能让一次手滑把原本可用的源清掉
+  if (normalizeDanmuApiBaseUrl(danmuApiBase.value) === null && danmuApiBase.value.trim().length > 0) {
+    danmuApiInvalid.value = true;
+    danmuApiSaved.value = false;
+    return;
+  }
+  danmuApiInvalid.value = false;
+  // 回显归一化结果：末尾斜杠与 `/api/v2` 尾巴会被摘掉，显示成用户填的样子反而误导
+  danmuApiBase.value = setDanmuApiBaseUrl(danmuApiBase.value) ?? '';
+  danmuApiSaved.value = true;
 }
 
 /* ---------- 本地弹幕 XML（B 站格式，只作用于当前这一集） ---------- */
@@ -160,6 +190,27 @@ function onPickXml(event: Event): void {
       </div>
 
       <div class="danmaku-sheet__field">
+        <label class="field__label" for="danmaku-danmuapi-base">自建弹幕聚合服务地址（可选，danmu_api / LogVar 弹幕 API）</label>
+        <input
+          id="danmaku-danmuapi-base"
+          v-model="danmuApiBase"
+          class="field__input"
+          :class="{ 'field__input--error': danmuApiInvalid }"
+          type="text"
+          inputmode="url"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="http://192.168.1.7:9321 或 https://你的域名/你的TOKEN"
+          @keyup.enter="saveDanmuApiBase"
+        />
+        <button type="button" class="btn btn--secondary btn--sm" @click="saveDanmuApiBase">保存地址</button>
+        <p v-if="danmuApiInvalid" class="field__error" role="alert">
+          地址无效：需以 http:// 或 https:// 开头，且不含账号密码。未保存，原地址仍可用。
+        </p>
+        <p v-else-if="danmuApiSaved" class="field__hint">已保存；清空后不再向该服务请求弹幕。</p>
+      </div>
+
+      <div class="danmaku-sheet__field">
         <label class="field__label" for="danmaku-ddp-appid">弹弹play AppId（可选，配置后启用该弹幕源）</label>
         <input
           id="danmaku-ddp-appid"
@@ -186,7 +237,8 @@ function onPickXml(event: Event): void {
 
       <p class="field__hint">
         弹幕由第三方弹幕库按「片名 + 年份 + 集号」自动匹配；关闭开关后不会发起任何弹幕请求。
-        部分弹幕数据来自「弹弹play开放弹幕网络」（www.dandanplay.com）。
+        部分弹幕数据来自「弹弹play开放弹幕网络」（www.dandanplay.com）；填写上方地址后，还会向你自己部署的
+        LogVar 弹幕 API（danmu_api）请求聚合弹幕——该请求只带片名、年份与集号。
       </p>
     </div>
   </BottomSheet>

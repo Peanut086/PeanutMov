@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { parseBilibiliXml } from '@/services/danmaku/bilibiliXml';
 import { clearBilibiliCache } from '@/services/danmaku/bilibili';
+import { setDanmuApiBaseUrl } from '@/services/danmaku/provider';
 import { danmakuService, thinComments } from '@/services/danmakuService';
 import { httpClient } from '@/sources/base/httpClient';
 
@@ -76,6 +77,55 @@ describe('danmakuService 回退链（AC-126）', () => {
     // dandanplay Provider 需凭据（localStorage）；B 站源无凭据恒可用
     globalThis.localStorage?.setItem('peanutmov.danmaku.dandanplay.appId', 'test-app');
     globalThis.localStorage?.setItem('peanutmov.danmaku.dandanplay.secret', 'test-secret');
+    // 自建聚合源默认停用，个别用例显式配置基址
+    setDanmuApiBaseUrl('');
+  });
+
+  it('配置了聚合服务基址时：六个直连源之后、dandanplay 之前命中 danmu-api', async () => {
+    setDanmuApiBaseUrl('http://danmu.test');
+    const urls: string[] = [];
+    route((url) => {
+      urls.push(url);
+      if (!host(url, 'danmu.test')) return undefined;
+      if (url.includes('/api/v2/match')) {
+        return { success: true, isMatched: true, matches: [{ episodeId: 10001, animeTitle: '狂飙', episodeTitle: '第05集', shift: 0 }] };
+      }
+      if (url.includes('/api/v2/comment/')) {
+        return { count: 1, comments: [{ cid: 1, p: '10.00,1,16777215,[BiliBili]', m: '聚合弹幕' }] };
+      }
+      return { success: true, animes: [] };
+    });
+
+    const result = await danmakuService.match('狂飙', 2024, 5);
+
+    expect(result).not.toBeNull();
+    expect(result!.provider).toBe('danmu-api');
+    expect(result!.comments).toEqual([{ time: 10, mode: 'scroll', color: 0xffffff, text: '聚合弹幕' }]);
+    // 六个直连源排在前面；聚合源命中即停，不再打弹弹play官方接口
+    const danmuIdx = urls.findIndex((url) => host(url, 'danmu.test'));
+    expect(danmuIdx).toBeGreaterThan(0);
+    expect(urls.slice(0, danmuIdx).some((url) => url.includes('api.bilibili.com'))).toBe(true);
+    expect(urls.some((url) => url.includes('api.dandanplay.net'))).toBe(false);
+  });
+
+  it('未配置基址时 danmu-api 整源跳过：回退链照旧落到 dandanplay', async () => {
+    const urls: string[] = [];
+    route((url) => {
+      urls.push(url);
+      if (url.includes('api.dandanplay.net/api/v2/match')) {
+        return { success: true, isMatched: true, matches: [{ episodeId: 42, animeTitle: '狂飙', episodeTitle: '第06集', shift: 0 }] };
+      }
+      if (url.includes('api.dandanplay.net/api/v2/comment/')) {
+        return { count: 1, comments: [{ cid: 1, p: '10.00,1,16777215,1001', m: '官方弹幕' }] };
+      }
+      return undefined;
+    });
+
+    // 集号 6：避开上一个用例写入同一缓存键
+    const result = await danmakuService.match('狂飙', 2024, 6);
+
+    expect(result!.provider).toBe('dandanplay');
+    expect(urls.some((url) => url.includes('danmu.test'))).toBe(false);
   });
 
   it('B 站无结果时回退 dandanplay；成功结果写入缓存（二次调用不发请求）', async () => {

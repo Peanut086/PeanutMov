@@ -801,7 +801,7 @@ export interface SubscriptionSummary {
 
 /* ---------- 弹幕（CHG-22，只读不发） ---------- */
 
-/** 网络源按「版权覆盖 + 接口稳定性」排序：B 站/腾讯之后是芒果、爱奇艺、优酷、乐视 */
+/** 网络源按「版权覆盖 + 接口稳定性」排序：B 站/腾讯之后是芒果、爱奇艺、优酷、乐视，再走两个需配置的聚合源 */
 export type DanmakuProviderId =
   | 'bilibili'
   | 'tencent'
@@ -809,6 +809,7 @@ export type DanmakuProviderId =
   | 'iqiyi'
   | 'youku'
   | 'leshi'
+  | 'danmu-api'
   | 'dandanplay'
   | 'local-xml';
 
