@@ -41,6 +41,8 @@ vi.mock('@/native/network', () => ({
     return () => hoisted.listeners.delete(cb);
   },
   getNetworkStatus: async () => ({ connected: true, type: hoisted.netType }),
+  // OPT-07：bootstrap 会播种真实网络类型；测试里 netType 由 hoisted 直接给出，播种无需动作
+  primeNetworkStatus: async () => undefined,
 }));
 
 const NOW = 1_700_000_000_000;

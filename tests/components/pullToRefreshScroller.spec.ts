@@ -71,7 +71,20 @@ describe('下拉刷新：谁在滚就按谁判顶部（#4）', () => {
     expect(wrapper.emitted('refresh')).toHaveLength(1);
     const indicator = indicatorEl(wrapper);
     expect(indicator.style.position).toBe('fixed');
-    expect(indicator.style.transform).toContain('translateY(60px)');
+    // A1①：释放后停在指示器盒高 64px（此前用阈值 60，与 .ptr-indicator 的 height 差 4px）
+    expect(indicator.style.transform).toContain('translateY(64px)');
+  });
+
+  it('系统手势打断（touchcancel）：收回下拉但不触发刷新（A1③）', async () => {
+    setWindowScroll(0);
+    const wrapper = mount(PullToRefresh, { slots: { default: '<div class="body"><p>内容</p></div>' } });
+
+    await wrapper.trigger('touchstart', { touches: [{ clientY: 100 }] });
+    await wrapper.trigger('touchmove', { touches: [{ clientY: 260 }] });
+    await wrapper.trigger('touchcancel', { touches: [] });
+
+    expect(wrapper.emitted('refresh')).toBeUndefined();
+    expect(indicatorEl(wrapper).style.transform).toContain('translateY(0px)');
   });
 
   it('文档模式空闲时指示器透明，不常驻盖在顶栏/筛选条上', () => {

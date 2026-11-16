@@ -156,13 +156,24 @@ function onTouchEnd(): void {
 
   if (pullDistance.value >= props.threshold && !props.loading) {
     triggered.value = true; // 先锁定，防止重复触发（REV-03）
-    const indicatorHeight = 60;
-    pullDistance.value = indicatorHeight;
+    // 释放后停在指示器盒高处，与 .ptr-indicator 的 64px 一致（A1①：消除 60/64 分叉导致的 4px 偏差）
+    pullDistance.value = INDICATOR_HEIGHT;
     haptic('light');
     emit('refresh');
   } else {
     pullDistance.value = 0;
   }
+}
+
+/**
+ * 系统手势/来电等打断（touchcancel）：仅收回下拉，不触发刷新（A1③）。
+ * 复用 onTouchEnd 会让「已经过阈值但被系统打断」误发 refresh。
+ */
+function onTouchCancel(): void {
+  if (!touching.value) return;
+  touching.value = false;
+  triggered.value = false;
+  pullDistance.value = 0;
 }
 
 /** 外部 loading 结束后，收回下拉 */
@@ -231,7 +242,7 @@ const ptrLabel = computed(() => {
     @touchstart.passive="onTouchStart"
     @touchmove.passive="onTouchMove"
     @touchend.passive="onTouchEnd"
-    @touchcancel.passive="onTouchEnd"
+    @touchcancel.passive="onTouchCancel"
   >
     <!-- 下拉指示器 -->
     <div class="ptr-indicator" :style="indicatorStyle" aria-hidden="true">

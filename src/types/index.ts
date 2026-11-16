@@ -289,20 +289,11 @@ export interface BrowseParams extends PageQuery {
   filters: LibraryFilters;
 }
 
-/** PERF-0：单源搜索分段耗时（适配器回填，纯观测） */
-export interface SearchPhasePerf {
-  cold?: boolean;
-  loadMs?: number;
-  searchMs?: number;
-}
-
 export interface SearchParams extends PageQuery {
   source: Source;
   keyword: string;
   /** SO-05：计算后的单源预算（ms），透传给 crawl/invoke 内部超时 */
   budgetMs?: number;
-  /** PERF-0：调用方持有引用，适配器回填加载/搜索分段耗时 */
-  perf?: SearchPhasePerf;
 }
 
 export interface GetDetailParams {

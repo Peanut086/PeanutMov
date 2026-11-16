@@ -115,6 +115,18 @@ export function onNetworkChange(cb: Listener): () => void {
   };
 }
 
+/**
+ * 启动播种（OPT-07）：原生冷启动先读一次真实网络类型写入 `lastStatus`。
+ *
+ * `nativeHandleRegistered` 的监听只在网络**变化**时触发，不会回填初始值，导致
+ * `currentNetworkType()` 在首次变化前恒为 `'unknown'`，移动网络下的下载二次确认
+ * （`needsCellularConfirm` / `enforceWifiOnlyOnCellular` 都判 `=== 'cellular'`）会漏触发。
+ */
+export async function primeNetworkStatus(): Promise<void> {
+  if (!isNative()) return;
+  await getNetworkStatus();
+}
+
 /** 测试辅助：重置内部状态 */
 export function resetNetworkState(): void {
   listeners.clear();

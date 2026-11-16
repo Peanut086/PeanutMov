@@ -20,7 +20,7 @@ import { DownloadQueue, transition } from '@/services/downloadQueue';
 import { createDownloadEngine, setDownloadEngine } from '@/services/downloadEngine';
 import { nativeFilePathOf, nativePartPathOf, readBlob } from '@/services/downloadSink';
 import { deleteFile, stat, toPlayableUrl } from '@/native/fs';
-import { currentNetworkType, isOnline, onNetworkChange } from '@/native/network';
+import { currentNetworkType, isOnline, onNetworkChange, primeNetworkStatus } from '@/native/network';
 import { onAppStateChange, type AppLifecycleState } from '@/native/appLifecycle';
 import { applyNativeSpeedLimit } from '@/native/mediaToolPlugin';
 import { nativeDownloadSetConcurrency } from '@/native/downloadPlugin';
@@ -640,6 +640,8 @@ export const downloadService = {
   /** 创建单个下载任务（AC-70：重复创建返回 `existed: true`；在飞期间重复调用复用同一次创建） */
   async create(input: CreateDownloadInput, extra?: Partial<DownloadTask>): Promise<{ task: DownloadTask; existed: boolean }> {
     validateInput(input);
+    // OPT-18：在用户发起下载（手势上下文）时一次性请求通知权限，之后复用缓存；不在每次完成回调里弹框
+    void ensureNotificationPermission();
     const key = existingKeyOf(input.mediaId, input.episodeId);
     const pending = createInFlight.get(key);
     if (pending) return pending;
@@ -696,6 +698,8 @@ export const downloadService = {
     queue: { before: number; after: number; capacity: number; full: boolean };
   }> {
     assertBatchSize(inputs.length);
+    // OPT-18：批量发起下载时一次性请求通知权限（与 create() 同一缓存，仅首次弹框）
+    void ensureNotificationPermission();
 
     let capacity = resolveQueueCapacity(null);
     try {
@@ -1050,6 +1054,10 @@ export const downloadService = {
         const ok = await deleteFile(task.filePath).then(() => true).catch(() => false);
         fileLeftBehind = fileLeftBehind || !ok;
       }
+      // OPT-12：未完成分块（*.part）不在 filePath 里，删除任务时一并清理，避免磁盘残片
+      if (isNative()) {
+        await deleteFile(nativePartPathOf(task)).catch(() => undefined);
+      }
     }
     await downloadRepo.remove(id);
     await emitQueueSummary();
@@ -1376,6 +1384,8 @@ export const downloadService = {
   /** 启动/回前台恢复队列；同时接线应用生命周期（AC-72 / REV-22） */
   async bootstrap(): Promise<void> {
     downloadService.bindLifecycle();
+    // OPT-07：冷启动播种真实网络类型，避免移动网络下载确认/暂停因 currentNetworkType()='unknown' 漏触发
+    void primeNetworkStatus();
     // FIX-D3：启动运行时卡死 watchdog
     startWatchdog();
     // EXT-04/FR-63（AC-149）：开机把持久化档位下发给限速器（JS 桶 + 原生桶）
@@ -1654,12 +1664,9 @@ export const downloadService = {
     const all = await downloadRepo.listAll();
     let filesLeftBehind = 0;
     for (const task of all) {
+      // remove() 现已连带删除成品文件、Blob 与未完成分块（OPT-12）
       const result = await this.remove(task.id, { deleteFile: true });
       if (result.fileLeftBehind) filesLeftBehind += 1;
-      // 在飞/暂停任务的未完成分块不在 filePath 里，需按 sink 规则显式清理（best-effort）
-      if (isNative() && task.status !== 'completed' && task.status !== 'canceled') {
-        await deleteFile(nativePartPathOf(task)).catch(() => undefined);
-      }
     }
     // 丢弃内存队列：清空后不得再有在飞下载，也不得残留 pausedSet 让任务"复活"
     queue?.dispose();
@@ -1981,27 +1988,63 @@ interface WakeLockSentinel extends EventTarget {
   release(): Promise<void>;
 }
 
-/* ---------------- 下载完成通知 ---------------- */
+/* ---------------- 下载完成通知（OPT-18：权限一次性请求、完成回调只静默检查） ---------------- */
+
+/** 通知权限决议缓存：每会话只在首次「发起下载」时弹框一次，之后复用结果。 */
+let notifPermission: 'unknown' | 'granted' | 'denied' = 'unknown';
+
+/**
+ * 确保通知权限：应在用户发起下载（手势上下文）时调用一次，而非每次下载完成时反复请求。
+ * 已拒绝时只静默 `checkPermissions` 复查（用户在系统设置里开启后能恢复），不再弹框。
+ */
+export async function ensureNotificationPermission(): Promise<boolean> {
+  if (notifPermission === 'granted') return true;
+  try {
+    if (isNative()) {
+      const { LocalNotifications } = await import('@capacitor/local-notifications');
+      if (notifPermission === 'denied') {
+        const check = await LocalNotifications.checkPermissions();
+        notifPermission = check.display === 'granted' ? 'granted' : 'denied';
+      } else {
+        const permission = await LocalNotifications.requestPermissions();
+        notifPermission = permission.display === 'granted' ? 'granted' : 'denied';
+      }
+    } else {
+      if (typeof Notification === 'undefined') {
+        notifPermission = 'denied';
+        return false;
+      }
+      if (Notification.permission === 'default') {
+        const permission = await Notification.requestPermission();
+        notifPermission = permission === 'granted' ? 'granted' : 'denied';
+      } else {
+        notifPermission = Notification.permission === 'granted' ? 'granted' : 'denied';
+      }
+    }
+  } catch (e) {
+    logger.debug('请求通知权限失败', e);
+    notifPermission = 'denied';
+  }
+  return notifPermission === 'granted';
+}
 
 async function sendDownloadCompleteNotification(task: DownloadTask): Promise<void> {
   const title = task.episodeTitle ? `${task.title} - ${task.episodeTitle}` : task.title;
   const body = '下载完成';
 
+  // 完成回调里绝不弹框请求权限：仅静默检查已授予状态（OPT-18）
   if (isNative()) {
-    // Android：使用 Local Notifications 插件
     try {
       const { LocalNotifications } = await import('@capacitor/local-notifications');
-      // 请求权限
-      const permission = await LocalNotifications.requestPermissions();
-      if (permission.display !== 'granted') {
-        logger.debug('通知权限未授予');
+      const check = await LocalNotifications.checkPermissions();
+      if (check.display !== 'granted') {
+        logger.debug('通知权限未授予，跳过完成通知');
         return;
       }
-      // 发送通知
       await LocalNotifications.schedule({
         notifications: [
           {
-            id: task.id.hashCode(),
+            id: hashStringToInt(task.id),
             title,
             body,
             sound: 'default',
@@ -2015,15 +2058,13 @@ async function sendDownloadCompleteNotification(task: DownloadTask): Promise<voi
       logger.warn('发送通知失败', e);
     }
   } else {
-    // Web：使用 Notification API
     if (typeof Notification === 'undefined') {
       logger.debug('Notification API 不可用');
       return;
     }
     try {
-      const permission = await Notification.requestPermission();
-      if (permission !== 'granted') {
-        logger.debug('通知权限未授予');
+      if (Notification.permission !== 'granted') {
+        logger.debug('通知权限未授予，跳过完成通知');
         return;
       }
       new Notification(title, { body, silent: false });
@@ -2034,23 +2075,19 @@ async function sendDownloadCompleteNotification(task: DownloadTask): Promise<voi
   }
 }
 
-// 简单的字符串 hash 函数（用于生成通知 ID）
-declare global {
-  interface String {
-    hashCode(): number;
+/**
+ * 字符串 → 非负 int32 哈希（OPT-18：替换旧的 `String.prototype.hashCode` 原型污染）。
+ *
+ * 旧实现 `Math.abs(hash)` 对 `INT_MIN` 仍返回负数，会让 Android 通知 id 变负而调度异常；
+ * 这里先 `>>> 0` 取无符号再对 Integer.MAX_VALUE 取模，结果恒落在 [0, 2147483646]。
+ * 纯函数、不改任何原型。
+ */
+function hashStringToInt(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (Math.imul(31, hash) + value.charCodeAt(i)) | 0;
   }
-}
-
-if (!String.prototype.hashCode) {
-  String.prototype.hashCode = function (): number {
-    let hash = 0;
-    for (let i = 0; i < this.length; i++) {
-      const char = this.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash |= 0;
-    }
-    return Math.abs(hash);
-  };
+  return (hash >>> 0) % 2147483647;
 }
 
 function cryptoRandomId(): string {

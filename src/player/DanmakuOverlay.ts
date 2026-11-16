@@ -13,7 +13,6 @@
  * 设计取舍：不用 DOM 弹幕（数百节点调度易掉帧），canvas 绘制成本恒定。
  */
 import { DANMAKU_MAX_ONSCREEN } from '@/shared/constants';
-import { danmakuPerf } from '@/shared/danmakuPerf';
 import type { DanmakuComment, DanmakuSettings } from '@/types';
 
 interface Track {
@@ -97,11 +96,6 @@ export class DanmakuOverlay {
   private lastDrawnTime = Number.NaN;
   private canvasWidth = 0;
   private canvasHeight = 0;
-  // 临时性能埋点（danmaku-perf）
-  private perfLastDrawStamp = 0;
-  private perfLastAnchorTickStamp = 0;
-  private perfFrameRasterMs = 0;
-  private perfFrameRasterBuilds = 0;
 
   constructor(options: {
     settings: DanmakuSettings;
@@ -126,7 +120,6 @@ export class DanmakuOverlay {
     this.ctx = canvas.getContext('2d');
     this.resize();
     this.start();
-    danmakuPerf.acquire();
   }
 
   detach(): void {
@@ -136,7 +129,6 @@ export class DanmakuOverlay {
     this.ctx = null;
     this.tracks = [];
     this.picked = null;
-    danmakuPerf.release();
   }
 
   setSettings(settings: DanmakuSettings): void {
@@ -174,9 +166,7 @@ export class DanmakuOverlay {
 
   /** 全量替换弹幕（已按时间排序；merge 由服务层完成） */
   load(comments: DanmakuComment[]): void {
-    const sortStart = performance.now();
     this.comments = [...comments].sort((a, b) => a.time - b.time);
-    danmakuPerf.recordLoadPhase('overlay.load.sort', performance.now() - sortStart, comments.length);
     this.cursor = 0;
     this.tracks = [];
     this.picked = null;
@@ -196,8 +186,6 @@ export class DanmakuOverlay {
     const predicted = this.anchorStamp === 0 ? currentTimeSec : this.extrapolate(stamp);
     const drift = currentTimeSec - predicted;
     const absDrift = Math.abs(drift);
-    const gapMs = this.perfLastAnchorTickStamp === 0 ? 0 : stamp - this.perfLastAnchorTickStamp;
-    this.perfLastAnchorTickStamp = stamp;
     const seekJump = currentTimeSec < this.lastTime - 1 || absDrift > BIG_JUMP_SEC;
     if (seekJump) {
       // seek/换集（前跳与回跳同等处理）：清空轨道，二分重定位游标
@@ -210,7 +198,6 @@ export class DanmakuOverlay {
       this.driftDebt = -drift;
       this.debtStamp = stamp;
     }
-    danmakuPerf.recordAnchorTick(gapMs, drift, seekJump);
     this.lastTime = currentTimeSec;
     this.anchorTime = currentTimeSec;
     this.anchorStamp = stamp;
@@ -250,7 +237,6 @@ export class DanmakuOverlay {
   /** 在锚点上外推媒体时间，并把 `driftDebt` 线性衰减地叠加进去 */
   private extrapolate(stamp: number): number {
     const elapsedSec = ((stamp - this.anchorStamp) / 1000) * this.getRate();
-    if (elapsedSec > MAX_EXTRAPOLATE_SEC) danmakuPerf.recordExtrapolationClamp(elapsedSec - MAX_EXTRAPOLATE_SEC);
     let t = this.anchorTime + Math.max(0, Math.min(elapsedSec, MAX_EXTRAPOLATE_SEC));
     if (this.driftDebt !== 0) {
       const k = (stamp - this.debtStamp) / DRIFT_SLEW_WINDOW_MS;
@@ -295,24 +281,13 @@ export class DanmakuOverlay {
     const stamp = performance.now();
     if (stamp - this.lastFrameAt < this.frameGateMs) return;
     this.lastFrameAt = stamp;
-    this.perfFrameRasterMs = 0;
-    this.perfFrameRasterBuilds = 0;
     const now = this.currentTime();
     if (now === this.lastDrawnTime) return; // 暂停/缓冲画面不变：跳过重绘
-    const intervalMs = this.perfLastDrawStamp === 0 ? 0 : stamp - this.perfLastDrawStamp;
-    this.perfLastDrawStamp = stamp;
     this.lastDrawnTime = now;
     const drawStart = performance.now();
     this.spawn(now);
     this.redraw(now);
     const costMs = performance.now() - drawStart;
-    danmakuPerf.recordFrame({
-      intervalMs,
-      costMs,
-      rasterBuilds: this.perfFrameRasterBuilds,
-      rasterMs: this.perfFrameRasterMs,
-      onScreen: this.tracks.length,
-    });
     // 成本兜底：逐帧重绘持续超过 8ms 降回 30fps，回落到 4ms 以下再恢复
     this.costEma += (costMs - this.costEma) * 0.1;
     if (this.costEma > COST_DEGRADE_MS && this.frameGateMs === 0) this.frameGateMs = FRAME_INTERVAL_MS;
@@ -531,7 +506,6 @@ export class DanmakuOverlay {
     const pad = strokeMode === 'none' ? 2 : Math.ceil(lineWidth / 2) + 2;
     const height = Math.ceil(fontSize * 1.5);
     const width = Math.max(1, Math.ceil(track.width + pad * 2));
-    const rasterStart = performance.now();
     const bitmap = document.createElement('canvas');
     bitmap.width = Math.max(1, Math.round(width * dpr));
     bitmap.height = Math.max(1, Math.round(height * dpr));
@@ -563,8 +537,6 @@ export class DanmakuOverlay {
         bctx.fillText(track.comment.text, pad, baseline);
       }
     }
-    this.perfFrameRasterMs += performance.now() - rasterStart;
-    this.perfFrameRasterBuilds += 1;
     track.bitmap = bitmap;
     track.bitmapFontSize = fontSize;
     track.bitmapDpr = dpr;
