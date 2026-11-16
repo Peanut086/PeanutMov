@@ -542,8 +542,8 @@ async function exportLogs(): Promise<void> {
     }
     await Share.share({
       title: 'PeanutMov 日志导出',
-      text: `日志文件（${formatBytes(result.size)}）`,
-      url: result.uri,
+      // Share 插件只接受 file:// 或 http url，content:// 会被拒（Unsupported url）
+      url: 'file://' + result.path,
       dialogTitle: '分享日志文件',
     });
     toast.success('日志已导出');

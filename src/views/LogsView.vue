@@ -233,13 +233,16 @@ async function exportLogs(): Promise<void> {
     const result = await logApi.export();
     await Share.share({
       title: 'PeanutMov 日志导出',
-      text: `日志文件（${formatBytes(result.size)}）`,
-      url: result.uri,
+      // Share 插件只接受 file:// 或 http url，content:// 会被拒（Unsupported url）
+      url: 'file://' + result.path,
       dialogTitle: '分享日志文件',
     });
     toast.success('日志已导出');
   } catch (e) {
-    toast.error('导出失败：' + toErrorShape(e).message);
+    const err = toErrorShape(e);
+    // 用户在分享面板取消不算错误
+    if (err.message?.includes('cancel') || err.message?.includes('dismiss')) return;
+    toast.error('导出失败：' + err.message);
   }
 }
 
