@@ -67,36 +67,57 @@ public class MainApplication extends Application {
     private void checkLastExit() {
         // 1. 检查未清除的哨兵（B1：per-invocation token 版）—— 同步，决定安全模式
         java.util.List<JSONObject> sentinels = CrashSentinel.readUnclearedAll();
+        boolean crashed = true;
         if (!sentinels.isEmpty()) {
             // 取最新的（startedAt 最大）作为归因目标
             JSONObject sentinel = sentinels.get(0);
             AppLog.w(TAG, "found " + sentinels.size() + " uncleared sentinels, attributing to: " + sentinel.toString());
-            CrashSentinel.recordCrash(this, sentinel);
 
-            // 根据哨兵内容生成隔离签名
-            String signature = buildQuarantineSignature(sentinel);
-            if (signature != null) {
-                // 爬虫原生崩溃归因可靠（哨兵紧贴 invoke 写入/清除）：首次即隔离该 jar+api，
-                // 避免同一坏源反复崩进程；7 天后自动过期，也可在健康管理手动解除。
-                // 其余签名（exoplayer）沿用 24h 内 2 次阈值——播放崩溃更可能与具体内容相关。
-                if (signature.startsWith("spider:") || shouldQuarantine(signature)) {
-                    CrashSentinel.quarantine(this, signature);
-                    AppLog.w(TAG, "quarantined: " + signature);
+            // G1：先问系统上次进程究竟怎么没的。哨兵只证明「死亡时该操作在途」，不证明因果；
+            // ROM 后台清理/低内存杀进程也会留下未清除哨兵，照常隔离等于每次被清就随机冤枉一个好源。
+            ExitVerdict verdict = classifyLastExit(sentinel.optInt("pid", -1));
+            AppLog.w("CrashExit", "sentinel attribution: " + verdict.detail);
+            crashed = verdict.kind != ExitAttribution.NON_CRASH_EXIT;
+
+            if (crashed) {
+                CrashSentinel.recordCrash(this, sentinel);
+
+                // 根据哨兵内容生成隔离签名
+                String signature = buildQuarantineSignature(sentinel);
+                if (signature != null) {
+                    // 爬虫原生崩溃归因可靠（哨兵紧贴 invoke 写入/清除）：首次即隔离该 jar+api，
+                    // 避免同一坏源反复崩进程；7 天后自动过期，也可在健康管理手动解除。
+                    // 其余签名（exoplayer）沿用 24h 内 2 次阈值——播放崩溃更可能与具体内容相关。
+                    if (signature.startsWith("spider:") || shouldQuarantine(signature)) {
+                        CrashSentinel.quarantine(this, signature);
+                        AppLog.w(TAG, "quarantined: " + signature);
+                    }
+                }
+
+                // 记录其他并发哨兵作为上下文
+                for (int i = 1; i < sentinels.size(); i++) {
+                    AppLog.i(TAG, "inFlight sentinel: " + sentinels.get(i).toString());
+                }
+
+                // P2：检查是否应进入安全模式
+                checkSafeMode();
+            } else {
+                // 被系统杀掉：在途哨兵只是被打断，不记崩溃、不隔离、不进安全模式
+                for (int i = 0; i < sentinels.size(); i++) {
+                    AppLog.i(TAG, "inFlight at kill (not a crash): " + sentinels.get(i).toString());
                 }
             }
 
-            // 记录其他并发哨兵作为上下文
-            for (int i = 1; i < sentinels.size(); i++) {
-                AppLog.i(TAG, "inFlight sentinel: " + sentinels.get(i).toString());
-            }
-
-            // 清除所有哨兵（已记录）
+            // 清除所有哨兵（两种归因都已记录完毕）
             CrashSentinel.clearAll();
-            // P2：检查是否应进入安全模式
-            checkSafeMode();
         }
 
         // 2. 稳定启动（无新崩溃）时自动静默退出安全模式——用户无感，爬虫源立即恢复
+        //    被系统强杀同样算稳定启动：那些隔离/降级本就不该由它触发。
+        if (!crashed && isSafeMode(this)) {
+            exitSafeMode(this);
+            Log.i(TAG, "system kill: auto-exited safe mode");
+        }
         if (sentinels.isEmpty() && isSafeMode(this)) {
             exitSafeMode(this);
             Log.i(TAG, "stable launch: auto-exited safe mode");
@@ -120,21 +141,25 @@ public class MainApplication extends Application {
                             getSharedPreferences("crash-exit-info", MODE_PRIVATE);
                     long lastSeen = exitPrefs.getLong("lastTs", 0L);
                     long maxSeen = lastSeen;
+                    // 16 条：WebView 沙箱进程的退出会插在主进程记录前面，5 条经常读不到主进程那条。
+                    // 按包名过滤——传 null 会把别的 App 的退出记录一起塞进这 16 个名额里，把我们的挤掉。
                     List<ApplicationExitInfo> exitInfos = getApplicationContext()
                             .getSystemService(android.app.ActivityManager.class)
-                            .getHistoricalProcessExitReasons(null, 0, 5);
+                            .getHistoricalProcessExitReasons(getPackageName(), 0, 16);
                     for (ApplicationExitInfo info : exitInfos) {
                         if (info.getTimestamp() > maxSeen) maxSeen = info.getTimestamp();
                         if (info.getTimestamp() <= lastSeen) continue;
-                        if (info.getReason() == ApplicationExitInfo.REASON_SIGNALED
-                                || info.getReason() == ApplicationExitInfo.REASON_CRASH
-                                || info.getReason() == ApplicationExitInfo.REASON_CRASH_NATIVE) {
-                            AppLog.w("CrashExit", "last exit: reason=" + info.getReason()
-                                    + " status=" + info.getStatus()
-                                    + " timestamp=" + info.getTimestamp()
-                                    + " process=" + info.getProcessName()
-                                    + " description=" + info.getDescription());
-                        }
+                        // G2：所有原因都落盘。此前只记 2/4/5，而国产 ROM 上「闪退」的主因是
+                        // reason=10/13（管家强杀）与 3（低内存），日志里一行都没有，用户报
+                        // 「崩溃」时无从归因。W 级保证详细日志开关关闭也落盘。
+                        int kind = ExitAttribution.classify(
+                                info.getReason(), info.getStatus(), info.getDescription());
+                        String prefix = kind == ExitAttribution.CRASH
+                                ? "crash exit: "
+                                : kind == ExitAttribution.NON_CRASH_EXIT
+                                        ? "process gone (not a crash): "
+                                        : "process gone (reason undetermined): ";
+                        AppLog.w("CrashExit", prefix + ExitAttribution.summary(info));
                     }
                     if (maxSeen > lastSeen) exitPrefs.edit().putLong("lastTs", maxSeen).apply();
                 } catch (Exception e) {
@@ -142,6 +167,65 @@ public class MainApplication extends Application {
                 }
             }
         }, "startup-io").start();
+    }
+
+    /** 上次进程退出的归因结论：kind 为 ExitAttribution.CRASH / NON_CRASH_EXIT / UNKNOWN，detail 为整行日志文案 */
+    private static final class ExitVerdict {
+        final int kind;
+        final String detail;
+
+        ExitVerdict(int kind, String detail) {
+            this.kind = kind;
+            this.detail = detail;
+        }
+    }
+
+    /**
+     * G1：查系统记录的最近一次主进程退出，判断是崩溃还是被杀。
+     * <p>
+     * 先用哨兵里的 pid 精确查（同一 pid 的退出不可能来自别的进程，返回集也最小）；
+     * 查不到再退回该包名最新的一条。API 30 以下没有该接口，或读取异常时返回 UNKNOWN
+     * ——保持原有「按崩溃处理」的行为。
+     */
+    private ExitVerdict classifyLastExit(int sentinelPid) {
+        int kind = ExitAttribution.UNKNOWN;
+        String detail = "no ApplicationExitInfo (API " + Build.VERSION.SDK_INT + ")";
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                android.app.ActivityManager am = getApplicationContext()
+                        .getSystemService(android.app.ActivityManager.class);
+                String self = getPackageName();
+                ApplicationExitInfo target = null;
+                boolean byPid = false;
+                if (sentinelPid > 0) {
+                    target = newestMainProcess(am.getHistoricalProcessExitReasons(self, sentinelPid, 4), self);
+                    byPid = target != null;
+                }
+                if (target == null) {
+                    // WebView 沙箱进程的退出记录会插在前面，只能多取几条再筛主进程
+                    target = newestMainProcess(am.getHistoricalProcessExitReasons(self, 0, 16), self);
+                }
+                if (target != null) {
+                    kind = ExitAttribution.classify(
+                            target.getReason(), target.getStatus(), target.getDescription());
+                    detail = (byPid ? "pid matched" : "newest main-process exit")
+                            + "; " + ExitAttribution.summary(target);
+                } else {
+                    detail = "no main-process exit record";
+                }
+            } catch (Exception e) {
+                detail = "read ApplicationExitInfo failed: " + e;
+            }
+        }
+        return new ExitVerdict(kind, ExitAttribution.kindName(kind) + " (" + detail + ")");
+    }
+
+    /** 过滤掉 WebView 沙箱等子进程；exit-info 按时间倒序，第一条即最新 */
+    private static ApplicationExitInfo newestMainProcess(List<ApplicationExitInfo> infos, String self) {
+        for (ApplicationExitInfo info : infos) {
+            if (self.equals(info.getProcessName())) return info;
+        }
+        return null;
     }
 
     /**

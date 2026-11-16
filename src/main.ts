@@ -9,7 +9,7 @@ import { createPinia } from 'pinia';
 
 import App from '@/App.vue';
 import router, { setComplianceGate } from '@/router';
-import { bindAppToasts, complianceGate, ensureDemoData, initCacheSweep, initDoubanRuntime, initDownloads, initLineHealth, initSettings, initSpiderWarmup, initSubscriptionAutoRefresh } from '@/stores/bootstrap';
+import { bindAppToasts, complianceGate, ensureDemoData, initCacheSweep, initDoubanRuntime, initDownloads, initLineHealth, initSessionRestore, initSettings, initSpiderWarmup, initSubscriptionAutoRefresh } from '@/stores/bootstrap';
 
 import '@/styles/global.css';
 import '@/styles/player.css';
@@ -70,6 +70,10 @@ async function bootstrap(): Promise<void> {
   // OPT-10：弹幕/EPG 纯缓存的 TTL 过期 + 超上限淘汰（内部只开两个小事务，
   // 不 await——读时过期已覆盖功能正确性，这里只解决「再也不会被读到」的占用滞留）
   void initCacheSweep();
+
+  // G3：冷启动回到上次那集（进程被 ROM 清掉时用户看到的就是"闪退"）。
+  // 必须 await 且在 app.use(router) 之前——它要抢在首帧导航前挂好改写守卫。
+  await initSessionRestore(router);
 
   app.use(router);
   await router.isReady();

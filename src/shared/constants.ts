@@ -37,6 +37,8 @@ export const KV_KEY_SETTINGS = 'app-settings';
 export const KV_KEY_DEMO_SEEDED = 'demo-seeded';
 /** kv 表中存放订阅导入记录的 key */
 export const KV_KEY_IMPORT_RECORDS = 'import-records';
+/** kv 表中存放「上次所在页面」会话快照的 key（G3 冷启动恢复，短 TTL、一次性消费） */
+export const KV_KEY_LAST_SESSION = 'last-session';
 
 /* ---------- 合规 ---------- */
 /** 合规声明文本版本；文本变更时 +1，触发已同意用户重新确认（AC-101） */

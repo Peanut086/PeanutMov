@@ -11,9 +11,12 @@
  * - `ensureDemoData()`：演示数据幂等种子（失败只记日志）；
  * - `restoreDemoSource()`：设置/源管理页的「恢复演示源」（REV-14 / FR-43 / AC-97）。
  */
+import type { Router } from 'vue-router';
+
 import type { ComplianceGateLike } from '@/router';
 import { cacheRepo } from '@/db/repositories/cacheRepo';
 import { settingsService } from '@/services/settingsService';
+import { bindSessionRestore } from '@/services/sessionRestoreService';
 import { seedService } from '@/services/seedService';
 import { downloadService } from '@/services/downloadService';
 import { runOfflineRemuxMigration } from '@/services/offlineRemuxMigration';
@@ -48,6 +51,21 @@ export async function initLineHealth(): Promise<void> {
     await lineHealthService.init();
   } catch (e) {
     logger.error('线路健康记忆初始化失败（不阻塞启动）', toAppError(e, 'E_DB'));
+  }
+}
+
+/**
+ * G3：冷启动会话恢复接线。
+ *
+ * 必须在 `app.use(router)` 之前 await 完成——首帧导航要被一次性 beforeEach 改写，
+ * 安装后再 replace 会先挂载首页再跳播放页，看得见一次闪跳。
+ * 失败只记日志，退回"每次启动都从首页开始"的原行为。
+ */
+export async function initSessionRestore(router: Router): Promise<void> {
+  try {
+    await bindSessionRestore(router);
+  } catch (e) {
+    logger.error('会话恢复接线失败（不阻塞启动）', toAppError(e, 'E_DB'));
   }
 }
 
