@@ -2,7 +2,7 @@
  * 弹幕数据 Provider（v1.7 / CHG-22，只读不发）
  *
  * 回退顺序（`danmakuService.match` 按序尝试）：
- * 1. `bilibili` —— B 站直连（见 `./bilibili`），无凭据主力源；
+ * 1. `bilibili` —— B 站直连（见 `./bilibili`），无凭据主力源；XML 触到弹幕池上限时按 360s 分片补量；
  * 2. `tencent` —— 腾讯视频直连（见 `./tencent`），国产剧/独播剧兜底；
  * 3. `mgtv` —— 芒果TV 直连（见 `./mgtv`），芒果独播剧/综艺；
  * 4. `iqiyi` —— 爱奇艺直连（见 `./iqiyi`），爱系独播（Brotli + protobuf 分片）；
