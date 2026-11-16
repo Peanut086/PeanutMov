@@ -4,8 +4,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { parseBilibiliXml } from '@/services/danmaku/bilibiliXml';
-import { clearBilibiliCache } from '@/services/danmaku/bilibili';
-import { setDanmuApiBaseUrl } from '@/services/danmaku/provider';
+import { bilibiliProvider, clearBilibiliCache } from '@/services/danmaku/bilibili';
+import { setDanmuApiBaseUrl, type DanmakuQuery } from '@/services/danmaku/provider';
 import { danmakuService, thinComments } from '@/services/danmakuService';
 import { httpClient } from '@/sources/base/httpClient';
 
@@ -241,6 +241,27 @@ describe('danmakuService 回退链（AC-126）', () => {
       { time: 11.6, mode: 'scroll', color: 0, text: '哈哈哈' },
     ]);
     expect(merged.length).toBe(2);
+  });
+});
+
+describe('场景标记（预取不做补量扇出）', () => {
+  it('实时播放传 playback，预取传 prefetch 到 Provider 的 DanmakuQuery.scene', async () => {
+    const title = '场景标记专用剧';
+    const seen: Array<DanmakuQuery['scene']> = [];
+    const spy = vi.spyOn(bilibiliProvider, 'match').mockImplementation(
+      (async (query: DanmakuQuery) => {
+        seen.push(query.scene);
+        return { comments: [{ time: 1, mode: 'scroll', color: 0xffffff, text: '弹幕' }], matchedTitle: title };
+      }) as never,
+    );
+
+    // 两次用不同集号：第一次已写缓存，第二次会直接命中而走不到 Provider
+    await danmakuService.match(title, 2019, 1);
+    await danmakuService.prefetch(title, 2019, 2);
+
+    // 预取不能靠"没缓存"侥幸少发请求：scene 必须由 prefetch 显式带上
+    expect(seen).toEqual(['playback', 'prefetch']);
+    spy.mockRestore();
   });
 });
 

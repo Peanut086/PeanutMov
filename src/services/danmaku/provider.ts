@@ -2,7 +2,8 @@
  * 弹幕数据 Provider（v1.7 / CHG-22，只读不发）
  *
  * 回退顺序（`danmakuService.match` 按序尝试）：
- * 1. `bilibili` —— B 站直连（见 `./bilibili`），无凭据主力源；XML 触到弹幕池上限时按 360s 分片补量；
+ * 1. `bilibili` —— B 站直连（见 `./bilibili`），无凭据主力源；XML 触到弹幕池上限时按 360s 分片补量
+ *    （补量只在实时播放路径做，预取路径不扇出，见 `DanmakuQuery.scene`）；
  * 2. `tencent` —— 腾讯视频直连（见 `./tencent`），国产剧/独播剧兜底；
  * 3. `mgtv` —— 芒果TV 直连（见 `./mgtv`），芒果独播剧/综艺；
  * 4. `iqiyi` —— 爱奇艺直连（见 `./iqiyi`），爱系独播（Brotli + protobuf 分片）；
@@ -30,12 +31,21 @@ import { requestWithHeaders } from './nativeHttp';
 /** 网络弹幕源标识（本地 xml 兜底不参与回退链枚举） */
 type NetworkProviderId = Exclude<DanmakuProviderId, 'local-xml'>;
 
+/** 调用场景：实时播放 / 下载完成时的离线预取 */
+export type DanmakuQueryScene = 'playback' | 'prefetch';
+
 /** 匹配查询：片名归一化由 provider 内部完成 */
 export interface DanmakuQuery {
   title: string;
   year: number | null;
   /** 1 起的集号；电影固定 1 */
   episode: number;
+  /**
+   * 缺省 `playback`。`prefetch` 只保证「离线有弹幕」，不做**补量扇出**：整季批量预取的
+   * 分片请求量会打进场源风控区（B 站实测连发约 260 片返回 `-352`，约 2 分钟自愈）。
+   * 语义只针对补量——腾讯/爱奇艺/优酷/乐视的分片就是弹幕本体，跳过等于没有弹幕，不适用。
+   */
+  scene?: DanmakuQueryScene;
   signal?: AbortSignal;
 }
 

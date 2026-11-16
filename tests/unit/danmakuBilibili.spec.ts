@@ -246,6 +246,20 @@ describe('bilibiliProvider 分片补量', () => {
     expect(segmentIndexes()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   });
 
+  it('预取场景即使触顶也不扇出（整季批量预取的请求量会进风控区）', async () => {
+    route({
+      xml: xmlWith(3000),
+      season: [{ title: '1', cid: 555, duration: 1_436_000 }],
+      segment: (index) => segReply([dm(index * 60_000, `分片${index}弹幕`)]),
+    });
+
+    const result = await bilibiliProvider.match({ title: '庆余年', year: 2019, episode: 1, scene: 'prefetch' });
+
+    expect(result!.comments).toHaveLength(3000); // 只剩 XML 基线，离线仍可用
+    expect(segmentIndexes()).toEqual([]);
+    expect(mockedRequest).toHaveBeenCalledTimes(4); // nav + 搜索 + 季 + XML
+  });
+
   it('季接口没给时长时不扇出（无别的途径能查分片总数）', async () => {
     route({ xml: xmlWith(3000), season: [{ title: '1', cid: 555 }] });
 

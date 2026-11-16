@@ -1,10 +1,11 @@
 /**
  * 弹幕服务门面（v1.7 / CHG-22）
  *
- * `danmakuService.match(title, year, episode, localXml)`：
+ * `danmakuService.match(title, year, episode, localXml, scene)`：
  *   缓存命中 → 直接返回（离线可用）
  *   未命中   → 按「版权覆盖 + 接口稳定性」串行回退（见 `./danmaku/provider` 文件头），
  *              最后落到两个需配置的聚合源（danmu-api 需基址 / dandanplay 需凭据）与 local-xml
+ *   `scene`：`playback`（默认，实时播放）/ `prefetch`（下载完成时的离线预取，补量扇出关闭）
  *
  * 结果（含偏移）写 `danmakuCache`；总开关关闭时调用方不得调用本服务（零第三方请求，AC-126）。
  */
@@ -15,7 +16,7 @@ import { mgtvProvider } from '@/services/danmaku/mgtv';
 import { iqiyiProvider } from '@/services/danmaku/iqiyi';
 import { youkuProvider } from '@/services/danmaku/youku';
 import { leshiProvider } from '@/services/danmaku/leshi';
-import { danmuApiProvider, dandanplayProvider, localXmlProvider, type DanmakuQuery } from '@/services/danmaku/provider';
+import { danmuApiProvider, dandanplayProvider, localXmlProvider, type DanmakuQuery, type DanmakuQueryScene } from '@/services/danmaku/provider';
 import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
 import { decodeSubtitle } from '@/player/SrtConverter';
 import { logger } from '@/shared/logger';
@@ -56,9 +57,16 @@ export const danmakuService = {
   /**
    * 匹配一集的弹幕。三级回退；全部失败或都不匹配返回 null。
    * `localXml` 传入本地 xml 内容读取函数（有值时优先级最低，兜底离线）。
+   * `scene` 缺省 `playback`；预取路径必须显式传 `prefetch`，见 `DanmakuQuery.scene`。
    */
-  async match(title: string, year: number | null, episode: number, localXml: (() => string | null) | null = null): Promise<DanmakuMatch | null> {
-    const query: DanmakuQuery = { title, year, episode };
+  async match(
+    title: string,
+    year: number | null,
+    episode: number,
+    localXml: (() => string | null) | null = null,
+    scene: DanmakuQueryScene = 'playback',
+  ): Promise<DanmakuMatch | null> {
+    const query: DanmakuQuery = { title, year, episode, scene };
 
     // ① 缓存
     const cacheKey = danmakuCacheKey(title, year, episode);
@@ -146,12 +154,13 @@ export const danmakuService = {
   /**
    * 功能扩展-3：预取弹幕（下载完成时调用，确保离线可用）
    *
-   * 与 match 相同逻辑，但静默失败（不影响下载流程）。
+   * 与 match 相同逻辑，但静默失败（不影响下载流程），并以 `prefetch` 场景调用：
+   * 补量型扇出（B 站分片）在此关闭，预取只要「离线有弹幕」，不承担批量请求的风控代价。
    * 成功时弹幕已写入 cacheRepo，离线播放可直接命中。
    */
   async prefetch(title: string, year: number | null, episode: number): Promise<void> {
     try {
-      await this.match(title, year, episode);
+      await this.match(title, year, episode, null, 'prefetch');
     } catch (e) {
       logger.debug('弹幕预取失败（静默）', { title, year, episode }, e);
     }

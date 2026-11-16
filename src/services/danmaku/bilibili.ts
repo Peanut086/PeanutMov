@@ -2,7 +2,7 @@
  * B 站直连弹幕源（无凭证）
  *
  * 链路：wbi 签名搜索番剧/影视 → 取季分集 → 按集号取 cid → 拉弹幕 XML；
- * XML 已触到 B 站弹幕池上限时，再按 360s 分片扇出补量（见 `fetchSegmentExtras`）。
+ * XML 已触到 B 站弹幕池上限时，再按 360s 分片扇出补量（见 `fetchSegmentExtras`；预取路径不扇出）。
  * 只用公开接口，不带用户标识；CapacitorHttp 原生请求，无 CORS 限制。
  * 覆盖范围限于 B 站有版权的番剧/国创/影视，匹配不到即返回 null（宁缺毋滥）。
  */
@@ -164,13 +164,17 @@ function pickEpisode(episodes: BiliEpisode[], episode: number): { cid: number; d
  * XML 触顶后的分片补量：按 360s 一块扇出，与 XML 结果直接拼接。
  * 重复条目交回渲染层处理（`PlayerView` 的 `dedupe` + `DanmakuOverlay` 的按时间排序），
  * 这里不再排一次——两个接口返回的是同一池的不同采样，合并顺序无意义。
+ *
+ * 预取路径（`scene === 'prefetch'`）不扇出：下载完成时整季批量预取会把分片请求量推近实测
+ * 触发 `-352` 的连发规模，而预取的目标只是「离线有弹幕」，XML 基线已经满足。
  */
 async function fetchSegmentExtras(
+  query: DanmakuQuery,
   cid: number,
   durationSec: number | null,
   xmlCount: number,
-  signal?: AbortSignal,
 ): Promise<DanmakuComment[]> {
+  if (query.scene === 'prefetch') return [];
   if (durationSec === null || xmlCount < SEGMENT_FANOUT_MIN_XML) return [];
   const indexes: number[] = [];
   const count = Math.min(Math.ceil(durationSec / SEGMENT_STEP_SEC), SEGMENT_MAX_COUNT);
@@ -181,7 +185,7 @@ async function fetchSegmentExtras(
       headers: BILI_HEADERS,
       timeoutMs: 8000,
       retries: 0,
-      signal,
+      signal: query.signal,
     });
     return parseSegmentReply(bytes);
   });
@@ -219,7 +223,7 @@ export const bilibiliProvider: DanmakuProvider = {
     const comments = parseBilibiliXml(xml);
     if (comments.length === 0) return null;
 
-    const extras = await fetchSegmentExtras(episode.cid, episode.durationSec, comments.length, query.signal);
+    const extras = await fetchSegmentExtras(query, episode.cid, episode.durationSec, comments.length);
     return {
       comments: extras.length === 0 ? comments : [...comments, ...extras],
       matchedTitle: season?.title ?? null,
