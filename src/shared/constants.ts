@@ -25,9 +25,11 @@ export const DB_NAME = 'cinema-db';
 /**
  * v2（CHG-13）：新增 lives store（直播播放列表）；v3（CHG-22/23）：danmakuCache / epgCache；
  * v4（EXT-06）：epgSources / channelPrefs / reminders + epgCache 键空间改版（`epgv2:`）；
- * v5：history.by-media 索引（自愈按 mediaId 查历史，此前只能全表读 500 条含快照的记录）
+ * v5：history.by-media 索引（自愈按 mediaId 查历史，此前只能全表读 500 条含快照的记录）；
+ * v6（OPT-10）：danmakuCache / epgCache 各加 by-fetched 索引（缓存 LRU 淘汰与过期清扫按时间扫，
+ *    此前只能 getAll 全表读进内存再排序——单条弹幕缓存可达数 MB）
  */
-export const DB_VERSION = 5;
+export const DB_VERSION = 6;
 
 /** kv 表中存放应用设置的 key */
 export const KV_KEY_SETTINGS = 'app-settings';
@@ -255,12 +257,23 @@ export const DANMAKU_MAX_ONSCREEN = 150;
 export const DANMAKU_MAX_PER_EPISODE = 10_000;
 /** 弹幕缓存 TTL（30 天；命中缓存不发网络请求） */
 export const DANMAKU_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/**
+ * OPT-10：弹幕缓存条目上限（LRU 按 `fetchedAt` 淘汰最旧）。
+ * 一集抽稀后最多 `DANMAKU_MAX_PER_EPISODE` 条 ≈ 3.4MB，150 条封顶即最坏 ~500MB、
+ * 常态几十 MB；此前只有 30 天 TTL，整季预取 + 长期使用的存量没有上界。
+ */
+export const DANMAKU_CACHE_MAX = 150;
 /** dandanplay 匹配接口基址（appId/secret 就绪前不启用该 Provider） */
 export const DANMAKU_DANDANPLAY_BASE = 'https://api.dandanplay.net';
 
 /* ---------- v1.7：EPG（CHG-23） ---------- */
 /** EPG 缓存 TTL */
 export const EPG_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+/**
+ * OPT-10：EPG 缓存条目上限（key = 源 × 频道 × 日，直播源动辄数千频道，24h TTL 内也能堆几万条）。
+ * 单条只有当日节目单，3000 条量级在几 MB，够覆盖"回看 + 当天全量浏览"的正常使用。
+ */
+export const EPG_CACHE_MAX = 3000;
 /** 默认 EPG 端点（diyp 风格） */
 export const EPG_DEFAULT_ENDPOINT = 'https://epg.112114.eu.org';
 

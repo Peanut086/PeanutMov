@@ -3,11 +3,58 @@
  *
  * `danmakuCache`（弹幕匹配）与 `epgCache`（节目单）共用同一读写模式：
  * key 寻址、fetchedAt 时间戳、读时过期即删。纯缓存——清空不影响功能正确性。
+ *
+ * OPT-10：只有 TTL「读时过期」等于永远不清扫——没人再读的那些条目（换过关键词的
+ * 弹幕匹配、看过一次就再没打开的频道节目单）会一直占着盘。现在写入超上限就地按
+ * `fetchedAt` 淘汰最旧，另外每次启动跑一次 `sweep()`（过期 + 上限）。
  */
-import { getDb } from '@/db/index';
+import { getDb, withTx } from '@/db/index';
 import { STORE_NAMES, type DanmakuCacheRecord, type EpgCacheRecord } from '@/db/schema';
-import { DANMAKU_CACHE_TTL_MS, EPG_CACHE_TTL_MS } from '@/shared/constants';
+import {
+  DANMAKU_CACHE_MAX,
+  DANMAKU_CACHE_TTL_MS,
+  EPG_CACHE_MAX,
+  EPG_CACHE_TTL_MS,
+} from '@/shared/constants';
 import type { DanmakuMatch } from '@/types';
+
+/** 两张缓存表共用同一套淘汰逻辑；上限与 TTL 按表配置 */
+type CacheStore = typeof STORE_NAMES.danmakuCache | typeof STORE_NAMES.epgCache;
+
+const CACHE_POLICY: Record<CacheStore, { max: number; ttlMs: number }> = {
+  [STORE_NAMES.danmakuCache]: { max: DANMAKU_CACHE_MAX, ttlMs: DANMAKU_CACHE_TTL_MS },
+  [STORE_NAMES.epgCache]: { max: EPG_CACHE_MAX, ttlMs: EPG_CACHE_TTL_MS },
+};
+
+/**
+ * 沿 `by-fetched` 索引（升序＝最旧在前）删除条目，只取键不取值。
+ * `before` 给出时间上界（严格小于），`limit` 给出条数上界，两者可叠加。
+ */
+async function evict(store: CacheStore, opts: { before?: number; limit?: number }): Promise<number> {
+  const range = opts.before === undefined ? undefined : IDBKeyRange.upperBound(opts.before, true);
+  return withTx([store], 'readwrite', async (tx) => {
+    const objectStore = tx.objectStore(store);
+    let removed = 0;
+    // idb v8 核心不带 async iterator（那是 `idb/with-async-ittr`），按仓库既有写法手动步进
+    let cursor = await objectStore.index('by-fetched').openCursor(range);
+    while (cursor) {
+      if (opts.limit !== undefined && removed >= opts.limit) break;
+      await objectStore.delete(cursor.primaryKey);
+      removed += 1;
+      cursor = await cursor.continue();
+    }
+    return removed;
+  });
+}
+
+/** 超出条目上限时淘汰最旧的，返回删除条数（`count()` 是 O(1)，每次写入都查得起） */
+async function trimToCap(store: CacheStore): Promise<number> {
+  const db = await getDb();
+  const total = await db.count(store);
+  const excess = total - CACHE_POLICY[store].max;
+  if (excess <= 0) return 0;
+  return evict(store, { limit: excess });
+}
 
 export const cacheRepo = {
   /* ---------- 弹幕（key = `${mediaId}:${episodeNumber}`） ---------- */
@@ -27,6 +74,7 @@ export const cacheRepo = {
     const db = await getDb();
     const record: DanmakuCacheRecord = { key, match, fetchedAt: Date.now() };
     await db.put(STORE_NAMES.danmakuCache, record);
+    await trimToCap(STORE_NAMES.danmakuCache);
   },
 
   /* ---------- EPG（key = `epgv2:{sourceId}:{channelKey}:{yyyy-MM-dd}`） ---------- */
@@ -62,6 +110,7 @@ export const cacheRepo = {
   async putEpgRecord(record: EpgCacheRecord): Promise<void> {
     const db = await getDb();
     await db.put(STORE_NAMES.epgCache, { ...record, fetchedAt: record.fetchedAt || Date.now() });
+    await trimToCap(STORE_NAMES.epgCache);
   },
 
   /** EXT-06：按 key 前缀删除（`clearSourceCache` 用），返回删除条数 */
@@ -76,5 +125,20 @@ export const cacheRepo = {
       }
     }
     return removed;
+  },
+
+  /**
+   * OPT-10：启动清扫——先按 TTL 删过期，再按条目上限淘汰最旧。
+   *
+   * 只在 App 启动时跑一次（`initCacheSweep()`，fire-and-forget）：写入路径只做
+   * `count()` + 超限淘汰，正常浏览不会为清扫付出全表遍历的代价。
+   */
+  async sweep(): Promise<{ danmaku: number; epg: number }> {
+    const sweepOne = async (store: CacheStore): Promise<number> => {
+      const policy = CACHE_POLICY[store];
+      const expired = await evict(store, { before: Date.now() - policy.ttlMs });
+      return expired + (await trimToCap(store));
+    };
+    return { danmaku: await sweepOne(STORE_NAMES.danmakuCache), epg: await sweepOne(STORE_NAMES.epgCache) };
   },
 };

@@ -178,6 +178,8 @@ async function summaryOf(): Promise<DownloadSummary> {
 async function emitQueueSummary(): Promise<void> {
   emitDownload({ type: 'queue', summary: await summaryOf() });
   appEvents.emit('downloads:changed', { id: null });
+  // OPT-09：队列在后台跑空/全暂停后要把保活收回来（前台时直接短路，不查库）
+  await syncKeepAliveIfBackground();
 }
 
 /**
@@ -1563,8 +1565,8 @@ export const downloadService = {
 
   /**
    * 订阅前后台切换（AC-72 / REV-22）：
-   * - Android（原生）：进后台不暂停，继续下载（前台 Service 保活）
-   * - Web：进后台时暂停下载（WebView 可能被冻结），并尝试 Wake Lock 防止屏幕休眠
+   * - Android（原生）：进后台不暂停，继续下载（前台 Service 保活，OPT-09 按队列状态起停）
+   * - Web：进后台时暂停下载（WebView 可能被冻结）
    * - 回前台：`settings.download.autoResume` 为 true 时自动恢复，否则等用户手动继续。
    * 重复调用幂等（`bootstrap()` 可能被多次触发）。
    */
@@ -1580,19 +1582,14 @@ export const downloadService = {
       lastLifecycleState = state;
       if (state === 'background') {
         if (isNative()) {
-          // FIX-D4：Android 后台启动前台 Service 保活 HLS/JS 下载
-          void startForegroundServiceIfNeeded().catch((e) => {
-            logger.warn('启动前台 Service 失败', toAppError(e).message);
+          // FIX-D4 / OPT-09：Android 后台不暂停下载，但前台 Service 只在真有在飞任务时起
+          void syncKeepAliveIfBackground().then(() => {
+            logger.debug('进入后台，Android 按队列状态同步前台 Service');
           });
-          logger.debug('进入后台，Android 启动前台 Service 保活下载');
         } else {
           // Web：暂停下载（WebView 可能被冻结）
           void downloadService.pauseAll('background').catch((e: unknown) => {
             logger.warn('切后台暂停下载失败', toAppError(e));
-          });
-          // 尝试 Wake Lock 防止屏幕休眠（用户回前台时可以继续）
-          void acquireWakeLock().catch((e) => {
-            logger.debug('Wake Lock 获取失败（忽略）', e);
           });
           appEvents.emit('toast', {
             text: '下载已暂停，切回前台可继续',
@@ -1601,10 +1598,8 @@ export const downloadService = {
         }
         return;
       }
-      // 回前台：释放 Wake Lock + 停止前台 Service
-      if (!isNative()) {
-        releaseWakeLock();
-      } else {
+      // 回前台：停止前台 Service（Web 后台已整体暂停，无需额外释放）
+      if (isNative()) {
         void stopForegroundServiceSafe().catch(() => undefined);
       }
       void downloadService.autoResumeFromBackground().catch((e: unknown) => {
@@ -1873,7 +1868,7 @@ export const downloadService = {
     networkUnbind?.();
     networkUnbind = null;
     lastLifecycleState = 'active';
-    releaseWakeLock();
+    foregroundServiceActive = false;
     stopWatchdog();
     queue?.dispose();
     queue = null;
@@ -1926,12 +1921,23 @@ async function runWatchdogCheck(): Promise<void> {
   }
 }
 
-/* ---------------- FIX-D4：Android 前台 Service 保活 ---------------- */
+/* ---------------- FIX-D4：Android 前台 Service 保活（OPT-09：按需持有） ---------------- */
 
 let foregroundServiceActive = false;
 
+/** 真正会搬字节的状态——排队中/下载中；暂停与终态不需要任何后台保活 */
+const KEEP_ALIVE_STATUSES: DownloadStatus[] = ['queued', 'downloading'];
+
+async function hasKeepAliveWork(): Promise<boolean> {
+  const busy = await downloadRepo.listByStatus(KEEP_ALIVE_STATUSES);
+  return busy.length > 0;
+}
+
 async function startForegroundServiceIfNeeded(): Promise<void> {
   if (!isNative() || foregroundServiceActive) return;
+  // OPT-09：只在真有在飞任务时起前台服务。此前进后台无条件启动，队列全暂停/全完成时
+  // 也会挂一条"下载中"的常驻通知，并把进程白保活整个后台期。
+  if (!(await hasKeepAliveWork())) return;
   try {
     const { nativeDownloadStartForegroundService } = await import('@/native/downloadPlugin');
     await nativeDownloadStartForegroundService();
@@ -1954,42 +1960,29 @@ async function stopForegroundServiceSafe(): Promise<void> {
   }
 }
 
-/* ---------------- Wake Lock（Web 端防止屏幕休眠） ---------------- */
-
-let wakeLockSentinel: WakeLockSentinel | null = null;
-
-async function acquireWakeLock(): Promise<void> {
-  if (typeof navigator === 'undefined' || !('wakeLock' in navigator)) {
-    logger.debug('Wake Lock API 不可用');
+/**
+ * OPT-09：后台保活跟着队列实际状态收敛。
+ *
+ * 前台服务只在「后台 + 有在飞任务」时持有，任务跑空/被暂停就收回。
+ * Web 端不参与：切后台一律 `pauseAll('background')`，没有在飞的量就没有值得撑住屏幕的东西
+ * （此前那里无条件申请 Wake Lock，纯属耗电）。回前台由 `bindLifecycle` 显式停止。
+ */
+async function syncKeepAlive(): Promise<void> {
+  if (!(await hasKeepAliveWork())) {
+    await stopForegroundServiceSafe();
     return;
   }
-  if (wakeLockSentinel) return;
-  try {
-    wakeLockSentinel = await navigator.wakeLock.request('screen');
-    logger.debug('Wake Lock 已获取');
-    wakeLockSentinel.addEventListener('release', () => {
-      logger.debug('Wake Lock 已释放');
-      wakeLockSentinel = null;
-    });
-  } catch (e) {
-    logger.warn('获取 Wake Lock 失败', e);
-    wakeLockSentinel = null;
-  }
+  await startForegroundServiceIfNeeded();
 }
 
-function releaseWakeLock(): void {
-  if (wakeLockSentinel) {
-    wakeLockSentinel.release().catch(() => undefined);
-    wakeLockSentinel = null;
-  }
-}
-
-interface WakeLockSentinel extends EventTarget {
-  release(): Promise<void>;
+function syncKeepAliveIfBackground(): Promise<void> {
+  if (!isNative() || lastLifecycleState !== 'background') return Promise.resolve();
+  return syncKeepAlive().catch((e: unknown) => {
+    logger.debug('后台保活同步失败（忽略）', toAppError(e).message);
+  });
 }
 
 /* ---------------- 下载完成通知（OPT-18：权限一次性请求、完成回调只静默检查） ---------------- */
-
 /** 通知权限决议缓存：每会话只在首次「发起下载」时弹框一次，之后复用结果。 */
 let notifPermission: 'unknown' | 'granted' | 'denied' = 'unknown';
 

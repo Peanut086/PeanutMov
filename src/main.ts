@@ -9,7 +9,7 @@ import { createPinia } from 'pinia';
 
 import App from '@/App.vue';
 import router, { setComplianceGate } from '@/router';
-import { bindAppToasts, complianceGate, ensureDemoData, initDoubanRuntime, initDownloads, initLineHealth, initSettings, initSpiderWarmup, initSubscriptionAutoRefresh } from '@/stores/bootstrap';
+import { bindAppToasts, complianceGate, ensureDemoData, initCacheSweep, initDoubanRuntime, initDownloads, initLineHealth, initSettings, initSpiderWarmup, initSubscriptionAutoRefresh } from '@/stores/bootstrap';
 
 import '@/styles/global.css';
 import '@/styles/player.css';
@@ -66,6 +66,10 @@ async function bootstrap(): Promise<void> {
   // F7：延迟一段时间后批量预热爬虫源，让「装完/重启后第一次搜索」不必现场加载 jar
   // （内部并发 ≤4，搜索一在途就自动让路）
   initSpiderWarmup();
+
+  // OPT-10：弹幕/EPG 纯缓存的 TTL 过期 + 超上限淘汰（内部只开两个小事务，
+  // 不 await——读时过期已覆盖功能正确性，这里只解决「再也不会被读到」的占用滞留）
+  void initCacheSweep();
 
   app.use(router);
   await router.isReady();

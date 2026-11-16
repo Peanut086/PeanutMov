@@ -48,9 +48,10 @@ function makeRecord(id: string, mediaId: string, updatedAt: number): HistoryReco
  * 按 v4 建库，但还原成「真实老库」的形态。
  *
  * migrations 的 `if (oldVersion < N)` 是连续下掉的：全新建库时 oldVersion 是 0，
- * 即使只要求打开到 v4，v5 分支也会执行并建好 by-media。而真实老用户在 v4 时 v5 代码
- * 还不存在，所以要在同一个 versionchange 事务里把索引删掉（deleteIndex 只能在
- * versionchange 事务里调用），否则测出来的「升级」永远是 no-op。
+ * 即使只要求打开到 v4，v5/v6 分支也会执行并建好索引。而真实老用户在 v4 时这些代码
+ * 还不存在，所以要在同一个 versionchange 事务里把后续版本新增的索引全部删掉
+ * （deleteIndex 只能在 versionchange 事务里调用），否则测出来的「升级」永远是 no-op，
+ * 再往下走还会因为 createIndex 重名而抛 ConstraintError → AbortError。
  */
 function upgradeToV4(
   ...args: Parameters<typeof upgrade>
@@ -58,6 +59,8 @@ function upgradeToV4(
   const [db, oldVersion, newVersion, tx] = args;
   upgrade(db, oldVersion, newVersion, tx);
   tx.objectStore('history').deleteIndex('by-media');
+  tx.objectStore('danmakuCache').deleteIndex('by-fetched');
+  tx.objectStore('epgCache').deleteIndex('by-fetched');
 }
 
 describe('DB v5：history.by-media', () => {
@@ -78,17 +81,17 @@ describe('DB v5：history.by-media', () => {
     // 给 fake-indexeddb 一个宏任务把连接摘除，否则下一次升级会看到「仍有连接未关闭」而 abort
     await tick();
 
-    const db5 = await openDB<CinemaDB>(DB_NAME, 5, { upgrade });
-    const tx = db5.transaction('history', 'readonly');
+    const dbUpgraded = await openDB<CinemaDB>(DB_NAME, DB_VERSION, { upgrade });
+    const tx = dbUpgraded.transaction('history', 'readonly');
     expect([...tx.objectStore('history').indexNames].sort()).toEqual(
       ['by-media', 'by-source', 'by-updated'].sort(),
     );
     await tx.done;
-    db5.close();
+    dbUpgraded.close();
     await tick();
 
     resetDbConnection();
-    expect(DB_VERSION).toBe(5);
+    expect(DB_VERSION).toBeGreaterThanOrEqual(5);
     expect((await historyRepo.getByMedia('m-a'))?.id).toBe('s1:m-a');
     expect((await historyRepo.getByMedia('m-b'))?.id).toBe('s1:m-b');
     expect(await historyRepo.getByMedia('m-none')).toBeNull();

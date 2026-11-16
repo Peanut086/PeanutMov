@@ -222,10 +222,19 @@ public class DownloadPlugin extends Plugin {
 
     /**
      * 停止前台服务
+     *
+     * OPT-09：JS 侧现在会在"队列没有在飞任务"时主动收回保活，但转封装（EXT-04）
+     * 是下载终态之后才跑的，此时 JS 队列已经空了。这里拒绝把 remux 的前台资格停掉，
+     * 由 {@code endPostprocess} 收尾时再判一次空闲。
      */
     @PluginMethod
     public void stopForegroundService(PluginCall call) {
         try {
+            if (DownloadService.isPostprocessing()) {
+                Log.d(TAG, "stopForegroundService ignored: remux in progress");
+                call.resolve();
+                return;
+            }
             Intent intent = new Intent(getContext(), DownloadService.class);
             getContext().stopService(intent);
             call.resolve();

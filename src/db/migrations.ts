@@ -18,6 +18,9 @@
  * - v5（2026-11-12）：`history` 新增 `by-media` 索引。详情自愈（`recoverItem`）此前只能
  *   `listAllRaw()` 读出最多 500 条（每条还带 `mediaSnapshot`）再在 JS 里 find；
  *   回滚方式：索引是派生数据，降级后旧客户端不读它即可，无需清表。
+ * - v6（2026-11-16，OPT-10）：`danmakuCache` / `epgCache` 新增 `by-fetched` 索引，
+ *   供缓存 TTL 清扫与 LRU 上限淘汰按时间遍历（此前只有全表 `getAll`）。
+ *   回滚方式：同 v5，纯派生索引，降级后不读即可。
  */
 import type { IDBPDatabase, IDBPTransaction } from 'idb';
 
@@ -136,5 +139,10 @@ export function upgrade(
   // v5：history.by-media（详情自愈按 mediaId 查历史，避免全表读）
   if (oldVersion < 5) {
     tx.objectStore('history').createIndex('by-media', 'mediaId');
+  }
+  // v6（OPT-10）：缓存表按 fetchedAt 建索引，LRU 淘汰/过期清扫不再需要把整表读进内存
+  if (oldVersion < 6) {
+    tx.objectStore('danmakuCache').createIndex('by-fetched', 'fetchedAt');
+    tx.objectStore('epgCache').createIndex('by-fetched', 'fetchedAt');
   }
 }

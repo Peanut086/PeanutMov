@@ -12,6 +12,7 @@
  * - `restoreDemoSource()`：设置/源管理页的「恢复演示源」（REV-14 / FR-43 / AC-97）。
  */
 import type { ComplianceGateLike } from '@/router';
+import { cacheRepo } from '@/db/repositories/cacheRepo';
 import { settingsService } from '@/services/settingsService';
 import { seedService } from '@/services/seedService';
 import { downloadService } from '@/services/downloadService';
@@ -90,6 +91,24 @@ export async function initDownloads(): Promise<void> {
 /** 恢复演示源（重新启用并补齐条目，不重复插入）；供源管理页「恢复演示源」使用 */
 export function restoreDemoSource(): Promise<Source> {
   return seedService.restoreDemo();
+}
+
+/**
+ * OPT-10：缓存清扫（弹幕 / EPG 的过期条目 + 超出 LRU 上限的最旧条目）。
+ *
+ * 每次启动一次、fire-and-forget：读时过期只覆盖"还会被读到"的键，换过关键词的弹幕匹配
+ * 与看过一次的频道节目单没人再读，就永久留在盘上（单条弹幕缓存可达数 MB）。
+ * 失败只记日志——纯缓存，清不动也不影响功能。
+ */
+export async function initCacheSweep(): Promise<void> {
+  try {
+    const swept = await cacheRepo.sweep();
+    if (swept.danmaku > 0 || swept.epg > 0) {
+      logger.debug('缓存清扫完成', { danmaku: swept.danmaku, epg: swept.epg });
+    }
+  } catch (e) {
+    logger.warn('缓存清扫失败（不阻塞启动）', toAppError(e, 'E_DB').message);
+  }
 }
 
 /**

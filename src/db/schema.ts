@@ -143,15 +143,17 @@ export interface CinemaDB extends DBSchema {
     value: LiveRecord;
     indexes: { 'by-created': number };
   };
-  /** v3（CHG-22）：弹幕匹配缓存，key = `${mediaId}:${episodeNumber}` */
+  /** v3（CHG-22）：弹幕匹配缓存，key = `${mediaId}:${episodeNumber}`；v6（OPT-10）加 by-fetched */
   danmakuCache: {
     key: string;
     value: DanmakuCacheRecord;
+    indexes: { 'by-fetched': number };
   };
   /** v3（CHG-23）：EPG 节目单缓存，key = `epgv2:{sourceId}:{channelKey}:{yyyy-MM-dd}` */
   epgCache: {
     key: string;
     value: EpgCacheRecord;
+    indexes: { 'by-fetched': number };
   };
   /** v4（EXT-06）：EPG 源（内置 1 条 + 用户源 ≤10） */
   epgSources: {
