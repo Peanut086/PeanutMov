@@ -1,6 +1,6 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { mount, flushPromises } from '@vue/test-utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LiveGroup, LiveRecord } from '@/types';
 import type { LiveChannel } from '@/sources/live/liveParsers';
@@ -29,6 +29,13 @@ const list = vi.fn();
 const channelsWithExtrasOf = vi.fn<(record: LiveRecord) => Promise<unknown>>();
 const findSourceIdByChannelName = vi.fn<(name: string) => string | null>(() => null);
 
+/* EPG 三个入口都是可编程的桩：OPT-15 用它们观察「观看中」的刷新节奏 */
+const programmesFor = vi
+  .fn<(channel: unknown, date: unknown) => Promise<unknown>>()
+  .mockResolvedValue({ programmes: [] });
+const nowPlaying = vi.fn<(programmes: unknown, now?: Date) => unknown>(() => null);
+const upNext = vi.fn<(programmes: unknown) => unknown[]>(() => []);
+
 vi.mock('@/services/liveService', () => ({
   liveService: {
     list: () => list(),
@@ -41,9 +48,9 @@ vi.mock('@/services/liveService', () => ({
 
 vi.mock('@/services/epgService', () => ({
   epgService: {
-    programmesFor: vi.fn().mockResolvedValue({ programmes: [] }),
-    nowPlaying: vi.fn(() => null),
-    upNext: vi.fn(() => []),
+    programmesFor: (channel: unknown, date: unknown) => programmesFor(channel, date),
+    nowPlaying: (programmes: unknown, now?: Date) => nowPlaying(programmes, now),
+    upNext: (programmes: unknown) => upNext(programmes),
     prefetch: vi.fn().mockResolvedValue(undefined),
   },
 }));
@@ -316,5 +323,84 @@ describe('OPT-27 LivePlayer 失败上报单次化', () => {
 
     expect(wrapper.emitted('timeout')).toHaveLength(2);
     expect(wrapper.text()).not.toContain('稍后到达的失败');
+  });
+});
+
+/**
+ * OPT-15 观看中的节目单周期刷新
+ *
+ * 旧实现只在换台时取一次节目单，"正在播 / 下一档"跨过节目边界甚至过了零点都不动。
+ * 现在下一次重取落在「当前节目结束时刻」，最迟 15 分钟兜底；卸载即停表。
+ */
+describe('OPT-15 观看中节目单周期刷新', () => {
+  const MINUTE = 60_000;
+
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    programmesFor.mockResolvedValue({ programmes: [] });
+    nowPlaying.mockReturnValue(null);
+    list.mockResolvedValue([makeRecord('A', '源A')]);
+    channelsWithExtrasOf.mockResolvedValue(makePayload('B'));
+    for (const key of Object.keys(routeQuery)) delete routeQuery[key];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** 让"当前节目"在 `ms` 之后结束 */
+  function programmeEndingIn(ms: number, title: string): void {
+    const startAt = Date.now();
+    const prog = {
+      start: '20:00',
+      end: '20:12',
+      title,
+      desc: null,
+      startSec: 0,
+      endSec: 0,
+      startAt,
+      endAt: startAt + ms,
+    };
+    programmesFor.mockResolvedValue({ programmes: [prog] });
+    nowPlaying.mockReturnValue(prog);
+  }
+
+  it('跨过节目结束时刻就重取，不必等换台', async () => {
+    vi.useFakeTimers();
+    programmeEndingIn(2 * MINUTE, '节目一');
+    const wrapper = mountView();
+    // 挂载 → 自动选台 → watch 触发首取
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(programmesFor).toHaveBeenCalledTimes(1);
+
+    // 越过 2 分钟边界后自动再取一次
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(programmesFor).toHaveBeenCalledTimes(2);
+    wrapper.unmount();
+  });
+
+  it('超长节目按 15 分钟上限兜底', async () => {
+    vi.useFakeTimers();
+    programmeEndingIn(3 * 60 * MINUTE, '马拉松直播');
+    const wrapper = mountView();
+    await vi.advanceTimersByTimeAsync(14 * MINUTE);
+    expect(programmesFor).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2 * MINUTE);
+    expect(programmesFor).toHaveBeenCalledTimes(2);
+    wrapper.unmount();
+  });
+
+  it('卸载后定时器不再触发', async () => {
+    vi.useFakeTimers();
+    programmeEndingIn(2 * MINUTE, '节目一');
+    const wrapper = mountView();
+    await vi.advanceTimersByTimeAsync(MINUTE);
+    expect(programmesFor).toHaveBeenCalledTimes(1);
+
+    wrapper.unmount();
+    await vi.advanceTimersByTimeAsync(60 * MINUTE);
+    expect(programmesFor).toHaveBeenCalledTimes(1);
   });
 });

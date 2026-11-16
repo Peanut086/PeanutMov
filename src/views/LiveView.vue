@@ -41,6 +41,7 @@ import { appEvents } from '@/services/events';
 import { LIVE_DEAD_STREAK, LIVE_AUTO_SWITCH_MAX, EPG_PREFETCH_MAX, CATCHUP_MAX_DAYS } from '@/shared/constants';
 import { CATCHUP_TOKENS, validateCatchupTemplate } from '@/shared/catchupTemplate';
 import { filterChannelsByQuery } from '@/shared/channelSearch';
+import { startOfLocalDay } from '@/shared/epgTime';
 import { prefersReducedMotion } from '@/composables/useSpring';
 import { useDebounce } from '@/composables/useDebounce';
 import { useToast } from '@/composables/useToast';
@@ -125,23 +126,85 @@ function channelEpgRefByName(name: string): EpgChannelRef {
   return channelRefFromLive(channel, extras.value);
 }
 
-/** EPG：频道切换后拉取当日节目单（失败静默，不影响播放） */
+/**
+ * EPG：频道切换后拉取当日节目单（失败静默，不影响播放）。
+ *
+ * OPT-15：以前只在换台时取一次，"正在播 / 下一档"会一直停在开播那一刻——跨过节目边界
+ * 甚至过了零点都不更新。现在按「当前节目结束时刻」定时重取，最迟 15 分钟兜底一次，
+ * 回前台时若数据已过一分钟也补一次（后台 WebView 会节流定时器）。
+ */
+const EPG_LIVE_MAX_REFRESH_MS = 15 * 60 * 1000;
+/** 下限：节目 endAt 异常（过去时刻/跨天误算）时不至于变成取爆 */
+const EPG_LIVE_MIN_REFRESH_MS = 60 * 1000;
+
 let epgToken = 0;
-watch(
-  () => playing.value?.title,
-  async (channel) => {
+let epgRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let epgFetchedAt = 0;
+
+function clearEpgRefreshTimer(): void {
+  if (epgRefreshTimer !== null) {
+    clearTimeout(epgRefreshTimer);
+    epgRefreshTimer = null;
+  }
+}
+
+/** 节目绝对结束时刻：多源结果带 `endAt`；缺省按开始时刻 + 时长回推（同 EpgView 口径） */
+function epgProgrammeEndAt(prog: EpgProgramme): number {
+  if (typeof prog.endAt === 'number' && prog.endAt > 0) return prog.endAt;
+  const startAt =
+    typeof prog.startAt === 'number' && prog.startAt > 0
+      ? prog.startAt
+      : startOfLocalDay(Date.now()) + prog.startSec * 1000;
+  return startAt + Math.max(60, prog.endSec - prog.startSec) * 1000;
+}
+
+function scheduleEpgRefresh(): void {
+  clearEpgRefreshTimer();
+  const current = epgNow.value;
+  const untilEnd = current ? epgProgrammeEndAt(current) - Date.now() : EPG_LIVE_MAX_REFRESH_MS;
+  const delay = Math.min(Math.max(untilEnd, EPG_LIVE_MIN_REFRESH_MS), EPG_LIVE_MAX_REFRESH_MS);
+  epgRefreshTimer = setTimeout(() => void loadEpgForPlaying(), delay);
+}
+
+async function loadEpgForPlaying(): Promise<void> {
+  const channel = playing.value?.title;
+  if (!channel) return;
+  const token = ++epgToken;
+  try {
+    const merged = await epgService.programmesFor(channelEpgRefByName(channel), new Date());
+    if (token !== epgToken) return;
+    epgFetchedAt = Date.now();
+    epgNow.value = epgService.nowPlaying(merged.programmes);
+    epgNext.value = epgService.upNext(merged.programmes);
+  } catch {
+    // EPG 缺失不影响播放
+    if (token !== epgToken) return;
     epgNow.value = null;
     epgNext.value = [];
-    if (!channel) return;
-    const token = ++epgToken;
-    try {
-      const merged = await epgService.programmesFor(channelEpgRefByName(channel), new Date());
-      if (token !== epgToken) return;
-      epgNow.value = epgService.nowPlaying(merged.programmes);
-      epgNext.value = epgService.upNext(merged.programmes);
-    } catch {
-      // EPG 缺失不影响播放
-    }
+  }
+  if (token === epgToken) scheduleEpgRefresh();
+}
+
+function onEpgVisibilityChange(): void {
+  if (document.visibilityState !== 'visible') {
+    clearEpgRefreshTimer();
+    return;
+  }
+  if (!playing.value?.title) return;
+  if (Date.now() - epgFetchedAt < EPG_LIVE_MIN_REFRESH_MS) return;
+  void loadEpgForPlaying();
+}
+
+watch(
+  () => playing.value?.title,
+  () => {
+    // 让在途结果作废（token 前进，loadEpgForPlaying 回来时会发现自己已过期）
+    epgToken += 1;
+    epgNow.value = null;
+    epgNext.value = [];
+    epgFetchedAt = 0;
+    clearEpgRefreshTimer();
+    void loadEpgForPlaying();
   },
 );
 
@@ -220,6 +283,7 @@ onMounted(() => {
   void reload();
   void loadFavorites();
   window.addEventListener('keydown', onDigitKey);
+  document.addEventListener('visibilitychange', onEpgVisibilityChange);
 });
 
 // 备份导入/恢复后直播源与频道偏好可能整体换掉，重载列表与收藏
@@ -231,6 +295,8 @@ const offLiveChanged = appEvents.on('live:changed', () => {
 onBeforeUnmount(() => {
   offLiveChanged();
   window.removeEventListener('keydown', onDigitKey);
+  document.removeEventListener('visibilitychange', onEpgVisibilityChange);
+  clearEpgRefreshTimer();
   if (digitTimer !== null) {
     clearTimeout(digitTimer);
     digitTimer = null;

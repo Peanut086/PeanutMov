@@ -40,31 +40,41 @@ function extractNameFromHref(href: string): string {
 
 /**
  * 解析 PROPFIND 响应的 XML（简易解析，不依赖 DOMParser 以兼容 Worker）
+ *
+ * OPT-11：命名空间前缀必须容错。WebDAV 规范只固定元素**本地名**，前缀由服务端自选：
+ * 声明默认命名空间后直接写 `<response>` 的实现（坚果云、不少 nginx/lua 网关）以前一条都
+ * 解析不出来——旧正则写死 `D:`，只有 `D:` / `d:` 两种大小写能碰上。表现是"远程目录为空 /
+ * 找不到已有备份 / 连接测试失败"，与服务器实际状态无关。
  */
+const NS = '(?:[A-Za-z_][\\w.-]*:)?';
+
+function findTagText(block: string, name: string): string | null {
+  const m = new RegExp(`<${NS}${name}\\b[^>]*>([^<]*)</${NS}${name}>`, 'i').exec(block);
+  return m ? m[1] : null;
+}
+
 function parsePropfindResponse(xml: string): WebDAVFileEntry[] {
   const entries: WebDAVFileEntry[] = [];
-  const responseRegex = /<D:response[^>]*>([\s\S]*?)<\/D:response>/gi;
+  const responseRegex = new RegExp(`<${NS}response\\b[^>]*>([\\s\\S]*?)</${NS}response>`, 'gi');
   let match;
 
   while ((match = responseRegex.exec(xml)) !== null) {
     const block = match[1];
 
-    const hrefMatch = /<D:href[^>]*>([^<]+)<\/D:href>/i.exec(block);
-    if (!hrefMatch) continue;
-    const href = hrefMatch[1];
+    const href = findTagText(block, 'href');
+    if (!href) continue;
 
-    const isDir = /<D:collection/i.test(block);
+    // collection 只在 resourcetype 里出现一次；部分服务端裁剪字段时用末尾 `/` 兜底
+    const isDir = new RegExp(`<${NS}collection\\b`, 'i').test(block) || href.endsWith('/');
 
-    const sizeMatch = /<D:getcontentlength[^>]*>(\d+)<\/D:getcontentlength>/i.exec(block);
-    const size = sizeMatch ? parseInt(sizeMatch[1], 10) : 0;
-
-    const dateMatch = /<D:getlastmodified[^>]*>([^<]+)<\/D:getlastmodified>/i.exec(block);
-    const lastModified = dateMatch ? Date.parse(dateMatch[1]) : 0;
+    const size = findTagText(block, 'getcontentlength');
+    const modifiedText = findTagText(block, 'getlastmodified');
+    const lastModified = modifiedText ? Date.parse(modifiedText) : 0;
 
     entries.push({
       href,
       name: extractNameFromHref(href),
-      size,
+      size: size ? parseInt(size, 10) || 0 : 0,
       lastModified: Number.isFinite(lastModified) ? lastModified : 0,
       isDirectory: isDir,
     });

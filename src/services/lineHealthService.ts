@@ -8,6 +8,7 @@
  * - Key 用 flag（线路名）而非 lineId（mediaId:index），因为 index 会随源返回顺序漂移；
  * - 错误分类：瞬时网络/账号/取消不计线路失败，避免误伤；
  * - failStreak ≥ 2 才标 fail，防瞬时抖动；
+ * - 源级可靠度另用累计 failCount（成功不清零）+ 7 天半衰期 + 1:1 伪计数；
  * - TTL：ok 24h / fail 30min（过期降 unknown 允许重试）；
  * - 真实播放反馈立即生效，不受 TTL 限制；
  * - 存储：内存 reactive Map + kvRepo 单 key 持久化，120ms 批量 flush，500 条 LRU。
@@ -21,8 +22,16 @@ export type LineHealthStatus = 'ok' | 'fail' | 'unknown';
 
 export interface LineHealthEntry {
   status: LineHealthStatus;
-  /** 连败计数，≥2 才标 fail */
+  /** 连败计数，≥2 才标 fail（成功即清零，只用于"当前是否连续挂"） */
   failStreak: number;
+  /**
+   * 累计失败次数，**不因成功清零**（OPT-16）。
+   *
+   * 可靠度必须看见全部历史失败：`failStreak` 一次成功就被抹平，用它算出来的分数会让
+   * "挂过 5 次终于播通 1 次"的线路得满分。老持久化数据没有该字段，读取处用
+   * `failStreak` 兜底（是下限，不是猜测）。
+   */
+  failCount: number;
   /** 累计成功次数 */
   successCount: number;
   /** 最近解析耗时（ms） */
@@ -39,6 +48,8 @@ const TTL_FAIL_MS = 30 * 60 * 1000;
 const MAX_ENTRIES = 500;
 const FLUSH_WINDOW_MS = 120;
 const FAIL_STREAK_THRESHOLD = 2;
+/** 可靠度半衰期：7 天前的证据权重减半，长期挂死的线路不会再被一年前的成功托住 */
+const RELIABILITY_HALF_LIFE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** 计线路失败的错误码 */
 const LINE_FAILURE_CODES = new Set<ErrorCode>([
@@ -112,11 +123,17 @@ function emptyEntry(): LineHealthEntry {
   return {
     status: 'unknown',
     failStreak: 0,
+    failCount: 0,
     successCount: 0,
     lastResolveMs: null,
     lastErrorCode: null,
     checkedAt: 0,
   };
+}
+
+/** 存量数据兼容：`failCount` 是 OPT-16 新增字段，缺失时退化为当前连败数 */
+function failCountOf(entry: LineHealthEntry): number {
+  return entry.failCount ?? entry.failStreak;
 }
 
 function shouldCountAsFailure(code: ErrorCode): boolean {
@@ -162,6 +179,8 @@ export const lineHealthService = {
     const entry: LineHealthEntry = {
       status: 'ok',
       failStreak: 0,
+      // 成功只抹掉"连败"，历史失败次数要留着算可靠度
+      failCount: failCountOf(existing),
       successCount: existing.successCount + 1,
       lastResolveMs: resolveMs,
       lastErrorCode: null,
@@ -180,6 +199,7 @@ export const lineHealthService = {
     const entry: LineHealthEntry = {
       status: newStreak >= FAIL_STREAK_THRESHOLD ? 'fail' : existing.status,
       failStreak: newStreak,
+      failCount: failCountOf(existing) + 1,
       successCount: existing.successCount,
       lastResolveMs: existing.lastResolveMs,
       lastErrorCode: errorCode,
@@ -229,20 +249,28 @@ export const lineHealthService = {
   },
 
   /**
-   * 批次2-5：计算源级线路可靠度（最近 N 条线路的成功率）
-   * 用于搜索代表排序，让"全线路挂"的源沉底。
+   * 批次2-5 / OPT-16：源级线路可靠度（供搜索代表排序，让"全线路挂"的源沉底）。
+   *
+   * 三条规则：
+   * 1. 失败用累计 `failCount`，不用会被成功清零的 `failStreak`；
+   * 2. 证据按 `checkedAt` 年龄做指数衰减（半衰期 7 天），旧数据不会永久托底；
+   * 3. 加 1:1 伪计数（Laplace），样本只有 1 次时向中性 0.5 收缩，避免单点噪声
+   *    把某个源顶到代表位。样本越多该先验影响越小（100 次时 ≈0.99）。
    */
   sourceReliability(sourceId: string): number {
-    let successCount = 0;
-    let failCount = 0;
+    let weightedOk = 0;
+    let weightedFail = 0;
+    const now = Date.now();
     for (const [key, entry] of cache.entries()) {
       if (!key.startsWith(`${sourceId}|`)) continue;
-      successCount += entry.successCount;
-      failCount += entry.failStreak;
+      const ageMs = Math.max(0, now - entry.checkedAt);
+      const weight = 0.5 ** (ageMs / RELIABILITY_HALF_LIFE_MS);
+      weightedOk += entry.successCount * weight;
+      weightedFail += failCountOf(entry) * weight;
     }
+    const total = weightedOk + weightedFail;
     // 无数据时返回 0.5（中性），避免新源被误判
-    const total = successCount + failCount;
     if (total === 0) return 0.5;
-    return successCount / total;
+    return (weightedOk + 1) / (total + 2);
   },
 };
