@@ -204,6 +204,10 @@ function onPickXml(event: Event): void {
           @keyup.enter="saveDanmuApiBase"
         />
         <button type="button" class="btn btn--secondary btn--sm" @click="saveDanmuApiBase">保存地址</button>
+        <p class="field__hint">
+          能匹配到哪些平台取决于你部署时的 SOURCE_ORDER（上游默认只含豆瓣/360/人人/韩剧，
+          咪咕、巴哈、B 站等需自行加进该变量）。
+        </p>
         <p v-if="danmuApiInvalid" class="field__error" role="alert">
           地址无效：需以 http:// 或 https:// 开头，且不含账号密码。未保存，原地址仍可用。
         </p>
