@@ -371,6 +371,43 @@ async function removeLocal(record: BackupRecord): Promise<void> {
  * 按 `retentionCount` 清理旧版本（按位置分别保留）。任一步失败都抛错，
  * 不写半条索引记录（失败信息由调用方决定是否落到 `lastError`）。
  */
+/**
+ * OPT-19：以远端目录的**实际内容**再做一次保留收敛。
+ *
+ * `pruneBackupRecords` 只看本机 KV 索引：换设备、重装或索引被清之后，服务器上那批
+ * `backup_*.json` 就成了没人认领的孤儿——「保留 N 份」形同虚设，目录只增不减。
+ * 这里按文件名反解时间戳，保留最新 N 份；只认 `isManagedBackupName` 命中的命名，
+ * 用户手动放的文件一律不碰。列目录失败（离线 / 无权限 / 目录不存在）整轮跳过：
+ * 宁可不删，也不能凭一份不完整的清单做删除决定。
+ */
+async function pruneRemoteBackups(
+  settings: Awaited<ReturnType<typeof settingsService.get>>,
+  keep: number,
+): Promise<number> {
+  const remoteDir = (settings.webdav?.backupPath || '/PeanutMov/backups').replace(/\/+$/, '');
+  const limit = Math.min(
+    BACKUP_RETENTION_MAX,
+    Math.max(BACKUP_RETENTION_MIN, Math.floor(Number(keep) || BACKUP_RETENTION_DEFAULT)),
+  );
+  try {
+    const client = requireWebdavClient(settings);
+    const managed: Array<{ name: string; timestamp: number }> = [];
+    for (const entry of await client.listDirectory(remoteDir)) {
+      if (entry.isDirectory || !isManagedBackupName(entry.name)) continue;
+      const timestamp = timestampFromBackupName(entry.name);
+      if (timestamp !== null) managed.push({ name: entry.name, timestamp });
+    }
+    const stale = managed.sort((a, b) => b.timestamp - a.timestamp).slice(limit);
+    for (const record of stale) {
+      await client.deleteFile(`${remoteDir}/${record.name}`);
+    }
+    return stale.length;
+  } catch (e) {
+    logger.warn('远端备份保留收敛跳过', { error: String(e) });
+    return 0;
+  }
+}
+
 async function runBackupImpl(opts: RunBackupOptions): Promise<RunBackupResult> {
   const settings = await settingsService.get();
   const backupSettings = settings.backup ?? defaultBackupSettings();
@@ -448,6 +485,9 @@ async function runBackupImpl(opts: RunBackupOptions): Promise<RunBackupResult> {
       logger.warn('旧版本备份清理失败', { path: record.path, error: String(e) });
     }
   }
+
+  // OPT-19：索引之外的远端残包同样按份数收口
+  if (wantWebdav) await pruneRemoteBackups(settings, backupSettings.retentionCount);
 
   const patch: Partial<BackupSettings> = { lastBackupAt: timestamp, lastError: null };
   if (opts.source === 'scheduled') patch.lastScheduledAt = timestamp;
