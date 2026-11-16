@@ -38,7 +38,7 @@ import {
 } from '@/services/channelIdentity';
 import { kvRepo } from '@/db/repositories/kvRepo';
 import { appEvents } from '@/services/events';
-import { LIVE_DEAD_STREAK, LIVE_AUTO_SWITCH_MAX, EPG_PREFETCH_MAX, CATCHUP_MAX_DAYS } from '@/shared/constants';
+import { LIVE_DEAD_STREAK, LIVE_AUTO_SWITCH_MAX, LIVE_SWITCH_STABLE_MS, EPG_PREFETCH_MAX, CATCHUP_MAX_DAYS } from '@/shared/constants';
 import { CATCHUP_TOKENS, validateCatchupTemplate } from '@/shared/catchupTemplate';
 import { filterChannelsByQuery } from '@/shared/channelSearch';
 import { startOfLocalDay } from '@/shared/epgTime';
@@ -216,10 +216,37 @@ watch(
  * 上一源判死的频道名也会误伤新源里的同名频道。
  */
 function resetSwitchCounters(): void {
+  clearBudgetReset();
   autoSwitchCount.value = 0;
   allChannelsDead.value = false;
   deadNames.value = new Set();
   failStreak.clear();
+}
+
+/**
+ * OPT-14：出画面后再连续播够 `LIVE_SWITCH_STABLE_MS`，才把这一路算「播稳了」并收回切路预算。
+ *
+ * 不复位的话一次网络抖动就能把 5 次用完，之后即使正在正常播放，真故障来临也只切一路就弹
+ * 「所有频道不可用」；但也不能在 canplay 当场清零——「出画面几秒就断流」的坏流会让预算永远
+ * 用不完，退化成正要避免的无限切路。失效名单 `deadNames` 照旧保留（沉底依据，理由同手动换台）。
+ */
+let budgetTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearBudgetReset(): void {
+  if (budgetTimer === null) return;
+  clearTimeout(budgetTimer);
+  budgetTimer = null;
+}
+
+function scheduleBudgetReset(url: string): void {
+  clearBudgetReset();
+  budgetTimer = setTimeout(() => {
+    budgetTimer = null;
+    // 窗口内又换了台：上一路的「播稳」不该给这一路的失败计数背书
+    if (playing.value?.url !== url) return;
+    autoSwitchCount.value = 0;
+    allChannelsDead.value = false;
+  }, LIVE_SWITCH_STABLE_MS);
 }
 
 /** 起播超时/失败：累计失效 → 切同组下一路（同名多路优先，排除 dead 频道） */
@@ -230,6 +257,8 @@ function onChannelTimeout(failedUrl: string): void {
    * 并给根本没试过的频道记一次失效。
    */
   if (playing.value?.url !== failedUrl) return;
+  // 失败即作废「正在播稳」的窗口：不能一边报错一边把预算还回来
+  clearBudgetReset();
 
   const flat = groups.value.flatMap((g) => g.channels);
   const failed = flat.find((c) => c.url === failedUrl) ?? null;
@@ -297,6 +326,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onDigitKey);
   document.removeEventListener('visibilitychange', onEpgVisibilityChange);
   clearEpgRefreshTimer();
+  clearBudgetReset();
   if (digitTimer !== null) {
     clearTimeout(digitTimer);
     digitTimer = null;
@@ -695,6 +725,7 @@ function playChannel(channel: { name: string; url: string }): void {
 /** OPT-12: 新流可播放后淡入 */
 function onPlayerCanplay(): void {
   channelSwitching.value = false;
+  if (playing.value) scheduleBudgetReset(playing.value.url);
 }
 
 /** FIX-L5: 重试当前直播源所有频道 */

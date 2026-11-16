@@ -240,6 +240,11 @@ export const LIVE_DEAD_STREAK = 2;
 /** 直播自动切路上限（达到后停止切路，避免死循环） */
 export const LIVE_AUTO_SWITCH_MAX = 5;
 /**
+ * 自动切路预算的「播稳了」判定窗口（毫秒）：出画面后连续播够这么久，本轮失败计数清零。
+ * 不在 canplay 当场清零——「出画面→几秒后断流」的坏流会让预算永远用不完，退化成无限切路。
+ */
+export const LIVE_SWITCH_STABLE_MS = 8000;
+/**
  * 直播/回看请求的默认 UA：部分 IPTV 源站按 UA 放行，okhttp 默认 UA 会被拒。
  * 只作用于原生引擎（OkHttp）——WebView 的 XHR 设不了 User-Agent（浏览器禁止头）。
  */

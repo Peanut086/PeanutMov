@@ -3,6 +3,7 @@ import { mount, flushPromises } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LiveGroup, LiveRecord } from '@/types';
+import { LIVE_SWITCH_STABLE_MS } from '@/shared/constants';
 import type { LiveChannel } from '@/sources/live/liveParsers';
 
 /**
@@ -402,5 +403,84 @@ describe('OPT-15 观看中节目单周期刷新', () => {
     wrapper.unmount();
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(programmesFor).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* ---------- OPT-14 自动切路预算复位 ---------- */
+
+describe('OPT-14 自动切路预算在播稳后收回', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+    programmesFor.mockResolvedValue({ programmes: [] });
+    nowPlaying.mockReturnValue(null);
+    for (const key of Object.keys(routeQuery)) delete routeQuery[key];
+
+    // 5 路同组：每一路只失败一次都不会被 `LIVE_DEAD_STREAK` 判死，切路只受预算支配
+    const channels: LiveChannel[] = [1, 2, 3, 4, 5].map((n) => ({
+      name: `第${n}路`,
+      url: `https://live.example/${n}.m3u8`,
+      group: '央视',
+      logo: null,
+    }));
+    list.mockResolvedValue([makeRecord('A', '源A')]);
+    channelsWithExtrasOf.mockResolvedValue({ groups: [{ name: '央视', channels }], channels, extras: {} });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function openView() {
+    vi.useFakeTimers();
+    const wrapper = mountView();
+    await vi.advanceTimersByTimeAsync(0);
+    return wrapper;
+  }
+
+  it('出画面后播够观察窗口，之后真故障仍能继续自动切路', async () => {
+    const wrapper = await openView();
+    const player = wrapper.findComponent(PlayerStub);
+    expect(player.text()).toBe('https://live.example/1.m3u8|第1路');
+
+    // 连败 4 路：`LIVE_AUTO_SWITCH_MAX = 5` 之下预算只剩一次
+    for (const n of [1, 2, 3, 4]) {
+      player.vm.$emit('timeout', `https://live.example/${n}.m3u8`);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(player.text()).toBe('https://live.example/5.m3u8|第5路');
+
+    player.vm.$emit('canplay');
+    await vi.advanceTimersByTimeAsync(LIVE_SWITCH_STABLE_MS);
+
+    player.vm.$emit('timeout', 'https://live.example/5.m3u8');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 旧实现：这正好是第 5 次失败 → 直接判「所有频道不可用」并停播
+    expect(wrapper.find('.live-dead-guide').exists()).toBe(false);
+    expect(player.text()).toBe('https://live.example/1.m3u8|第1路');
+    wrapper.unmount();
+  });
+
+  it('观察窗口未满就再失败：预算不收回（坏流不能靠「出画面几秒」骗到无限切路）', async () => {
+    const wrapper = await openView();
+    const player = wrapper.findComponent(PlayerStub);
+
+    player.vm.$emit('timeout', 'https://live.example/1.m3u8');
+    await vi.advanceTimersByTimeAsync(0);
+    player.vm.$emit('canplay');
+    await vi.advanceTimersByTimeAsync(1_000);
+    player.vm.$emit('timeout', 'https://live.example/2.m3u8');
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 补够窗口时长：失败已作废那次窗口，计数必须还是 2
+    await vi.advanceTimersByTimeAsync(LIVE_SWITCH_STABLE_MS);
+
+    for (const n of [3, 4, 5]) {
+      player.vm.$emit('timeout', `https://live.example/${n}.m3u8`);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+
+    expect(wrapper.find('.live-dead-guide').exists()).toBe(true);
   });
 });
