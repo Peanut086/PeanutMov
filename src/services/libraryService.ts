@@ -370,6 +370,12 @@ const WARMUP_SWEEP_CONCURRENCY = 4;
 const WARMUP_SWEEP_START_DELAY_MS = 12000;
 /** F4：串行档（熔断 / 已知带原生库的 jar）每个源之间的间隔，给 ART/JNI 留恢复窗口 */
 const WARMUP_SERIAL_STEP_DELAY_MS = 2000;
+/**
+ * G5：串行档单轮预算。熔断期整轮串行 = 源数 × 2s，25+ 源要跑到 50s 开外，
+ * 而熔断标记一置就是 24h，等于这段时间里每次冷启动都要付一次全量串行。
+ * 超预算的源本轮不碰，留给下次冷启动（预热本身是幂等的补充加载，不做延后调度）。
+ */
+const WARMUP_SERIAL_BUDGET_MS = 20000;
 
 /** F7：预热扫描在途标记（重复触发直接复用，不并行跑两轮） */
 let warmupSweepRunning = false;
@@ -394,8 +400,14 @@ async function isPrewarmThrottled(): Promise<boolean> {
 /**
  * F7：worker 池跑一批预热。
  * `stepDelayMs > 0` 时每个源之间额外等待（串行档专用）；搜索在途时立刻停止领取新源。
+ * G5：`deadlineAt` 到点后同样停止领取新源，未处理的个数通过 `deferred` 报回调用方。
  */
-async function runWarmupBatch(sources: Source[], concurrency: number, stepDelayMs: number): Promise<number> {
+async function runWarmupBatch(
+  sources: Source[],
+  concurrency: number,
+  stepDelayMs: number,
+  deadlineAt = Number.POSITIVE_INFINITY,
+): Promise<{ warmed: number; deferred: number }> {
   let cursor = 0;
   let warmed = 0;
   const workers: Promise<void>[] = [];
@@ -405,6 +417,8 @@ async function runWarmupBatch(sources: Source[], concurrency: number, stepDelayM
         while (cursor < sources.length) {
           // 让路：真实搜索在途时立刻停止领取新源
           if (searchInFlight > 0) return;
+          // G5：串行档预算耗尽，剩下的源不碰
+          if (Date.now() > deadlineAt) return;
           const source = sources[cursor++];
           if (!source) continue;
           try {
@@ -422,7 +436,7 @@ async function runWarmupBatch(sources: Source[], concurrency: number, stepDelayM
     );
   }
   await Promise.all(workers);
-  return warmed;
+  return { warmed, deferred: Math.max(0, sources.length - cursor) };
 }
 
 /**
@@ -432,12 +446,14 @@ async function runWarmupBatch(sources: Source[], concurrency: number, stepDelayM
  * 再搜（真首装档，约 3.5 分钟）同一关键词超时数是 0——差别的唯一来源就是"预热做没做"。
  * 既有 `prewarm` 全在真实请求路径内，没有任何主动批量入口，所以这里补上。
  *
- * 三条硬约束：
+ * 四条硬约束：
  * 1. 并发 ≤4（原生线程池余量）；
  * 2. 有搜索在途就收手（worker 每取下一个源前检查），因为预热与搜索打满同一个池会把搜索挤进队列；
  * 3. F4：带原生库的 jar 不与其它加载并发——正常档把它们留到最后一轮单独串行，
  *    熔断档整轮串行。冷启动 native 并发初始化是原生崩溃的头号触发条件（两次现场
  *    同 jar 加载仅隔 24ms），原生侧另有同 jar 串行 + 全局 ≤2 闸门（F1）兜底。
+ * 4. G5：串行档每轮另有 20s 预算，超预算的源本轮不碰（熔断标记一置就是 24h，
+ *    不设上限等于每次冷启动都为 25+ 个源付 50s+ 的串行代价）。
  *
  * `warmup` 内部对同源去重、失败静默，所以本函数可重复调用且不打扰用户。
  */
@@ -465,16 +481,30 @@ async function warmupSources(opts?: { delayMs?: number }): Promise<number> {
     const light = throttled ? targets : targets.filter((source) => !isNativeBearingSpiderSource(source.id));
     const nativeHeavy = throttled ? [] : targets.filter((source) => isNativeBearingSpiderSource(source.id));
 
-    let warmed = await runWarmupBatch(
+    let { warmed, deferred } = await runWarmupBatch(
       light,
       throttled ? 1 : WARMUP_SWEEP_CONCURRENCY,
       throttled ? WARMUP_SERIAL_STEP_DELAY_MS : 0,
+      throttled ? Date.now() + WARMUP_SERIAL_BUDGET_MS : Number.POSITIVE_INFINITY,
     );
     if (nativeHeavy.length > 0) {
       // 搜索在途时前一轮已提前 return，这里给同一条件留一次喘息
       if (searchInFlight === 0) {
-        warmed += await runWarmupBatch(nativeHeavy, 1, WARMUP_SERIAL_STEP_DELAY_MS);
+        const heavy = await runWarmupBatch(
+          nativeHeavy,
+          1,
+          WARMUP_SERIAL_STEP_DELAY_MS,
+          Date.now() + WARMUP_SERIAL_BUDGET_MS,
+        );
+        warmed += heavy.warmed;
+        deferred += heavy.deferred;
       }
+    }
+    if (deferred > 0) {
+      logger.debug(
+        '串行预热本轮未跑完（搜索让路或超出预算），源留给下次冷启动',
+        `剩 ${deferred} 个 / 本轮预热 ${warmed} 个`,
+      );
     }
     if (warmed > 0) logger.debug('爬虫源批量预热结束', `共加载 ${warmed} 个`);
     return warmed;
