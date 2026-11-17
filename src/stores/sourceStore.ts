@@ -22,6 +22,7 @@ import {
   type HealthTrendSnapshot,
 } from '@/services/healthCenterService';
 import { liveService } from '@/services/liveService';
+import { PREWARM_SERIAL_STEP_DELAY_MS, isPrewarmThrottled } from '@/services/prewarmState';
 import { appEvents } from '@/services/events';
 import { sourceRegistry } from '@/sources/registry';
 import { logger } from '@/shared/logger';
@@ -203,6 +204,9 @@ export const useSourceStore = defineStore('source', () => {
    * 适配器内部对句柄/预热中去重，load 与 reload 双入口重复调用无副作用。
    *
    * P0-5: 预热收敛——只预热当前源+默认源+健康前 3，其余懒加载；并发从 3 降到 2。
+   * G7: 熔断期降级为单并发 + 2s 间隔。这是第二条预热入口（`libraryService.warmupSources`
+   * 是全量扫描档），此前不看熔断状态，熔断期照样 2 并发发 5 个加载，
+   * 把 F4/G5 那条路径的串行保护整个绕过——原生闸门只能限制同时在途数量，限制不了加载频率。
    */
   function warmupSpiderSources(): void {
     const candidates = sources.value.filter(
@@ -220,6 +224,14 @@ export const useSourceStore = defineStore('source', () => {
         ];
     const toWarmup = prioritized.slice(0, 5);
 
+    void runSpiderWarmup(toWarmup);
+  }
+
+  /** G7：本入口的预热节奏——正常 2 并发，熔断期 1 并发 + 每源 2s 间隔 */
+  async function runSpiderWarmup(toWarmup: Source[]): Promise<void> {
+    const throttled = await isPrewarmThrottled();
+    const stepDelayMs = throttled ? PREWARM_SERIAL_STEP_DELAY_MS : 0;
+
     let cursor = 0;
     const worker = async (): Promise<void> => {
       while (cursor < toWarmup.length) {
@@ -231,10 +243,14 @@ export const useSourceStore = defineStore('source', () => {
         } catch {
           /* 预热失败静默：真实调用时再报错 */
         }
+        if (stepDelayMs > 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, stepDelayMs));
+        }
       }
     };
-    // P0-5: 并发从 3 降到 2
-    for (let i = 0; i < Math.min(2, toWarmup.length); i += 1) void worker();
+    // P0-5: 并发从 3 降到 2；G7: 熔断期降到 1
+    const concurrency = throttled ? 1 : Math.min(2, toWarmup.length);
+    for (let i = 0; i < concurrency; i += 1) void worker();
   }
 
   async function select(sourceId: string | null): Promise<void> {

@@ -642,8 +642,11 @@ public class SpiderPlugin extends Plugin {
             List<Map<String, Object>> entries = new ArrayList<>();
             for (int i = 0; i < entriesArr.length(); i++) {
                 Object item = entriesArr.get(i);
-                if (!(item instanceof JSObject)) continue;
-                JSObject e = (JSObject) item;
+                // 桥反序列化交给插件的是 org.json.JSONObject（JSObject 只是它的子类）：
+                // 此前只认 JSObject，整批 JS 日志被静默丢弃（written 恒 0，两天日志里
+                // 一条 JS 行都没有）。
+                if (!(item instanceof JSONObject)) continue;
+                JSONObject e = (JSONObject) item;
                 Map<String, Object> m = new HashMap<>();
                 m.put("level", e.optString("level", "D"));
                 m.put("tag", e.optString("tag", "app"));

@@ -34,11 +34,10 @@ import { resolveGlobalDeadlineMs, resolveSearchTimeoutMs } from '@/shared/search
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { classifySourceFailure, isTransientFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { isKeywordIgnored } from '@/services/searchAggregate';
+import { PREWARM_SERIAL_STEP_DELAY_MS, isPrewarmThrottled } from '@/services/prewarmState';
 import { isLocalArtifactUrl, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
-import { isNative } from '@/shared/platform';
-import { Spider } from '@/native/spiderPlugin';
 import { isNativeBearingSpiderSource } from '@/sources/spider/SpiderAdapter';
 import type {
   AppErrorShape,
@@ -368,10 +367,7 @@ function prewarm(adapter: object, source: Source): void {
 const WARMUP_SWEEP_CONCURRENCY = 4;
 /** F7：启动后预热的起跑延迟，避开首屏渲染与下载队列自检那一段最忙的时间 */
 const WARMUP_SWEEP_START_DELAY_MS = 12000;
-/** F4：串行档（熔断 / 已知带原生库的 jar）每个源之间的间隔，给 ART/JNI 留恢复窗口 */
-const WARMUP_SERIAL_STEP_DELAY_MS = 2000;
-/**
- * G5：串行档单轮预算。熔断期整轮串行 = 源数 × 2s，25+ 源要跑到 50s 开外，
+/** G5：串行档单轮预算。熔断期整轮串行 = 源数 × 2s，25+ 源要跑到 50s 开外，
  * 而熔断标记一置就是 24h，等于这段时间里每次冷启动都要付一次全量串行。
  * 超预算的源本轮不碰，留给下次冷启动（预热本身是幂等的补充加载，不做延后调度）。
  */
@@ -381,21 +377,6 @@ const WARMUP_SERIAL_BUDGET_MS = 20000;
 let warmupSweepRunning = false;
 /** F7：搜索在途计数——预热必须给真实搜索让路，否则反而拖慢搜索 */
 let searchInFlight = 0;
-
-/**
- * F4：读原生侧崩溃熔断状态（同签名原生崩溃 24h 内复发 ≥2 次）。
- * Web / 插件不支持 / 读取失败一律按未熔断——预热降级不该成为新的失败点。
- */
-async function isPrewarmThrottled(): Promise<boolean> {
-  if (!isNative()) return false;
-  try {
-    const state = await Spider.getPrewarmState();
-    return state.throttled === true;
-  } catch (e) {
-    logger.debug('读取预热熔断状态失败（按未熔断处理）', e);
-    return false;
-  }
-}
 
 /**
  * F7：worker 池跑一批预热。
@@ -484,7 +465,7 @@ async function warmupSources(opts?: { delayMs?: number }): Promise<number> {
     let { warmed, deferred } = await runWarmupBatch(
       light,
       throttled ? 1 : WARMUP_SWEEP_CONCURRENCY,
-      throttled ? WARMUP_SERIAL_STEP_DELAY_MS : 0,
+      throttled ? PREWARM_SERIAL_STEP_DELAY_MS : 0,
       throttled ? Date.now() + WARMUP_SERIAL_BUDGET_MS : Number.POSITIVE_INFINITY,
     );
     if (nativeHeavy.length > 0) {
@@ -493,7 +474,7 @@ async function warmupSources(opts?: { delayMs?: number }): Promise<number> {
         const heavy = await runWarmupBatch(
           nativeHeavy,
           1,
-          WARMUP_SERIAL_STEP_DELAY_MS,
+          PREWARM_SERIAL_STEP_DELAY_MS,
           Date.now() + WARMUP_SERIAL_BUDGET_MS,
         );
         warmed += heavy.warmed;
