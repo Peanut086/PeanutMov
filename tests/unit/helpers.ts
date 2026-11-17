@@ -20,9 +20,23 @@ export async function resetAll(): Promise<void> {
   healthService.__reset();
   appEvents.clear();
   resetRegistryToDefaults();
-  // 先关闭已缓存的连接（否则 deleteDatabase 会被 blocked 卡住）
-  await closeDb();
-  await deleteDatabase();
+  // 后台补偿链路（如空结果搜索的别名读）可能恰好在 closeDb 之后、deleteDB 期间
+  // 重开连接，让 deleteDB 永久 blocked（表现为 beforeEach hook 60s 超时）。
+  // 「等一拍 → 关连接 → 限时删」重试几拍：超时那拍说明有漏网连接，下一拍的
+  // closeDb 会把它关掉，先前挂着的 deleteDB 随即落地。
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await closeDb();
+    try {
+      await Promise.race([
+        deleteDatabase(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('deleteDatabase-timeout')), 500)),
+      ]);
+      break;
+    } catch {
+      // 被漏网连接挡住：继续下一拍
+    }
+  }
   resetDbConnection();
 }
 

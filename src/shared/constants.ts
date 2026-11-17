@@ -39,6 +39,10 @@ export const KV_KEY_DEMO_SEEDED = 'demo-seeded';
 export const KV_KEY_IMPORT_RECORDS = 'import-records';
 /** kv 表中存放「上次所在页面」会话快照的 key（G3 冷启动恢复，短 TTL、一次性消费） */
 export const KV_KEY_LAST_SESSION = 'last-session';
+/** kv 表中存放播放黑匣子快照的 key（BB-01：线路/集号/进度/倍速，退出播放页即清） */
+export const KV_KEY_PLAYBACK_BLACKBOX = 'playback-blackbox';
+/** kv 表中存放本地学习出的片名别名表（SO-ALIAS：搜索词 → 点击片名 的形态映射） */
+export const KV_KEY_SEARCH_ALIASES = 'search-aliases';
 
 /* ---------- 合规 ---------- */
 /** 合规声明文本版本；文本变更时 +1，触发已同意用户重新确认（AC-101） */
@@ -102,6 +106,13 @@ export const TIMEOUT_SEARCH_LOAD_ALLOWANCE_MS = 45000;
  * 等于把召回换成空列表。OPT-03 起随搜索预算档位缩放，此前写死在 libraryService 里。
  */
 export const SEARCH_GLOBAL_DEADLINE_MS = 28000;
+/**
+ * 空结果查询扩展的单次扇出上限（SO-ALIAS）。
+ *
+ * 扩展搜索只在原词 0 结果时触发，属于"救回来是赚、救不回也不该把用户锁在转圈里"的
+ * 补偿路径，因此比常规 28s 截止更紧；真机实测预热后的扩展扇出多在个位数秒返回。
+ */
+export const SEARCH_EXPANSION_DEADLINE_MS = 15000;
 /** 播放器 loadedmetadata 等待（9.7） */
 export const TIMEOUT_LOAD_METADATA_MS = 15000;
 /** 播放网络错误自动重试间隔（FR-25） */

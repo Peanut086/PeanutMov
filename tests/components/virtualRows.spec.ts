@@ -25,9 +25,10 @@ describe('computeWindow（固定行高虚拟滚动窗口）', () => {
     expect(w.end).toBe(130);
   });
 
-  it('底部：end 封顶到 count，不越界', () => {
+  it('底部：start/end 双双钳制，不越界', () => {
     const w = computeWindow(999999, 600, 50, 24, 10);
-    expect(w.start).toBe(0);
+    // 超过总高的 scrollTop（overscroll 回弹瞬间）：窗口钳到最后一屏而不是渲染空区
+    expect(w.start).toBe(25);
     expect(w.end).toBe(50);
   });
 

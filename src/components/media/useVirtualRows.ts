@@ -15,7 +15,11 @@ export function computeWindow(
   overscan: number,
 ): { start: number; end: number } {
   if (count <= 0 || rowHeight <= 0 || viewportH <= 0) return { start: 0, end: 0 };
-  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+  // start 必须有上界：overscroll/回弹会让 scrollTop 短暂超过内容总高，
+  // 不钳制则 padTop 越界、最后几行反而渲染不出。
+  // 钳到 count-可见行 = 正常滚到底的窗口，而不是退回 0（那会全量渲染，虚拟滚动失效）。
+  const maxStart = Math.max(0, count - Math.ceil(viewportH / rowHeight));
+  const start = Math.min(Math.max(0, Math.floor(scrollTop / rowHeight) - overscan), maxStart);
   const end = Math.min(count, Math.ceil((scrollTop + viewportH) / rowHeight) + overscan);
   return { start, end };
 }

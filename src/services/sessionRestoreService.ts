@@ -44,8 +44,8 @@ const RESTORABLE_ROUTES: Record<string, string[]> = {
   replay: ['sourceId', 'programId'],
 };
 
-/** 恢复时丢弃的 query 键 */
-const DROP_QUERY_KEYS = new Set(['restart']);
+/** 恢复时丢弃的 query 键：restart=从头播；t=口令定位点（恢复语义该听黑匣子/历史，不该听别人的进度） */
+const DROP_QUERY_KEYS = new Set(['restart', 't']);
 
 /** 快照有效期：跨一夜就不再是"刚才那集"了 */
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;

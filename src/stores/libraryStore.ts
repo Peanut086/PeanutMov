@@ -16,10 +16,12 @@ import {
   selectRepresentative,
 } from '@/services/searchAggregate';
 import { playabilityService } from '@/services/playabilityService';
+import { expansionCandidates } from '@/services/queryExpansion';
+import { lookupAliases } from '@/services/aliasService';
 import { lineHealthService } from '@/services/lineHealthService';
 import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
-import { PAGE_SIZE, SEARCH_LOCAL_LIMIT } from '@/shared/constants';
+import { PAGE_SIZE, SEARCH_EXPANSION_DEADLINE_MS, SEARCH_LOCAL_LIMIT } from '@/shared/constants';
 import { AppError, isCanceled, toAppError, toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
@@ -64,6 +66,8 @@ export const useLibraryStore = defineStore('library', () => {
   const searchSkippedIds = ref<string[]>([]);
   /** C-12：搜不到时的尾词建议芯片（如"今天也是太阳雨"→"今天也是太阳"/"今天"/"太阳雨"） */
   const searchTailSuggestions = ref<string[]>([]);
+  /** SO-ALIAS：原词 0 结果时，某扩展词救回结果则记录该词（UI 显示"按「××」找到"） */
+  const searchExpandedNote = ref<string | null>(null);
   /* ---------- v2.0/P0-P1：聚合检索重构 ---------- */
   /** 未去重的完整结果（分组视图的数据源） */
   const searchResultsAll = ref<MediaItem[]>([]);
@@ -204,6 +208,8 @@ export const useLibraryStore = defineStore('library', () => {
   let requestSeq = 0;
   /** 进行中的搜索控制器：新搜索前 abort 旧的，避免旧请求继续占用源（REV-06） */
   let searchController: AbortController | null = null;
+  /** SO-ALIAS：空结果查询扩展的后台通道（新搜索/输入清空时中止，防止过期结果上屏） */
+  let expansionController: AbortController | null = null;
   /** 渐进搜索进度（CHG-12）：已完成的源 / 总源数，结束为 null */
   const searchProgress = ref<{ done: number; total: number } | null>(null);
   const sourceStore = useSourceStore();
@@ -435,6 +441,9 @@ export const useLibraryStore = defineStore('library', () => {
     searchKeyword.value = keyword;
     searchController?.abort();
     searchController = null;
+    expansionController?.abort();
+    expansionController = null;
+    searchExpandedNote.value = null;
     if (trimmed.length === 0) {
       searchResultsAll.value = [];
       searchFailed.value = [];
@@ -495,6 +504,13 @@ export const useLibraryStore = defineStore('library', () => {
 
       // C-12：搜不到时给尾词建议芯片（去掉尾字优先，最多 3 条，算不出则不显示）
       searchTailSuggestions.value = searchState.value === 'empty' ? buildTailSuggestions(trimmed) : [];
+
+      // SO-ALIAS：原词 0 结果时的查询扩展补偿（后台跑，最多 2 个扩展词）
+      if (searchState.value === 'empty' && !controller.signal.aborted) {
+        const expansion = new AbortController();
+        expansionController = expansion;
+        void expandEmptySearch(trimmed, expansion.signal);
+      }
     } catch (e) {
       if (isCanceled(e) || controller.signal.aborted) return;
       searchResultsAll.value = [];
@@ -513,6 +529,57 @@ export const useLibraryStore = defineStore('library', () => {
     } finally {
       if (searchController === controller) searchController = null;
       searchProgress.value = null;
+    }
+  }
+
+  /**
+   * SO-ALIAS：空结果查询扩展的补偿扇出。
+   *
+   * 原词 0 结果才跑，与主搜索共用中止信号（新搜索一开始就整体停）；
+   * 每个扩展词自带 15s 预算（比常规 28s 截止更紧——救回来是赚，救不回不该拖住空态）。
+   * 命中即并入现有结果、撤掉尾词建议并标注「按「××」找到」；失败与无结果都静默：
+   * 空态诊断口径仍以原词为准，扩展不记超时连击、不污染退避。
+   */
+  async function expandEmptySearch(keyword: string, outer: AbortSignal): Promise<void> {
+    let aliases: string[] = [];
+    try {
+      aliases = await lookupAliases(keyword);
+    } catch {
+      aliases = [];
+    }
+    for (const variant of expansionCandidates(keyword, aliases, 2)) {
+      if (outer.aborted) return;
+      const controller = new AbortController();
+      const abort = () => controller.abort();
+      outer.addEventListener('abort', abort, { once: true });
+      const timer = setTimeout(abort, SEARCH_EXPANSION_DEADLINE_MS);
+      try {
+        const result = await libraryService.search({
+          keyword: variant,
+          signal: controller.signal,
+          sourceIds: scopeSourceIds(),
+        });
+        if (outer.aborted) return;
+        const seenIds = new Set(searchResultsAll.value.map((item) => item.id));
+        const fresh = result.items.filter((item) => {
+          if (seenIds.has(item.id)) return false;
+          const source = sourceStore.sources.find((s) => s.id === item.sourceId);
+          if (!source || !source.enabled) return false;
+          seenIds.add(item.id);
+          return true;
+        });
+        if (fresh.length === 0) continue;
+        searchResultsAll.value = [...searchResultsAll.value, ...fresh];
+        searchTailSuggestions.value = [];
+        searchExpandedNote.value = variant;
+        searchState.value = 'success';
+        return;
+      } catch {
+        return;
+      } finally {
+        clearTimeout(timer);
+        outer.removeEventListener('abort', abort);
+      }
     }
   }
 
@@ -775,6 +842,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchSkippedIds,
     continueSearchSkipped,
     searchTailSuggestions,
+    searchExpandedNote,
     searchViewMode,
     searchScope,
     searchSelectedSourceIds,

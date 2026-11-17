@@ -58,15 +58,21 @@ function emitVisibility(state: 'visible' | 'hidden'): void {
 }
 
 describe('sessionSnapshotOf', () => {
-  it('播放页保留 params 与除 restart 之外的 query', () => {
+  it('播放页保留 params 与除 restart/t 之外的 query', () => {
     const snapshot = sessionSnapshotOf(
-      routeLike('player', { mediaId: 'm1', episodeId: 'e2' }, { lineId: 'L1', restart: '1', local: '1' }),
+      routeLike(
+        'player',
+        { mediaId: 'm1', episodeId: 'e2' },
+        { lineId: 'L1', restart: '1', local: '1', ep: '7', t: '120' },
+      ),
     );
     expect(snapshot).not.toBeNull();
     expect(snapshot!.name).toBe('player');
     expect(snapshot!.params).toEqual({ mediaId: 'm1', episodeId: 'e2' });
     // restart 被丢弃：恢复的语义是"接着放"，留着它每次都从头播
-    expect(snapshot!.query).toEqual({ lineId: 'L1', local: '1' });
+    // t 同样丢弃：口令/深链定位点是"那一次"的进度，跨会话应听黑匣子与历史
+    // ep 保留：目标集号仍可恢复（找不到时由 episodeFallback 兜底）
+    expect(snapshot!.query).toEqual({ lineId: 'L1', local: '1', ep: '7' });
     expect(snapshot!.at).toBeGreaterThan(0);
   });
 

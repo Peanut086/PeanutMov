@@ -96,6 +96,8 @@ import { pipService } from '@/native/pipService';
 import { describeTsScan, isMediaToolAvailable, scanTsFile } from '@/native/mediaToolPlugin';
 import { onAppStateChange } from '@/native/appLifecycle';
 import { libraryService } from '@/services/libraryService';
+import { notePlayback, peekBlackbox, type BlackboxSnapshot } from '@/services/blackboxService';
+import { buildShareText } from '@/services/shareCodeService';
 import { sourceService } from '@/services/sourceService';
 import { downloadService, selectCompletedTask } from '@/services/downloadService';
 import { pickPlayCandidates } from '@/sources/douban/playMatch';
@@ -126,6 +128,21 @@ const episodeIdParam = computed(() =>
 );
 const lineIdParam = computed(() => (typeof route.query.lineId === 'string' ? route.query.lineId : null));
 const restart = computed(() => route.query.restart === '1');
+/**
+ * 口令深链参数：`?ep=<集号>` 直达某集、`?t=<秒>` 指定起播点。
+ * 二者只在**进入播放页的首帧**生效（消费后从 URL 移除，见 consumeDeepLinkParams），
+ * 后续换源/切集不应被口令残留值反复劫持。
+ */
+const epParam = computed(() => {
+  const raw = typeof route.query.ep === 'string' ? route.query.ep : null;
+  const n = raw !== null ? Number.parseInt(raw, 10) : Number.NaN;
+  return Number.isFinite(n) && n >= 1 ? n : null;
+});
+const tParamSec = computed(() => {
+  const raw = typeof route.query.t === 'string' ? route.query.t : null;
+  const n = raw !== null ? Number.parseFloat(raw ?? '') : Number.NaN;
+  return Number.isFinite(n) && n >= 0 ? n : null;
+});
 
 /**
  * 本地优先起播（`?local=1`）时锁定的真实播放身份，来自匹配上的那条下载任务。
@@ -135,6 +152,13 @@ const restart = computed(() => route.query.restart === '1');
  * null = 当前播放内容来自在线解析。
  */
 const localIdentity = ref<{ episodeId: string; episodeNumber: number | null } | null>(null);
+
+/**
+ * BB-01 黑匣子恢复点：进入播放页时读一次，为首帧提供「集号锚 + 线路 + 倍速」。
+ * 首轮 `resolveAndLoad` 消费后即清空——它是"刚才那次中断"的上下文，
+ * 不该继续参与本会话后续的手动切集/换线决策。
+ */
+const blackboxAnchor = ref<BlackboxSnapshot | null>(null);
 
 /** 常亮锁持锁者令牌（本页实例唯一，交给 deviceService 判归属） */
 const keepAwakeOwner = {};
@@ -204,7 +228,11 @@ const currentLineId = computed(() => {
     episodeIdParam.value,
   );
   if (ownerLineId) return ownerLineId;
-  return lineIdParam.value ?? lines.value[0]?.id ?? null;
+  if (lineIdParam.value) return lineIdParam.value;
+  // BB-01：口令/黑匣子直达（路由没带集 id）时按上次实际在用的线路起播
+  const anchorLine = blackboxAnchor.value?.lineId;
+  if (anchorLine && lines.value.some((line) => line.id === anchorLine)) return anchorLine;
+  return lines.value[0]?.id ?? null;
 });
 const currentLine = computed(() => lines.value.find((l) => l.id === currentLineId.value) ?? null);
 
@@ -220,27 +248,28 @@ const currentEpisode = computed<Episode | null>(() => {
   const list = episodes.value;
   if (list.length === 0) return null;
   const wanted = episodeIdParam.value;
-  if (!wanted) return list[0] ?? null;
   // 精确匹配当前线路
-  const byId = list.find((ep) => ep.id === wanted);
+  const byId = wanted === null ? null : list.find((ep) => ep.id === wanted);
   if (byId) return byId;
-  // 跨线路回退：只用**这一集自己**的历史记录按集号重映射。
-  // 取该媒体的第一条记录会拿到别的集的集号，把用户送到完全不相干的一集。
-  const rec = history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === wanted);
-  if (rec?.episodeNumber != null) {
-    const resolved = resolveTargetEpisode({
-      recordedEpisodeId: wanted,
-      recordedNumber: rec.episodeNumber,
-      episodes: list,
-    });
-    if (resolved.episode) return resolved.episode;
+  // 集号回退链：深链 ?ep= > 这一集自己的历史记录集号 > 黑匣子集号锚。
+  // 历史口径保留原有的严格条件——取该媒体的第一条记录会拿到别的集的集号，
+  // 把用户送到完全不相干的一集。
+  const historyNumber = wanted === null
+    ? null
+    : history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === wanted)?.episodeNumber ?? null;
+  for (const number of [epParam.value, historyNumber, blackboxAnchor.value?.episodeNumber ?? null]) {
+    if (number === null || number === undefined) continue;
+    const hit = list.find((ep) => ep.number === number);
+    if (hit) return hit;
   }
-  logger.warn('路由集号在当前线路无匹配，回退首集', {
-    mediaId: mediaId.value,
-    episodeId: wanted,
-    lineId: currentLineId.value,
-    episodeCount: list.length,
-  });
+  if (wanted) {
+    logger.warn('路由集号在当前线路无匹配，回退首集', {
+      mediaId: mediaId.value,
+      episodeId: wanted,
+      lineId: currentLineId.value,
+      episodeCount: list.length,
+    });
+  }
   return list[0] ?? null;
 });
 
@@ -1119,10 +1148,24 @@ async function resolveAndLoad(): Promise<boolean> {
     currentPlayback.value = prepared;
     const rec = history.progressOf(it.sourceId, it.id);
     let start = 0;
-    if (!restart.value && rec && rec.episodeId === ep.id) {
-      const duration = rec.durationSec > 0 ? rec.durationSec : (ep.durationSec ?? 0);
-      const ratio = duration > 0 ? rec.positionSec / duration : 0;
-      if (ratio > 0.05 && ratio < 0.95) start = rec.positionSec;
+    if (!restart.value) {
+      // 口令深链 `?t=` 是显式意图，优先于一切记忆（切线路/换集后 query 会被重建，天然只生效一次）
+      if (tParamSec.value !== null) {
+        start = tParamSec.value;
+      } else if (rec && rec.episodeId === ep.id) {
+        const duration = rec.durationSec > 0 ? rec.durationSec : (ep.durationSec ?? 0);
+        const ratio = duration > 0 ? rec.positionSec / duration : 0;
+        if (ratio > 0.05 && ratio < 0.95) start = rec.positionSec;
+      }
+      // BB-01：历史没接上（换线路后 episodeId 漂移、记录缺失）时按黑匣子集号锚兜底，
+      // 口径与 history 相同的首尾闸门；`?ep=` 深链带显式 t 之外的一切首轮起播都适用
+      if (start === 0 && tParamSec.value === null) {
+        const bb = blackboxAnchor.value;
+        if (bb && (bb.episodeNumber === null || bb.episodeNumber === ep.number)) {
+          const ratio = bb.durationSec > 0 ? bb.positionSec / bb.durationSec : 0;
+          if (ratio > 0.05 && ratio < 0.95) start = bb.positionSec;
+        }
+      }
     }
     // P0-7: 续播位置注入 PlaybackSource，原生引擎随 prepare 下发（省掉起播后 seek）
     if (start > 0) {
@@ -1261,6 +1304,12 @@ onMounted(async () => {
   // P1-4 + API-12：亮度/音量起点（必须在 createController 之前，决定引擎倍率的初值）
   await initPlaybackLevels();
 
+  // BB-01：详情加载前读黑匣子——首帧选集/线路的集号锚要用它
+  if (!restart.value) {
+    const resume = await peekBlackbox(mediaId.value);
+    if (resume && pageAlive) blackboxAnchor.value = resume;
+  }
+
   const episodeParam = typeof route.params.episodeId === 'string' ? route.params.episodeId : '';
   // P1-4：下载列表入口（`?local=1`）先本地起播，详情后台补——离线时不再被网络解析吊住
   if (route.query.local === '1' && episodeParam && (await tryPlayLocalFirst(episodeParam))) {
@@ -1282,11 +1331,52 @@ onMounted(async () => {
   // EXT-07：控制器建好后订阅内嵌轨道状态（切集由控制器自己重置）
   bindEmbeddedTracks();
   await resolveAndLoad();
+  // BB-01：倍速记忆——只在进入页面这一次生效，之后用户手动调整不再被覆盖
+  if (blackboxAnchor.value && blackboxAnchor.value.rate !== player.rate) {
+    setRate(blackboxAnchor.value.rate);
+  }
   // AC-68：记录集号已下线时明确提示，而不是静默从第 1 集起播
   announceOfflineEpisode();
 });
 
 /* ---------- 关闭时写回进度 ---------- */
+
+/**
+ * BB-01 黑匣子写入。
+ *
+ * `usePlayerController` 的卸载钩子先跑并 reset 播放器（音量同理），届时 `player.currentTime`
+ * 已归零——所以播放中持续留一份最近快照，卸载时用 `force` 补写这份，而不是现场读引擎。
+ * 落盘由服务内部 30s 节流，这里 10s 一拍只为缩短卸载瞬间的陈旧度。
+ */
+let blackboxLive: Omit<BlackboxSnapshot, 'at'> | null = null;
+function captureBlackbox(): void {
+  const identity = playingIdentity.value;
+  const durationSec = Math.floor(player.duration || 0);
+  const positionSec = Math.floor(player.currentTime || 0);
+  if (!identity || !mediaId.value || durationSec <= 0 || positionSec > durationSec) return;
+  blackboxLive = {
+    mediaId: mediaId.value,
+    episodeNumber: identity.episodeNumber,
+    lineId: currentLineId.value,
+    positionSec,
+    durationSec,
+    rate: player.rate,
+  };
+}
+watch(
+  () => player.currentTime,
+  () => {
+    if (player.playing) captureBlackbox();
+  },
+);
+// 换集/换线路的瞬间旧位置不再可信：置空，等新一集的第一个 timeupdate 再填
+watch(currentPlayback, () => {
+  blackboxLive = null;
+});
+const blackboxTimer = window.setInterval(() => {
+  captureBlackbox();
+  if (blackboxLive) void notePlayback(blackboxLive);
+}, 10_000);
 
 /**
  * P1-4 音量写回值。
@@ -1307,6 +1397,9 @@ watch(
 onBeforeUnmount(() => {
   cancelAutoNext();
   clearSeekPreview();
+  // BB-01：退出瞬间补写一次（此刻引擎已被 composable 复位，只能用播放期间留存的快照）
+  window.clearInterval(blackboxTimer);
+  if (blackboxLive) void notePlayback(blackboxLive, { force: true });
   // 起播进度 rAF 自续不受 finally 守卫保护：卸载会置反 pageAlive/epoch，
   // 不在这里显式取消就会留下常驻循环。
   cancelLoadingProgress();
@@ -1908,6 +2001,42 @@ async function copyError(): Promise<void> {
     toast.success('已复制错误信息');
   } catch {
     toast.info(text);
+  }
+}
+
+/**
+ * SHARE-CODE：生成观影口令。
+ * 纯元数据（片名/年份/集号/时间点），不含任何播放地址、源或订阅——
+ * 对方能否看到取决于其自有订阅，分享的是「坐标」，不是「资源」。
+ */
+async function shareWatchCode(): Promise<void> {
+  const it = item.value;
+  if (!it) return;
+  const identity = playingIdentity.value;
+  const payload = {
+    title: it.title,
+    year: it.year ?? null,
+    // 单集内容（电影/正片）不带集号；多线路长剧才需要定位到集
+    episodeNumber: episodes.value.length <= 1 ? null : identity?.episodeNumber ?? null,
+    positionSec: Math.floor(player.currentTime || 0),
+  };
+  const text = buildShareText(payload);
+  moreOpen.value = false;
+  try {
+    if (typeof navigator.share === 'function') {
+      await navigator.share({ title: it.title, text });
+      return;
+    }
+    throw new Error('no-share-target');
+  } catch (e) {
+    // 系统分享面板取消不算失败；无分享面板/失败退回剪贴板
+    if (e instanceof DOMException && e.name === 'AbortError') return;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('观影口令已复制，粘到对方的搜索框即可续上');
+    } catch {
+      toast.info(text, 8000);
+    }
   }
 }
 
@@ -3186,6 +3315,7 @@ onBeforeUnmount(() => {
     <BottomSheet v-model="moreOpen" title="更多">
       <ul class="sheet-list">
         <li><button class="sheet-list__item" type="button" @click="openDetail">查看详情</button></li>
+        <li><button class="sheet-list__item" type="button" @click="shareWatchCode">生成观影口令</button></li>
         <li><button class="sheet-list__item" type="button" @click="pickerOpen = true">下载本集</button></li>
         <!-- FIX-PLAY-C3：自检只对本机 .ts 产物有意义（转封装成 mp4 后不适用，blob 兜底没有文件可扫） -->
         <li v-if="canScanLocalFile">

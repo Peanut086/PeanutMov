@@ -34,6 +34,9 @@ import { mediaSubtitle } from '@/components/common/format';
 import { toErrorShape } from '@/shared/errors';
 import { playabilityService } from '@/services/playabilityService';
 import { scoreRelevance } from '@/services/searchAggregate';
+// SHARE-CODE / SO-ALIAS：口令解析与别名学习
+import { decodeShareCode, looksLikeShareCode } from '@/services/shareCodeService';
+import { learnPair } from '@/services/aliasService';
 // OPT-07：搜索建议服务
 import { getSearchSuggestions, getHotSearchTags } from '@/services/suggestService';
 // 功能扩展-7：来源切换弹层
@@ -172,12 +175,50 @@ onMounted(async () => {
 async function runSearch(value: string, recordHistory: boolean): Promise<void> {
   const kw = value.trim();
   if (kw.length === 0) return;
+  // SHARE-CODE：提交内容带口令时按「坐标」动作消费——不记历史，也不把口令当搜索词
+  if (looksLikeShareCode(kw)) {
+    void consumeShareCode(kw);
+    return;
+  }
   try {
     await library.search(kw);
     if (recordHistory) await pushHistory(kw);
   } catch (e) {
     toast.error(toErrorShape(e).message);
   }
+}
+
+/**
+ * 口令消费：按片名搜索 → 带年份优先同组（否则取相关性最高组）→ 深链到播放页。
+ * `ep`/`t` 由 PlayerView 首帧一次性消费；搜不到时留在搜索页，让原有空态诊断说话。
+ */
+async function consumeShareCode(text: string): Promise<void> {
+  const code = decodeShareCode(text);
+  if (code === null) {
+    toast.error('口令无法识别，请粘贴完整口令文本');
+    return;
+  }
+  keyword.value = code.title;
+  try {
+    await library.search(code.title);
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+    return;
+  }
+  const groups = library.searchGroups;
+  if (groups.length === 0) {
+    toast.info(`没在你的订阅里找到「${code.title}」，先导入包含这部影片的源再回来试试`);
+    return;
+  }
+  const target = (code.year !== null ? groups.find((g) => g.year === code.year) : null) ?? groups[0];
+  const rep = target?.items[0];
+  if (!rep || !target) return;
+  const query: Record<string, string> = {};
+  if (code.episodeNumber !== null) query.ep = String(code.episodeNumber);
+  if (code.positionSec !== null && code.positionSec > 0) query.t = String(code.positionSec);
+  const located = code.episodeNumber !== null ? ` · 第${code.episodeNumber}集` : '';
+  toast.success(`已按口令找到《${target.title}》${located}，你的订阅决定能否播出`);
+  void router.push({ name: 'player', params: { mediaId: rep.id }, query });
 }
 
 async function pushHistory(kw: string): Promise<void> {
@@ -241,6 +282,10 @@ async function clearHistory(): Promise<void> {
 }
 
 function openDetail(item: MediaItem): void {
+  // SO-ALIAS：「搜索词 → 点击片名」是唯一学习信号（点击即确认）；
+  // 隐私开关与形态相似度围栏都在 learnPair 内部，失败静默
+  const kw = keyword.value.trim().length > 0 ? keyword.value : library.searchKeyword;
+  if (kw.trim().length > 0 && !looksLikeShareCode(kw)) void learnPair(kw, item.title);
   void router.push({ name: 'detail', params: { mediaId: item.id }, query: { sourceId: item.sourceId } });
 }
 
@@ -626,6 +671,11 @@ function openSourceManage(): void {
           :busy="isSearching"
           @continue="continueSkipped"
         />
+
+        <!-- SO-ALIAS：原词 0 结果、由查询扩展救回的来源标注（不藏着掖着，也不打断结果浏览） -->
+        <div v-if="library.searchExpandedNote" class="search-expanded-note" role="status">
+          原词没搜到，已按「{{ library.searchExpandedNote }}」扩展查找
+        </div>
 
         <section class="search-section">
           <div class="section-head">
@@ -1380,6 +1430,15 @@ function openSourceManage(): void {
 }
 
 .search-offline-hint {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-info-soft);
+  font: var(--text-caption);
+  color: var(--color-info);
+}
+
+.search-expanded-note {
   margin-top: var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-md);
