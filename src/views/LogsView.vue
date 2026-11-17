@@ -43,7 +43,7 @@ const status = ref<DebugLogStatus>({
   enabled: false,
   fileCount: 0,
   totalBytes: 0,
-  retentionDays: 3,
+  retentionDays: 7,
 });
 const files = ref<LogFile[]>([]);
 const selectedFile = ref<string>('');
@@ -62,6 +62,9 @@ const dateSheetOpen = ref(false);
 const errorOnly = ref(false);
 const startTime = ref('');
 const endTime = ref('');
+const fileRolled = ref(false);
+const loadingStatic = ref(false);
+let pollCount = 0;
 
 // 清空确认
 const clearOpen = ref(false);
@@ -79,9 +82,9 @@ const filteredEntries = computed(() => {
     if (levelFilter.value.size > 0) {
       result = filterByLevel(result, levelFilter.value);
     }
-    if (tagFilter.value.size > 0) {
-      result = filterByTag(result, tagFilter.value);
-    }
+  }
+  if (tagFilter.value.size > 0) {
+    result = filterByTag(result, tagFilter.value);
   }
   if (keyword.value) {
     result = search(result, keyword.value);
@@ -111,18 +114,68 @@ const hasEntries = computed(() => entries.value.length > 0);
 // 初始化
 onMounted(async () => {
   await refreshStatus();
-  await startPolling();
+  await syncPolling();
+  document.addEventListener('visibilitychange', onVisibilityChange);
 });
 
 onUnmounted(() => {
+  document.removeEventListener('visibilitychange', onVisibilityChange);
   stopPolling();
 });
 
+// 文件按 lastModified 升序，末位即最新；最新且非压缩的才实时轮询
+const latestFileName = computed(() =>
+  files.value.length > 0 ? files.value[files.value.length - 1].name : '',
+);
+const isStaticFile = computed(
+  () =>
+    selectedFile.value.endsWith('.gz') ||
+    (latestFileName.value !== '' && selectedFile.value !== latestFileName.value),
+);
+
 // 监听暂停状态
-watch(paused, (p) => {
-  if (p) stopPolling();
-  else startPolling();
+watch(paused, () => {
+  void syncPolling();
 });
+
+watch(selectedFile, () => {
+  fileRolled.value = false;
+  if (isStaticFile.value) {
+    stopPolling();
+    void loadStatic();
+  } else {
+    void syncPolling();
+  }
+});
+
+function onVisibilityChange(): void {
+  void syncPolling();
+}
+
+/** 轮询只在「最新明文文件 + 未暂停 + 页面可见」时运行 */
+async function syncPolling(): Promise<void> {
+  const shouldPoll = !paused.value && !isStaticFile.value && document.visibilityState === 'visible';
+  if (shouldPoll) {
+    await startPolling();
+  } else {
+    stopPolling();
+  }
+}
+
+/** 静态文件（.gz 历史 / 非最新）一次性加载，不轮询 */
+async function loadStatic(): Promise<void> {
+  if (loadingStatic.value || !selectedFile.value) return;
+  loadingStatic.value = true;
+  try {
+    const result = await logApi.readTail(selectedFile.value, 0, 256 * 1024);
+    entries.value = parseLogText(result.text, result.file, 0);
+    cursor.value = { file: result.file, offset: result.offset };
+  } catch (e) {
+    console.warn('Load static failed', e);
+  } finally {
+    loadingStatic.value = false;
+  }
+}
 
 async function refreshStatus(): Promise<void> {
   try {
@@ -181,7 +234,19 @@ async function poll(): Promise<void> {
     }
     return;
   }
+  if (isStaticFile.value) return;
+  pollCount++;
   try {
+    // 每 ~10 秒核对一次最新文件：跨天滚动后旧文件不再增长，需提示用户跟随
+    if (pollCount % 10 === 1) {
+      const fresh = await logApi.listFiles();
+      files.value = fresh;
+      const newest = fresh.length > 0 ? fresh[fresh.length - 1].name : '';
+      if (newest && newest !== selectedFile.value) {
+        fileRolled.value = true;
+        return;
+      }
+    }
     const result = await logApi.readTail(selectedFile.value, cursor.value.offset, 256 * 1024);
     if (result.reset) {
       entries.value = [];
@@ -221,6 +286,7 @@ async function clearLogs(): Promise<void> {
     await logApi.clearAll();
     entries.value = [];
     cursor.value = { file: '', offset: 0 };
+    selectedFile.value = '';
     await refreshStatus();
     toast.success('日志已清空');
   } catch (e) {
@@ -279,6 +345,10 @@ function selectFile(name: string): void {
   dateSheetOpen.value = false;
 }
 
+function followLatestFile(): void {
+  if (latestFileName.value) selectFile(latestFileName.value);
+}
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -302,13 +372,18 @@ function levelClass(level: LogLevel): string {
 function formatTime(ts: number): string {
   if (!ts) return 'N/A';
   const d = new Date(ts);
-  return d.toTimeString().slice(0, 12);
+  const p = (n: number, w = 2) => String(n).padStart(w, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
 }
 </script>
 
 <template>
   <div class="logs-view">
-    <AppHeader title="运行日志" back />
+    <AppHeader title="运行日志" back>
+      <template #actions>
+        <button class="logs-clear" type="button" @click="clearOpen = true">清空</button>
+      </template>
+    </AppHeader>
 
     <div v-if="loading" class="logs-loading">
       <LoadingSpinner :size="24" />
@@ -350,7 +425,7 @@ function formatTime(ts: number): string {
       <div class="logs-filter">
         <div class="logs-filter__levels">
           <button
-            v-for="level in (['D', 'I', 'W', 'E'] as LogLevel[])"
+            v-for="level in (['D', 'I', 'W', 'E', 'F'] as LogLevel[])"
             :key="level"
             class="logs-filter__chip"
             :class="{ 'logs-filter__chip--active': levelFilter.has(level) }"
@@ -388,6 +463,11 @@ function formatTime(ts: number): string {
           />
         </div>
       </div>
+
+      <!-- 跨天滚动提示 -->
+      <button v-if="fileRolled" class="logs-rolled" type="button" @click="followLatestFile">
+        日志已滚动到新文件，点击跟随最新 →
+      </button>
 
       <!-- 日志列表 -->
       <div
@@ -445,9 +525,6 @@ function formatTime(ts: number): string {
         </button>
         <button class="logs-toolbar__btn" @click="copyAll">复制</button>
         <button class="logs-toolbar__btn" @click="exportLogs">分享</button>
-        <button class="logs-toolbar__btn logs-toolbar__btn--danger" @click="clearOpen = true">
-          清空
-        </button>
       </div>
     </template>
 
@@ -487,7 +564,7 @@ function formatTime(ts: number): string {
     <ConfirmDialog
       v-model="clearOpen"
       title="清空全部日志？"
-      message="此操作不可恢复"
+      message="将删除全部日志与崩溃证据，且无法恢复"
       confirm-text="清空"
       danger
       @confirm="clearLogs"
@@ -511,6 +588,29 @@ function formatTime(ts: number): string {
   gap: var(--space-3);
   padding: var(--space-8);
   color: var(--color-text-secondary);
+}
+
+.logs-clear {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-2);
+  font: var(--font-weight-medium) 13px / 1.4 var(--font-family-base);
+  color: var(--color-danger);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.logs-rolled {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-4);
+  font: var(--font-weight-medium) 13px / 1.4 var(--font-family-base);
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+  border: none;
+  border-bottom: 1px solid var(--color-divider);
+  cursor: pointer;
+  text-align: center;
 }
 
 .logs-status {

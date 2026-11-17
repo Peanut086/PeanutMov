@@ -134,10 +134,20 @@ export function extractTags(entries: LogEntry[]): Map<string, number> {
   return tags;
 }
 
+/** 本地时间戳，与原生落盘格式一致：`2026-11-17 14:23:45.123` */
+export function formatLocalTs(ts: number): string {
+  if (!ts || ts <= 0) return 'N/A';
+  const d = new Date(ts);
+  const p = (n: number, w = 2) => String(n).padStart(w, '0');
+  return (
+    `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
+    `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`
+  );
+}
+
 /**
  * 格式化条目为可读字符串（用于复制/分享）。
  */
 export function formatEntry(entry: LogEntry): string {
-  const ts = entry.ts > 0 ? new Date(entry.ts).toISOString() : 'N/A';
-  return `${ts} ${entry.level} [${entry.thread}] ${entry.tag}: ${entry.message}`;
+  return `${formatLocalTs(entry.ts)} ${entry.level} [${entry.thread}] ${entry.tag}: ${entry.message}`;
 }

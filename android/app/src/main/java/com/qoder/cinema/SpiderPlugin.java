@@ -473,7 +473,7 @@ public class SpiderPlugin extends Plugin {
         File[] files = store.listFiles();
         ret.put("fileCount", files.length);
         ret.put("totalBytes", store.totalBytes());
-        ret.put("retentionDays", 3);
+        ret.put("retentionDays", SpiderLogStore.RETENTION_DAYS);
         call.resolve(ret);
     }
 

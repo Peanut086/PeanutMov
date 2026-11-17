@@ -63,7 +63,7 @@ export const logApi = {
         enabled: r.enabled ?? false,
         fileCount: r.fileCount ?? 0,
         totalBytes: r.totalBytes ?? 0,
-        retentionDays: r.retentionDays ?? 3,
+        retentionDays: r.retentionDays ?? 7,
       };
     } catch (e) {
       logger.warn('获取日志状态失败', e);

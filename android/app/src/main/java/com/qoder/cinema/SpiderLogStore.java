@@ -49,16 +49,25 @@ public final class SpiderLogStore {
     private static final String LOG_DIR_NAME = "logs";
     private static final long MAX_FILE_BYTES = 2L * 1024 * 1024;
     private static final long MAX_DIR_BYTES = 20L * 1024 * 1024;
-    private static final int RETENTION_DAYS = 7;
+    /** 与 UI「保留」显示共用一个口径（SpiderPlugin.getDebugLogStatus） */
+    public static final int RETENTION_DAYS = 7;
     private static final int MAX_QUEUE = 2048;
     private static final int MSG_DRAIN = 1;
     private static final long DRAIN_DELAY_MS = 80L;
+
+    /** G4：Java 崩溃栈环形文件所在目录与保留条数（放在 logs 之外，避免被「清空日志」连带删掉） */
+    private static final String CRASH_DIR_NAME = "crash-stacks";
+    private static final String CRASH_RING_NAME = "java-crash.log";
+    private static final int JAVA_CRASH_MAX_ENTRIES = 5;
+    private static final String JAVA_CRASH_MARK = "===== java crash ";
 
     private static volatile SpiderLogStore instance;
 
     private final File logDir;
     /** F3：xCrash 原生 tombstone 目录（导出包内附带原文，避免只有摘要帧拿不到真凶 .so） */
     private final File tombstoneDir;
+    /** G4：崩溃栈环形文件（同步写，进程临死前不依赖异步写队列） */
+    private final File crashRingFile;
     private final SharedPreferences prefs;
     private final HandlerThread worker;
     private final Handler workerHandler;
@@ -92,6 +101,9 @@ public final class SpiderLogStore {
         this.logDir = new File(appContext.getFilesDir(), LOG_DIR_NAME);
         if (!logDir.exists()) logDir.mkdirs();
         this.tombstoneDir = new File(appContext.getFilesDir(), CrashNative.TOMBSTONE_DIR_NAME);
+        File crashDir = new File(appContext.getFilesDir(), CRASH_DIR_NAME);
+        if (!crashDir.exists()) crashDir.mkdirs();
+        this.crashRingFile = new File(crashDir, CRASH_RING_NAME);
         this.prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         this.enabled = prefs.getBoolean(KEY_ENABLED, false);
         this.worker = new HandlerThread("spider-log-writer");
@@ -117,13 +129,20 @@ public final class SpiderLogStore {
         Log.i(TAG, "debug log enabled=" + value);
     }
 
-    /** 写入日志。level: D/I/W/E */
+    /** 写入日志。level: D/I/W/E/F（F=进程级致命错误，与 W/E 一样无视调试开关强制落盘） */
     public void log(String level, String tag, String message) {
-        boolean isError = "W".equals(level) || "E".equals(level);
+        // G4："F" 必须算错误级。此前它既不过 `!enabled` 闸门，logcat 也落到 default 分支，
+        // 于是发布版（调试开关默认关）里 installCrashHandler 写的 Java 崩溃整栈被丢弃——
+        // 两份导出日志的 FATAL 命中数为 0 就是这个原因，而不是「没有 Java 崩溃」。
+        boolean isError = "W".equals(level) || "E".equals(level) || "F".equals(level);
         if (!enabled && !isError) return;
         if (message == null) message = "";
         logcat(level, tag, message);
         String line = formatLine(level, tag, message);
+        if ("F".equals(level)) {
+            // 崩溃路径上等不起 80ms 批缓冲与「清空日志」，同步落一份独立副本
+            writeCrashRing(line);
+        }
         if (!queue.offer(line)) {
             queue.poll();
             queue.offer(line);
@@ -139,6 +158,7 @@ public final class SpiderLogStore {
             case "I": Log.i(tag, message); break;
             case "W": Log.w(tag, message); break;
             case "E": Log.e(tag, message); break;
+            case "F": Log.e(tag, message); break;
             default: Log.d(tag, message);
         }
     }
@@ -541,18 +561,88 @@ public final class SpiderLogStore {
             // F3：原始 tombstone 全文入包。AppLog 里的摘要只有 top-N 帧与寄存器片段，
             // 归因第三方 jar 的原生真凶必须看完整 backtrace / memory map，导出必须带上。
             appendTombstones(w);
+            // G4：Java 崩溃栈独立副本入包。发布版调试开关默认关，日志文件里只有 W/E，
+            // 且「清空日志」会把当天文件一起删掉——崩溃栈必须有一条不依赖这两件事的通道。
+            appendCrashRing(w);
         }
         return exportFile;
     }
 
-    /** F3：导出包追加最近的原生 tombstone 原文（单文件截断，总量封顶，避免撑爆分享） */
+    /** G4：崩溃栈环形文件（进程临死前同步写，故用独立锁，不走 worker 队列） */
+    private final Object crashRingLock = new Object();
+
+    private void writeCrashRing(String line) {
+        synchronized (crashRingLock) {
+            try {
+                String previous = readWholeFile(crashRingFile);
+                try (BufferedWriter w = new BufferedWriter(new FileWriter(crashRingFile, false))) {
+                    w.write(trimToLatestEntries(JAVA_CRASH_MARK + line, previous));
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "crash ring write failed: " + e);
+            }
+        }
+    }
+
+    private void appendCrashRing(BufferedWriter w) throws IOException {
+        String content;
+        synchronized (crashRingLock) {
+            content = readWholeFile(crashRingFile);
+        }
+        if (content.isEmpty()) return;
+        w.write("===== java crash stacks (last " + JAVA_CRASH_MAX_ENTRIES + ") =====\n");
+        w.write(content);
+        w.newLine();
+    }
+
+    private static String readWholeFile(File f) {
+        if (f == null || !f.isFile()) return "";
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader r = new BufferedReader(
+                new java.io.InputStreamReader(new FileInputStream(f), "UTF-8"))) {
+            char[] buf = new char[8192];
+            int read;
+            while ((read = r.read(buf)) > 0) sb.append(buf, 0, read);
+        } catch (Exception e) {
+            Log.w(TAG, "crash ring read failed: " + e);
+            return "";
+        }
+        return sb.toString();
+    }
+
+    /** 新条目放最前，只保留最近 JAVA_CRASH_MAX_ENTRIES 条（条目以 `===== java crash ` 分块） */
+    private static String trimToLatestEntries(String newest, String previous) {
+        List<String> blocks = new java.util.ArrayList<>();
+        blocks.add(newest);
+        int firstMark = previous.indexOf(JAVA_CRASH_MARK);
+        while (firstMark >= 0 && blocks.size() < JAVA_CRASH_MAX_ENTRIES) {
+            int next = previous.indexOf(JAVA_CRASH_MARK, firstMark + JAVA_CRASH_MARK.length());
+            String body = next >= 0 ? previous.substring(firstMark, next) : previous.substring(firstMark);
+            if (!body.trim().isEmpty()) blocks.add(body);
+            firstMark = next;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String b : blocks) {
+            sb.append(b.endsWith("\n") ? b : b + "\n");
+        }
+        return sb.toString();
+    }
+
     private static final int TOMBSTONE_MAX_FILES = 8;
     private static final int TOMBSTONE_MAX_BYTES_PER_FILE = 256 * 1024;
 
+    /**
+     * F3：导出包追加最近的原生 tombstone 原文（单文件截断，总量封顶，避免撑爆分享）。
+     *
+     * G4 实测纠正：xCrash 3.1.0 的真实落盘名是 `tombstone_<seq>_<ver>_<pkg>.native.xcrash`
+     * 与 `..._java_.xcrash`（真机验证：`tombstone_00001794883231201000_0.1.0__com.qoder.cinema.java.xcrash`），
+     * 既不含 ".tombstone" 也不以 ".log" 结尾——此前的过滤器一条都匹配不上，等于 tombstone 从未进过导出包。
+     */
     private void appendTombstones(BufferedWriter w) throws IOException {
         if (tombstoneDir == null || !tombstoneDir.isDirectory()) return;
         File[] stones = tombstoneDir.listFiles(
-                (dir, name) -> name.contains(".tombstone") || name.endsWith(".log"));
+                (dir, name) -> name.endsWith(".xcrash") || name.contains("tombstone")
+                        || name.endsWith(".log"));
         if (stones == null || stones.length == 0) return;
         Arrays.sort(stones, Comparator.comparingLong(File::lastModified).reversed());
         int limit = Math.min(TOMBSTONE_MAX_FILES, stones.length);
