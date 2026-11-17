@@ -260,6 +260,20 @@ const NATIVE_PROXY_TIMEOUT_MS = 25_000;
 const ZOMBIE_COOLDOWN_MS = 30_000;
 
 /**
+ * F4：本次会话内已知「jar 自带原生库」的源 id。
+ *
+ * 带原生库的 jar（guard 系列）在并发初始化时是原生崩溃的头号触发条件，
+ * 预热据此把它们排到最后单独串行跑。原生侧另有 F1 闸门（同 jar 串行 + 全局 ≤2），
+ * 这里只是让正常预热不去撞那道闸门。
+ * 仅内存态：冷启动首轮没有先验知识，由 F1 兜底；熔断时预热整体降级串行，不依赖这份名单。
+ */
+const nativeBearingSourceIds = new Set<string>();
+
+export function isNativeBearingSpiderSource(sourceId: string): boolean {
+  return nativeBearingSourceIds.has(sourceId);
+}
+
+/**
  * 原生调用竞速：正常结果 / 外部取消 / 超时三者先到先出。
  * 超时或取消后底层任务仍在原生线程池里跑，但 JS 侧立刻得到确定结果。
  */
@@ -605,6 +619,7 @@ export class SpiderAdapter extends BaseAdapter {
         void loadPromise.then(
           (late) => {
             if (!late?.handle) return;
+            if (late.native === true) nativeBearingSourceIds.add(source.id);
             // 宏任务再判定：成功路径的 delivered/handles 写入都发生在微任务里，
             // 同步检查会把"刚创建的正牌句柄"误判成孤儿。
             setTimeout(() => {
@@ -623,6 +638,9 @@ export class SpiderAdapter extends BaseAdapter {
         delivered = true;
         this.jarVariants.set(source.id, candidate);
         this.handles.set(source.id, result.handle);
+        // undefined（Web/旧插件不带该字段）时保留既有判断，不当成"非原生"
+        if (result.native === true) nativeBearingSourceIds.add(source.id);
+        else if (result.native === false) nativeBearingSourceIds.delete(source.id);
         return result.handle;
       } catch (e) {
         if (e instanceof AppError && e.code === 'E_ABORTED') throw e;

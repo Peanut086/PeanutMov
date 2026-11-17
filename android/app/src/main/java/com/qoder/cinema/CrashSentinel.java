@@ -279,6 +279,30 @@ public class CrashSentinel {
     }
 
     /**
+     * F2'：爬虫加载/调用前的隔离检查——同时认 api 级签名（{@code spider:<md5>:<api>}）
+     * 与 jar 级签名（{@code spider:<md5>:*}）。
+     *
+     * 为什么要 jar 级：真机 tombstone 实证（文件 B 两例同签名 SIGSEGV），同一 jar 换个 api
+     * 预热就照崩——原生真凶在 jar 里，与调哪个 api 无关。仅靠崩溃现场那个 api 的签名
+     * 隔离，等于每次都隔错东西。tombstone 命中即对整个 jarMd5 下 {@code :*} 通配。
+     */
+    public static synchronized boolean isSpiderQuarantined(Context context, String jarMd5, String api) {
+        if (jarMd5 == null || jarMd5.isEmpty()) return false;
+        if (api != null && !api.isEmpty() && isQuarantined(context, "spider:" + jarMd5 + ":" + api)) {
+            return true;
+        }
+        return isQuarantined(context, "spider:" + jarMd5 + ":*");
+    }
+
+    /**
+     * F2'：按 jar 粒度隔离（该 jarMd5 下所有 api 一并拒绝），7 天后自动过期。
+     */
+    public static void quarantineJar(Context context, String jarMd5) {
+        if (jarMd5 == null || jarMd5.isEmpty()) return;
+        quarantine(context, "spider:" + jarMd5 + ":*");
+    }
+
+    /**
      * 解除某个签名的隔离
      */
     public static synchronized void unquarantine(Context context, String signature) {

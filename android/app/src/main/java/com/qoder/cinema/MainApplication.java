@@ -68,6 +68,8 @@ public class MainApplication extends Application {
         // 1. 检查未清除的哨兵（B1：per-invocation token 版）—— 同步，决定安全模式
         java.util.List<JSONObject> sentinels = CrashSentinel.readUnclearedAll();
         boolean crashed = true;
+        // F2'：崩溃现场哨兵快照（clearAll 会清空磁盘，后台线程要用它做 jar 级隔离）
+        final java.util.List<JSONObject> crashSentinels = new java.util.ArrayList<>();
         if (!sentinels.isEmpty()) {
             // 取最新的（startedAt 最大）作为归因目标
             JSONObject sentinel = sentinels.get(0);
@@ -108,6 +110,9 @@ public class MainApplication extends Application {
                 }
             }
 
+            // F2'：留一份崩溃现场哨兵快照给后台线程（native tombstone 命中后做 jar 级隔离）
+            crashSentinels.addAll(sentinels);
+
             // 清除所有哨兵（两种归因都已记录完毕）
             CrashSentinel.clearAll();
         }
@@ -124,11 +129,20 @@ public class MainApplication extends Application {
         }
 
         // OPT-17: 以下 IO 重操作移后台线程
+        final boolean crashedFinal = crashed;
         new Thread(() -> {
             // 0. 摄入 tombstone 摘要（A3）
             CrashNative.TombstoneInfo tombstone = CrashNative.ingest(this);
             if (tombstone != null) {
-                AppLog.w(TAG, "found native tombstone: " + tombstone.filename + " signal=" + tombstone.signal);
+                AppLog.w(TAG, "found native tombstone: " + tombstone.filename
+                        + " signal=" + tombstone.signal + " fault=" + tombstone.faultAddr
+                        + " sig=" + tombstone.signature);
+                // F2'：原生崩溃 tombstone 是最强证据（xcrash 只在真崩时落盘）。把该 pid
+                // 现场的全部在途爬虫 jar 按 jarMd5 整体隔离——只崩一次也拉黑整个 jar，
+                // 因为真凶在 jar 原生层，换 api 预热照崩（文件 B 两例同签名实证）。
+                if (crashedFinal && tombstone.crashSignal) {
+                    applyJarLevelQuarantine(tombstone, crashSentinels);
+                }
             }
 
             // 3. 读取 ApplicationExitInfo（API 30+）
@@ -226,6 +240,42 @@ public class MainApplication extends Application {
             if (self.equals(info.getProcessName())) return info;
         }
         return null;
+    }
+
+    /**
+     * F2'：原生崩溃 tombstone 命中后，把该崩溃 pid 现场的全部在途爬虫 jar 整体（jar 级）隔离。
+     *
+     * 匹配口径：优先 pid 精确匹配（同一次进程死亡）；tombstone 未带 pid 或对不上时，
+     * 退回隔离现场所有 spider 在途 jar——宁可多隔一个坏源，也不放它下次冷启再崩。
+     * 与 api 级隔离（{@link #buildQuarantineSignature}）叠加：jar 级签名 {@code spider:<md5>:*}
+     * 由 {@link CrashSentinel#isSpiderQuarantined} 在 load/invoke 前拦截。
+     */
+    private void applyJarLevelQuarantine(CrashNative.TombstoneInfo tombstone,
+                                         List<JSONObject> sentinels) {
+        if (sentinels == null || sentinels.isEmpty()) return;
+        long pid = tombstone.pid;
+        java.util.Set<String> jarMd5s = new java.util.LinkedHashSet<>();
+        java.util.Set<String> anyJarMd5s = new java.util.LinkedHashSet<>();
+        for (JSONObject s : sentinels) {
+            String action = s.optString("action", "");
+            if (!action.startsWith("spider.")) continue;
+            String md5 = s.optString("jarMd5", "");
+            if (md5.isEmpty()) continue;
+            anyJarMd5s.add(md5);
+            if (pid <= 0 || s.optInt("pid", -1) == (int) pid) {
+                jarMd5s.add(md5);
+            }
+        }
+        if (jarMd5s.isEmpty() && !anyJarMd5s.isEmpty() && pid > 0) {
+            // tombstone pid 与哨兵 pid 对不上（个别 ROM 的 pid 字段口径差异）：全量兜底
+            AppLog.w(TAG, "tombstone pid=" + pid + " matched no in-flight spider sentinel; "
+                    + "falling back to jar-level quarantine of all " + anyJarMd5s.size() + " in-flight jar(s)");
+            jarMd5s = anyJarMd5s;
+        }
+        for (String md5 : jarMd5s) {
+            CrashSentinel.quarantineJar(this, md5);
+            AppLog.w(TAG, "jar-level quarantine from tombstone: spider:" + md5 + ":*");
+        }
     }
 
     /**

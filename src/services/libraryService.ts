@@ -37,6 +37,9 @@ import { isKeywordIgnored } from '@/services/searchAggregate';
 import { isLocalArtifactUrl, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
+import { isNative } from '@/shared/platform';
+import { Spider } from '@/native/spiderPlugin';
+import { isNativeBearingSpiderSource } from '@/sources/spider/SpiderAdapter';
 import type {
   AppErrorShape,
   BrowseParams,
@@ -365,11 +368,62 @@ function prewarm(adapter: object, source: Source): void {
 const WARMUP_SWEEP_CONCURRENCY = 4;
 /** F7：启动后预热的起跑延迟，避开首屏渲染与下载队列自检那一段最忙的时间 */
 const WARMUP_SWEEP_START_DELAY_MS = 12000;
+/** F4：串行档（熔断 / 已知带原生库的 jar）每个源之间的间隔，给 ART/JNI 留恢复窗口 */
+const WARMUP_SERIAL_STEP_DELAY_MS = 2000;
 
 /** F7：预热扫描在途标记（重复触发直接复用，不并行跑两轮） */
 let warmupSweepRunning = false;
 /** F7：搜索在途计数——预热必须给真实搜索让路，否则反而拖慢搜索 */
 let searchInFlight = 0;
+
+/**
+ * F4：读原生侧崩溃熔断状态（同签名原生崩溃 24h 内复发 ≥2 次）。
+ * Web / 插件不支持 / 读取失败一律按未熔断——预热降级不该成为新的失败点。
+ */
+async function isPrewarmThrottled(): Promise<boolean> {
+  if (!isNative()) return false;
+  try {
+    const state = await Spider.getPrewarmState();
+    return state.throttled === true;
+  } catch (e) {
+    logger.debug('读取预热熔断状态失败（按未熔断处理）', e);
+    return false;
+  }
+}
+
+/**
+ * F7：worker 池跑一批预热。
+ * `stepDelayMs > 0` 时每个源之间额外等待（串行档专用）；搜索在途时立刻停止领取新源。
+ */
+async function runWarmupBatch(sources: Source[], concurrency: number, stepDelayMs: number): Promise<number> {
+  let cursor = 0;
+  let warmed = 0;
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < Math.min(concurrency, sources.length); i++) {
+    workers.push(
+      (async () => {
+        while (cursor < sources.length) {
+          // 让路：真实搜索在途时立刻停止领取新源
+          if (searchInFlight > 0) return;
+          const source = sources[cursor++];
+          if (!source) continue;
+          try {
+            const adapter = await adapterFor(source);
+            await adapter.warmup?.(source);
+            warmed += 1;
+          } catch {
+            /* 预热失败静默：真实调用时再报对症错误 */
+          }
+          if (stepDelayMs > 0) {
+            await new Promise<void>((resolve) => setTimeout(resolve, stepDelayMs));
+          }
+        }
+      })(),
+    );
+  }
+  await Promise.all(workers);
+  return warmed;
+}
 
 /**
  * F7：批量预热爬虫源，让 jar 下载 / dex / 防护初始化落在搜索之前而不是搜索里。
@@ -378,9 +432,12 @@ let searchInFlight = 0;
  * 再搜（真首装档，约 3.5 分钟）同一关键词超时数是 0——差别的唯一来源就是"预热做没做"。
  * 既有 `prewarm` 全在真实请求路径内，没有任何主动批量入口，所以这里补上。
  *
- * 两条硬约束：
+ * 三条硬约束：
  * 1. 并发 ≤4（原生线程池余量）；
- * 2. 有搜索在途就收手（worker 每取下一个源前检查），因为预热与搜索打满同一个池会把搜索挤进队列。
+ * 2. 有搜索在途就收手（worker 每取下一个源前检查），因为预热与搜索打满同一个池会把搜索挤进队列；
+ * 3. F4：带原生库的 jar 不与其它加载并发——正常档把它们留到最后一轮单独串行，
+ *    熔断档整轮串行。冷启动 native 并发初始化是原生崩溃的头号触发条件（两次现场
+ *    同 jar 加载仅隔 24ms），原生侧另有同 jar 串行 + 全局 ≤2 闸门（F1）兜底。
  *
  * `warmup` 内部对同源去重、失败静默，所以本函数可重复调用且不打扰用户。
  */
@@ -402,29 +459,23 @@ async function warmupSources(opts?: { delayMs?: number }): Promise<number> {
         return a.sort - b.sort;
       });
 
-    let cursor = 0;
-    let warmed = 0;
-    const workers: Promise<void>[] = [];
-    for (let i = 0; i < Math.min(WARMUP_SWEEP_CONCURRENCY, targets.length); i++) {
-      workers.push(
-        (async () => {
-          while (cursor < targets.length) {
-            // 让路：真实搜索在途时立刻停止领取新源
-            if (searchInFlight > 0) return;
-            const source = targets[cursor++];
-            if (!source) continue;
-            try {
-              const adapter = await adapterFor(source);
-              await adapter.warmup?.(source);
-              warmed += 1;
-            } catch {
-              /* 预热失败静默：真实调用时再报对症错误 */
-            }
-          }
-        })(),
-      );
+    // 熔断态下"哪些源带原生库"这份会话内名单不可信（新装/换源后首轮是空的），
+    // 因此整轮降级为串行，而不是只把名单里的挪到最后。
+    const throttled = await isPrewarmThrottled();
+    const light = throttled ? targets : targets.filter((source) => !isNativeBearingSpiderSource(source.id));
+    const nativeHeavy = throttled ? [] : targets.filter((source) => isNativeBearingSpiderSource(source.id));
+
+    let warmed = await runWarmupBatch(
+      light,
+      throttled ? 1 : WARMUP_SWEEP_CONCURRENCY,
+      throttled ? WARMUP_SERIAL_STEP_DELAY_MS : 0,
+    );
+    if (nativeHeavy.length > 0) {
+      // 搜索在途时前一轮已提前 return，这里给同一条件留一次喘息
+      if (searchInFlight === 0) {
+        warmed += await runWarmupBatch(nativeHeavy, 1, WARMUP_SERIAL_STEP_DELAY_MS);
+      }
     }
-    await Promise.all(workers);
     if (warmed > 0) logger.debug('爬虫源批量预热结束', `共加载 ${warmed} 个`);
     return warmed;
   } catch (e) {

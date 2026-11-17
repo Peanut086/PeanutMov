@@ -57,6 +57,8 @@ public final class SpiderLogStore {
     private static volatile SpiderLogStore instance;
 
     private final File logDir;
+    /** F3：xCrash 原生 tombstone 目录（导出包内附带原文，避免只有摘要帧拿不到真凶 .so） */
+    private final File tombstoneDir;
     private final SharedPreferences prefs;
     private final HandlerThread worker;
     private final Handler workerHandler;
@@ -89,6 +91,7 @@ public final class SpiderLogStore {
     private SpiderLogStore(Context appContext) {
         this.logDir = new File(appContext.getFilesDir(), LOG_DIR_NAME);
         if (!logDir.exists()) logDir.mkdirs();
+        this.tombstoneDir = new File(appContext.getFilesDir(), CrashNative.TOMBSTONE_DIR_NAME);
         this.prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         this.enabled = prefs.getBoolean(KEY_ENABLED, false);
         this.worker = new HandlerThread("spider-log-writer");
@@ -535,7 +538,46 @@ public final class SpiderLogStore {
                 }
                 w.newLine();
             }
+            // F3：原始 tombstone 全文入包。AppLog 里的摘要只有 top-N 帧与寄存器片段，
+            // 归因第三方 jar 的原生真凶必须看完整 backtrace / memory map，导出必须带上。
+            appendTombstones(w);
         }
         return exportFile;
+    }
+
+    /** F3：导出包追加最近的原生 tombstone 原文（单文件截断，总量封顶，避免撑爆分享） */
+    private static final int TOMBSTONE_MAX_FILES = 8;
+    private static final int TOMBSTONE_MAX_BYTES_PER_FILE = 256 * 1024;
+
+    private void appendTombstones(BufferedWriter w) throws IOException {
+        if (tombstoneDir == null || !tombstoneDir.isDirectory()) return;
+        File[] stones = tombstoneDir.listFiles(
+                (dir, name) -> name.contains(".tombstone") || name.endsWith(".log"));
+        if (stones == null || stones.length == 0) return;
+        Arrays.sort(stones, Comparator.comparingLong(File::lastModified).reversed());
+        int limit = Math.min(TOMBSTONE_MAX_FILES, stones.length);
+        for (int i = 0; i < limit; i++) {
+            File f = stones[i];
+            w.write("===== tombstone " + f.getName() + " =====\n");
+            try (BufferedReader r = new BufferedReader(
+                    new java.io.InputStreamReader(new FileInputStream(f), "UTF-8"))) {
+                char[] buf = new char[8192];
+                int written = 0;
+                int read;
+                while (written < TOMBSTONE_MAX_BYTES_PER_FILE && (read = r.read(buf)) > 0) {
+                    w.write(buf, 0, read);
+                    written += read;
+                }
+                if (written >= TOMBSTONE_MAX_BYTES_PER_FILE) {
+                    w.write("\n... [truncated]\n");
+                }
+            } catch (IOException e) {
+                try {
+                    w.write("[read failed: " + e.getMessage() + "]\n");
+                } catch (IOException ignored) {
+                }
+            }
+            w.newLine();
+        }
     }
 }

@@ -291,6 +291,25 @@ public class SpiderPlugin extends Plugin {
     private final Map<String, Boolean> guardInitDone = new ConcurrentHashMap<>();
 
     /**
+     * F1：同一 jar 文件 → 加载串行锁。
+     *
+     * 多个源共用同一 jar 时，JS 侧会在订阅导入后并发 load；此前只有 guardInitLocks
+     * 串行化了 Init.init() 这一步，而真机 tombstone（文件 B 两例同签名 SIGSEGV）显示崩溃
+     * 发生在更宽的原生初始化窗口（DexClassLoader → 类实例化 → 构造 → init），且两次
+     * 同 jar 加载仅相隔 24ms。这里把「从 ABI 预检到 LoadedSpider 产出」整段按 jar 串行，
+     * 纯 Java jar 不受额外影响（它们通常不共享、且无原生状态）。
+     */
+    private final Map<String, java.util.concurrent.locks.ReentrantLock> jarNativeLocks = new ConcurrentHashMap<>();
+    /**
+     * F1：带原生库的 jar 全局并发闸门（≤2）。
+     *
+     * 同 jar 的并发由 jarNativeLocks 消除；跨 jar 的并发仍可能同时压满 ART/JIT 与 guard
+     * 原生栈。冷启动预热会一次性拉起十几个不同 jar，闸门把它们削到 2 个并发，避开崩溃窗口。
+     */
+    private final java.util.concurrent.Semaphore nativeAbiGate = new java.util.concurrent.Semaphore(2);
+    private static final long NATIVE_GATE_ACQUIRE_TIMEOUT_MS = 60_000;
+
+    /**
      * TVBox 爬虫类名解析：订阅里的 `api` 形如 `csp_XBPQ` / `py_cctv_full`，
      * jar 内的实际类是 `com.github.catvod.spider.XBPQ`（去掉 `csp_`/`py_` 前缀）。
      * 少数 jar 直接放同名类（`csp_XBPQ` 本身），两种都尝试。
@@ -391,6 +410,8 @@ public class SpiderPlugin extends Plugin {
         final String api;
         final File dexDir;
         final String jarMd5;
+        /** F4：该 jar 是否带原生库（native 承载 jar 的预热需在前端错峰） */
+        final boolean nativeBearing;
         /**
          * F1：同实例串行锁。看门狗超时只放弃 JS 侧回执，原生任务继续跑（僵尸），
          * 此时重试/再次搜索会并发重入同一 Spider 实例——TVBox 爬虫不保证线程安全，
@@ -399,11 +420,12 @@ public class SpiderPlugin extends Plugin {
         final java.util.concurrent.locks.ReentrantLock invokeLock =
                 new java.util.concurrent.locks.ReentrantLock();
 
-        LoadedSpider(Spider spider, String api, File dexDir, String jarMd5) {
+        LoadedSpider(Spider spider, String api, File dexDir, String jarMd5, boolean nativeBearing) {
             this.spider = spider;
             this.api = api;
             this.dexDir = dexDir;
             this.jarMd5 = jarMd5;
+            this.nativeBearing = nativeBearing;
         }
     }
 
@@ -641,6 +663,8 @@ public class SpiderPlugin extends Plugin {
             }
             JSObject ret = new JSObject();
             ret.put("handle", handle);
+            // F4：告知 JS 侧该源是否带原生库（native 承载 jar 的预热需错峰，见 libraryService）
+            ret.put("native", result.nativeBearing);
             call.resolve(ret);
         });
     }
@@ -897,6 +921,20 @@ public class SpiderPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /**
+     * F4：查询预热熔断状态。
+     *
+     * 当原生崩溃签名在 24h 内复发 ≥2 次（{@link CrashNative#isPrewarmThrottled}），
+     * 前端批量预热应降级：延后 / 串行 native 承载 jar，避开冷启动 native 初始化风暴。
+     */
+    @PluginMethod
+    public void getPrewarmState(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("throttled", CrashNative.isPrewarmThrottled(getContext()));
+        ret.put("safeMode", MainApplication.isSafeMode(getContext()));
+        call.resolve(ret);
+    }
+
     @Override
     protected void handleOnDestroy() {
         watchdog.removeCallbacksAndMessages(null);
@@ -1045,13 +1083,11 @@ public class SpiderPlugin extends Plugin {
      * 与 `Build.SUPPORTED_ABIS` 一个都不匹配就抛 `UnsatisfiedLinkError`
      * （由 `describeFailure` 转成「该源依赖 ARM 原生库」的明确文案）。
      */
-    private static void assertNativeAbiSupported(File jarFile) throws UnsatisfiedLinkError {
-        java.util.Set<String> jarAbis;
-        try {
-            jarAbis = nativeAbisOf(jarFile);
-        } catch (Exception e) {
+    private static void assertNativeAbiSupported(File jarFile, java.util.Set<String> jarAbis,
+                                                 boolean abiScanOk) throws UnsatisfiedLinkError {
+        if (!abiScanOk) {
             // 解析失败不阻断（纯 Java jar 是常态），交给后续加载路径
-            Log.w(TAG, "jar abi precheck skipped: " + e.getMessage());
+            Log.w(TAG, "jar abi precheck skipped: scan failed");
             return;
         }
         Log.i(TAG, "jar abi precheck: " + jarFile.getName() + " -> " + jarAbis
@@ -1172,28 +1208,55 @@ public class SpiderPlugin extends Plugin {
         }
 
         // REV-24：隔离检查——同 jar+api 签名若已崩溃 2 次被隔离，直接拒绝加载
-        String quarantineSig = "spider:" + jarMd5 + ":" + api;
-        if (CrashSentinel.isQuarantined(context, quarantineSig)) {
-            throw new IllegalStateException("spider quarantined (crash x2): " + quarantineSig);
+        // F2'：额外认 jar 级通配签名（spider:<md5>:*），原生 tombstone 命中即整 jar 拉黑
+        if (CrashSentinel.isSpiderQuarantined(context, jarMd5, api)) {
+            throw new IllegalStateException("spider quarantined (crash): spider:" + jarMd5 + ":" + api);
         }
 
-        // REV-24 / B2：写哨兵——若后续 DexClassLoader/init 触发 native crash，下次启动可检测到
-        String token = null;
+        // F1：带原生库的 jar 并发初始化是闪退头号触发条件（文件 B 两例同 jar 加载仅隔 24ms）。
+        // 同 jar 串行（jarNativeLocks）+ 全局原生闸门（nativeAbiGate ≤2），把冷启动 native 风暴削平。
+        String lockKey = jarFile.getAbsolutePath();
+        java.util.Set<String> jarAbis;
+        boolean abiScanOk = true;
         try {
-            JSONObject sentinelDetails = new JSONObject();
-            sentinelDetails.put("jarMd5", jarMd5);
-            sentinelDetails.put("api", api);
-            sentinelDetails.put("jarUrl", cleanUrl);
-            token = CrashSentinel.begin("spider.load", sentinelDetails);
+            jarAbis = nativeAbisOf(jarFile);
         } catch (Exception e) {
-            Log.w(TAG, "failed to write sentinel", e);
+            jarAbis = java.util.Collections.emptySet();
+            abiScanOk = false;
+            Log.w(TAG, "jar abi scan failed (treat as native): " + e.getMessage());
         }
+        final boolean nativeBearing = abiScanOk ? !jarAbis.isEmpty() : true;
 
+        java.util.concurrent.locks.ReentrantLock jarLoadLock =
+                jarNativeLocks.computeIfAbsent(lockKey, k -> new java.util.concurrent.locks.ReentrantLock());
+        jarLoadLock.lock();
+        boolean gateAcquired = false;
         try {
-        // 加载前做 ABI 预检：带 native 库的 jar（ftyguard 系列）如果只有 ARM 版本，
-        // 在 x86 模拟器上会由 native 代码触发 JNI abort（SIGABRT 杀进程，catch 不住）。
-        // 必须在 DexClassLoader 之前拒绝，否则一个后台预热就能把整个 App 打崩。
-        assertNativeAbiSupported(jarFile);
+            if (nativeBearing) {
+                gateAcquired = nativeAbiGate.tryAcquire(
+                        NATIVE_GATE_ACQUIRE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+                if (!gateAcquired) {
+                    throw new IllegalStateException("原生源加载排队超时，请稍后重试");
+                }
+            }
+
+            // REV-24 / B2：写哨兵——若后续 DexClassLoader/init 触发 native crash，下次启动可检测到
+            String token = null;
+            try {
+                JSONObject sentinelDetails = new JSONObject();
+                sentinelDetails.put("jarMd5", jarMd5);
+                sentinelDetails.put("api", api);
+                sentinelDetails.put("jarUrl", cleanUrl);
+                token = CrashSentinel.begin("spider.load", sentinelDetails);
+            } catch (Exception e) {
+                Log.w(TAG, "failed to write sentinel", e);
+            }
+
+            try {
+            // 加载前做 ABI 预检：带 native 库的 jar（ftyguard 系列）如果只有 ARM 版本，
+            // 在 x86 模拟器上会由 native 代码触发 JNI abort（SIGABRT 杀进程，catch 不住）。
+            // 必须在 DexClassLoader 之前拒绝，否则一个后台预热就能把整个 App 打崩。
+            assertNativeAbiSupported(jarFile, jarAbis, abiScanOk);
 
         // P0-5: 复用 DexClassLoader，避免同一 jar 重复加载
         String jarKey = jarFile.getAbsolutePath();
@@ -1261,9 +1324,10 @@ public class SpiderPlugin extends Plugin {
         if (userAgent != null && !userAgent.isEmpty()) {
             applyUserAgent(spider, userAgent);
         }
-        Log.i(TAG, "loaded spider: " + api + (loaderReused ? " (reused loader)" : ""));
+        Log.i(TAG, "loaded spider: " + api + (loaderReused ? " (reused loader)" : "")
+                + (nativeBearing ? " (native)" : ""));
         CrashSentinel.end(token);
-        return new LoadedSpider(spider, api, dexDir, jarMd5);
+        return new LoadedSpider(spider, api, dexDir, jarMd5, nativeBearing);
         } catch (Exception e) {
             CrashSentinel.end(token);
             // C: Android 14+ DCL 限制——把晦涩的 SecurityException 转成用户可读文案，
@@ -1274,6 +1338,10 @@ public class SpiderPlugin extends Plugin {
                         "系统安全限制（Android 14+ 动态加载要求只读），请更新 App 版本", e);
             }
             throw e;
+        }
+        } finally {
+            if (gateAcquired) nativeAbiGate.release();
+            jarLoadLock.unlock();
         }
     }
 

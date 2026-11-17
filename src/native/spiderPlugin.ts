@@ -60,8 +60,8 @@ export interface SpiderProxyResult {
 }
 
 export interface SpiderPlugin {
-  /** 加载/初始化爬虫实例；重复加载同一 jar 复用缓存 */
-  load(options: SpiderLoadOptions): Promise<{ handle: string }>;
+  /** 加载/初始化爬虫实例；重复加载同一 jar 复用缓存。`native` 标记该 jar 是否自带原生库 */
+  load(options: SpiderLoadOptions): Promise<{ handle: string; native?: boolean }>;
   /** 调用调用爬虫方法，返回 JSON 字符串 */
   invoke(options: SpiderInvokeOptions): Promise<SpiderInvokeResult>;
   /** 走爬虫代理取内容地址 */
@@ -74,6 +74,11 @@ export interface SpiderPlugin {
   isSupported(): Promise<{ supported: boolean }>;
   /** 查询安全模式状态（近期多次崩溃后原生会暂停爬虫加载） */
   getSafeMode(): Promise<{ active: boolean }>;
+  /**
+   * F4：查询预热降级状态。`throttled` 在原生崩溃签名 24h 内复发 ≥2 次后置真，
+   * 前端据此把带原生库的源的预热改为串行延后（见 libraryService.warmupSources）。
+   */
+  getPrewarmState(): Promise<{ throttled: boolean; safeMode: boolean }>;
   /** 手动退出安全模式并清空崩溃历史，恢复爬虫源加载 */
   exitSafeMode(): Promise<{ ok: boolean }>;
   /** 设置详细日志开关 */
