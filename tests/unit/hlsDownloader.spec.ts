@@ -169,7 +169,7 @@ describe('HLS 下载（Phase 2）', () => {
   });
 
   describe('加密方式：AES-128 不应被 DRM 守卫误拒', () => {
-    it('AES-128 清单继续进入密钥获取，不抛 E_DRM_PROTECTED', async () => {
+    it('AES-128 清单不在清单阶段被 DRM 守卫拦截，照常进入密钥获取', async () => {
       const responses = new Map([
         ['https://cdn.example.com/master.m3u8', { body: ENCRYPTED_PLAYLIST }],
         ['https://cdn.example.com/key.bin', { body: new Uint8Array(16).fill(3) }],
@@ -184,13 +184,15 @@ describe('HLS 下载（Phase 2）', () => {
         fetchImpl: fetchImpl as unknown as typeof fetch,
       });
 
-      // 解密结果不在本用例关注范围（假密钥），只关心"清单阶段有没有被误判成 DRM"
+      // 解密结果不在本用例关注范围（假密钥），只关心"清单阶段有没有被误判成 DRM"。
+      // 假密钥解不开如今会撞到解密判死（同样是 E_DRM_PROTECTED，但发生在分片阶段），
+      // 所以按判据区分：清单阶段的守卫把证据写在 detail 里。
       const error = await downloader.run(task(), new AbortController().signal).then(
         () => null,
-        (e: { code?: string }) => e,
+        (e: { code?: string; detail?: string }) => e,
       );
 
-      expect(error?.code).not.toBe('E_DRM_PROTECTED');
+      expect(error?.detail ?? '').not.toMatch(/不支持的 HLS 加密方式/);
       const calls = fetchImpl.mock.calls.map((c) => String(c[0]));
       expect(calls).toContain('https://cdn.example.com/key.bin');
     });

@@ -193,6 +193,9 @@ const STALE_LINK_CODES = new Set<string>([
   'E_HTTP_403',
   'E_HTTP_404',
   'E_AUTH',
+  // 密钥过期同样表现为"解不开"：AES 密钥是按签名直链拉回来的，直链一过期，
+  // 拿到的就是错误页而不是密钥，于是每片都解密失败。先换新链再重试才有救。
+  'E_DRM_PROTECTED',
 ]);
 
 /** 去掉签名查询串：同一资源换了 token 仍算同一资源，已下载的字节可以继续用 */
@@ -254,6 +257,19 @@ async function refreshStaleLink(task: DownloadTask): Promise<void> {
 }
 
 /**
+ * 直链失效类失败的统一收口：任何"让它重新跑起来"的入口都先换一份带新签名的地址。
+ *
+ * 只有 `retry()` 做过这件事，而 UI 上「继续」走的是 `resume()`——停滞/暂停后的任务
+ * 按继续等于拿同一条过期 `auth_key` 再请求一次，CDN 就回 402/403，用户看到的是
+ * "点继续必报错"。判定只看错误码，不做多余解析。
+ */
+async function refreshLinkIfStale(id: string): Promise<void> {
+  const task = await downloadRepo.get(id);
+  if (!task?.errorCode || !STALE_LINK_CODES.has(task.errorCode)) return;
+  await refreshStaleLink(task);
+}
+
+/**
  * 并发档位同步给原生直链下载器（EXT-04 / FR-62）。
  * 原生侧此前硬编码 2 路，设置页的 1/2/3 只驱动 JS 队列，走原生时用户调档完全无感。
  */
@@ -305,7 +321,19 @@ async function ensureQueue(): Promise<DownloadQueue> {
   const saveProgress = async (id: string, patch: Partial<DownloadTask>): Promise<void> => {
     const current = await downloadRepo.get(id);
     if (!current) return;
-    const next: DownloadTask = { ...current, ...patch, updatedAt: patch.updatedAt ?? Date.now() };
+    /**
+     * 进度回写不许复活状态：`hlsDownloader`（第 741 行）与 `downloadEngine`（native 启动回执）
+     * 都带着 `status: 'downloading'` 写字节数，而这些写入可能晚于队列把任务改成 failed/paused
+     * （停滞中断、用户暂停、后台回收）。库里于是留下一条「downloading 却没人跑」的任务，
+     * 30s 后被 watchdog 当成孤儿判成「下载停滞」，用户点继续再撞回原来的 402/403。
+     * 状态迁移归队列，进度回写只允许 queued → downloading（引擎的异步启动回执）。
+     */
+    let guarded = patch;
+    if (patch.status && patch.status !== current.status && current.status !== 'queued') {
+      guarded = { ...patch };
+      delete guarded.status;
+    }
+    const next: DownloadTask = { ...current, ...guarded, updatedAt: guarded.updatedAt ?? Date.now() };
     await downloadRepo.save(next);
     emitDownload({ type: 'progress', task: next });
   };
@@ -393,7 +421,13 @@ async function requeuePending(mode: 'none' | 'auto' | 'all' = 'none'): Promise<v
     if (task.status === 'paused') {
       // 自动恢复不复活用户主动暂停/仅WiFi强制暂停；旧记录无 pausedBy 视为后台冻结照常恢复。
       if (mode === 'auto' && (task.pausedBy === 'user' || task.pausedBy === 'network')) continue;
-      const next = transition(task, 'resume');
+      // 自动重试退避会停在 paused，直链过期就留在这里：恢复前换新地址
+      let row = task;
+      if (task.errorCode && STALE_LINK_CODES.has(task.errorCode)) {
+        await refreshStaleLink(task);
+        row = (await downloadRepo.get(task.id)) ?? task;
+      }
+      const next = transition(row, 'resume');
       await persist(next);
       emitDownload({ type: 'status', task: next, previous: 'paused' });
       q.enqueue(next);
@@ -917,6 +951,8 @@ export const downloadService = {
 
   async resume(id: string): Promise<DownloadTask> {
     const q = await ensureQueue();
+    // FIX-D9 补口：「继续」也要先刷新过期直链，否则只会在同一死链上再撞一次 402/403
+    await refreshLinkIfStale(id);
     const task = await q.resume(id);
     await emitQueueSummary();
     return task;
@@ -1459,6 +1495,14 @@ export const downloadService = {
   },
 
   /**
+   * FIX-STALL：停滞巡检入口（watchdog 定时器每 30s 调它，单测直接调同一份逻辑）。
+   * 孤儿任务交回队列续传，而不是判成「下载停滞」让用户手动重试。
+   */
+  async checkStalledTasks(): Promise<void> {
+    await runWatchdogCheck();
+  },
+
+  /**
    * REV-24：僵尸任务检测——app 重启后 "downloading" 状态的任务必然是僵尸（进程已死），
    * 标记为 failed 让用户可以重试，避免永远卡在 downloading 状态。
    * 只在真正的 app 启动时执行（由 bootstrap store 的 initDownloads 调用），
@@ -1876,6 +1920,7 @@ export const downloadService = {
     queue?.dispose();
     queue = null;
     listeners.clear();
+    orphanRequeueStreak.clear();
     bootstrapped = false;
     setDownloadEngine(null);
   },
@@ -1898,26 +1943,68 @@ function stopWatchdog(): void {
   }
 }
 
+/**
+ * 孤儿任务被交回队列的次数（每次 app 启动重新计数）。
+ * 超限才按老路判失败，避免真正跑不动的任务无限自我重入。
+ */
+const orphanRequeueStreak = new Map<string, number>();
+const ORPHAN_REQUEUE_LIMIT = 3;
+
 async function runWatchdogCheck(): Promise<void> {
   try {
     if (!queue) return;
     const tasks = await downloadRepo.listByStatus(['downloading']);
     const now = Date.now();
+    const requeuedIds = new Set<string>();
     for (const task of tasks) {
       if (now - task.updatedAt < WATCHDOG_STALE_MS) continue;
       if (queue.isActive(task.id)) {
         // runner 还在但没进度 → 强制 abort 触发重试
         queue.abortTask(task.id, `停滞 ${Math.round((now - task.updatedAt) / 1000)}s`);
         logger.warn('watchdog: 强制中断停滞任务', { taskId: task.id, staleSec: Math.round((now - task.updatedAt) / 1000) });
-      } else {
-        // runner 不在活跃列表 → 孤儿任务，标记失败
-        const next = transition(task, 'fail');
-        next.errorMessage = '下载停滞（watchdog 检测）';
-        await downloadRepo.save(next);
-        emitDownload({ type: 'status', task: next, previous: 'downloading' });
-        void emitQueueSummary();
-        logger.warn('watchdog: 孤儿任务已标记失败', { taskId: task.id });
+        continue;
       }
+
+      /**
+       * 「downloading 但队列里没有 runner」不等于停滞，它意味着没人对这个任务负责：
+       * 上次会话被系统回收、退避期间被迟到的进度回写复活……直接判失败就是用户看到的
+       * 「下载停滞（watchdog 检测）」，再接一句毫无意义的「重试」。交回队列按断点续传，
+       * 续传口自己会用新地址（直链过期由 resume()/refreshStaleLink 负责）。
+       */
+      if (!isOnline()) continue; // 离线时不动它，网络策略那条路负责暂停与归还
+
+      const streak = (orphanRequeueStreak.get(task.id) ?? 0) + 1;
+      orphanRequeueStreak.set(task.id, streak);
+
+      if (streak <= ORPHAN_REQUEUE_LIMIT) {
+        const stopped = transition(task, 'pause');
+        stopped.pausedBy = 'background';
+        await downloadRepo.save(stopped);
+        emitDownload({ type: 'status', task: stopped, previous: 'downloading' });
+        const requeued = transition(stopped, 'resume');
+        await downloadRepo.save(requeued);
+        emitDownload({ type: 'status', task: requeued, previous: 'paused' });
+        queue.enqueue(requeued);
+        requeuedIds.add(task.id);
+        void emitQueueSummary();
+        logger.warn('watchdog: 无人负责的 downloading 已交回队列续传', { taskId: task.id, streak });
+        continue;
+      }
+
+      // 反复交回仍无人跑 → 判失败，保留原有可见文案供上报
+      const next = transition(task, 'fail');
+      next.errorMessage = '下载停滞（watchdog 检测）';
+      await downloadRepo.save(next);
+      emitDownload({ type: 'status', task: next, previous: 'downloading' });
+      void emitQueueSummary();
+      logger.warn('watchdog: 孤儿任务已标记失败', { taskId: task.id, streak });
+    }
+    // 计数只在"还可能继续被巡检"期间保留：这一轮里仍是 downloading、或刚被交回队列的，
+    // 保留计数（否则交回后短暂处于 queued 会让次数被抹平，判失败的兜底就永远走不到）；
+    // 已经跑起来/完成/失败/取消的任务清零，避免历史计数带到下一轮。
+    const touched = new Set([...tasks.map((t) => t.id), ...requeuedIds]);
+    for (const id of [...orphanRequeueStreak.keys()]) {
+      if (!touched.has(id)) orphanRequeueStreak.delete(id);
     }
   } catch (e) {
     logger.warn('watchdog 检查异常', toAppError(e).message);

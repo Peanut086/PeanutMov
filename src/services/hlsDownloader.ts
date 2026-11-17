@@ -132,8 +132,14 @@ const RETRY_BACKOFF_MS = [500, 1500];
 const SEGMENT_FETCH_TIMEOUT_MS = 30_000;
 /** FIX-D1：清单 / 密钥获取超时（15s） */
 const MANIFEST_KEY_TIMEOUT_MS = 15_000;
-/** FIX-D1：主循环停滞阈值（60s 无任何分片完成 → 判定卡死） */
+/**
+ * FIX-D1：主循环停滞阈值（60s 没有任何分片请求发起 → 判定调度卡死）。
+ * 计数口径是"发起"而不是"完成"：一次「30s 超时 + 退避」的正常重试节奏约 31.5s，
+ * 只认完成事件会把还在重试的窗口误判成停滞（用户看到的下载停滞中断之一）。
+ */
 const STALL_TIMEOUT_MS = 60_000;
+/** 连续多少片解密失败就判这条线解不开（再多试只是空跑 987 片） */
+const DECRYPT_FAILURE_LIMIT = 3;
 
 /**
  * 源侧返回的不是清单，而是网页 / 接口错误体（防盗链、限流、直链过期）。
@@ -578,10 +584,39 @@ function parseIV(ivHex: string): Uint8Array {
   return iv;
 }
 
+/**
+ * `AbortSignal.reason`（ES2022）读取：旧宿主没有该属性时返回 undefined。
+ * 转发 reason 才有"为什么被中止"——丢掉 reason 会让 watchdog 的中止理由在半路变成
+ * 一个空消息的 AbortError，最终洗成「操作失败，请重试」。
+ */
+function abortReasonOf(signal: AbortSignal): unknown {
+  return (signal as AbortSignal & { reason?: unknown }).reason;
+}
+
 export class HlsDownloader {
   constructor(private readonly deps: HlsDownloaderDeps) {}
 
-  async run(task: DownloadTask, signal: AbortSignal): Promise<void> {
+  /**
+   * 一次下载 = 一个作用域信号（FIX-STALL）。
+   *
+   * 滑动窗口里的分片请求是 fire-and-forget：run 因停滞、首个错误或超时退出时，
+   * 最多 `parallelSegments` 个在途 fetch（含退避 sleep）不会自动终止，而是变成僵尸请求
+   * 继续打同一批 CDN 地址。实测同一 taskId 因此出现 3 轮重入、单轮 12 路并发，
+   * 直接换来 429/403 与"进度永远 0"。退出即 abort 本作用域，僵尸请求一个不留。
+   */
+  async run(task: DownloadTask, parentSignal: AbortSignal): Promise<void> {
+    const controller = new AbortController();
+    const onParentAbort = (): void => controller.abort(abortReasonOf(parentSignal) ?? new AppError('E_ABORTED'));
+    parentSignal.addEventListener('abort', onParentAbort, { once: true });
+    try {
+      await this.runWithSignal(task, controller.signal);
+    } finally {
+      parentSignal.removeEventListener('abort', onParentAbort);
+      controller.abort(new AppError('E_ABORTED', '下载已结束'));
+    }
+  }
+
+  private async runWithSignal(task: DownloadTask, signal: AbortSignal): Promise<void> {
     const fetchImpl = this.deps.fetchImpl ?? fetch.bind(globalThis);
     const sinkFactory = this.deps.createSinkImpl ?? createSink;
     const now = this.deps.now ?? Date.now;
@@ -784,6 +819,10 @@ export class HlsDownloader {
       let nextWriteIndex = completedCount;
       let queueIdx = 0;
       let inflight = 0;
+      // 必须早于 downloadSegment/launchNext 声明：初始填充窗口在下面的主循环之前就
+      // 调用了 launchNext，晚声明会踩到 TDZ（ReferenceError）。
+      let lastActivityAt = now();
+      let decryptFailures = 0;
       let firstError: unknown = null;
       let wake: (() => void) | null = null;
       const settled: Array<{ data: Uint8Array; index: number }> = [];
@@ -791,10 +830,13 @@ export class HlsDownloader {
       const downloadSegment = async (seg: { segment: typeof playlist.segments[0]; index: number }) => {
         let lastError: unknown;
         for (let attempt = 0; attempt <= MAX_SEGMENT_RETRIES; attempt++) {
+          // 发起一次请求就算"有活动"：停滞闸门若只认完成事件，一个正常的
+          // 「30s 超时 + 退避」节奏（≈31.5s×2）就会顶穿 60s，把还在重试的窗口判死。
+          lastActivityAt = now();
           try {
             // FIX-D1：单分片超时，超时后 abort fetch 触发重试
             const segController = new AbortController();
-            const onParentAbort = (): void => segController.abort();
+            const onParentAbort = (): void => segController.abort(abortReasonOf(signal) ?? new AppError('E_ABORTED'));
             signal.addEventListener('abort', onParentAbort, { once: true });
             const timeoutId = setTimeout(() => segController.abort(new AppError('E_NETWORK', `分片下载超时 (${SEGMENT_FETCH_TIMEOUT_MS}ms)`)), SEGMENT_FETCH_TIMEOUT_MS);
 
@@ -847,7 +889,27 @@ export class HlsDownloader {
                   throw new AppError('E_PARSE', `密钥未找到: ${seg.segment.key.uri}`);
                 }
                 const iv = seg.segment.key.iv ? parseIV(seg.segment.key.iv) : this.getDefaultIV(seg.segment, playlist);
-                data = await decryptAes128(data, key, iv);
+                try {
+                  data = await decryptAes128(data, key, iv);
+                  decryptFailures = 0;
+                } catch (decryptErr) {
+                  /**
+                   * 密钥解不开内容时 `crypto.subtle` 只给一个空消息的 OperationError，
+                   * 上层洗成 E_UNKNOWN（「操作失败，请重试」，可重试）→ 987 片 ×3 次重试全部
+                   * 空跑，进度永远 0，用户看到的正是"停滞 + 重试无意义"。
+                   * 连续 3 片解不开就判死：要么直链过期把密钥换成了错误页（重试能救，见
+                   * STALE_LINK_CODES），要么这条线的加密我们本来就解不了（只能换线）。
+                   */
+                  decryptFailures += 1;
+                  if (decryptFailures >= DECRYPT_FAILURE_LIMIT) {
+                    throw new AppError(
+                      'E_DRM_PROTECTED',
+                      `该线路分片解密失败（已连续 ${decryptFailures} 片，密钥与内容不匹配），请重试换新直链或切换线路`,
+                      { detail: seg.segment.url, cause: decryptErr },
+                    );
+                  }
+                  throw decryptErr;
+                }
               }
 
               // A2/A3：结构校验放在解密与去前缀之后，检查的是最终要落盘的字节
@@ -858,7 +920,9 @@ export class HlsDownloader {
             }
           } catch (e) {
             lastError = e;
-            if (signal.aborted) throw toAppError(e, 'E_ABORTED');
+            // 中止理由优先于本层异常：丢掉 reason 会让 watchdog 的判因在中途变成
+            // 一个空消息 AbortError/OperationError，最后被洗成「操作失败，请重试」。
+            if (signal.aborted) throw toAppError(abortReasonOf(signal) ?? e, 'E_ABORTED');
             // 可重试的 AppError（5xx / 429 / 超时 / 源侧暂时拒绝）必须走退避重试。
             // 之前「只要是 AppError 就立即抛」让 MAX_SEGMENT_RETRIES 形同虚设：
             // 一次网络抖动就整任务失败，用户看到的就是「偶发中断后再也下不动」。
@@ -946,7 +1010,6 @@ export class HlsDownloader {
       }
 
       // 滑动窗口主循环（FIX-D8：结果队列全量消费，绝不丢弃）
-      let lastActivityAt = now();
       while (true) {
         if (signal.aborted) throw new AppError('E_ABORTED');
 
@@ -1261,6 +1324,9 @@ export class HlsDownloader {
   private mapHttpError(status: number, message: string): AppError {
     const code =
       status === 401 ? 'E_AUTH' :
+      // 402 在这类 CDN 上就是「URL 里的签名过期/不被接受」（auth_key=<到期时间>-…-<md5>），
+      // 归 403 同族才能进 STALE_LINK_CODES 换新直链；文案保留真实状态码，不改状态语义。
+      status === 402 ? 'E_HTTP_403' :
       status === 403 ? 'E_HTTP_403' :
       status === 404 ? 'E_HTTP_404' :
       // 限流是可重试的：之前落到 E_HTTP_400（不可重试），一被限流就整任务判死

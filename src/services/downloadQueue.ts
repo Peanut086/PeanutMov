@@ -254,9 +254,14 @@ export class DownloadQueue {
     return this.active.size;
   }
 
-  /** FIX-D3：检查指定任务是否正在活跃执行中 */
+  /**
+   * FIX-D3：检查指定任务是否正在活跃执行中。
+   *
+   * 除在跑的外，还认"已入队待跑"和"退避重试等槽位"：这两种情况下任务同样由队列负责，
+   * 若只认 active，watchdog 会把刚被恢复、还在 pending 里的任务当孤儿判成「下载停滞」。
+   */
   isActive(id: string): boolean {
-    return this.active.has(id);
+    return this.active.has(id) || this.pending.some((entry) => entry.id === id) || this.retryAfterActive.has(id);
   }
 
   /** FIX-D3：强制中断指定任务的执行（watchdog 检测到卡死时调用） */
@@ -377,10 +382,21 @@ export class DownloadQueue {
     if (!task) return;
     if (task.status !== 'downloading') return; // 用户已暂停/取消
 
-    const error = cause instanceof AppError ? cause : new AppError('E_UNKNOWN', undefined, { detail: String(cause) });
-    if (error.code === 'E_ABORTED' || error.code === 'E_CANCELED') return;
-
     const now = this.opts.now ?? Date.now;
+    const error = cause instanceof AppError ? cause : new AppError('E_UNKNOWN', undefined, { detail: String(cause) });
+    if (error.code === 'E_ABORTED' || error.code === 'E_CANCELED') {
+      /**
+       * 中止了 runner 却没先改状态的路径（`stopAll()`、`dispose()`、迟到的一次 abort）
+       * 会把任务永久留在 `downloading`：没有 runner、没有进度，最终被 watchdog 判成
+       * 「下载停滞」。这里收口成后台暂停，交给回前台的自动恢复续传，而不是留个死状态。
+       */
+      const stopped = transition(task, 'pause', now());
+      stopped.pausedBy = 'background';
+      await this.opts.save(stopped);
+      this.opts.onStatus?.(stopped, task.status);
+      return;
+    }
+
     const decision = decideAfterFailure(
       task,
       { code: error.code, message: error.message, retryable: error.retryable },

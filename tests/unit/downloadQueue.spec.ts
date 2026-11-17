@@ -252,3 +252,74 @@ describe('下载队列调度（AC-71）', () => {
     expect(store.get('f')?.retries).toBe(2);
   });
 });
+
+describe('停滞误报收口（11-17）', () => {
+  /** 并发 1、两条任务：第二条只能待在 pending 里 */
+  function makeHoldQueue() {
+    const store = new Map<string, DownloadTask>();
+    const queue = new DownloadQueue({
+      load: async (id) => store.get(id) ?? null,
+      save: async (t) => {
+        store.set(t.id, t);
+      },
+      concurrency: 1,
+      sleep: async () => undefined,
+    });
+    return { queue, store };
+  }
+
+  it('isActive 认 pending：还在排队不等于没人负责，watchdog 不该判它停滞', async () => {
+    const { queue, store } = makeHoldQueue();
+    let releaseFirst: () => void = () => undefined;
+    const blocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    queue.run(async (t) => {
+      if (t.id === 'hold-1') await blocked;
+    });
+
+    const a = task({ id: 'hold-1' });
+    const b = task({ id: 'hold-2' });
+    store.set(a.id, a);
+    store.set(b.id, b);
+    queue.enqueue(a);
+    queue.enqueue(b);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(queue.isActive('hold-1')).toBe(true); // 在跑
+    expect(queue.isActive('hold-2')).toBe(true); // 在排队，同样由队列负责
+    releaseFirst();
+    await queue.drain();
+    expect(queue.isActive('hold-2')).toBe(false);
+  });
+
+  it('runner 被 abort 但状态还是 downloading：收口成后台暂停，不留死状态', async () => {
+    const store = new Map<string, DownloadTask>();
+    const statusLog: Array<[string, DownloadStatus]> = [];
+    const queue = new DownloadQueue({
+      load: async (id) => store.get(id) ?? null,
+      save: async (t) => {
+        store.set(t.id, t);
+        statusLog.push([t.id, t.status]);
+      },
+      concurrency: 1,
+      sleep: async () => undefined,
+    });
+    // 模拟 stopAll()：中止 runner，却没人先改库里的状态
+    queue.run(async (t) => {
+      store.set(t.id, { ...t, status: 'downloading' });
+      throw new AppError('E_ABORTED');
+    });
+
+    const frozen = task({ id: 'abort-1' });
+    store.set(frozen.id, { ...frozen, status: 'queued' });
+    queue.enqueue({ ...frozen, status: 'queued' });
+    await queue.drain();
+
+    const row = store.get('abort-1');
+    expect(row?.status).toBe('paused');
+    expect(row?.pausedBy).toBe('background');
+    // 留在 downloading 就是 watchdog 眼里的孤儿 → 用户看到「下载停滞」
+    expect(row?.status).not.toBe('downloading');
+  });
+});

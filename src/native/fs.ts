@@ -9,7 +9,7 @@
  */
 import { Directory, Filesystem } from '@capacitor/filesystem';
 
-import { AppError, toAppError } from '@/shared/errors';
+import { AppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
 
@@ -21,16 +21,51 @@ export interface FsStat {
   mtime: number | null;
 }
 
+/**
+ * 插件异常的 `code` 与 `message`。
+ *
+ * Capacitor 7 的 Filesystem 在 Android 侧 reject 的是 `{code, message}` 普通对象
+ * （`OS-PLUG-FILE-00NN`），不是 Error 实例；对它取 `message` 或 `String(e)` 只会得到
+ * 空串 / `[object Object]`，于是所有正则判断全部落空，任何一次写盘抖动都被兜底成
+ * `E_FILE_MISSING`，用户看到的就是一句假话「本地文件不可用，请重新下载」。
+ */
+function describeRejection(e: unknown): { code: string; message: string } {
+  if (e instanceof Error) return { code: '', message: e.message };
+  if (e && typeof e === 'object') {
+    const raw = e as { code?: unknown; message?: unknown };
+    return { code: String(raw.code ?? ''), message: String(raw.message ?? '') };
+  }
+  return { code: '', message: typeof e === 'string' ? e : '' };
+}
+
+/** 目录/文件已存在（OS-PLUG-FILE-0010 覆盖 mkdir 与 rename 两种「已存在」） */
+function isAlreadyExists({ code, message }: { code: string; message: string }): boolean {
+  // 「does not exist」里也含 "exist"：不排除掉就会把缺失当成已存在，rename 会去删目标、
+  // mkdir 会把真故障咽成成功。
+  if (isDoesNotExist({ code, message })) return false;
+  return code === 'OS-PLUG-FILE-0010' || /already exist|cannot be overwritten|exists/i.test(message);
+}
+
+/** 目标不存在（OS-PLUG-FILE-0008） */
+function isDoesNotExist({ code, message }: { code: string; message: string }): boolean {
+  return code === 'OS-PLUG-FILE-0008' || /does not exist|not exist|no such file|ENOENT|not found/i.test(message);
+}
+
+function isQuota({ code, message }: { code: string; message: string }): boolean {
+  return /quota|space|ENOSPC|No space left/i.test(`${code} ${message}`);
+}
+
 function mapFsError(e: unknown): AppError {
   if (e instanceof AppError) return e;
-  const message = e instanceof Error ? e.message : String(e);
-  if (/not exist|no such file|ENOENT|File does not exist/i.test(message)) {
-    return new AppError('E_FILE_MISSING', undefined, { detail: message, cause: e });
-  }
-  if (/quota|space|ENOSPC|No space left/i.test(message)) {
-    return new AppError('E_STORAGE_QUOTA', undefined, { detail: message, cause: e });
-  }
-  return toAppError(e, 'E_FILE_MISSING');
+  const info = describeRejection(e);
+  if (isDoesNotExist(info)) return new AppError('E_FILE_MISSING', undefined, { detail: info.message, cause: e });
+  if (isQuota(info)) return new AppError('E_STORAGE_QUOTA', undefined, { detail: info.message, cause: e });
+  // 归不了类的文件系统故障（权限、插件未实现、已存在……）不能谎报成"文件不可用"：
+  // 判成可重试的 E_UNKNOWN，交给上层的重试/续传，而不是把用户推向「重新下载」。
+  return new AppError('E_UNKNOWN', undefined, {
+    detail: info.message || info.code || (e instanceof Error ? e.message : String(e)),
+    cause: e,
+  });
 }
 
 /** 是否可用原生文件系统 */
@@ -54,8 +89,7 @@ export async function ensureDir(path: string): Promise<void> {
     });
   } catch (e) {
     // 已存在会被插件报错，忽略即可
-    const message = e instanceof Error ? e.message : String(e);
-    if (/exist/i.test(message)) return;
+    if (isAlreadyExists(describeRejection(e))) return;
     throw mapFsError(e);
   }
 }
@@ -122,9 +156,9 @@ export async function deleteFile(path: string): Promise<void> {
   try {
     await Filesystem.deleteFile({ path: normalizeFsPath(path), directory: Directory.Data });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    if (/not exist|no such file|ENOENT/i.test(message)) return;
-    logger.debug('删除文件失败', { path, message });
+    const info = describeRejection(e);
+    if (isDoesNotExist(info)) return;
+    logger.debug('删除文件失败', { path, code: info.code, message: info.message });
     throw mapFsError(e);
   }
 }
@@ -135,23 +169,38 @@ export async function stat(path: string): Promise<FsStat> {
     const info = await Filesystem.stat({ path: normalizeFsPath(path), directory: Directory.Data });
     return { exists: true, size: info.size ?? 0, mtime: info.mtime ?? null };
   } catch (e) {
-    const err = mapFsError(e);
-    if (err.code === 'E_FILE_MISSING') return { exists: false, size: 0, mtime: null };
-    throw err;
+    const info = describeRejection(e);
+    // 只有"确实不存在"才算 exists:false。配额/权限这类故障必须原样抛出去：
+    // 把它们咽成"文件不存在"，下载侧会从头重下、播放侧会报「本地文件不可用」，真因全被藏掉。
+    if (isDoesNotExist(info)) return { exists: false, size: 0, mtime: null };
+    throw mapFsError(e);
   }
 }
 
 /** 把本地文件转成 WebView 可播放的 URL（Android 走 convertFileSrc） */
 /** 重命名/移动文件（.part → 最终路径） */
 export async function renameFile(from: string, to: string): Promise<void> {
+  const args = {
+    from: normalizeFsPath(from),
+    to: normalizeFsPath(to),
+    directory: Directory.Data,
+  };
   try {
-    await Filesystem.rename({
-      from: normalizeFsPath(from),
-      to: normalizeFsPath(to),
-      directory: Directory.Data,
-    });
+    await Filesystem.rename(args);
   } catch (e) {
-    throw mapFsError(e);
+    /**
+     * Android 的 rename 不覆盖已存在的目标，直接回 OS-PLUG-FILE-0010。
+     * 下载侧要的语义是"用 .part 替换最终文件"，而残留的最终文件恰恰是常态
+     * （上次会话已 rename、任务被判失败后重下、进度回写没落库……）。
+     * 不先清掉旧产物，「完成」这一步就永远失败，用户看到的是假的「本地文件不可用」。
+     */
+    if (!isAlreadyExists(describeRejection(e))) throw mapFsError(e);
+    await deleteFile(to);
+    try {
+      await Filesystem.rename(args);
+    } catch (retryErr) {
+      throw mapFsError(retryErr);
+    }
   }
 }
 

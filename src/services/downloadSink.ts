@@ -178,6 +178,9 @@ export class NativeFsSink implements DownloadSink {
       await renameFile(this.partPath, this.filePath);
     } catch (e) {
       logger.error('rename .part 失败', { from: this.partPath, to: this.filePath, error: e });
+      // 已经归类的原因（配额/权限/……）不许洗成「本地文件不可用」：
+      // 那句话会把用户推向"重新下载一遍"，而下一次 rename 仍会因同一个原因失败。
+      if (e instanceof AppError && e.code !== 'E_FILE_MISSING') throw e;
       throw new AppError('E_FILE_MISSING', '下载完成但重命名失败', {
         detail: `from=${this.partPath}, to=${this.filePath}, error=${String(e)}`,
         cause: e,
