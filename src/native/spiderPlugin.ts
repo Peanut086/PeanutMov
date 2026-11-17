@@ -113,6 +113,32 @@ export interface SpiderPlugin {
     entries: Array<{ level: string; tag: string; message: string; ts: number }>;
     source?: string;
   }): Promise<{ written: number }>;
+  /** 崩溃/退出事件列表（tombstones + java-crash 环形栈 + ApplicationExitInfo 合并去重） */
+  getCrashEvents(): Promise<{
+    events: Array<{
+      id: string;
+      kind: string;
+      ts: number;
+      source: string;
+      title: string;
+      detail: string;
+    }>;
+  }>;
+  /** 单个崩溃事件全文（详情抽屉用） */
+  getCrashDetail(options: { id: string }): Promise<{
+    id: string;
+    kind: string;
+    ts: number;
+    source: string;
+    title: string;
+    text: string;
+  }>;
+  /** 单事件取证导出：全文 + ±windowMinutes 日志上下文合成一个分享文件 */
+  exportCrashEvent(options: { id: string; windowMinutes?: number }): Promise<{
+    uri: string;
+    path: string;
+    size: number;
+  }>;
 }
 
 export const Spider = registerPlugin<SpiderPlugin>('Spider');

@@ -47,6 +47,20 @@ export interface LogEntry {
   ts: number;
 }
 
+export interface CrashEvent {
+  id: string;
+  /** native / java / anr / killed / lomem / exit */
+  kind: string;
+  ts: number;
+  source: string;
+  title: string;
+  detail: string;
+}
+
+export interface CrashEventDetail extends CrashEvent {
+  text: string;
+}
+
 const EMPTY_STATUS: DebugLogStatus = {
   enabled: false,
   fileCount: 0,
@@ -142,6 +156,37 @@ export const logApi = {
       await Spider.appendLogs({ entries, source });
     } catch (e) {
       logger.warn('写入日志失败', e);
+    }
+  },
+
+  /** 崩溃/退出事件列表（轻量卡片） */
+  async getCrashEvents(): Promise<CrashEvent[]> {
+    try {
+      const r = await Spider.getCrashEvents();
+      return r.events ?? [];
+    } catch (e) {
+      logger.warn('获取崩溃事件失败', e);
+      return [];
+    }
+  },
+
+  /** 单个崩溃事件全文 */
+  async getCrashDetail(id: string): Promise<CrashEventDetail | null> {
+    try {
+      return await Spider.getCrashDetail({ id });
+    } catch (e) {
+      logger.warn('获取崩溃详情失败', e);
+      return null;
+    }
+  },
+
+  /** 单事件取证导出（返回可分享的文件路径） */
+  async exportCrashEvent(id: string, windowMinutes = 5): Promise<ExportResult> {
+    try {
+      return await Spider.exportCrashEvent({ id, windowMinutes });
+    } catch (e) {
+      logger.warn('导出崩溃事件失败', e);
+      throw e;
     }
   },
 };

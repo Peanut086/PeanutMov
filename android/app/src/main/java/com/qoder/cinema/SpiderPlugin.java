@@ -629,6 +629,94 @@ public class SpiderPlugin extends Plugin {
         }
     }
 
+    /**
+     * 崩溃/退出事件列表（崩溃 tab 卡片，轻量不带全文）
+     */
+    @PluginMethod
+    public void getCrashEvents(PluginCall call) {
+        Context ctx = getContext();
+        if (ctx == null) {
+            call.reject("No context available");
+            return;
+        }
+        try {
+            List<CrashEventsCollector.Event> events = CrashEventsCollector.collect(ctx);
+            JSArray arr = new JSArray();
+            for (CrashEventsCollector.Event e : events) {
+                JSObject o = new JSObject();
+                o.put("id", e.id);
+                o.put("kind", e.kind);
+                o.put("ts", e.ts);
+                o.put("source", e.source);
+                o.put("title", e.title);
+                o.put("detail", e.detail);
+                arr.put(o);
+            }
+            JSObject ret = new JSObject();
+            ret.put("events", arr);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Get crash events failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 单个崩溃事件全文（详情抽屉）。参数：id
+     */
+    @PluginMethod
+    public void getCrashDetail(PluginCall call) {
+        Context ctx = getContext();
+        if (ctx == null) {
+            call.reject("No context available");
+            return;
+        }
+        String id = call.getString("id", "");
+        try {
+            CrashEventsCollector.Event e = CrashEventsCollector.findDetail(ctx, id);
+            if (e == null) {
+                call.reject("Event not found: " + id);
+                return;
+            }
+            JSObject ret = new JSObject();
+            ret.put("id", e.id);
+            ret.put("kind", e.kind);
+            ret.put("ts", e.ts);
+            ret.put("source", e.source);
+            ret.put("title", e.title);
+            ret.put("text", e.fullText());
+            call.resolve(ret);
+        } catch (Exception ex) {
+            call.reject("Get crash detail failed: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * 单事件取证导出：事件全文 + ±windowMinutes 日志上下文，合成一个分享文件。
+     * 参数：id、windowMinutes（可选，默认 5）
+     */
+    @PluginMethod
+    public void exportCrashEvent(PluginCall call) {
+        Context ctx = getContext();
+        if (ctx == null) {
+            call.reject("No context available");
+            return;
+        }
+        String id = call.getString("id", "");
+        int windowMinutes = call.getInt("windowMinutes", 5);
+        try {
+            File exported = CrashEventsCollector.export(ctx, id, windowMinutes);
+            String authority = ctx.getPackageName() + ".fileprovider";
+            android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(ctx, authority, exported);
+            JSObject ret = new JSObject();
+            ret.put("uri", uri.toString());
+            ret.put("path", exported.getAbsolutePath());
+            ret.put("size", exported.length());
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Export crash event failed: " + e.getMessage());
+        }
+    }
+
     @PluginMethod
     public void load(PluginCall call) {
         String jarUrl = call.getString("jarUrl");

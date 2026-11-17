@@ -33,6 +33,7 @@ import EmptyState from '@/components/common/EmptyState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue';
+import CrashPane from '@/components/log/CrashPane.vue';
 
 const toast = useToast();
 
@@ -65,6 +66,10 @@ const endTime = ref('');
 const fileRolled = ref(false);
 const loadingStatic = ref(false);
 let pollCount = 0;
+
+// Tab：有崩溃记录时默认落在「崩溃」
+const activeTab = ref<'crash' | 'logs'>('logs');
+const crashCount = ref(0);
 
 // 清空确认
 const clearOpen = ref(false);
@@ -114,6 +119,7 @@ const hasEntries = computed(() => entries.value.length > 0);
 // 初始化
 onMounted(async () => {
   await refreshStatus();
+  void loadCrashCount();
   await syncPolling();
   document.addEventListener('visibilitychange', onVisibilityChange);
 });
@@ -148,13 +154,27 @@ watch(selectedFile, () => {
   }
 });
 
+watch(activeTab, () => {
+  void syncPolling();
+});
+
+async function loadCrashCount(): Promise<void> {
+  const evts = await logApi.getCrashEvents();
+  crashCount.value = evts.length;
+  if (evts.length > 0) activeTab.value = 'crash';
+}
+
 function onVisibilityChange(): void {
   void syncPolling();
 }
 
-/** 轮询只在「最新明文文件 + 未暂停 + 页面可见」时运行 */
+/** 轮询只在「日志 tab + 最新明文文件 + 未暂停 + 页面可见」时运行 */
 async function syncPolling(): Promise<void> {
-  const shouldPoll = !paused.value && !isStaticFile.value && document.visibilityState === 'visible';
+  const shouldPoll =
+    activeTab.value === 'logs' &&
+    !paused.value &&
+    !isStaticFile.value &&
+    document.visibilityState === 'visible';
   if (shouldPoll) {
     await startPolling();
   } else {
@@ -399,8 +419,32 @@ function formatTime(ts: number): string {
     />
 
     <template v-else>
-      <!-- 状态条 -->
-      <div class="logs-status">
+      <!-- Tab 切换 -->
+      <div class="logs-tabs">
+        <button
+          class="logs-tabs__btn"
+          :class="{ 'logs-tabs__btn--active': activeTab === 'crash' }"
+          type="button"
+          @click="activeTab = 'crash'"
+        >
+          崩溃
+          <span v-if="crashCount > 0" class="logs-tabs__badge">{{ crashCount }}</span>
+        </button>
+        <button
+          class="logs-tabs__btn"
+          :class="{ 'logs-tabs__btn--active': activeTab === 'logs' }"
+          type="button"
+          @click="activeTab = 'logs'"
+        >
+          日志
+        </button>
+      </div>
+
+      <CrashPane v-if="activeTab === 'crash'" />
+
+      <template v-else>
+        <!-- 状态条 -->
+        <div class="logs-status">
         <div class="logs-status__row">
           <span class="logs-status__label">详细日志</span>
           <ToggleSwitch
@@ -526,6 +570,7 @@ function formatTime(ts: number): string {
         <button class="logs-toolbar__btn" @click="copyAll">复制</button>
         <button class="logs-toolbar__btn" @click="exportLogs">分享</button>
       </div>
+      </template>
     </template>
 
     <!-- 标签过滤弹层 -->
@@ -610,6 +655,42 @@ function formatTime(ts: number): string {
   border: none;
   border-bottom: 1px solid var(--color-divider);
   cursor: pointer;
+  text-align: center;
+}
+
+.logs-tabs {
+  display: flex;
+  gap: var(--space-4);
+  padding: var(--space-1) var(--space-4) 0;
+  background: var(--color-bg-base);
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.logs-tabs__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
+  font: var(--font-weight-medium) 14px / 1.4 var(--font-family-base);
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.logs-tabs__btn--active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
+.logs-tabs__badge {
+  min-width: 18px;
+  padding: 0 5px;
+  font: var(--font-weight-bold) 11px / 1.7 var(--font-family-number);
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border-radius: 9px;
   text-align: center;
 }
 
