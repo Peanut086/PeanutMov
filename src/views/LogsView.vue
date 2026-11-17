@@ -363,7 +363,7 @@ const filteredEntries = computed(() => {
 });
 
 const filteredCount = computed(() => filteredEntries.value.length);
-const { containerRef, win, totalHeight, padTop, padBottom, scrollToIndex, scrollToBottom } =
+const { containerRef, win, padTop, padBottom, scrollToIndex, scrollToBottom } =
   useVirtualRows(filteredCount, ROW_H, 10);
 const viewRows = computed(() => filteredEntries.value.slice(win.value.start, win.value.end));
 

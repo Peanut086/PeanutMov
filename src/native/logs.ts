@@ -69,7 +69,8 @@ export interface CrashEvent {
   detail: string;
 }
 
-export interface CrashEventDetail extends CrashEvent {
+/** 单事件全文：native `getCrashDetail` 只回 id/kind/ts/source/title/text，列表用的摘要字段不在其中 */
+export interface CrashEventDetail extends Omit<CrashEvent, 'detail'> {
   text: string;
 }
 

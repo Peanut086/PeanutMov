@@ -88,6 +88,7 @@ export function useVirtualRows(count: Ref<number>, rowHeight = 22, overscan = 10
     scrollToIndex,
     scrollToBottom,
     scrollToTop,
+    indexOfClientY,
     scrollTop,
     viewportH,
   };
