@@ -522,7 +522,8 @@ public class SpiderPlugin extends Plugin {
     }
 
     /**
-     * 导出日志：合并所有日志到单文件，返回 FileProvider URI
+     * 导出日志：按 scope 合并到单文件，返回 FileProvider URI。
+     * scope：all（默认）/ crash / today / recent1h
      */
     @PluginMethod
     public void exportLogs(PluginCall call) {
@@ -536,8 +537,9 @@ public class SpiderPlugin extends Plugin {
             call.reject("No context available");
             return;
         }
+        String scope = call.getString("scope", "all");
         try {
-            File exported = store.exportMerged();
+            File exported = store.exportMerged(scope);
             String authority = ctx.getPackageName() + ".fileprovider";
             android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(ctx, authority, exported);
             JSObject ret = new JSObject();
@@ -575,6 +577,35 @@ public class SpiderPlugin extends Plugin {
             call.resolve(ret);
         } catch (Exception e) {
             call.reject("Read log tail failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 全量读取日志文件（.gz 解压），按 maxBytes 字符分块。
+     * 参数：file（可选）、offset（字符偏移）、maxBytes（可选，默认 256K 字符）
+     */
+    @PluginMethod
+    public void readLogRange(PluginCall call) {
+        SpiderLogStore store = SpiderLogStore.get();
+        if (store == null) {
+            call.reject("Log store not initialized");
+            return;
+        }
+        String fileName = call.getString("file", null);
+        long offset = call.getLong("offset", 0L);
+        int maxBytes = call.getInt("maxBytes", 256 * 1024);
+        try {
+            SpiderLogStore.RangeResult r = store.readRange(fileName, offset, maxBytes);
+            JSObject ret = new JSObject();
+            ret.put("file", r.file);
+            ret.put("size", r.size);
+            ret.put("offset", r.offset);
+            ret.put("byteOffset", r.byteOffset);
+            ret.put("text", r.text);
+            ret.put("eof", r.eof);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Read log range failed: " + e.getMessage());
         }
     }
 

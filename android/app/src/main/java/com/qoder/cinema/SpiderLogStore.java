@@ -497,20 +497,92 @@ public final class SpiderLogStore {
     
     /** 读取压缩日志文件：解压后返回全部内容（历史日志不支持增量读取） */
     private TailResult readCompressedFile(File gzFile, int maxBytes) throws IOException {
+        String text = decompress(gzFile);
+        if (text.length() > maxBytes) {
+            text = text.substring(text.length() - maxBytes);
+        }
+        return new TailResult(gzFile.getName(), gzFile.length(), text.length(), text, false);
+    }
+
+    /** gz 解压为字符串（文件 ≤2MB，一次性读入可接受） */
+    private String decompress(File gzFile) throws IOException {
         StringBuilder sb = new StringBuilder();
         try (GZIPInputStream gis = new GZIPInputStream(new FileInputStream(gzFile));
              BufferedReader reader = new BufferedReader(new java.io.InputStreamReader(gis, "UTF-8"))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 sb.append(line).append('\n');
-                if (sb.length() > maxBytes) {
-                    // 超限截断，保留最后 maxBytes 字节
-                    sb.delete(0, sb.length() - maxBytes);
-                }
             }
         }
-        String text = sb.toString();
-        return new TailResult(gzFile.getName(), gzFile.length(), text.length(), text, false);
+        return sb.toString();
+    }
+
+    /** 明文文件整体读为字符串 */
+    private String readChars(File f) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new java.io.InputStreamReader(
+                new FileInputStream(f), "UTF-8"))) {
+            char[] buf = new char[8192];
+            int n;
+            while ((n = reader.read(buf)) > 0) sb.append(buf, 0, n);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 全量读取（明文直读 / .gz 解压后），按 maxBytes 字符分块返回。
+     *
+     * 与 {@link #readTail} 的字节偏移语义不同：这里的 offset 是「字符偏移」，两者不可混用；
+     * eof 时的 byteOffset（明文字节数）供 live 模式无缝切到 readTail 增量续读，gz 无此概念（-1）。
+     */
+    public RangeResult readRange(String fileName, long offset, int maxBytes) throws IOException {
+        File[] files = listFiles();
+        if (files.length == 0) {
+            return new RangeResult("", 0, 0, 0, "", true);
+        }
+        File target;
+        if (fileName != null && !fileName.isEmpty()) {
+            target = new File(logDir, fileName);
+            if (!target.exists()) {
+                target = files[files.length - 1];
+            }
+        } else {
+            target = files[files.length - 1];
+        }
+        boolean isGz = target.getName().endsWith(".gz");
+        String all = isGz ? decompress(target) : readChars(target);
+        int start = (int) Math.max(0, Math.min(offset, all.length()));
+        int end = (int) Math.min(all.length(), start + Math.max(1, maxBytes));
+        // 不把代理对（emoji 等）劈进两个分块
+        while (end > start && end < all.length() && Character.isHighSurrogate(all.charAt(end - 1))) {
+            end--;
+        }
+        String text = all.substring(start, end);
+        boolean eof = end >= all.length();
+        long byteOffset = eof && !isGz ? target.length() : -1;
+        return new RangeResult(target.getName(), all.length(), end, byteOffset, text, eof);
+    }
+
+    public static final class RangeResult {
+        public final String file;
+        /** 全文字符数 */
+        public final long size;
+        /** 下一次读取的字符偏移 */
+        public final long offset;
+        /** eof 时的明文字节游标（readTail 续读用），gz 为 -1 */
+        public final long byteOffset;
+        public final String text;
+        public final boolean eof;
+
+        public RangeResult(String file, long size, long offset, long byteOffset,
+                           String text, boolean eof) {
+            this.file = file;
+            this.size = size;
+            this.offset = offset;
+            this.byteOffset = byteOffset;
+            this.text = text;
+            this.eof = eof;
+        }
     }
 
     public static final class TailResult {
@@ -528,35 +600,49 @@ public final class SpiderLogStore {
         }
     }
 
-    /** 合并所有日志到 cacheDir 下单文件，供导出 */
+    /** 合并所有日志到 cacheDir 下单文件，供导出（全量） */
     public File exportMerged() throws IOException {
+        return exportMerged("all");
+    }
+
+    /**
+     * 按范围导出日志。scope：
+     * - all：全部 spider 日志 + tombstones + 崩溃栈
+     * - crash：仅崩溃证据（tombstones + 崩溃栈）
+     * - today：今天的 spider 日志 + 崩溃证据
+     * - recent1h：最近 1 小时的日志行 + 崩溃证据
+     * 文件名带日期时间，分享出去能看出是哪次导的。
+     */
+    public File exportMerged(String scope) throws IOException {
         File[] files = listFiles();
         File cacheDir = new File(logDir.getParentFile(), "cache");
         if (!cacheDir.exists()) cacheDir.mkdirs();
-        File exportFile = new File(cacheDir, "peanutmov-logs-" + System.currentTimeMillis() + ".txt");
+        File exportFile = new File(cacheDir, "peanutmov-logs-"
+                + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".txt");
+        boolean crashOnly = "crash".equals(scope);
+        long cutoff = "recent1h".equals(scope)
+                ? System.currentTimeMillis() - 60L * 60 * 1000 : 0L;
+        String today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
         try (BufferedWriter w = new BufferedWriter(new FileWriter(exportFile))) {
-            for (File f : files) {
-                w.write("===== " + f.getName() + " =====\n");
-                // P2-5: 支持读取压缩日志
-                if (f.getName().endsWith(".gz")) {
-                    try (GZIPInputStream gis = new GZIPInputStream(new FileInputStream(f));
-                         BufferedReader r = new BufferedReader(new java.io.InputStreamReader(gis, "UTF-8"))) {
-                        String line;
-                        while ((line = r.readLine()) != null) {
-                            w.write(line);
-                            w.newLine();
+            if (!crashOnly) {
+                for (File f : files) {
+                    if ("today".equals(scope) && !f.getName().contains(today)) continue;
+                    w.write("===== " + f.getName() + " =====\n");
+                    if (cutoff > 0) {
+                        appendLinesSince(w, f, cutoff);
+                    } else if (f.getName().endsWith(".gz")) {
+                        w.write(decompress(f));
+                    } else {
+                        try (BufferedReader r = new BufferedReader(new FileReader(f))) {
+                            String line;
+                            while ((line = r.readLine()) != null) {
+                                w.write(line);
+                                w.newLine();
+                            }
                         }
                     }
-                } else {
-                    try (BufferedReader r = new BufferedReader(new FileReader(f))) {
-                        String line;
-                        while ((line = r.readLine()) != null) {
-                            w.write(line);
-                            w.newLine();
-                        }
-                    }
+                    w.newLine();
                 }
-                w.newLine();
             }
             // F3：原始 tombstone 全文入包。AppLog 里的摘要只有 top-N 帧与寄存器片段，
             // 归因第三方 jar 的原生真凶必须看完整 backtrace / memory map，导出必须带上。
@@ -566,6 +652,37 @@ public final class SpiderLogStore {
             appendCrashRing(w);
         }
         return exportFile;
+    }
+
+    /** 只保留时间戳 ≥ cutoff 的行（无时间戳的续行跟随宿主行） */
+    private void appendLinesSince(BufferedWriter w, File f, long cutoff) throws IOException {
+        SimpleDateFormat parseFmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
+        try (BufferedReader r = openText(f)) {
+            String line;
+            boolean inWindow = false;
+            while ((line = r.readLine()) != null) {
+                if (line.length() >= 23) {
+                    try {
+                        Date d = parseFmt.parse(line.substring(0, 23));
+                        inWindow = d != null && d.getTime() >= cutoff;
+                    } catch (Exception ignored) {
+                        // 非时间戳开头的行：续行跟随宿主
+                    }
+                }
+                if (inWindow) {
+                    w.write(line);
+                    w.newLine();
+                }
+            }
+        }
+    }
+
+    private BufferedReader openText(File f) throws IOException {
+        if (f.getName().endsWith(".gz")) {
+            return new BufferedReader(new java.io.InputStreamReader(
+                    new GZIPInputStream(new FileInputStream(f)), "UTF-8"));
+        }
+        return new BufferedReader(new java.io.InputStreamReader(new FileInputStream(f), "UTF-8"));
     }
 
     /** G4：崩溃栈环形文件（进程临死前同步写，故用独立锁，不走 worker 队列） */

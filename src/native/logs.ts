@@ -40,6 +40,18 @@ export interface TailResult {
   reset: boolean;
 }
 
+export interface RangeResult {
+  file: string;
+  /** 全文字符数 */
+  size: number;
+  /** 下一次读取的字符偏移 */
+  offset: number;
+  /** eof 时的明文字节游标（readTail 续读用），gz 为 -1 */
+  byteOffset: number;
+  text: string;
+  eof: boolean;
+}
+
 export interface LogEntry {
   level: 'D' | 'I' | 'W' | 'E';
   tag: string;
@@ -130,10 +142,10 @@ export const logApi = {
     }
   },
 
-  /** 导出日志（合并为单文件，返回 FileProvider URI） */
-  async export(): Promise<ExportResult> {
+  /** 导出日志（scope: all/crash/today/recent1h，合并为单文件，返回 FileProvider URI） */
+  async export(scope: 'all' | 'crash' | 'today' | 'recent1h' = 'all'): Promise<ExportResult> {
     try {
-      return await Spider.exportLogs();
+      return await Spider.exportLogs({ scope });
     } catch (e) {
       logger.warn('导出日志失败', e);
       throw e;
@@ -147,6 +159,20 @@ export const logApi = {
     } catch (e) {
       logger.warn('读取日志失败', e);
       return { file: '', size: 0, offset: 0, text: '', reset: true };
+    }
+  },
+
+  /** 全量读取日志文件（.gz 解压），按字符分块拉取 */
+  async readRange(
+    file?: string,
+    offset = 0,
+    maxBytes = 256 * 1024,
+  ): Promise<RangeResult> {
+    try {
+      return await Spider.readLogRange({ file, offset, maxBytes });
+    } catch (e) {
+      logger.warn('全量读取日志失败', e);
+      return { file: '', size: 0, offset: 0, byteOffset: -1, text: '', eof: true };
     }
   },
 

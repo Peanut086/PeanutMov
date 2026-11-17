@@ -98,8 +98,8 @@ export interface SpiderPlugin {
   listLogFiles(): Promise<{
     files: Array<{ name: string; size: number; mtime: number }>;
   }>;
-  /** 导出日志（合并为单文件，返回 FileProvider URI） */
-  exportLogs(): Promise<{ uri: string; path: string; size: number }>;
+  /** 导出日志（scope: all/crash/today/recent1h，合并为单文件，返回 FileProvider URI） */
+  exportLogs(options?: { scope?: string }): Promise<{ uri: string; path: string; size: number }>;
   /** 增量读取日志文件尾部 */
   readLogTail(options: { file?: string; offset?: number; maxBytes?: number }): Promise<{
     file: string;
@@ -107,6 +107,15 @@ export interface SpiderPlugin {
     offset: number;
     text: string;
     reset: boolean;
+  }>;
+  /** 全量读取日志文件（.gz 解压），offset 为字符偏移，分块拉取直到 eof */
+  readLogRange(options: { file?: string; offset?: number; maxBytes?: number }): Promise<{
+    file: string;
+    size: number;
+    offset: number;
+    byteOffset: number;
+    text: string;
+    eof: boolean;
   }>;
   /** 批量写入 JS 侧日志 */
   appendLogs(options: {

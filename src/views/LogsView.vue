@@ -1,26 +1,29 @@
 <script setup lang="ts">
 /**
- * 运行日志查看页（P0-P3）
+ * 运行日志查看页（P0-P3 / 批次3 重做）
  *
  * 功能：
- * - 实时查看日志（1s 轮询原生文件尾部）
- * - 级别/标签/关键字过滤
- * - 暂停/自动滚动/复制/分享/清空
- * - 选择日期文件
- * - 错误/崩溃高亮
+ * - 双 tab：崩溃（CrashPane）/ 日志
+ * - 日志：全量加载单文件（readRange 分块，.gz 解压）+ 固定行高虚拟滚动
+ * - 级别单选组（全部/警告+/仅错误）/ 标签 / 关键字（命中计数与跳转）
+ * - 按小时直方图时间导航（错误小时标红，点柱跳转）
+ * - 上下文抽屉：任意条 ±50 行，可复制此条/带上下文
+ * - 跟随交互：上滑自动解除跟随，浮出「N 条新日志」，点击回底恢复
+ * - live 轮询仅「最新明文文件 + 日志 tab + 页面可见」时运行；历史/.gz 文件静态查看
+ * - 导出范围：全部 / 仅崩溃证据 / 今天 / 最近 1 小时
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 
 import type { LogLevel } from '@/shared/logLine';
 import {
   extractTags,
-  filterByLevel,
   filterByTag,
   formatEntry,
+  formatLocalTs,
   parseLogText,
-  search,
 } from '@/shared/logLine';
 import { logApi, type DebugLogStatus, type LogFile } from '@/native/logs';
+import type { LogEntry } from '@/shared/logLine';
 import { useToast } from '@/composables/useToast';
 import { toErrorShape } from '@/shared/errors';
 import { isNative } from '@/shared/platform';
@@ -34,8 +37,12 @@ import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue';
 import CrashPane from '@/components/log/CrashPane.vue';
+import { useVirtualRows } from '@/components/media/useVirtualRows';
 
 const toast = useToast();
+
+// 日志行固定高度（虚拟滚动的基准，CSS 里 .log-entry 必须同高）
+const ROW_H = 24;
 
 // 状态
 const loading = ref(true);
@@ -47,74 +54,53 @@ const status = ref<DebugLogStatus>({
   retentionDays: 7,
 });
 const files = ref<LogFile[]>([]);
-const selectedFile = ref<string>('');
-const entries = ref<ReturnType<typeof parseLogText>>([]);
+const selectedFile = ref('');
+const entries = ref<LogEntry[]>([]);
 const cursor = ref({ file: '', offset: 0 });
-const paused = ref(false);
-const autoScroll = ref(true);
 const pollTimer = ref<number | null>(null);
-
-// 过滤
-const levelFilter = ref<Set<LogLevel>>(new Set());
-const tagFilter = ref<Set<string>>(new Set());
-const keyword = ref('');
-const tagSheetOpen = ref(false);
-const dateSheetOpen = ref(false);
-const errorOnly = ref(false);
-const startTime = ref('');
-const endTime = ref('');
+const loadingFile = ref(false);
 const fileRolled = ref(false);
-const loadingStatic = ref(false);
 let pollCount = 0;
 
 // Tab：有崩溃记录时默认落在「崩溃」
 const activeTab = ref<'crash' | 'logs'>('logs');
 const crashCount = ref(0);
 
+// 过滤
+const LEVEL_OPTS = [
+  { value: 'all', label: '全部' },
+  { value: 'warn', label: '警告+' },
+  { value: 'err', label: '仅错误' },
+] as const;
+const levelMode = ref<'all' | 'warn' | 'err'>('all');
+const tagFilter = ref<Set<string>>(new Set());
+const keyword = ref('');
+const matchIndex = ref(0);
+const tagSheetOpen = ref(false);
+const dateSheetOpen = ref(false);
+
+// 跟随：用户上滑解除，回底或点浮标恢复
+const follow = ref(true);
+const pendingNew = ref(0);
+let lastScrollTop = 0;
+
+// 上下文抽屉
+const contextOpen = ref(false);
+const contextEntry = ref<LogEntry | null>(null);
+
+// 导出
+const EXPORT_OPTS = [
+  { value: 'all', label: '全部日志', desc: '全部文件 + 崩溃证据' },
+  { value: 'crash', label: '仅崩溃证据', desc: 'tombstone + Java 崩溃栈' },
+  { value: 'today', label: '今天的日志', desc: '今日文件 + 崩溃证据' },
+  { value: 'recent1h', label: '最近 1 小时', desc: '一小时内日志行 + 崩溃证据' },
+] as const;
+const exportOpen = ref(false);
+const exportScope = ref<'all' | 'crash' | 'today' | 'recent1h'>('all');
+const exportBusy = ref(false);
+
 // 清空确认
 const clearOpen = ref(false);
-
-// 列表容器引用（用于自动滚动）
-const listRef = ref<HTMLElement | null>(null);
-
-// 计算属性
-const allTags = computed(() => extractTags(entries.value));
-const filteredEntries = computed(() => {
-  let result = entries.value;
-  if (errorOnly.value) {
-    result = result.filter((e) => e.level === 'E' || e.level === 'F');
-  } else {
-    if (levelFilter.value.size > 0) {
-      result = filterByLevel(result, levelFilter.value);
-    }
-  }
-  if (tagFilter.value.size > 0) {
-    result = filterByTag(result, tagFilter.value);
-  }
-  if (keyword.value) {
-    result = search(result, keyword.value);
-  }
-  // 时间范围筛选
-  if (startTime.value) {
-    const startTs = new Date(startTime.value).getTime();
-    if (!isNaN(startTs)) {
-      result = result.filter((e) => e.ts >= startTs);
-    }
-  }
-  if (endTime.value) {
-    const endTs = new Date(endTime.value).getTime();
-    if (!isNaN(endTs)) {
-      result = result.filter((e) => e.ts <= endTs);
-    }
-  }
-  // 限制最多 2000 条
-  if (result.length > 2000) {
-    result = result.slice(-2000);
-  }
-  return result;
-});
-
-const hasEntries = computed(() => entries.value.length > 0);
 
 // 初始化
 onMounted(async () => {
@@ -139,19 +125,14 @@ const isStaticFile = computed(
     (latestFileName.value !== '' && selectedFile.value !== latestFileName.value),
 );
 
-// 监听暂停状态
-watch(paused, () => {
-  void syncPolling();
-});
-
-watch(selectedFile, () => {
+watch(selectedFile, async (name) => {
   fileRolled.value = false;
-  if (isStaticFile.value) {
-    stopPolling();
-    void loadStatic();
-  } else {
-    void syncPolling();
-  }
+  entries.value = [];
+  cursor.value = { file: '', offset: 0 };
+  pendingNew.value = 0;
+  lastScrollTop = 0;
+  await loadFullFile(name);
+  await syncPolling();
 });
 
 watch(activeTab, () => {
@@ -168,32 +149,16 @@ function onVisibilityChange(): void {
   void syncPolling();
 }
 
-/** 轮询只在「日志 tab + 最新明文文件 + 未暂停 + 页面可见」时运行 */
+/** 轮询只在「日志 tab + 最新明文文件 + 页面可见」时运行 */
 async function syncPolling(): Promise<void> {
   const shouldPoll =
     activeTab.value === 'logs' &&
-    !paused.value &&
     !isStaticFile.value &&
     document.visibilityState === 'visible';
   if (shouldPoll) {
     await startPolling();
   } else {
     stopPolling();
-  }
-}
-
-/** 静态文件（.gz 历史 / 非最新）一次性加载，不轮询 */
-async function loadStatic(): Promise<void> {
-  if (loadingStatic.value || !selectedFile.value) return;
-  loadingStatic.value = true;
-  try {
-    const result = await logApi.readTail(selectedFile.value, 0, 256 * 1024);
-    entries.value = parseLogText(result.text, result.file, 0);
-    cursor.value = { file: result.file, offset: result.offset };
-  } catch (e) {
-    console.warn('Load static failed', e);
-  } finally {
-    loadingStatic.value = false;
   }
 }
 
@@ -225,31 +190,69 @@ function stopPolling(): void {
   }
 }
 
+let loadToken = 0;
+
+/** 全量加载当前文件（明文/.gz 通用），live 文件末尾切回 readTail 增量 */
+async function loadFullFile(name: string): Promise<void> {
+  if (!isNative() || !name) return;
+  const token = ++loadToken;
+  loadingFile.value = true;
+  try {
+    let offset = 0;
+    let text = '';
+    let byteOffset = -1;
+    for (let i = 0; i < 64; i++) {
+      const r = await logApi.readRange(name, offset, 256 * 1024);
+      text += r.text;
+      offset = r.offset;
+      if (r.eof) {
+        byteOffset = r.byteOffset;
+        break;
+      }
+    }
+    if (token !== loadToken) return;
+    const parsed = parseLogText(text, name, 0);
+    parsed.forEach((e, i) => {
+      e.seq = i;
+    });
+    entries.value = parsed;
+    cursor.value = { file: name, offset: byteOffset >= 0 ? byteOffset : 0 };
+    follow.value = true;
+    pendingNew.value = 0;
+    requestAnimationFrame(() => scrollToBottom());
+  } catch (e) {
+    console.warn('Load full file failed', e);
+  } finally {
+    if (token === loadToken) loadingFile.value = false;
+  }
+}
+
 async function poll(): Promise<void> {
   if (!isNative()) {
-    // Web 环境：直接从 logBus 读取
-    // OPT-24: 增量追加（按 id 去重，避免每秒全量重建列表）
+    // Web 环境：直接从 logBus 读取（增量追加，按 id 去重）
     const buffer = getBuffer();
     const existingIds = new Set(entries.value.map((e) => e.id));
     const newEntries = buffer
       .filter((e) => !existingIds.has(e.id))
-      .map((e) => ({
-        id: e.id,
-        ts: e.ts,
-        level: e.level as LogLevel,
-        thread: 'JS',
-        tag: e.tag,
-        message: e.message,
-        raw: `${new Date(e.ts).toISOString()} ${e.level} [JS] ${e.tag}: ${e.message}`,
-      }));
+      .map((e, i) => {
+        const entry: LogEntry = {
+          id: e.id,
+          ts: e.ts,
+          level: e.level as LogLevel,
+          thread: 'JS',
+          tag: e.tag,
+          message: e.message,
+          raw: `${new Date(e.ts).toISOString()} ${e.level} [JS] ${e.tag}: ${e.message}`,
+          seq: entries.value.length + i,
+        };
+        return entry;
+      });
     if (newEntries.length > 0) {
       entries.value = [...entries.value, ...newEntries];
-      if (autoScroll.value && listRef.value) {
-        requestAnimationFrame(() => {
-          if (listRef.value) {
-            listRef.value.scrollTop = listRef.value.scrollHeight;
-          }
-        });
+      if (follow.value) {
+        requestAnimationFrame(() => scrollToBottom());
+      } else {
+        pendingNew.value += newEntries.length;
       }
     }
     return;
@@ -273,16 +276,18 @@ async function poll(): Promise<void> {
       cursor.value = { file: '', offset: 0 };
     }
     if (result.text) {
-      const newEntries = parseLogText(result.text, result.file, cursor.value.offset);
-      entries.value = [...entries.value, ...newEntries].slice(-3000);
-      cursor.value = { file: result.file, offset: result.offset };
-    }
-    if (autoScroll.value && listRef.value) {
-      requestAnimationFrame(() => {
-        if (listRef.value) {
-          listRef.value.scrollTop = listRef.value.scrollHeight;
-        }
+      const newEntries = parseLogText(result.text, result.file, result.reset ? 0 : cursor.value.offset);
+      const base = entries.value.length;
+      newEntries.forEach((e, i) => {
+        e.seq = base + i;
       });
+      entries.value = [...entries.value, ...newEntries];
+      cursor.value = { file: result.file, offset: result.offset };
+      if (follow.value) {
+        requestAnimationFrame(() => scrollToBottom());
+      } else {
+        pendingNew.value += newEntries.length;
+      }
     }
   } catch (e) {
     console.warn('Poll failed', e);
@@ -314,9 +319,12 @@ async function clearLogs(): Promise<void> {
   }
 }
 
-async function exportLogs(): Promise<void> {
+async function doExport(): Promise<void> {
+  if (exportBusy.value) return;
+  exportOpen.value = false;
+  exportBusy.value = true;
   try {
-    const result = await logApi.export();
+    const result = await logApi.export(exportScope.value);
     await Share.share({
       title: 'PeanutMov 日志导出',
       // Share 插件只接受 file:// 或 http url，content:// 会被拒（Unsupported url）
@@ -329,24 +337,136 @@ async function exportLogs(): Promise<void> {
     // 用户在分享面板取消不算错误
     if (err.message?.includes('cancel') || err.message?.includes('dismiss')) return;
     toast.error('导出失败：' + err.message);
+  } finally {
+    exportBusy.value = false;
   }
 }
 
-function copyAll(): void {
-  const text = filteredEntries.value.map(formatEntry).join('\n');
-  navigator.clipboard.writeText(text).then(
-    () => toast.success('已复制到剪贴板'),
+// 计算：过滤 / 虚拟滚动
+const filteredEntries = computed(() => {
+  let result = entries.value;
+  if (levelMode.value === 'warn') {
+    result = result.filter((e) => e.level === 'W' || e.level === 'E' || e.level === 'F');
+  } else if (levelMode.value === 'err') {
+    result = result.filter((e) => e.level === 'E' || e.level === 'F');
+  }
+  if (tagFilter.value.size > 0) {
+    result = filterByTag(result, tagFilter.value);
+  }
+  if (keyword.value) {
+    const kw = keyword.value.toLowerCase();
+    result = result.filter(
+      (e) => e.message.toLowerCase().includes(kw) || e.tag.toLowerCase().includes(kw),
+    );
+  }
+  return result;
+});
+
+const filteredCount = computed(() => filteredEntries.value.length);
+const { containerRef, win, totalHeight, padTop, padBottom, scrollToIndex, scrollToBottom } =
+  useVirtualRows(filteredCount, ROW_H, 10);
+const viewRows = computed(() => filteredEntries.value.slice(win.value.start, win.value.end));
+
+const allTags = computed(() => extractTags(filteredEntries.value));
+const hasEntries = computed(() => entries.value.length > 0);
+
+watch([keyword, levelMode, tagFilter], () => {
+  matchIndex.value = 0;
+  if (follow.value) {
+    requestAnimationFrame(() => scrollToBottom());
+  }
+});
+
+function onUserScroll(): void {
+  const el = containerRef.value;
+  if (!el) return;
+  const st = el.scrollTop;
+  const nearBottom = st + el.clientHeight >= el.scrollHeight - ROW_H * 2;
+  if (nearBottom) {
+    follow.value = true;
+    pendingNew.value = 0;
+  } else if (st < lastScrollTop - 2) {
+    // 只有用户主动上滑才解除跟随，程序化 scrollToBottom 不算
+    follow.value = false;
+  }
+  lastScrollTop = st;
+}
+
+function jumpToBottom(): void {
+  follow.value = true;
+  pendingNew.value = 0;
+  scrollToBottom();
+}
+
+function jumpMatch(dir: 1 | -1): void {
+  const n = filteredEntries.value.length;
+  if (!keyword.value || n === 0) return;
+  matchIndex.value = (matchIndex.value + dir + n) % n;
+  follow.value = false;
+  scrollToIndex(matchIndex.value);
+}
+
+// 小时直方图
+const hourBuckets = computed(() => {
+  const buckets = Array.from({ length: 24 }, () => ({ total: 0, errs: 0, first: -1 }));
+  filteredEntries.value.forEach((e, i) => {
+    if (!e.ts) return;
+    const h = new Date(e.ts).getHours();
+    const b = buckets[h];
+    b.total++;
+    if (e.level === 'E' || e.level === 'F') b.errs++;
+    if (b.first < 0) b.first = i;
+  });
+  return buckets;
+});
+const hourMax = computed(() => Math.max(1, ...hourBuckets.value.map((b) => b.total)));
+const hasBuckets = computed(() => hourBuckets.value.some((b) => b.total > 0));
+
+function barHeight(b: { total: number }): number {
+  if (b.total === 0) return 0;
+  return Math.max(15, Math.round(Math.sqrt(b.total / hourMax.value) * 100));
+}
+
+function jumpHour(h: number): void {
+  const first = hourBuckets.value[h]?.first;
+  if (first == null || first < 0) return;
+  follow.value = false;
+  scrollToIndex(first);
+}
+
+// 上下文抽屉
+const contextAround = computed(() => {
+  const e = contextEntry.value;
+  if (!e || e.seq == null) return null;
+  return {
+    seq: e.seq,
+    items: entries.value.slice(Math.max(0, e.seq - 50), e.seq + 51),
+  };
+});
+
+function openContext(entry: LogEntry): void {
+  contextEntry.value = entry;
+  contextOpen.value = true;
+}
+
+function copyOne(): void {
+  if (!contextEntry.value) return;
+  navigator.clipboard.writeText(formatEntry(contextEntry.value)).then(
+    () => toast.success('已复制此条'),
     () => toast.error('复制失败'),
   );
 }
 
-function toggleLevel(level: LogLevel): void {
-  if (levelFilter.value.has(level)) {
-    levelFilter.value.delete(level);
-  } else {
-    levelFilter.value.add(level);
-  }
-  levelFilter.value = new Set(levelFilter.value);
+function copyContext(): void {
+  const ctx = contextAround.value;
+  if (!ctx) return;
+  const text = ctx.items
+    .map((it) => (it.seq === ctx.seq ? '▶ ' : '  ') + formatEntry(it))
+    .join('\n');
+  navigator.clipboard.writeText(text).then(
+    () => toast.success('已复制上下文（±50 行）'),
+    () => toast.error('复制失败'),
+  );
 }
 
 function toggleTag(tag: string): void {
@@ -360,13 +480,24 @@ function toggleTag(tag: string): void {
 
 function selectFile(name: string): void {
   selectedFile.value = name;
-  cursor.value = { file: '', offset: 0 };
-  entries.value = [];
   dateSheetOpen.value = false;
 }
 
 function followLatestFile(): void {
   if (latestFileName.value) selectFile(latestFileName.value);
+}
+
+function copyAll(): void {
+  const list = filteredEntries.value;
+  const capped = list.length > 5000 ? list.slice(-5000) : list;
+  const note =
+    list.length > 5000
+      ? `\n[仅复制最近 5000 条，共 ${list.length} 条，完整数据请用分享导出]`
+      : '';
+  navigator.clipboard.writeText(capped.map(formatEntry).join('\n') + note).then(
+    () => toast.success(list.length > 5000 ? '已复制最近 5000 条' : '已复制到剪贴板'),
+    () => toast.error('复制失败'),
+  );
 }
 
 function formatBytes(bytes: number): string {
@@ -391,9 +522,7 @@ function levelClass(level: LogLevel): string {
 
 function formatTime(ts: number): string {
   if (!ts) return 'N/A';
-  const d = new Date(ts);
-  const p = (n: number, w = 2) => String(n).padStart(w, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+  return formatLocalTs(ts).slice(11);
 }
 </script>
 
@@ -445,131 +574,142 @@ function formatTime(ts: number): string {
       <template v-else>
         <!-- 状态条 -->
         <div class="logs-status">
-        <div class="logs-status__row">
-          <span class="logs-status__label">详细日志</span>
-          <ToggleSwitch
-            :model-value="status.enabled"
-            @update:model-value="toggleEnabled"
-          />
+          <div class="logs-status__row">
+            <span class="logs-status__label">详细日志</span>
+            <ToggleSwitch
+              :model-value="status.enabled"
+              @update:model-value="toggleEnabled"
+            />
+          </div>
+          <div class="logs-status__row">
+            <span class="logs-status__label">文件</span>
+            <span class="logs-status__value">
+              {{ files.length }} 个 · {{ formatBytes(status.totalBytes) }}
+            </span>
+            <button class="logs-status__btn" @click="dateSheetOpen = true">选择</button>
+          </div>
+          <div class="logs-status__row">
+            <span class="logs-status__label">保留</span>
+            <span class="logs-status__value">{{ status.retentionDays }} 天</span>
+          </div>
         </div>
-        <div class="logs-status__row">
-          <span class="logs-status__label">文件</span>
-          <span class="logs-status__value">
-            {{ files.length }} 个 · {{ formatBytes(status.totalBytes) }}
-          </span>
-          <button class="logs-status__btn" @click="dateSheetOpen = true">选择</button>
-        </div>
-        <div class="logs-status__row">
-          <span class="logs-status__label">保留</span>
-          <span class="logs-status__value">{{ status.retentionDays }} 天</span>
-        </div>
-      </div>
 
-      <!-- 过滤栏 -->
-      <div class="logs-filter">
-        <div class="logs-filter__levels">
+        <!-- 过滤栏 -->
+        <div class="logs-filter">
+          <div class="logs-filter__levels">
+            <button
+              v-for="opt in LEVEL_OPTS"
+              :key="opt.value"
+              class="logs-filter__chip"
+              :class="{ 'logs-filter__chip--active': levelMode === opt.value }"
+              @click="levelMode = opt.value"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+          <input
+            v-model="keyword"
+            class="logs-filter__search"
+            type="search"
+            placeholder="搜索…"
+          />
           <button
-            v-for="level in (['D', 'I', 'W', 'E', 'F'] as LogLevel[])"
-            :key="level"
-            class="logs-filter__chip"
-            :class="{ 'logs-filter__chip--active': levelFilter.has(level) }"
-            @click="toggleLevel(level)"
+            class="logs-filter__btn"
+            :class="{ 'logs-filter__btn--active': tagFilter.size > 0 }"
+            @click="tagSheetOpen = true"
           >
-            {{ level }}
+            标签{{ tagFilter.size > 0 ? ` (${tagFilter.size})` : '' }}
           </button>
         </div>
-        <input
-          v-model="keyword"
-          class="logs-filter__search"
-          type="search"
-          placeholder="搜索…"
-        />
-        <button
-          class="logs-filter__btn"
-          :class="{ 'logs-filter__btn--active': tagFilter.size > 0 }"
-          @click="tagSheetOpen = true"
-        >
-          标签{{ tagFilter.size > 0 ? ` (${tagFilter.size})` : '' }}
-        </button>
-        <div class="logs-filter__time">
-          <input
-            v-model="startTime"
-            class="logs-filter__time-input"
-            type="datetime-local"
-            placeholder="开始时间"
-          />
-          <span class="logs-filter__time-sep">至</span>
-          <input
-            v-model="endTime"
-            class="logs-filter__time-input"
-            type="datetime-local"
-            placeholder="结束时间"
-          />
+
+        <!-- 小时直方图 -->
+        <div v-if="hasBuckets" class="logs-histogram">
+          <div class="logs-histogram__bars">
+            <button
+              v-for="(b, h) in hourBuckets"
+              :key="h"
+              class="logs-histogram__bar"
+              :class="{
+                'logs-histogram__bar--err': b.errs > 0,
+                'logs-histogram__bar--has': b.total > 0 && b.errs === 0,
+              }"
+              :style="{ height: barHeight(b) + '%' }"
+              :disabled="b.total === 0"
+              :title="`${h}:00 · ${b.total} 条 · 错误 ${b.errs}`"
+              @click="jumpHour(h)"
+            />
+          </div>
+          <div class="logs-histogram__ticks">
+            <span>0时</span><span>6</span><span>12</span><span>18</span><span>23</span>
+          </div>
         </div>
-      </div>
 
-      <!-- 跨天滚动提示 -->
-      <button v-if="fileRolled" class="logs-rolled" type="button" @click="followLatestFile">
-        日志已滚动到新文件，点击跟随最新 →
-      </button>
+        <!-- 跨天滚动提示 -->
+        <button v-if="fileRolled" class="logs-rolled" type="button" @click="followLatestFile">
+          日志已滚动到新文件，点击跟随最新 →
+        </button>
 
-      <!-- 日志列表 -->
-      <div
-        v-if="filteredEntries.length === 0"
-        class="logs-empty"
-      >
-        <EmptyState
-          icon="📋"
-          :title="hasEntries ? '无匹配日志' : '暂无日志'"
-          :description="!status.enabled ? '开启详细日志后复现问题' : undefined"
-          :action-label="!status.enabled ? '开启' : undefined"
-          @action="toggleEnabled(true)"
-        />
-      </div>
-      <div
-        v-else
-        ref="listRef"
-        class="logs-list"
-      >
-        <div
-          v-for="entry in filteredEntries"
-          :key="entry.id"
-          class="log-entry"
-          :class="levelClass(entry.level)"
-        >
-          <span class="log-entry__time">{{ formatTime(entry.ts) }}</span>
-          <span class="log-entry__level">{{ entry.level }}</span>
-          <span class="log-entry__tag">{{ entry.tag }}</span>
-          <pre class="log-entry__msg">{{ entry.message }}</pre>
+        <!-- 日志列表 -->
+        <div class="logs-main">
+          <div v-if="loadingFile && filteredEntries.length === 0" class="logs-loading">
+            <LoadingSpinner :size="24" />
+            <span>加载文件…</span>
+          </div>
+
+          <div v-else-if="filteredEntries.length === 0" class="logs-empty">
+            <EmptyState
+              icon="📋"
+              :title="hasEntries ? '无匹配日志' : '暂无日志'"
+              :description="!status.enabled ? '开启详细日志后复现问题' : undefined"
+              :action-label="!status.enabled ? '开启' : undefined"
+              @action="toggleEnabled(true)"
+            />
+          </div>
+
+          <div
+            v-else
+            ref="containerRef"
+            class="logs-list"
+            @scroll="onUserScroll"
+          >
+            <div :style="{ paddingTop: padTop + 'px', paddingBottom: padBottom + 'px' }">
+              <div
+                v-for="entry in viewRows"
+                :key="entry.id"
+                class="log-entry"
+                :class="levelClass(entry.level)"
+                :style="{ height: ROW_H + 'px' }"
+                @click="openContext(entry)"
+              >
+                <span class="log-entry__time">{{ formatTime(entry.ts) }}</span>
+                <span class="log-entry__level">{{ entry.level }}</span>
+                <span class="log-entry__tag truncate-1">{{ entry.tag }}</span>
+                <span class="log-entry__msg truncate-1">{{ entry.message }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 新日志浮标 -->
+          <button
+            v-if="!follow && pendingNew > 0"
+            class="logs-newpill"
+            type="button"
+            @click="jumpToBottom"
+          >
+            ↓ {{ pendingNew }} 条新日志
+          </button>
         </div>
-      </div>
 
-      <!-- 底部工具栏 -->
-      <div class="logs-toolbar">
-        <button
-          class="logs-toolbar__btn"
-          :class="{ 'logs-toolbar__btn--active': paused }"
-          @click="paused = !paused"
-        >
-          {{ paused ? '继续' : '暂停' }}
-        </button>
-        <button
-          class="logs-toolbar__btn"
-          :class="{ 'logs-toolbar__btn--active': autoScroll }"
-          @click="autoScroll = !autoScroll"
-        >
-          自动滚动
-        </button>
-        <button
-          class="logs-toolbar__btn"
-          :class="{ 'logs-toolbar__btn--active': errorOnly, 'logs-toolbar__btn--danger': errorOnly }"
-          @click="errorOnly = !errorOnly"
-        >
-          只看错误
-        </button>
-        <button class="logs-toolbar__btn" @click="copyAll">复制</button>
-        <button class="logs-toolbar__btn" @click="exportLogs">分享</button>
-      </div>
+        <!-- 底部工具栏 -->
+        <div class="logs-toolbar">
+          <div v-if="keyword" class="logs-toolbar__match">
+            第 {{ Math.min(matchIndex + 1, filteredCount) }}/{{ filteredCount }} 条
+            <button class="logs-toolbar__nav" @click="jumpMatch(-1)">↑</button>
+            <button class="logs-toolbar__nav" @click="jumpMatch(1)">↓</button>
+          </div>
+          <button class="logs-toolbar__btn" @click="copyAll">复制</button>
+          <button class="logs-toolbar__btn" @click="exportOpen = true">分享</button>
+        </div>
       </template>
     </template>
 
@@ -601,6 +741,43 @@ function formatTime(ts: number): string {
         >
           <span>{{ file.name }}</span>
           <span class="date-list__size">{{ formatBytes(file.size) }}</span>
+        </button>
+      </div>
+    </BottomSheet>
+
+    <!-- 上下文抽屉 -->
+    <BottomSheet v-model="contextOpen" title="日志上下文">
+      <div class="ctx">
+        <div v-if="contextAround" class="ctx__text">
+          <div
+            v-for="it in contextAround.items"
+            :key="it.id"
+            class="ctx__line"
+            :class="{ 'ctx__line--focus': contextEntry && it.seq === contextEntry.seq }"
+          >{{ it.raw }}</div>
+        </div>
+        <div class="ctx__actions">
+          <button class="ctx__btn" @click="copyOne">复制此条</button>
+          <button class="ctx__btn ctx__btn--primary" @click="copyContext">复制带上下文</button>
+        </div>
+      </div>
+    </BottomSheet>
+
+    <!-- 导出范围 -->
+    <BottomSheet v-model="exportOpen" title="选择导出范围">
+      <div class="export-list">
+        <button
+          v-for="opt in EXPORT_OPTS"
+          :key="opt.value"
+          class="export-list__item"
+          :class="{ 'export-list__item--active': exportScope === opt.value }"
+          @click="exportScope = opt.value"
+        >
+          <span>{{ opt.label }}</span>
+          <span class="export-list__desc">{{ opt.desc }}</span>
+        </button>
+        <button class="export-list__go" :disabled="exportBusy" @click="doExport">
+          {{ exportBusy ? '打包中…' : '导出并分享' }}
         </button>
       </div>
     </BottomSheet>
@@ -643,19 +820,6 @@ function formatTime(ts: number): string {
   background: transparent;
   border: none;
   cursor: pointer;
-}
-
-.logs-rolled {
-  display: block;
-  width: 100%;
-  padding: var(--space-2) var(--space-4);
-  font: var(--font-weight-medium) 13px / 1.4 var(--font-family-base);
-  color: var(--color-warning);
-  background: var(--color-warning-soft);
-  border: none;
-  border-bottom: 1px solid var(--color-divider);
-  cursor: pointer;
-  text-align: center;
 }
 
 .logs-tabs {
@@ -747,7 +911,7 @@ function formatTime(ts: number): string {
 
 .logs-filter__chip {
   padding: var(--space-1) var(--space-2);
-  font: var(--font-weight-medium) 11px / 1.4 var(--font-family-mono);
+  font: var(--font-weight-medium) 11px / 1.4 var(--font-family-base);
   color: var(--color-text-secondary);
   background: var(--color-bg-base);
   border: 1px solid var(--color-divider);
@@ -794,33 +958,72 @@ function formatTime(ts: number): string {
   border-color: var(--color-accent);
 }
 
-.logs-filter__time {
+.logs-histogram {
+  padding: var(--space-2) var(--space-4) var(--space-1);
+  background: var(--color-bg-elevated);
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.logs-histogram__bars {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 2px;
+  height: 36px;
 }
 
-.logs-filter__time-input {
-  flex: 1 1 auto;
-  min-width: 140px;
-  padding: var(--space-1) var(--space-2);
-  font: var(--font-weight-regular) 12px / 1.4 var(--font-family-base);
-  color: var(--color-text-primary);
+.logs-histogram__bar {
+  flex: 1 1 0;
+  min-height: 0;
+  padding: 0;
   background: var(--color-bg-base);
-  border: 1px solid var(--color-divider);
-  border-radius: var(--radius-sm);
+  border: none;
+  border-radius: 1px 1px 0 0;
+  cursor: pointer;
 }
 
-.logs-filter__time-input:focus {
-  outline: none;
-  border-color: var(--color-accent);
+.logs-histogram__bar--has {
+  background: var(--color-info);
+  opacity: 0.55;
 }
 
-.logs-filter__time-sep {
-  flex: 0 0 auto;
-  font: var(--font-weight-regular) 12px / 1 var(--font-family-base);
+.logs-histogram__bar--err {
+  background: var(--color-danger);
+  opacity: 0.8;
+}
+
+.logs-histogram__bar:disabled {
+  cursor: default;
+  background: var(--color-divider-soft);
+  height: 2px !important;
+  opacity: 1;
+}
+
+.logs-histogram__ticks {
+  display: flex;
+  justify-content: space-between;
+  font: var(--font-weight-regular) 9px / 1.6 var(--font-family-number);
   color: var(--color-text-tertiary);
+}
+
+.logs-rolled {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-4);
+  font: var(--font-weight-medium) 13px / 1.4 var(--font-family-base);
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+  border: none;
+  border-bottom: 1px solid var(--color-divider);
+  cursor: pointer;
+  text-align: center;
+}
+
+.logs-main {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 .logs-empty {
@@ -834,17 +1037,21 @@ function formatTime(ts: number): string {
 .logs-list {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: var(--space-2);
+  padding: var(--space-1) 0;
   font: var(--font-weight-regular) 11px / 1.5 var(--font-family-mono);
 }
 
 .log-entry {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  padding: 0 var(--space-2);
   border-bottom: 1px solid var(--color-divider-soft);
-  content-visibility: auto;
-  contain-intrinsic-size: 0 60px;
+  cursor: pointer;
+}
+
+.log-entry:active {
+  background: var(--color-overlay-press);
 }
 
 .log-entry--error {
@@ -855,18 +1062,15 @@ function formatTime(ts: number): string {
   background: var(--color-warning-soft);
 }
 
-.log-entry--info {
-  background: var(--color-info-soft);
-}
-
 .log-entry__time {
   flex: 0 0 auto;
+  font: var(--font-weight-regular) 10px / 1.4 var(--font-family-number);
   color: var(--color-text-tertiary);
 }
 
 .log-entry__level {
   flex: 0 0 auto;
-  min-width: 1.5em;
+  min-width: 1.4em;
   font-weight: var(--font-weight-bold);
 }
 
@@ -878,30 +1082,62 @@ function formatTime(ts: number): string {
   color: var(--color-warning);
 }
 
-.log-entry--info .log-entry__level {
-  color: var(--color-info);
-}
-
 .log-entry__tag {
   flex: 0 0 auto;
+  max-width: 30%;
   color: var(--color-text-secondary);
 }
 
 .log-entry__msg {
   flex: 1 1 auto;
   min-width: 0;
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
   color: var(--color-text-primary);
+}
+
+.logs-newpill {
+  position: absolute;
+  left: 50%;
+  bottom: var(--space-3);
+  transform: translateX(-50%);
+  padding: var(--space-1) var(--space-3);
+  font: var(--font-weight-medium) 12px / 1.6 var(--font-family-base);
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  border: 1px solid var(--color-accent);
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
+  cursor: pointer;
 }
 
 .logs-toolbar {
   display: flex;
+  align-items: center;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   background: var(--color-bg-elevated);
   border-top: 1px solid var(--color-divider);
+}
+
+.logs-toolbar__match {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font: var(--font-weight-regular) 12px / 1.4 var(--font-family-number);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.logs-toolbar__nav {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font: var(--font-weight-medium) 14px / 1 var(--font-family-base);
+  color: var(--color-text-primary);
+  background: var(--color-bg-base);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
 }
 
 .logs-toolbar__btn {
@@ -920,27 +1156,19 @@ function formatTime(ts: number): string {
   background: var(--color-overlay-press);
 }
 
-.logs-toolbar__btn--active {
-  color: var(--color-accent);
-  border-color: var(--color-accent);
-  background: var(--color-accent-soft);
-}
-
-.logs-toolbar__btn--danger {
-  color: var(--color-danger);
-  border-color: var(--color-danger);
-}
-
 .tag-list,
-.date-list {
+.date-list,
+.export-list {
   padding: var(--space-2);
 }
 
 .tag-list__item,
-.date-list__item {
+.date-list__item,
+.export-list__item {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--space-2);
   width: 100%;
   padding: var(--space-3);
   font: var(--font-weight-regular) 14px / 1.4 var(--font-family-base);
@@ -953,12 +1181,14 @@ function formatTime(ts: number): string {
 }
 
 .tag-list__item:active,
-.date-list__item:active {
+.date-list__item:active,
+.export-list__item:active {
   background: var(--color-overlay-press);
 }
 
 .tag-list__item--active,
-.date-list__item--active {
+.date-list__item--active,
+.export-list__item--active {
   color: var(--color-accent);
   background: var(--color-accent-soft);
 }
@@ -967,5 +1197,79 @@ function formatTime(ts: number): string {
 .date-list__size {
   font: var(--font-weight-regular) 12px / 1.4 var(--font-family-number);
   color: var(--color-text-tertiary);
+}
+
+.export-list__desc {
+  font: var(--font-weight-regular) 12px / 1.4 var(--font-family-base);
+  color: var(--color-text-tertiary);
+}
+
+.export-list__go {
+  width: 100%;
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  font: var(--font-weight-medium) 14px / 1.4 var(--font-family-base);
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.export-list__go:disabled {
+  opacity: 0.6;
+}
+
+.ctx {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+
+.ctx__text {
+  max-height: 50vh;
+  overflow-y: auto;
+  padding: var(--space-2);
+  font: var(--font-weight-regular) 11px / 1.5 var(--font-family-mono);
+  background: var(--color-bg-base);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+}
+
+.ctx__line {
+  padding: 1px 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--color-text-primary);
+}
+
+.ctx__line--focus {
+  padding-left: var(--space-1);
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  border-radius: var(--radius-sm);
+}
+
+.ctx__actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.ctx__btn {
+  flex: 1 1 auto;
+  padding: var(--space-2);
+  font: var(--font-weight-medium) 13px / 1.4 var(--font-family-base);
+  color: var(--color-text-primary);
+  background: var(--color-bg-base);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.ctx__btn--primary {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
 }
 </style>

@@ -121,11 +121,11 @@ public final class CrashEventsCollector {
                 + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".txt");
         try (BufferedWriter w = new BufferedWriter(new FileWriter(out))) {
             w.write("===== PeanutMov crash evidence =====\n");
-            w.write("event: ").write(target.id).write("\n");
-            w.write("kind: ").write(target.kind).write("\n");
-            w.write("time: ").write(fmtTime(target.ts)).write("\n\n");
+            w.write("event: " + target.id + "\n");
+            w.write("kind: " + target.kind + "\n");
+            w.write("time: " + fmtTime(target.ts) + "\n\n");
             w.write(target.fullText());
-            w.write("\n\n===== log context (±").write(String.valueOf(windowMinutes)).write(" min) =====\n");
+            w.write("\n\n===== log context (±" + windowMinutes + " min) =====\n");
             appendLogContext(w, ctx, target.ts, windowMinutes * 60_000L);
         }
         return out;

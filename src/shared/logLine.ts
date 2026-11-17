@@ -24,6 +24,8 @@ export interface LogEntry {
   message: string;
   /** 原始行 */
   raw: string;
+  /** 在全量条目数组中的序号（查看页加载后回填，用于上下文切片） */
+  seq?: number;
 }
 
 const LOG_LINE_RE = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) ([DIWEF]) \[([^\]]+)\] ([^:]+): (.*)$/;
