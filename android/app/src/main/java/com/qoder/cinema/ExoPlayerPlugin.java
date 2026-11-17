@@ -268,8 +268,11 @@ public class ExoPlayerPlugin extends Plugin {
                 }
                 MediaItem mediaItem = itemBuilder.build();
 
-                // P0-7: 续播位置随 prepare 下发（毫秒），0 或负数视为从头播放
-                long startPositionMs = call.getLong("startPositionMs", 0L);
+                // P0-7: 续播位置随 prepare 下发（毫秒），0 或负数视为从头播放。
+                // 必须走 getData().optLong：JS 数字在 org.json 里是 Integer，
+                // `call.getLong(key, 0L)` 会当成类型不符返回默认值 0（真机实证 2026-11-17：
+                // 桥 methodData 带 15000，handler 读到 0，续播位置整体失效）。
+                long startPositionMs = call.getData().optLong("startPositionMs", 0L);
 
                 // P0-6: DefaultLoadControl 首帧优先——缩短起播等待
                 LoadControl loadControl = new DefaultLoadControl.Builder()
@@ -464,6 +467,7 @@ public class ExoPlayerPlugin extends Plugin {
                 ensureMediaSession();
                 // 纯音频模式跨切集保持：ensureOverlay 会把容器置回 VISIBLE
                 applyAudioOnly();
+                AppLog.i("ExoPlayerPlugin", "prepare startPosition=" + startPositionMs + "ms");
                 player.prepare();
                 // P0-3：起播意图若在 prepare 之前到达，此刻补上
                 if (pendingPlay) {

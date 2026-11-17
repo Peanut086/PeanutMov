@@ -98,8 +98,10 @@ public class DownloadPlugin extends Plugin {
             }
         }
 
-        long startBytes = call.getLong("startBytes", 0L);
-        long totalBytes = call.getLong("totalBytes", -1L);
+        // 必须走 getData().optLong：JS 数字在 org.json 里是 Integer，`call.getLong(key, default)`
+        // 只认 Long 类型，续传偏移会被静默当成缺失退回默认值（同源缺陷见 ExoPlayerPlugin P0-7）
+        long startBytes = call.getData().optLong("startBytes", 0L);
+        long totalBytes = call.getData().optLong("totalBytes", -1L);
 
         try {
             downloadManager.start(taskId, url, filePath, headers, startBytes, totalBytes);
@@ -226,6 +228,9 @@ public class DownloadPlugin extends Plugin {
      * OPT-09：JS 侧现在会在"队列没有在飞任务"时主动收回保活，但转封装（EXT-04）
      * 是下载终态之后才跑的，此时 JS 队列已经空了。这里拒绝把 remux 的前台资格停掉，
      * 由 {@code endPostprocess} 收尾时再判一次空闲。
+     *
+     * FGS-GUARD：收回必须走 {@link DownloadService#stop}。JS 侧的 start/stop 是两条独立
+     * 异步链，stop 落在 startForeground 之前会被 AMS 判成超时并强杀进程（真机 18ms 内落地）。
      */
     @PluginMethod
     public void stopForegroundService(PluginCall call) {
@@ -235,8 +240,7 @@ public class DownloadPlugin extends Plugin {
                 call.resolve();
                 return;
             }
-            Intent intent = new Intent(getContext(), DownloadService.class);
-            getContext().stopService(intent);
+            DownloadService.stop(getContext());
             call.resolve();
         } catch (Exception e) {
             Log.e(TAG, "Failed to stop foreground service", e);

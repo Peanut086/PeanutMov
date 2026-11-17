@@ -3235,6 +3235,14 @@ onBeforeUnmount(() => {
               音轨
             </button>
           </template>
+          <button
+            class="player-info__action"
+            type="button"
+            data-test="open-more-sheet"
+            @click="moreOpen = true"
+          >
+            更多
+          </button>
         </div>
 
         <section v-if="episodes.length > 0" class="player-info__section">

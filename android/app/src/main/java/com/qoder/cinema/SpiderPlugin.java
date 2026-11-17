@@ -564,7 +564,8 @@ public class SpiderPlugin extends Plugin {
             return;
         }
         String fileName = call.getString("file", null);
-        long offset = call.getLong("offset", 0L);
+        // getLong 只认 org.json Long，JS 数字是 Integer，会让增量游标静默退回 0（见 ExoPlayerPlugin P0-7）
+        long offset = call.getData().optLong("offset", 0L);
         int maxBytes = call.getInt("maxBytes", 256 * 1024);
         try {
             SpiderLogStore.TailResult r = store.readTail(fileName, offset, maxBytes);
@@ -592,7 +593,8 @@ public class SpiderPlugin extends Plugin {
             return;
         }
         String fileName = call.getString("file", null);
-        long offset = call.getLong("offset", 0L);
+        // getLong 只认 org.json Long，JS 数字是 Integer，会让增量游标静默退回 0（见 ExoPlayerPlugin P0-7）
+        long offset = call.getData().optLong("offset", 0L);
         int maxBytes = call.getInt("maxBytes", 256 * 1024);
         try {
             SpiderLogStore.RangeResult r = store.readRange(fileName, offset, maxBytes);

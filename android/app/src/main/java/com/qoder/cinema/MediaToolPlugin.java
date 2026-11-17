@@ -169,10 +169,19 @@ public class MediaToolPlugin extends Plugin {
         }
     }
 
+    /**
+     * 可空长整型入参。`call.getLong(key)` 只认 org.json 的 Long，而 JS 数字在桥里是 Integer，
+     * 会被判成类型不符返回 null；这里按 Number 取，仅缺失或非数字才退回 null（同源缺陷见 ExoPlayerPlugin P0-7）。
+     */
+    private static Long optLongOrNull(JSObject data, String key) {
+        Object value = data.opt(key);
+        return value instanceof Number ? ((Number) value).longValue() : null;
+    }
+
     /** 下发全局限速额度；bytesPerSec <= 0 表示不限速。切换立即对进行中的分段线程生效 */
     @PluginMethod
     public void setSpeedLimit(PluginCall call) {
-        Long bytesPerSec = call.getLong("bytesPerSec");
+        Long bytesPerSec = optLongOrNull(call.getData(), "bytesPerSec");
         if (bytesPerSec == null) {
             call.reject("bytesPerSec required");
             return;
@@ -216,7 +225,7 @@ public class MediaToolPlugin extends Plugin {
         String outputPath = trimToNull(call.getString("outputPath"));
         String container = trimToNull(call.getString("container"));
         Boolean deleteInputArg = call.getBoolean("deleteInput", Boolean.TRUE);
-        Long timeoutArg = call.getLong("timeoutMs");
+        Long timeoutArg = optLongOrNull(call.getData(), "timeoutMs");
 
         if (inputPath == null || outputPath == null) {
             reject(call, MediaRemuxer.CODE_INVALID_INPUT, "inputPath/outputPath required");

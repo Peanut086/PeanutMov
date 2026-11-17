@@ -323,16 +323,23 @@ public class NativeDownloadManager {
             com.qoder.cinema.AppLog.d(TAG, "Keep foreground service: remux in progress");
             return;
         }
-        boolean hasRunnablePending = false;
-        for (DownloadTask task : pendingTasks.values()) {
-            if (!pausedTasks.containsKey(task.taskId)) {
-                hasRunnablePending = true;
-                break;
-            }
-        }
-        if (activeDownloads.isEmpty() && !hasRunnablePending) {
+        if (!hasActiveTasks()) {
             DownloadService.stop(context);
         }
+    }
+
+    /**
+     * 是否还有原生侧的在飞任务（正在下载，或排队中且未被暂停）。
+     *
+     * JS 侧的队列视图可能先于原生清空（进度回调在传、任务已落库为终态），此时若照 JS 的
+     * 判断收回保活，就会在字节还在写的时候把前台资格摘掉。原生自己说了才算。
+     */
+    public boolean hasActiveTasks() {
+        if (!activeDownloads.isEmpty()) return true;
+        for (DownloadTask task : pendingTasks.values()) {
+            if (!pausedTasks.containsKey(task.taskId)) return true;
+        }
+        return false;
     }
 
     private void onProgress(String taskId, long downloadedBytes, long totalBytes, long speedBps) {

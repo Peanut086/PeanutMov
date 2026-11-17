@@ -48,6 +48,8 @@ public class DownloadService extends Service {
 
     /** 转封装等后处理任务计数（进程内，配对调用；<0 视为失衡并复位） */
     private static final AtomicInteger postprocessCount = new AtomicInteger(0);
+    /** 停服请求落在「已 startForegroundService、尚未 startForeground」窗口时的延后标记 */
+    private static volatile boolean stopWhenReady = false;
     /** 当前服务实例（未启动时为 null），供静态方法刷新通知 */
     private static volatile WeakReference<DownloadService> instanceRef = new WeakReference<>(null);
 
@@ -67,6 +69,17 @@ public class DownloadService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.d(TAG, "DownloadService started");
         startForegroundNotification();
+        if (stopWhenReady) {
+            // 收回请求曾落在 startForeground 之前（那会儿 stopService 会直接被 AMS 判超时强杀），
+            // 现在前台已坐实，补做当初被延后的那次收回。
+            stopWhenReady = false;
+            Log.d(TAG, "Applying deferred keep-alive reclaim");
+            try {
+                NativeDownloadManager.getInstance(this).stopServiceIfIdle();
+            } catch (Exception e) {
+                Log.w(TAG, "Deferred reclaim failed", e);
+            }
+        }
         // START_STICKY：系统杀死后自动重启（保持下载不中断）
         return START_STICKY;
     }
@@ -82,6 +95,7 @@ public class DownloadService extends Service {
         super.onDestroy();
         Log.d(TAG, "DownloadService destroyed");
         instanceRef = new WeakReference<>(null);
+        stopWhenReady = false;
         if (isForeground) {
             stopForeground(true);
             isForeground = false;
@@ -193,6 +207,7 @@ public class DownloadService extends Service {
      * 启动服务
      */
     public static void start(Context context) {
+        stopWhenReady = false; // 新的保活诉求作废尚未落地的收回
         Intent intent = new Intent(context, DownloadService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             context.startForegroundService(intent);
@@ -203,10 +218,26 @@ public class DownloadService extends Service {
 
     /**
      * 停止服务
+     *
+     * FGS-GUARD：`startForegroundService()` 之后、`startForeground()` 之前把服务停掉，AMS 会当场
+     * 判定 `ForegroundServiceDidNotStartInTimeException` 并杀掉整个进程（真机实测：撤回落在起活后
+     * 18ms）。所以前台还没坐实时只能延后，由 onStartCommand 落地后补做。
      */
     public static void stop(Context context) {
+        if (!isForegroundReady()) {
+            stopWhenReady = true;
+            Log.d(TAG, "stop deferred: startForeground not landed yet");
+            return;
+        }
+        stopWhenReady = false;
         Intent intent = new Intent(context, DownloadService.class);
         context.stopService(intent);
+    }
+
+    /** 前台资格是否已真正生效（服务实例存在且 startForeground 已执行） */
+    public static boolean isForegroundReady() {
+        DownloadService instance = instanceRef.get();
+        return instance != null && instance.isForeground;
     }
 
     // ========== EXT-04 / FR-60：转封装等后处理的前台保活 ==========
