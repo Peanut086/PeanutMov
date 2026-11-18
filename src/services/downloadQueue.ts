@@ -180,6 +180,14 @@ export interface DownloadQueueOptions {
   save: (task: DownloadTask) => Promise<void>;
   /** 状态变化回调（发事件用） */
   onStatus?: (task: DownloadTask, previous: DownloadStatus) => void;
+  /**
+   * 起跑前钩子（DL-P0-4）：拿到的是库里的原始行——`start` 迁移会抹掉 errorCode，
+   * 之后再看就不知道上一次是怎么死的了。给直链过期类失败换新地址必须赶在这一步，
+   * 才能覆盖所有入口（退避自动重试、watchdog 孤儿交回、用户点重试/继续）。
+   * 钩子可以改写库里的行（换新地址、或直接判失败让本次派发作废），
+   * 因此钩子之后必须重新读库，而不是继续沿用钩子前那份快照。
+   */
+  beforeStart?: (task: DownloadTask) => Promise<void>;
   concurrency?: 1 | 2 | 3;
   /** 重试等待实现（测试可替换为立即返回） */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -357,10 +365,15 @@ export class DownloadQueue {
         return;
       }
 
+      await this.opts.beforeStart?.(task);
+      // 钩子可能换了地址、也可能直接把这条判成失败；两个方向都以库里的新行为准
+      const current = (await this.opts.load(id)) ?? task;
+      if (current.status !== 'queued') return;
+
       const now = this.opts.now ?? Date.now;
-      const started = transition(task, 'start', now());
+      const started = transition(current, 'start', now());
       await this.opts.save(started);
-      this.opts.onStatus?.(started, task.status);
+      this.opts.onStatus?.(started, current.status);
 
       try {
         await runner(started, { signal: controller.signal });

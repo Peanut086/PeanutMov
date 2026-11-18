@@ -60,6 +60,7 @@ import type {
   DownloadSubtitlePolicy,
   DownloadSummary,
   DownloadTask,
+  ErrorCode,
   HlsQuality,
   MediaFormat,
   PlaybackSource,
@@ -203,30 +204,64 @@ function resourcePathOf(url: string): string {
   return url.split(/[?#]/, 1)[0] ?? url;
 }
 
+/** 源站把同一条死链原样回吐时给用户的可行动文案（DL-P0-4） */
+const STALE_UNCHANGED_MESSAGE = '该线路的直链已过期，源站没有给出新地址，请更换线路或源';
+
 /**
  * 失败重试前重新解析直链与请求头（解析失败则沿用原地址，不阻断重试）。
  *
  * 资源路径变了就是换了一份清单：旧的 `.part` 与分片序号不能再拼上去，
  * 否则得到的是能"完成"却播不动的损坏文件（FIX-D8 同类）。
+ *
+ * 返回换链结果，调用方据此决定要不要拿原来那条链再撞一次：
+ * - `'refreshed'`：拿到了新地址（换了签名，或整份清单都换了）
+ * - `'unchanged'`：地址与请求头逐字未变——重试必然再吃一次同样的 402/403
+ * - `'failed'`：解析本身没成或结果不可用，沿用原地址
  */
-async function refreshStaleLink(task: DownloadTask): Promise<void> {
+async function refreshStaleLink(task: DownloadTask): Promise<'refreshed' | 'unchanged' | 'failed'> {
   try {
     // 动态引入：libraryService 静态依赖 downloadService，顶层 import 会成环
     const { libraryService } = await import('@/services/libraryService');
+    /**
+     * DL-P0-4：先打掉解析缓存，"刷新直链"才真的是一次刷新。
+     *
+     * `resolvePlay` 的第一道命中是 30 分钟内存缓存，而爬虫源交回的 `expiresAt` 恒为
+     * null（SpiderAdapter 里写死），P0-3 那道「直链过期优先于内存 TTL」的闸门对它们
+     * 完全空转。真机实测：13:45:47~13:56:19 连着 9 次刷新全是 `resourceChanged: false`，
+     * 每条都配着一句「播放地址缓存命中」，库里那条 `auth_key=1794979747…` 自 13:29:07
+     * 起一个字没变；每一轮都是「缓存命中→已刷新直链→用同一个签名起跑→清单 402」。
+     */
+    libraryService.invalidatePlayCache(task.mediaId);
     const play = await libraryService.resolvePlay({
       mediaId: task.mediaId,
       episodeId: task.episodeId,
       lineId: task.lineId ?? null,
       prefer: 'network',
     });
-    if (!play.url || isLocalArtifactUrl(play.url)) return;
+    if (!play.url || isLocalArtifactUrl(play.url)) return 'failed';
 
     const resourceChanged = resourcePathOf(play.url) !== resourcePathOf(task.url);
+    /**
+     * 「没换」要连请求头一起看：签名放在头里的源，换了头就是换了链。
+     * 按字面序列化比对，键序不同只会误成「换了」——那是放行重试的方向，不会把死链放跑。
+     */
+    const unchanged =
+      play.url === task.url &&
+      JSON.stringify(play.headers ?? {}) === JSON.stringify(task.headers ?? {});
+    // 以库里的当前行为底本回写：拿派发前那份快照会把刚被暂停/取消的任务复活成 downloading
+    const current = (await downloadRepo.get(task.id)) ?? task;
     const next: DownloadTask = {
-      ...task,
+      ...current,
       url: play.url,
       headers: play.headers ?? task.headers,
       format: play.format,
+      /**
+       * 原样回吐时顺手把结论写进这一行：卡片上的文案要和 toast 是同一句。
+       * 继续挂着上一次「源返回了网页而不是视频清单」那种描述，用户只会照着它再点一次重试。
+       */
+      ...(unchanged
+        ? { errorCode: 'E_SOURCE_UNAVAILABLE' as ErrorCode, errorMessage: STALE_UNCHANGED_MESSAGE }
+        : {}),
       ...(resourceChanged
         ? {
             downloadedBytes: 0,
@@ -250,23 +285,39 @@ async function refreshStaleLink(task: DownloadTask): Promise<void> {
       taskId: task.id,
       errorCode: task.errorCode,
       resourceChanged,
+      unchanged,
     });
+    return unchanged ? 'unchanged' : 'refreshed';
   } catch (e) {
     logger.warn('刷新直链失败，沿用原地址重试', { taskId: task.id, error: toAppError(e).message });
+    return 'failed';
   }
 }
 
 /**
- * 直链失效类失败的统一收口：任何"让它重新跑起来"的入口都先换一份带新签名的地址。
+ * 起跑前的换链闸门（队列 `beforeStart` 钩子，DL-P0-4）。
  *
- * 只有 `retry()` 做过这件事，而 UI 上「继续」走的是 `resume()`——停滞/暂停后的任务
- * 按继续等于拿同一条过期 `auth_key` 再请求一次，CDN 就回 402/403，用户看到的是
- * "点继续必报错"。判定只看错误码，不做多余解析。
+ * 此前换链只挂在 `retry()` / `resume()` / `requeuePending()` 三个入队口上，而长下载最常
+ * 见的死法恰好不从这三个口进来：跑到中途签名过期 → 队列退避自动重试、watchdog 把无人
+ * 负责的孤儿交回队列，两条路都拿着同一个过期 `auth_key` 原地再撞一次。收口到派发前这个
+ * 口子，四条入口共用一段逻辑，也不会出现「入队前刷一次、派发时又刷一次」的重复解析——
+ * 爬虫源单次解析 1~3 秒，且原生侧同实例串行，第二次只会被挡回「仍在原生侧执行」。
+ *
+ * 换不到新地址就不起跑：直接判失败给一句可行动文案，比让它把退避表里的两轮机会烧光、
+ * 最后回一句「源不可用」有用。`fail` 迁移只接受 downloading，这里是派发前的 queued，
+ * 所以按行落库并补发状态事件，走不了 `transition`。
  */
-async function refreshLinkIfStale(id: string): Promise<void> {
-  const task = await downloadRepo.get(id);
-  if (!task?.errorCode || !STALE_LINK_CODES.has(task.errorCode)) return;
-  await refreshStaleLink(task);
+async function refreshBeforeStart(task: DownloadTask): Promise<void> {
+  if (!task.errorCode || !STALE_LINK_CODES.has(task.errorCode)) return;
+  if ((await refreshStaleLink(task)) !== 'unchanged') return;
+  const current = await downloadRepo.get(task.id);
+  if (!current) return;
+  // 文案已由 `refreshStaleLink` 在原样回吐时写好，这里只负责把 queued 收成 failed
+  const failed: DownloadTask = { ...current, status: 'failed', speedBps: 0, updatedAt: Date.now() };
+  logger.warn('直链已过期且源站未给出新地址，本次不起跑', { taskId: task.id });
+  await persist(failed);
+  emitDownload({ type: 'status', task: failed, previous: 'queued' });
+  await emitQueueSummary();
 }
 
 /**
@@ -395,6 +446,7 @@ async function ensureQueue(): Promise<DownloadQueue> {
         });
       }
     },
+    beforeStart: refreshBeforeStart,
     concurrency,
     sleep: (ms, signal) =>
       new Promise<void>((resolve, reject) => {
@@ -436,13 +488,9 @@ async function requeuePending(mode: 'none' | 'auto' | 'all' = 'none'): Promise<v
     if (task.status === 'paused') {
       // 自动恢复不复活用户主动暂停/仅WiFi强制暂停；旧记录无 pausedBy 视为后台冻结照常恢复。
       if (mode === 'auto' && (task.pausedBy === 'user' || task.pausedBy === 'network')) continue;
-      // 自动重试退避会停在 paused，直链过期就留在这里：恢复前换新地址
-      let row = task;
-      if (task.errorCode && STALE_LINK_CODES.has(task.errorCode)) {
-        await refreshStaleLink(task);
-        row = (await downloadRepo.get(task.id)) ?? task;
-      }
-      const next = transition(row, 'resume');
+      // 直链过期不在这里刷：交给派发前的 `refreshBeforeStart` 统一处理（DL-P0-4）。
+      // 留在这里的话同一次下载要解析两遍，而原生侧同实例串行，第二遍必被闸门挡回。
+      const next = transition(task, 'resume');
       await persist(next);
       emitDownload({ type: 'status', task: next, previous: 'paused' });
       q.enqueue(next);
@@ -975,8 +1023,9 @@ export const downloadService = {
 
   async resume(id: string): Promise<DownloadTask> {
     const q = await ensureQueue();
-    // FIX-D9 补口：「继续」也要先刷新过期直链，否则只会在同一死链上再撞一次 402/403
-    await refreshLinkIfStale(id);
+    // FIX-D9：「继续」也要换掉过期直链，否则只会在同一条死链上再撞一次 402/403。
+    // 这件事现在由派发前的 `refreshBeforeStart` 统一做——`resume` 迁移不清 errorCode，
+    // 所以那一处一定还看得见上一次是怎么死的（DL-P0-4）。
     const task = await q.resume(id);
     await emitQueueSummary();
     return task;
@@ -997,9 +1046,15 @@ export const downloadService = {
       return this.redownload(id);
     }
     // FIX-D9：直链过期类失败先换新地址/请求头，再入队（必须在 q.retry 之前落库，
-    // 队列会从库里重新读任务）
+    // 队列会从库里重新读任务）。
+    // 这一处不能挪到派发前：`retry` 迁移会把 errorCode 抹成 null，等 `beforeStart`
+    // 再去看已经不知道上一次是怎么死的了（DL-P0-4）。抹不掉的那两条路——退避自动重试、
+    // watchdog 交回——由 `refreshBeforeStart` 负责。
     if (task.status === 'failed' && task.errorCode && STALE_LINK_CODES.has(task.errorCode)) {
-      await refreshStaleLink(task);
+      // 原样回吐就不必再烧两轮退避：这一条是用户主动点的，直接把结论还给他
+      if ((await refreshStaleLink(task)) === 'unchanged') {
+        throw new AppError('E_SOURCE_UNAVAILABLE', STALE_UNCHANGED_MESSAGE, { retryable: false });
+      }
     }
     const next = await q.retry(id);
     await emitQueueSummary();
@@ -1992,8 +2047,10 @@ async function runWatchdogCheck(): Promise<void> {
       /**
        * 「downloading 但队列里没有 runner」不等于停滞，它意味着没人对这个任务负责：
        * 上次会话被系统回收、退避期间被迟到的进度回写复活……直接判失败就是用户看到的
-       * 「下载停滞（watchdog 检测）」，再接一句毫无意义的「重试」。交回队列按断点续传，
-       * 续传口自己会用新地址（直链过期由 resume()/refreshStaleLink 负责）。
+       * 「下载停滞（watchdog 检测）」，再接一句毫无意义的「重试」。交回队列按断点续传。
+       * 直链过期不在这里管：`pause`/`resume` 两个迁移都不清 errorCode，交回后派发前的
+       * `refreshBeforeStart` 一定看得见死因（DL-P0-4；此前这句注释是错的，所以孤儿
+       * 交回每次都拿着同一个过期签名再撞一次 402）。
        */
       if (!isOnline()) continue; // 离线时不动它，网络策略那条路负责暂停与归还
 

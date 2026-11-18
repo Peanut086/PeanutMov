@@ -15,7 +15,11 @@ import type { DownloadTask, ErrorCode, PlaybackSource } from '@/types';
  * 引擎在此被替换成记录器：断言的是「真正交给下载器的任务」，而不只是库里的字段。
  */
 
-const h = vi.hoisted(() => ({ runs: [] as DownloadTask[] }));
+const h = vi.hoisted(() => ({
+  runs: [] as DownloadTask[],
+  /** 下一次派发先抛这个错（用来演练队列的退避自动重试） */
+  throwNext: null as { code: string; message: string } | null,
+}));
 
 vi.mock('@/services/downloadEngine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/downloadEngine')>();
@@ -24,6 +28,12 @@ vi.mock('@/services/downloadEngine', async (importOriginal) => {
     createDownloadEngine: () => ({
       run: async (task: DownloadTask) => {
         h.runs.push(task);
+        if (h.throwNext) {
+          const error = h.throwNext;
+          h.throwNext = null;
+          const { AppError } = await import('@/shared/errors');
+          throw new AppError(error.code as never, error.message);
+        }
       },
     }),
   };
@@ -106,6 +116,7 @@ describe('失败重试前刷新直链（#3）', () => {
     await resetAll();
     downloadService.__resetQueue();
     h.runs.length = 0;
+    h.throwNext = null;
     vi.restoreAllMocks();
     // 记录型引擎会立刻把任务判完成，连带触发附件/弹幕预取（真实网络）——与本用例无关
     vi.spyOn(downloadService, 'downloadAttachments').mockResolvedValue(undefined);
@@ -211,5 +222,95 @@ describe('失败重试前刷新直链（#3）', () => {
       expect(resolve, code).toHaveBeenCalledTimes(1);
       expect(ran.url, code).toContain('sign=fresh');
     }
+  });
+
+  it('换链前先把播放地址内存缓存打掉（真机 9 连击全部走的缓存）', async () => {
+    await seedFailed();
+    const invalidate = vi.spyOn(libraryService, 'invalidatePlayCache').mockImplementation(() => undefined);
+    vi.spyOn(libraryService, 'resolvePlay').mockResolvedValue(makePlayback());
+
+    await retryAndCapture();
+
+    expect(invalidate).toHaveBeenCalledWith('demo:m1');
+  });
+
+  it('源站把同一条地址与请求头原样回吐：不起跑，直接给可行动结论', async () => {
+    const stale = await seedFailed();
+    vi.spyOn(libraryService, 'resolvePlay').mockResolvedValue(
+      makePlayback({ url: OLD_URL, headers: stale.headers }),
+    );
+
+    await expect(downloadService.retry('task-stale-retry')).rejects.toMatchObject({
+      code: 'E_SOURCE_UNAVAILABLE',
+      retryable: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(h.runs).toHaveLength(0);
+    const row = await downloadRepo.get('task-stale-retry');
+    expect(row?.status).toBe('failed');
+    expect(row?.errorMessage).toContain('源站没有给出新地址');
+  });
+
+  it('只有签名在请求头里的源：头换了就算换到新链，照常起跑', async () => {
+    await seedFailed();
+    vi.spyOn(libraryService, 'resolvePlay').mockResolvedValue(
+      makePlayback({ url: OLD_URL, headers: { Referer: 'https://fresh.example.com/' } }),
+    );
+
+    const ran = await retryAndCapture();
+
+    expect(ran.url).toBe(OLD_URL);
+    expect(ran.headers).toEqual({ Referer: 'https://fresh.example.com/' });
+  });
+
+  it('退避自动重试那一轮也换新地址（此前只有入队前那一次会刷）', async () => {
+    let sign = 0;
+    const resolve = vi.spyOn(libraryService, 'resolvePlay').mockImplementation(async () => {
+      sign += 1;
+      return makePlayback({ url: `https://cdn.example.com/vod/ep1.m3u8?sign=${sign}` });
+    });
+    await seedFailed({ errorCode: 'E_PARSE', errorMessage: '清单解析失败', retries: 0 });
+    // 第 1 次派发抛一个可重试的解析失败，逼出队列自己的退避重试（ DOWNLOAD_RETRY_BACKOFF_MS[0] = 1s）
+    h.throwNext = { code: 'E_PARSE', message: '清单解析失败' };
+
+    await downloadService.retry('task-stale-retry');
+    for (let i = 0; i < 800 && h.runs.length < 2; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    expect(h.runs).toHaveLength(2);
+    expect(h.runs[0].url).toContain('sign=1');
+    expect(h.runs[1].url).toContain('sign=2');
+    expect(resolve).toHaveBeenCalledTimes(2);
+    // 续传不作废：只换签名不动已下载字节
+    expect(h.runs[1].downloadedBytes).toBe(500);
+  });
+
+  it('起跑前闸门也拦得住死链：退避那一轮换不到新地址就不再撞第二次', async () => {
+    const resolve = vi.spyOn(libraryService, 'resolvePlay').mockResolvedValue(
+      makePlayback({ url: OLD_URL, headers: { Referer: 'https://old.example.com/' } }),
+    );
+    /**
+     * 起点故意用网络类失败（不在换链名单里），让第一次派发照常起跑；跑完才发现是直链失效。
+     * 这正是真机上最常见的形态：下载起来了好几分钟，中途签名过期。
+     */
+    await seedFailed({ errorCode: 'E_NETWORK', errorMessage: '网络中断', retries: 0 });
+    h.throwNext = { code: 'E_SOURCE_UNAVAILABLE', message: '直链已过期' };
+
+    await downloadService.retry('task-stale-retry');
+    for (let i = 0; i < 800 && h.runs.length < 1; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    // 等过 1s 退避 + 闸门里那一轮解析
+    await new Promise((r) => setTimeout(r, 2_500));
+
+    // 只起跑一次：第二轮被闸门判死，不再拿同一个 auth_key 去撞
+    expect(h.runs).toHaveLength(1);
+    // 换链只发生在起跑前的闸门里这一次
+    expect(resolve).toHaveBeenCalledTimes(1);
+    const row = await downloadRepo.get('task-stale-retry');
+    expect(row?.status).toBe('failed');
+    expect(row?.errorMessage).toContain('源站没有给出新地址');
   });
 });
