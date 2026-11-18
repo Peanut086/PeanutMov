@@ -205,16 +205,14 @@ public class DownloadPlugin extends Plugin {
 
     /**
      * 启动前台服务（用于保持下载进程存活）
+     *
+     * FGS-GUARD：必须走 {@link DownloadService#start}，不能自己拼 Intent——那条路不会清掉
+     * 尚未落地的延后收回标记，服务一坐实就会被上一次过期收回停掉（JS 侧在飞的原生队列看不见）。
      */
     @PluginMethod
     public void startForegroundService(PluginCall call) {
         try {
-            Intent intent = new Intent(getContext(), DownloadService.class);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                getContext().startForegroundService(intent);
-            } else {
-                getContext().startService(intent);
-            }
+            DownloadService.start(getContext());
             call.resolve();
         } catch (Exception e) {
             Log.e(TAG, "Failed to start foreground service", e);
