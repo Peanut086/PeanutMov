@@ -2,6 +2,7 @@ package com.qoder.cinema;
 
 import android.app.PictureInPictureParams;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -11,6 +12,8 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 import android.util.Rational;
+import android.view.PixelCopy;
+import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -61,6 +64,8 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * ExoPlayer —— 原生播放引擎 PoC（v1.7 / CHG-21，Spike）
@@ -990,6 +995,8 @@ public class ExoPlayerPlugin extends Plugin {
     public void release(PluginCall call) {
         getBridge().executeOnMainThread(() -> {
             releasePlayerQuietly();
+            // 弹幕取样的整帧位图按 surface 尺寸分配（1080p 约 8MB），离开播放页必须撤掉
+            recycleLumaScratch();
             if (playerView != null) playerView.setPlayer(null);
             if (overlay != null) overlay.setVisibility(View.GONE);
             // 恢复 WebView 透明：让 CSS 主题背景负责绘制，避免深色主题下闪白
@@ -1142,6 +1149,236 @@ public class ExoPlayerPlugin extends Plugin {
             mainHandler.removeCallbacks(watchdogRunnable);
             watchdogRunnable = null;
         }
+    }
+
+    /* ---------- 11-17：弹幕智能配色的画面取样 ---------- */
+
+    /**
+     * sRGB 8bit → 线性分量查表。
+     *
+     * 亮度口径必须与 JS 侧（WCAG 2.1 相对亮度）一致，否则同一片雪景在两个引擎下
+     * 会判成不同的背景明暗。用均值再查表（先平均后线性化），与 WebView 侧
+     * `drawImage` 降采样后再读像素的做法同一口径。
+     */
+    private static final double[] SRGB_LINEAR = new double[256];
+
+    static {
+        for (int i = 0; i < 256; i++) {
+            double c = i / 255.0;
+            SRGB_LINEAR[i] = c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+        }
+    }
+
+    /** 每个网格纵向取几条扫描线求均值（一屏只取 1 行会被细横线/字幕条带偏） */
+    private static final int LUMA_LINES_PER_ROW = 3;
+    /** PixelCopy 兜底超时：框架不保证回调一定来，超时就当本轮没有帧 */
+    private static final int LUMA_COPY_TIMEOUT_MS = 1500;
+
+    /** PixelCopy 目标位图：与 surface 同尺寸，跨轮次复用（1080p 约 8MB，每轮新建必然抖内存） */
+    private Bitmap lumaFrame;
+    /** 逐行读像素的行缓冲，同样复用 */
+    private int[] lumaRow;
+    /**
+     * 取样互斥位。JS 侧本身有 in-flight 闸门，但引擎切换时可能有两个取样方重叠；
+     * 复用同一张位图时被并发写入会取到半帧，所以这里直接让后来者拿到"本轮无帧"。
+     */
+    private boolean lumaBusy = false;
+    /** 降采样专用线程（惰性创建，单条串行，天然避免两轮同时写同一张位图） */
+    private ExecutorService lumaDownsampler;
+
+    @PluginMethod
+    @OptIn(markerClass = UnstableApi.class)
+    public void sampleFrameLuma(PluginCall call) {
+        Integer reqCols = call.getInt("cols");
+        Integer reqRows = call.getInt("rows");
+        int cols = reqCols == null ? 32 : reqCols;
+        int rows = reqRows == null ? 18 : reqRows;
+        if (cols <= 0 || rows <= 0 || cols > 128 || rows > 128) {
+            call.reject("cols/rows 超出范围");
+            return;
+        }
+        getBridge().executeOnMainThread(() -> {
+            if (playerView == null) {
+                // 还没起播（PlayerView 未创建）：这条路是通的，只是本轮没帧
+                resolveLumaUnavailable(call);
+                return;
+            }
+            View surface = playerView.getVideoSurfaceView();
+            if (!(surface instanceof SurfaceView)) {
+                // 纹理渲染 / 未挂播放器：系统没有可截的 surface，永久不通
+                JSObject ret = new JSObject();
+                ret.put("unsupported", true);
+                call.resolve(ret);
+                return;
+            }
+            if (lumaBusy) {
+                resolveLumaUnavailable(call);
+                return;
+            }
+            SurfaceView surfaceView = (SurfaceView) surface;
+            int width = surfaceView.getWidth();
+            int height = surfaceView.getHeight();
+            if (width < 4 || height < 4) {
+                resolveLumaUnavailable(call);
+                return;
+            }
+            if (lumaFrame == null || lumaFrame.getWidth() != width || lumaFrame.getHeight() != height) {
+                if (lumaFrame != null) lumaFrame.recycle();
+                lumaFrame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                lumaRow = new int[width];
+            }
+            final Bitmap dest = lumaFrame;
+            final int[] row = lumaRow;
+            final JSObject box = lumaBoxOf(surfaceView);
+            // SurfaceView 版 PixelCopy 只有异步回调（Window 版才同步返回状态），框架也不保证
+            // 一定会回调，所以这一轮用 settled 收口一次：兜底超时与回调都排在 mainHandler 上，天然串行。
+            final boolean[] settled = new boolean[1];
+            final Runnable deadline = () -> settleLuma(call, settled, null, null);
+            lumaBusy = true;
+            mainHandler.postDelayed(deadline, LUMA_COPY_TIMEOUT_MS);
+            try {
+                PixelCopy.request(surfaceView, dest, result -> {
+                    mainHandler.removeCallbacks(deadline);
+                    if (result != PixelCopy.SUCCESS) {
+                        // 超时 / surface 暂无 buffer（切集、进 PiP、纯音频）：本轮无帧
+                        settleLuma(call, settled, null, null);
+                        return;
+                    }
+                    // PixelCopy 只能整帧拷贝，逐格求均值放到专用线程，别在播放的主线程上卡出掉帧
+                    lumaExecutor().execute(() -> {
+                        JSArray computed = null;
+                        try {
+                            computed = lumaCells(dest, row, cols, rows);
+                        } catch (Throwable e) {
+                            com.qoder.cinema.AppLog.w("ExoPlayerPlugin", "lumaCells failed: " + e);
+                        }
+                        final JSArray cells = computed;
+                        mainHandler.post(() -> settleLuma(call, settled, cells, box));
+                    });
+                }, mainHandler);
+            } catch (Throwable e) {
+                mainHandler.removeCallbacks(deadline);
+                com.qoder.cinema.AppLog.w("ExoPlayerPlugin", "sampleFrameLuma failed: " + e);
+                settleLuma(call, settled, null, null);
+            }
+        });
+    }
+
+    /**
+     * 结束一轮取样：cells 为 null 表示本轮没有帧。
+     * 只在主线程调用，所以 settled / lumaBusy 都不需要额外同步。
+     */
+    private void settleLuma(PluginCall call, boolean[] settled, JSArray cells, JSObject box) {
+        if (settled[0]) return;
+        settled[0] = true;
+        lumaBusy = false;
+        if (cells == null || box == null) {
+            resolveLumaUnavailable(call);
+            return;
+        }
+        JSObject ret = new JSObject();
+        ret.put("available", true);
+        ret.put("cells", cells);
+        ret.put("box", box);
+        call.resolve(ret);
+    }
+
+    /** 降采样线程惰性创建；单条串行，所以两轮取样不会同时写同一张位图 */
+    private ExecutorService lumaExecutor() {
+        if (lumaDownsampler == null || lumaDownsampler.isShutdown()) {
+            lumaDownsampler = Executors.newSingleThreadExecutor(r -> new Thread(r, "danmaku-luma"));
+        }
+        return lumaDownsampler;
+    }
+
+    private void resolveLumaUnavailable(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("available", false);
+        call.resolve(ret);
+    }
+
+    /**
+     * surface 在 PlayerView 里的归一化矩形。
+     *
+     * JS 侧的亮度场要铺满整块弹幕画布，而 surface 只是其中的内容区（contain 时有黑边）。
+     * 直接量出来的比按视频长宽重算更准：各向异性像素、cover/fill 拉伸都在这里天然正确。
+     */
+    @OptIn(markerClass = UnstableApi.class)
+    private JSObject lumaBoxOf(View surface) {
+        int[] at = new int[2];
+        int[] base = new int[2];
+        surface.getLocationInWindow(at);
+        playerView.getLocationInWindow(base);
+        double pw = Math.max(1, playerView.getWidth());
+        double ph = Math.max(1, playerView.getHeight());
+        JSObject box = new JSObject();
+        box.put("left", (at[0] - base[0]) / pw);
+        box.put("top", (at[1] - base[1]) / ph);
+        box.put("width", Math.max(0, surface.getWidth()) / pw);
+        box.put("height", Math.max(0, surface.getHeight()) / ph);
+        return box;
+    }
+
+    /** 逐格求块内 sRGB 均值，再换算成 0~255 的相对亮度 */
+    private static JSArray lumaCells(Bitmap src, int[] row, int cols, int rows) {
+        JSArray out = new JSArray();
+        int width = src.getWidth();
+        int height = src.getHeight();
+        for (int r = 0; r < rows; r++) {
+            double bandTop = r * (double) height / rows;
+            double bandBottom = (r + 1) * (double) height / rows;
+            int bandLines = Math.max(1, Math.min(LUMA_LINES_PER_ROW, (int) Math.max(1, bandBottom - bandTop)));
+            long[] sumR = new long[cols];
+            long[] sumG = new long[cols];
+            long[] sumB = new long[cols];
+            int[] count = new int[cols];
+            for (int li = 0; li < bandLines; li++) {
+                int y = (int) Math.min(height - 1, Math.max(0, bandTop + (li + 0.5) * (bandBottom - bandTop) / bandLines));
+                src.getPixels(row, 0, width, 0, y, width, 1);
+                for (int c = 0; c < cols; c++) {
+                    int x0 = (int) (c * (double) width / cols);
+                    int x1 = (int) ((c + 1) * (double) width / cols);
+                    if (x1 <= x0) x1 = Math.min(width, x0 + 1);
+                    for (int x = x0; x < x1 && x < width; x++) {
+                        int px = row[x];
+                        sumR[c] += (px >> 16) & 0xff;
+                        sumG[c] += (px >> 8) & 0xff;
+                        sumB[c] += px & 0xff;
+                        count[c] += 1;
+                    }
+                }
+            }
+            for (int c = 0; c < cols; c++) {
+                int n = count[c];
+                if (n <= 0) {
+                    out.put(0);
+                    continue;
+                }
+                double luma = 0.2126 * SRGB_LINEAR[(int) (sumR[c] / n)]
+                        + 0.7152 * SRGB_LINEAR[(int) (sumG[c] / n)]
+                        + 0.0722 * SRGB_LINEAR[(int) (sumB[c] / n)];
+                out.put((int) Math.round(Math.max(0d, Math.min(1d, luma)) * 255));
+            }
+        }
+        return out;
+    }
+
+    /** 离开播放页 / 销毁：把取样用的整帧位图还给系统 */
+    private void recycleLumaScratch() {
+        lumaBusy = false;
+        if (lumaDownsampler != null) {
+            lumaDownsampler.shutdownNow();
+            lumaDownsampler = null;
+        }
+        if (lumaFrame != null) {
+            try {
+                lumaFrame.recycle();
+            } catch (Exception ignored) {
+                // 已回收或正被占用：没有可恢复动作
+            }
+            lumaFrame = null;
+        }
+        lumaRow = null;
     }
 
     private void ensureOverlay() {

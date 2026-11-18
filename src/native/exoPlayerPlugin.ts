@@ -62,6 +62,22 @@ export interface ExoAudioTrack {
   channels: number | null;
 }
 
+/**
+ * 弹幕智能配色的取帧结果（11-17）。
+ *
+ * `cells` 只覆盖 **视频内容区**（surface 本身），信箱黑边由 JS 侧铺 0；
+ * 每格是 0~255 的 sRGB 相对亮度，不是 gamma 域的 RGB 均值。
+ */
+export interface ExoFrameLuma {
+  /** 这条路永久不通（不是 SurfaceView 渲染 / 系统调用异常）：调用方应关掉功能 */
+  unsupported?: boolean;
+  /** 这一轮有没有拿到帧（未起播、surface 未就绪 = false，下一轮再问） */
+  available?: boolean;
+  cells?: number[];
+  /** 内容区在原生播放器容器里的归一化矩形（cover/fill 时就是整块） */
+  box?: { left: number; top: number; width: number; height: number };
+}
+
 export interface ExoPlayerPlugin {
   isSupported(): Promise<{ supported: boolean }>;
   prepare(options: ExoPrepareOptions): Promise<void>;
@@ -91,6 +107,13 @@ export interface ExoPlayerPlugin {
   isPipSupported(): Promise<{ supported: boolean }>;
   /** EXT-07：当前是否处于画中画 */
   isPipActive(): Promise<{ active: boolean }>;
+  /**
+   * 11-17 弹幕智能配色：抓当前视频帧，回 `cols×rows` 的相对亮度网格。
+   *
+   * 原生侧用 `PixelCopy` 截 PlayerView 的 SurfaceView，JS 侧按 contain 的算法把它铺到
+   * 整块弹幕画布上。拿不到帧的两种口径见 `ExoFrameLuma`。
+   */
+  sampleFrameLuma(options: { cols: number; rows: number }): Promise<ExoFrameLuma>;
   /** v1.8 优化：获取播放质量指标 */
   getPlaybackStats(): Promise<{
     bufferEvents: number;

@@ -858,6 +858,11 @@ export interface DanmakuSettings {
   filterBottom: boolean;
   /** 单击可命中弹幕（停住该条并出点赞/定位/复制），关闭时点击行为与现状一致 */
   interactive: boolean;
+  /**
+   * 智能配色（11-17，默认开）：按弹幕身后的画面亮度改颜色，只在原色看不清时接管。
+   * 取不到帧（源站未开放跨域 / 老安装包原生无取样）时逐条退回原色 + 深色描边。
+   */
+  autoContrast?: boolean;
 }
 
 /**

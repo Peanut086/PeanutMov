@@ -74,6 +74,7 @@ import { usePlayerController } from '@/composables/usePlayerController';
 import { useSeekThumbnails } from '@/composables/useSeekThumbnails';
 import { useSkipIntro } from '@/composables/useSkipIntro';
 import { useDanmakuPick } from '@/composables/useDanmakuPick';
+import { useDanmakuContrast } from '@/composables/useDanmakuContrast';
 import { prefersReducedMotion } from '@/composables/useSpring';
 import type { AmbilightBlockReason } from '@/composables/useAmbilight';
 import { findEpisodeOwnerLineId, offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
@@ -413,10 +414,9 @@ const playerCtl = usePlayerController({
       .catch(() => undefined),
   // AC-53：播放时保持屏幕常亮；Web 下 no-op。
   // 带本页令牌：路由切换时新页先挂、旧页后卸，旧页的释放不该清掉新页的锁。
+  // 这里刻意不 catch：动态 import 失败要让上层控制器看见，它才会按 1s/3s/9s 补发。
   setKeepAwake: (on) =>
-    import('@/services/deviceService')
-      .then((m) => m.deviceService.keepAwake(on, keepAwakeOwner))
-      .catch(() => undefined),
+    import('@/services/deviceService').then((m) => m.deviceService.keepAwake(on, keepAwakeOwner)),
   // API-12 二期：亮度写窗口背光、音量写媒体流档位。
   // 原生能力缺失时这些方法返回 false/null，播放器整体退回「遮罩 + 播放器倍率」。
   levels: {
@@ -2146,6 +2146,7 @@ const danmakuSettings = computed(
       filterTop: false,
       filterBottom: false,
       interactive: true,
+      autoContrast: true,
     },
 );
 
@@ -2425,6 +2426,19 @@ watch(danmakuReady, (ready) => {
 
 // 设置变化（字号/速度等）即时生效
 watch(danmakuSettings, (next) => danmakuOverlay.value?.setSettings(next), { deep: true });
+
+/** 智能配色（11-17）：缺省开——老设置里没有这个键 */
+const danmakuAutoContrast = computed(() => danmakuSettings.value.autoContrast !== false);
+
+const { blocked: danmakuContrastBlocked } = useDanmakuContrast({
+  overlay: danmakuOverlay,
+  stage: stageRef,
+  enabled: computed(() => danmakuReady.value && danmakuAutoContrast.value),
+  native: engineIsNative,
+  resizeMode: currentResizeMode,
+  // 暂停时画面不会自己变，不必白取帧
+  isPlaying: () => player.playing || player.waiting,
+});
 
 // 播放进度驱动弹幕时间轴（store.currentTime 由 timeupdate 事件更新）
 // 用 rAF 合并：多次 currentTime 变化合并为一帧 tick，避免高频 watch 开销
@@ -3099,7 +3113,7 @@ onBeforeUnmount(() => {
         </PlayerSurface>
 
         <!-- 弹幕样式实时调节面板（非模态，叠在 player-stage 内） -->
-        <DanmakuStylePanel :open="danmakuStylePanelOpen && !screenLocked" />
+        <DanmakuStylePanel :open="danmakuStylePanelOpen && !screenLocked" :contrast-blocked="danmakuContrastBlocked" />
       </div>
 
       <!-- 竖屏下方信息区（全屏时隐藏） -->

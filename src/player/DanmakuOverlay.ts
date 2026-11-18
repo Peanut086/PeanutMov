@@ -8,11 +8,14 @@
  * - 默认跟随 rAF 逐帧重绘（~60fps），单帧成本超限自动降回 30fps；
  * - 滚动 / 顶部 / 底部三模式；同屏密度上限 `DANMAKU_MAX_ONSCREEN`；
  * - 底部安全区（字幕区）禁显；文字入场时栅格化成位图，每帧只贴图（描边文字逐帧重绘极慢）；
- * - B-04 互动：`pick()` 按点击坐标命中单条并冻结它（其余照常滚动），canvas 全程不吃指针事件。
+ * - B-04 互动：`pick()` 按点击坐标命中单条并冻结它（其余照常滚动），canvas 全程不吃指针事件；
+ * - 智能配色：播放器按 ~3Hz 推一帧 32×18 亮度场（`setLumaField`），只在原色看不清时
+ *   接管颜色。配色判定跟着采样节奏走而不是逐帧走——逐帧重建位图就是上面那条红线。
  *
  * 设计取舍：不用 DOM 弹幕（数百节点调度易掉帧），canvas 绘制成本恒定。
  */
 import { DANMAKU_MAX_ONSCREEN } from '@/shared/constants';
+import { averageLuma, legacyPaint, resolvePaint, type DanmakuPaint, type LumaField, type PaintRect } from '@/player/danmakuContrast';
 import type { DanmakuComment, DanmakuSettings } from '@/types';
 
 interface Track {
@@ -25,12 +28,20 @@ interface Track {
   duration: number;
   x: number;
   width: number;
-  /** 文字位图（入场时渲染一次，字体/像素比变化后按需重建） */
+  /** 文字位图（入场时栅格化一次，字体/像素比/配色变化后按需重建） */
   bitmap: HTMLCanvasElement | null;
   bitmapFontSize: number;
   bitmapDpr: number;
   bitmapPad: number;
   bitmapHeight: number;
+  bitmapBold: boolean;
+  bitmapStroke: DanmakuSettings['strokeStyle'];
+  /** 位图是按哪套配色画的；与 `paint.key` 不一致才重建 */
+  bitmapPaintKey: string;
+  /** 当前配色（null = 还没判定过，按旧行为） */
+  paint: DanmakuPaint | null;
+  /** 上次判定是否处于接管态（迟滞用） */
+  adapted: boolean;
 }
 
 /** 被点中的弹幕：钉在点中瞬间的坐标上，其余条目照常滚动 */
@@ -96,6 +107,8 @@ export class DanmakuOverlay {
   private lastDrawnTime = Number.NaN;
   private canvasWidth = 0;
   private canvasHeight = 0;
+  /** 最近一帧画面亮度场（null = 还没有 / 智能配色不可用） */
+  private lumaField: LumaField | null = null;
 
   constructor(options: {
     settings: DanmakuSettings;
@@ -160,8 +173,59 @@ export class DanmakuOverlay {
       // 区域一改，原坐标就不可信了；冻结的条目直接放行
       this.picked = null;
     }
+    // 智能配色开关变化：关掉时立刻把接管的条目交还原色，开启时等下一帧亮度场
+    if (settings.autoContrast !== prev.autoContrast && settings.autoContrast === false) this.lumaField = null;
+    this.refreshPaints();
     this.resize();
     this.lastDrawnTime = Number.NaN;
+  }
+
+  /** 弹幕容器尺寸（CSS px）：取样方按它把亮度场铺成整块画布 */
+  get canvasSize(): { width: number; height: number } {
+    return { width: this.canvasWidth, height: this.canvasHeight };
+  }
+
+  /**
+   * 推一帧画面亮度场（播放器侧按 ~3Hz 调用）。
+   *
+   * 配色只在采样节奏上重算（每帧重算要逐条读网格 + 重建位图，是这层明确要避免的成本），
+   * 判定结果没变的条目位图继续复用。传 null 表示"这条路取不到帧"，全部退回旧行为。
+   */
+  setLumaField(field: LumaField | null): void {
+    this.lumaField = this.settings.autoContrast ? field : null;
+    this.refreshPaints();
+  }
+
+  /** 逐条重算配色，变了才让位图作废 */
+  private refreshPaints(): void {
+    for (const track of this.tracks) {
+      const paint = this.paintOf(track);
+      track.adapted = paint.adapted;
+      if (paint.key !== track.paint?.key) {
+        track.paint = paint;
+        track.bitmap = null;
+      }
+    }
+  }
+
+  /** 单条弹幕的配色：取不到帧 / 开关关掉 → 旧行为 */
+  private paintOf(track: Track): DanmakuPaint {
+    const fallback = legacyPaint(track.comment.color);
+    if (!this.settings.autoContrast || this.lumaField === null) return fallback;
+    const bg = averageLuma(this.lumaField, this.paintRectOf(track), this.canvasWidth, this.canvasHeight);
+    return resolvePaint(track.comment.color, bg, track.adapted) ?? fallback;
+  }
+
+  /** 条目的绘制矩形（CSS px，含描边留白），与 `drawTrack` 的落点一致 */
+  private paintRectOf(track: Track): PaintRect {
+    const height = track.bitmapHeight || Math.ceil(this.settings.fontSize * 1.5);
+    const pad = track.bitmapPad || 4;
+    const centered = track.comment.mode !== 'scroll';
+    const x = centered ? (this.canvasWidth - track.width) / 2 : track.x;
+    const baseline = centered
+      ? this.fixedBaselineY(track.comment.mode as 'top' | 'bottom', track.lane)
+      : this.scrollBaselineY(track.lane);
+    return { left: x - pad, top: baseline - height / 2, width: track.width + pad * 2, height };
   }
 
   /** 全量替换弹幕（已按时间排序；merge 由服务层完成） */
@@ -311,7 +375,7 @@ export class DanmakuOverlay {
       const duration = Math.max(4, 10 / Math.max(0.5, this.settings.speed));
       const lane = this.allocateLane(comment, width, duration, now);
       if (lane < 0) continue; // 该模式通道已满，丢弃（密度上限语义）
-      this.tracks.push({
+      const track: Track = {
         comment,
         lane,
         bornAt: now,
@@ -323,7 +387,15 @@ export class DanmakuOverlay {
         bitmapDpr: 0,
         bitmapPad: 0,
         bitmapHeight: 0,
-      });
+        bitmapBold: this.settings.bold,
+        bitmapStroke: this.settings.strokeStyle,
+        bitmapPaintKey: '',
+        paint: null,
+        adapted: false,
+      };
+      // 入场时还在屏外，先按旧配色占位；下一轮亮度场（≤330ms）进来再判定
+      track.paint = this.paintOf(track);
+      this.tracks.push(track);
     }
   }
 
@@ -492,12 +564,14 @@ export class DanmakuOverlay {
     const dpr = this.dpr;
     const bold = this.settings.bold;
     const strokeMode = this.settings.strokeStyle;
+    const paint = track.paint ?? legacyPaint(track.comment.color);
     if (
       track.bitmap !== null
       && track.bitmapFontSize === fontSize
       && track.bitmapDpr === dpr
-      && (track as unknown as { _bold?: boolean })._bold === bold
-      && (track as unknown as { _stroke?: string })._stroke === strokeMode
+      && track.bitmapBold === bold
+      && track.bitmapStroke === strokeMode
+      && track.bitmapPaintKey === paint.key
     ) {
       return track.bitmap;
     }
@@ -517,23 +591,23 @@ export class DanmakuOverlay {
       bctx.lineWidth = lineWidth;
       const baseline = height / 2;
       if (strokeMode === 'shadow') {
-        bctx.shadowColor = 'rgba(0,0,0,0.7)';
+        bctx.shadowColor = paint.shadow;
         bctx.shadowBlur = lineWidth;
         bctx.shadowOffsetX = 1;
         bctx.shadowOffsetY = 1;
-        bctx.fillStyle = `#${(track.comment.color & 0xffffff).toString(16).padStart(6, '0')}`;
+        bctx.fillStyle = paint.fill;
         bctx.fillText(track.comment.text, pad, baseline);
         bctx.shadowColor = 'transparent';
         bctx.shadowBlur = 0;
         bctx.shadowOffsetX = 0;
         bctx.shadowOffsetY = 0;
       } else if (strokeMode === 'outline') {
-        bctx.strokeStyle = 'rgba(0,0,0,0.8)';
+        bctx.strokeStyle = paint.stroke;
         bctx.strokeText(track.comment.text, pad, baseline);
-        bctx.fillStyle = `#${(track.comment.color & 0xffffff).toString(16).padStart(6, '0')}`;
+        bctx.fillStyle = paint.fill;
         bctx.fillText(track.comment.text, pad, baseline);
       } else {
-        bctx.fillStyle = `#${(track.comment.color & 0xffffff).toString(16).padStart(6, '0')}`;
+        bctx.fillStyle = paint.fill;
         bctx.fillText(track.comment.text, pad, baseline);
       }
     }
@@ -542,8 +616,9 @@ export class DanmakuOverlay {
     track.bitmapDpr = dpr;
     track.bitmapPad = pad;
     track.bitmapHeight = height;
-    (track as unknown as { _bold: boolean })._bold = bold;
-    (track as unknown as { _stroke: string })._stroke = strokeMode;
+    track.bitmapBold = bold;
+    track.bitmapStroke = strokeMode;
+    track.bitmapPaintKey = paint.key;
     return bitmap;
   }
 }

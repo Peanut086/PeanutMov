@@ -11,11 +11,26 @@ import { useDebounce } from '@/composables/useDebounce';
 
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
 import { useSettingsStore } from '@/stores/settingsStore';
+import type { DanmakuContrastBlockReason } from '@/composables/useDanmakuContrast';
 import type { DanmakuSettings } from '@/types';
 
-defineProps<{ open: boolean }>();
+const props = withDefaults(defineProps<{ open: boolean; contrastBlocked?: DanmakuContrastBlockReason | null }>(), {
+  contrastBlocked: null,
+});
 
 const settings = useSettingsStore();
+
+/** 取不到帧的原因要说清是哪条路不通，笼统一句"不支持"只会让人以为功能坏了 */
+const CONTRAST_BLOCK_TEXT: Record<DanmakuContrastBlockReason, string> = {
+  tainted: '源站未开放跨域，内置引擎读不到画面像素',
+  unsupported: '当前播放引擎取不到画面帧',
+  'no-video': '没有找到可取样的画面',
+};
+
+const contrastHint = computed(() => {
+  const reason = props.contrastBlocked;
+  return reason ? CONTRAST_BLOCK_TEXT[reason] ?? '' : '';
+});
 
 const danmaku = computed<DanmakuSettings>(
   () =>
@@ -33,6 +48,7 @@ const danmaku = computed<DanmakuSettings>(
       filterTop: false,
       filterBottom: false,
       interactive: true,
+      autoContrast: true,
     },
 );
 
@@ -127,6 +143,17 @@ function updateField<K extends keyof DanmakuSettings>(key: K, value: DanmakuSett
             <option value="outline">描边</option>
           </select>
         </div>
+
+        <div class="panel-row">
+          <span>智能配色</span>
+          <ToggleSwitch
+            :model-value="local.autoContrast !== false"
+            @update:model-value="updateField('autoContrast', $event)"
+          />
+        </div>
+        <p v-if="contrastHint && local.autoContrast !== false" class="panel-hint">
+          {{ contrastHint }}，本轮仍按原色显示
+        </p>
 
         <div class="panel-row">
           <span>密度</span>
@@ -242,6 +269,13 @@ function updateField<K extends keyof DanmakuSettings>(key: K, value: DanmakuSett
   font-size: 12px;
   color: rgba(255, 255, 255, 0.85);
   min-height: 28px;
+}
+
+.panel-hint {
+  margin: -4px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.5);
 }
 
 .panel-select {

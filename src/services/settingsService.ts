@@ -150,6 +150,7 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       filterTop: false,
       filterBottom: false,
       interactive: true,
+      autoContrast: true,
     },
     /* v1.8/P4：网盘画质与线程配置 */
     netdisk: {
@@ -298,6 +299,8 @@ function sanitize(input: AppSettings): AppSettings {
   danmaku.filterTop = Boolean(danmaku.filterTop);
   danmaku.filterBottom = Boolean(danmaku.filterBottom);
   danmaku.interactive = danmaku.interactive !== false;
+  // 缺省即开：老设置里没有这个键，第一次读到也要带上（关掉它才会退回旧行为）
+  danmaku.autoContrast = danmaku.autoContrast !== false;
 
   const merged: AppSettings = {
     ...defaults,

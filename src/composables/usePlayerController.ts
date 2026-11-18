@@ -283,24 +283,40 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
 
   /* ---------- 屏幕常亮（AC-53） ---------- */
 
-  /** 记录当前 keep-awake 状态，避免重复调用 */
-  let awakeActive = false;
-
   /**
-   * 同步常亮锁。`force` 用于回前台：本地缓存可能还记着「亮着」，
-   * 而窗口 flag 已在后台被清掉，此时必须重新落到原生而不是提前返回。
+   * 期望态直接下发，本页不再缓存「我开过了」：`deviceService` 是唯一缓存，
+   * 它按最新意图串行落到原生 flag。
+   *
+   * 这里曾经也存一份布尔——起播瞬间 `waiting/playing` 抖动会发出
+   * true→false→true 三连请求，两层缓存与窗口 flag 拧成反的之后再也不补，
+   * 表现就是「首集播到点熄屏，切一次前后台才恢复」。
    */
-  function syncKeepAwake(force = false): void {
-    const shouldAwake = player.playing || player.waiting;
-    if (!force && shouldAwake === awakeActive) return;
-    awakeActive = shouldAwake;
-    options.setKeepAwake?.(shouldAwake);
+  let awakeIntent = false;
+  /** 每次下发递增：重试回稿时用它认掉过期意图 */
+  let awakeGeneration = 0;
+  /** View 侧走动态 import，冷启动期分片/桥抖动可能整条 reject，补三次再认输 */
+  const AWAKE_RETRY_MS = [1000, 3000, 9000];
+
+  function requestKeepAwake(on: boolean, attempt = 0): void {
+    awakeIntent = on;
+    const generation = ++awakeGeneration;
+    void Promise.resolve(options.setKeepAwake?.(on)).catch(() => {
+      if (generation !== awakeGeneration) return; // 期间已有新意图，别拿旧值覆盖
+      const delayMs = AWAKE_RETRY_MS[attempt];
+      if (delayMs === undefined) {
+        logger.warn('常亮请求连续失败，交由复核周期兜底', { on });
+        return;
+      }
+      setTimeout(() => {
+        if (generation === awakeGeneration) requestKeepAwake(awakeIntent, attempt + 1);
+      }, delayMs);
+    });
   }
 
   // 播放/缓冲状态变化时同步 keep-awake
   watch(
     () => player.playing || player.waiting,
-    () => syncKeepAwake(),
+    (shouldAwake) => requestKeepAwake(shouldAwake),
   );
 
   /** 创建并挂载控制器 */
@@ -737,13 +753,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
         backgroundPaused.value = true;
       }
       // 后台播放时用户没在看画面，继续持常亮锁只会耗电
-      if (awakeActive) {
-        awakeActive = false;
-        options.setKeepAwake?.(false);
-      }
+      requestKeepAwake(false);
       void c.flushProgress();
     } else {
-      syncKeepAwake(true);
+      requestKeepAwake(player.playing || player.waiting);
     }
   }
 
@@ -771,11 +784,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     // 音量不恢复——它是全局状态，按产品决策保留。
     if (player.levelSource === 'system') void options.levels?.releaseBrightness();
     player.reset();
-    // AC-53：离开播放页释放屏幕常亮
-    if (awakeActive) {
-      awakeActive = false;
-      options.setKeepAwake?.(false);
-    }
+    // AC-53：离开播放页释放屏幕常亮（卸载时状态往往还停在 playing，watcher 不会再触发）
+    requestKeepAwake(false);
   });
 
   /* ---------- 派生状态 ---------- */

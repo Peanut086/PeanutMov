@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => {
   const state = { flag: false };
   return {
     state,
+    logs: [] as string[],
     keepAwake: vi.fn(async () => {
       state.flag = true;
     }),
@@ -31,6 +32,12 @@ vi.mock('@capacitor-community/keep-awake', () => ({
   },
 }));
 vi.mock('@/shared/platform', () => ({ isNative: () => true }));
+vi.mock('@/shared/logger', () => ({
+  logger: {
+    info: (msg: string) => mocks.logs.push(msg),
+    warn: () => {},
+  },
+}));
 
 import { deviceService } from '@/services/deviceService';
 
@@ -41,6 +48,7 @@ describe('常亮锁：以窗口 flag 为准 + 归属判定', () => {
   beforeEach(async () => {
     vi.useFakeTimers();
     mocks.state.flag = false;
+    mocks.logs.length = 0;
     mocks.keepAwake.mockClear();
     mocks.allowSleep.mockClear();
     mocks.isKeptAwake.mockClear();
@@ -62,9 +70,67 @@ describe('常亮锁：以窗口 flag 为准 + 归属判定', () => {
 
     // Activity 重建：flag 没了，JS 侧期望态仍是 true
     mocks.state.flag = false;
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(10_000);
 
     expect(mocks.keepAwake).toHaveBeenCalledTimes(2);
+    expect(mocks.state.flag).toBe(true);
+  });
+
+  it('起播瞬间 true→false→true 三连并发 → 锁最终仍在（首集熄屏回归）', async () => {
+    // 让 isKeptAwake 悬挂住，模拟桥往返期间状态又跳了两次
+    let release: ((v: { isKeptAwake: boolean }) => void) | null = null;
+    // 赋值发生在 Promise 执行器里，TS 看不见，用闭包按声明类型取值
+    const settle = (value: { isKeptAwake: boolean }): void => {
+      release?.(value);
+    };
+    mocks.isKeptAwake.mockImplementationOnce(
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+
+    const first = deviceService.keepAwake(true, ownerA);
+    const second = deviceService.keepAwake(false, ownerA);
+    const third = deviceService.keepAwake(true, ownerA);
+    await Promise.resolve();
+    settle({ isKeptAwake: false });
+    await Promise.all([first, second, third]);
+
+    // 过期那一轮读到的 false 不能把刚拿到的锁撤掉
+    expect(mocks.state.flag).toBe(true);
+    expect(mocks.allowSleep).not.toHaveBeenCalled();
+  });
+
+  it('对齐日志按本轮意图记，不被对齐期间到达的新意图改写', async () => {
+    await deviceService.keepAwake(true, ownerA);
+    mocks.logs.length = 0;
+
+    let release: ((v: { isKeptAwake: boolean }) => void) | null = null;
+    const settle = (value: { isKeptAwake: boolean }): void => {
+      release?.(value);
+    };
+    mocks.isKeptAwake.mockImplementationOnce(
+      () => new Promise((resolve) => { release = resolve; }),
+    );
+
+    // 释放轮已在路上（原生往返悬挂，读到的仍是持锁时的 flag），此时起播又下了持锁意图
+    const releasing = deviceService.keepAwake(false, ownerA);
+    await Promise.resolve();
+    const holding = deviceService.keepAwake(true, ownerA);
+    settle({ isKeptAwake: true });
+    await Promise.all([releasing, holding]);
+
+    const lines = mocks.logs.filter((s) => s.startsWith('屏幕常亮'));
+    expect(lines).toEqual([
+      expect.stringContaining('释放（意图 离开释放'),
+      expect.stringContaining('持锁（意图 起播持锁'),
+    ]);
+  });
+
+  it('原生调用抛错 → 退避重试后仍然持锁', async () => {
+    mocks.keepAwake.mockRejectedValueOnce(new Error('bridge busy'));
+    await deviceService.keepAwake(true, ownerA);
+    expect(mocks.state.flag).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(mocks.state.flag).toBe(true);
   });
 
