@@ -18,7 +18,7 @@ import { appEvents } from '@/services/events';
 import { danmakuService } from '@/services/danmakuService';
 import { DownloadQueue, transition } from '@/services/downloadQueue';
 import { createDownloadEngine, setDownloadEngine } from '@/services/downloadEngine';
-import { nativeFilePathOf, nativePartPathOf, readBlob } from '@/services/downloadSink';
+import { isDownloadPhaseSettled, nativeFilePathOf, nativePartPathOf, readBlob } from '@/services/downloadSink';
 import { deleteFile, stat, toPlayableUrl } from '@/native/fs';
 import { currentNetworkType, isOnline, onNetworkChange, primeNetworkStatus } from '@/native/network';
 import { onAppStateChange, type AppLifecycleState } from '@/native/appLifecycle';
@@ -1592,7 +1592,34 @@ export const downloadService = {
     zombieChecked = true;
     const downloadingTasks = await downloadRepo.listByStatus(['downloading']);
     const failedIds: string[] = [];
+    let settledCount = 0;
     for (const task of downloadingTasks) {
+      /*
+       * DL-R0：`finish()` 是把 `.part` 原子改名成成品的，所以「分片索引已齐却还挂在
+       * downloading」只可能是下载阶段走完、结算或转封装途中进程被强杀。判成 failed
+       * 有两个后果：一句并不成立的「应用重启，下载中断」，以及 autoResume 关着时用户
+       * 必须手动重试才能拿到已经下完的这一集。改判 paused 后走的就是既有的恢复通道
+       * ——紧随其后的 `bootstrap()` → `requeuePending` 按 autoResume 偏好决定是否自动
+       * 继续，离线时也不会提前起跑；文件真不在盘上时 sink 的采纳门槛会落空，仍旧回落
+       * 到重下，不会被糊弄成「已完成」。
+       */
+      if (isDownloadPhaseSettled(task)) {
+        try {
+          const paused = transition(task, 'pause');
+          paused.pausedBy = 'background';
+          await persist(paused);
+          emitDownload({ type: 'status', task: paused, previous: 'downloading' });
+          settledCount += 1;
+          logger.info('僵尸任务下载阶段已走完，按暂停交回恢复通道', {
+            taskId: task.id,
+            downloadedBytes: task.downloadedBytes,
+            segments: `${(task.completedSegments ?? []).filter((i) => i >= 0).length}/${task.hlsTotalSegments ?? 0}`,
+          });
+          continue;
+        } catch (e) {
+          logger.warn('僵尸任务改判暂停失败，按原路径判失败', { taskId: task.id, error: toAppError(e).message });
+        }
+      }
       const next = transition(task, 'fail');
       next.errorMessage = '应用重启，下载中断';
       await persist(next);
@@ -1600,6 +1627,7 @@ export const downloadService = {
       failedIds.push(next.id);
       logger.info(`僵尸任务已标记失败: ${task.id}`);
     }
+    if (settledCount > 0) await emitQueueSummary();
     // FIX-D6：autoResume 开启时，自动恢复因重启而失败的任务
     if (failedIds.length > 0) {
       try {
@@ -2001,6 +2029,9 @@ export const downloadService = {
     listeners.clear();
     orphanRequeueStreak.clear();
     bootstrapped = false;
+    // 启动一次性闸门放回未触发：与 `bootstrapped` 同一语义，否则用例里第二次
+    // `checkZombieTasks()` 直接 return，分类结果永远断不到。
+    zombieChecked = false;
     setDownloadEngine(null);
   },
 };

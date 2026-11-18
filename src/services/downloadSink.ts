@@ -14,6 +14,7 @@
 import { blobRepo } from '@/db/repositories/blobRepo';
 import { AppError } from '@/shared/errors';
 import { DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/shared/constants';
+import { isM3u8Url } from '@/player/sourceGuard';
 import { downloadRateLimiter } from '@/services/downloadRateLimiter';
 import { extensionOf } from '@/shared/id';
 import { logger } from '@/shared/logger';
@@ -38,6 +39,13 @@ export interface SinkInit {
 export interface BeginResult {
   /** 实际可用的续传起点（可能与 DB 记录不一致，以文件实际大小为准） */
   actualStartBytes: number;
+  /**
+   * DL-R0：起点来自「已晋升的成品」而不是 `.part`。
+   *
+   * 此时这份字节与任务记录里的分片索引是同一轮产出（采纳前已核对过索引完备性），
+   * 续传侧不能再把「起点 ≠ DB 记账」当成损坏证据去清空索引、从头重下。
+   */
+  adoptedArtifact?: boolean;
 }
 
 export interface DownloadSink {
@@ -65,6 +73,30 @@ export function nativeFilePathOf(task: DownloadTask): string {
 /** Android 临时路径：最终路径 + `.part` */
 export function nativePartPathOf(task: DownloadTask): string {
   return `${nativeFilePathOf(task)}.part`;
+}
+
+/**
+ * HLS 分片索引是否已覆盖清单声明的全部分片。
+ *
+ * 负数序号是初始化分片（fMP4 的 init segment），不占媒体分片位，与
+ * `checkCorruptedHlsTasks` 的口径保持一致：只数 `>= 0` 的。
+ */
+export function isSegmentIndexComplete(task: DownloadTask): boolean {
+  const total = task.hlsTotalSegments ?? 0;
+  if (total <= 0) return false;
+  return (task.completedSegments ?? []).filter((index) => index >= 0).length >= total;
+}
+
+/**
+ * 「下载阶段已经跑完、只剩结算/转封装」这一形态的唯一判据（DL-R0）。
+ *
+ * 两处共用：sink 据此决定能不能拿成品当续传基线，僵尸检测据此决定能不能不判失败。
+ * 只看 HLS——直链的续传起点同时是 `Range` 的起点，把更长的成品当基线会在拼接处空出
+ * 一段字节；HLS 是一片一个 URL、按索引各写各的，起点长一点短一点都不会错位。
+ */
+export function isDownloadPhaseSettled(task: DownloadTask): boolean {
+  if (task.format !== 'hls' && !isM3u8Url(task.url)) return false;
+  return isSegmentIndexComplete(task);
 }
 
 /** 去掉文件名里的非法字符（ID 已含 `:` 与 `~`），并把过长的段收进文件系统上限
@@ -145,7 +177,20 @@ export class NativeFsSink implements DownloadSink {
     const partStat = await stat(this.partPath);
     const actualSize = partStat.exists ? partStat.size : 0;
 
-    if (init.startBytes > 0 && init.task.resumable && actualSize > 0) {
+    let adopted = false;
+    if (init.startBytes > 0 && init.task.resumable && actualSize === 0) {
+      // DL-R0：`.part` 不见了但 DB 记着已下字节——先看成品在不在。`finish()` 是把
+      // `.part` 原子改名成成品的，所以这个形态多半是「下载阶段已经跑完，只差结算/
+      // 转封装时进程被强杀」。采纳成品的话这一轮会把已齐的分片全部跳过、直接收尾，
+      // 零流量；判据不满足（字节对不上、分片索引不全）才落回「从头下载」。
+      const artifactBytes = await this.adoptPromotedArtifact(init.task, init.startBytes);
+      if (artifactBytes === null) {
+        await this.resetToZero();
+      } else {
+        adopted = true;
+        this.written = artifactBytes;
+      }
+    } else if (init.startBytes > 0 && init.task.resumable) {
       // 续传：保留 .part 文件
       if (actualSize < init.startBytes) {
         // 文件比 DB 记录小（异常中断）：以文件为准，引擎会重新对齐 Range
@@ -158,15 +203,47 @@ export class NativeFsSink implements DownloadSink {
       this.written = actualSize;
     } else {
       // 从 0 开始：清空残留
-      await deleteFile(this.partPath);
-      await writeBase64(this.partPath, '');
-      this.written = 0;
+      await this.resetToZero();
     }
 
     this.writeBuffer = [];
     this.writeBufferSize = 0;
     this.started = true;
-    return { actualStartBytes: this.written };
+    return adopted
+      ? { actualStartBytes: this.written, adoptedArtifact: true }
+      : { actualStartBytes: this.written };
+  }
+
+  /** 建立空的 `.part`（从 0 开始的唯一入口，避免两处各写一遍 delete+create） */
+  private async resetToZero(): Promise<void> {
+    await deleteFile(this.partPath);
+    await writeBase64(this.partPath, '');
+    this.written = 0;
+  }
+
+  /**
+   * 把已晋升的成品接回续传基线，成功返回其字节数，否则返回 null。
+   *
+   * 三条门槛，缺一不采纳（宁可让用户重下一遍，也不能产出一份拼接坏的文件）：
+   * - 形态可信（`isDownloadPhaseSettled`：HLS 且分片索引覆盖清单全部分片）；
+   * - 成品确实在盘上；
+   * - 体积不能小于 DB 记账——比记录还短说明连下载阶段都没走完。
+   * 索引缺过半却有个完整体积的成品，说明它是上一轮从头重下之前留下的，与索引不再
+   * 一一对应，据此跳片会写出半途拼接的成品，比重新下载更糟。
+   */
+  private async adoptPromotedArtifact(task: DownloadTask, startBytes: number): Promise<number | null> {
+    if (!isDownloadPhaseSettled(task)) return null;
+    const fileStat = await stat(this.filePath);
+    if (!fileStat.exists || fileStat.size < startBytes) return null;
+
+    await renameFile(this.filePath, this.partPath);
+    logger.info('下载阶段已完成、只剩收尾：以成品作为续传基线，不再重下', {
+      filePath: this.filePath,
+      partPath: this.partPath,
+      artifactBytes: fileStat.size,
+      dbBytes: startBytes,
+    });
+    return fileStat.size;
   }
 
   async write(chunk: Uint8Array): Promise<void> {

@@ -575,6 +575,15 @@ export interface DownloadSummary {
   failed: number;
   totalBytes: number;
   downloadedBytes: number;
+  /**
+   * 批次总进度（0~1），按任务加权：`completed` 记 1，其余按该任务自己的字节比。
+   *
+   * P2-1：不能用 `downloadedBytes / totalBytes` 当总进度——未开始任务的 `totalBytes`
+   * 是 null，不进分母，于是「13 个任务里 2 个完成」会显示成 100%。
+   */
+  progress: number;
+  /** 体积还未知（`totalBytes === null`）的任务数：非 0 时字节分母不可信 */
+  unknownSizeTasks: number;
 }
 
 /* ---------- 设置 ---------- */

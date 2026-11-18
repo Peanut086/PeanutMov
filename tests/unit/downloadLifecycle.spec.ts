@@ -257,3 +257,88 @@ describe('REV-22 切后台暂停下载（AC-72）', () => {
     expect(task?.pausedBy).toBeUndefined();
   });
 });
+
+/**
+ * DL-R0 重启僵尸任务的分类（真机实测：重启后 779,919,880 字节的一整集从 0M 重下）。
+ *
+ * `checkZombieTasks()` 原先把所有 `downloading` 一律判 failed「应用重启，下载中断」，
+ * autoResume 再当场 retry 入队。问题是分片索引已齐的那一类根本没过下载阶段的中断——
+ * `finish()` 把 `.part` 原子改名成了成品，进程死在结算/转封装途中，库里于是留下一条
+ * 「已下完却没结算」的任务：既挂着并不成立的失败原因，又要靠 sink 的采纳门槛才不重下。
+ * 分类改判 paused(background) 后，它走的是既有的暂停恢复通道（上一条用例已覆盖
+ * 「background 暂停会被 autoResume 复活」），不再占用失败重试那条路。
+ */
+describe('DL-R0 重启僵尸任务分类', () => {
+  beforeEach(async () => {
+    await resetAll();
+    settingsService.__resetCache();
+    resetLifecycleState();
+  });
+
+  afterEach(() => {
+    downloadService.__resetQueue();
+    resetLifecycleState();
+  });
+
+  function hlsZombie(overrides: Partial<DownloadTask> = {}): DownloadTask {
+    return makeTask({
+      format: 'hls',
+      url: 'https://cdn.example.com/720p.m3u8',
+      sink: 'filesystem',
+      hlsTotalSegments: 10,
+      completedSegments: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+      totalBytes: 779_919_880,
+      downloadedBytes: 779_919_880,
+      ...overrides,
+    });
+  }
+
+  it('分片索引已齐：判「已暂停(background)」并保住进度，不进失败重试名单', async () => {
+    await settingsService.update({ download: { autoResume: true } });
+    await downloadRepo.save(hlsZombie({ id: 'zombie-settled', mediaId: 'demo:z1', episodeId: 'demo:z1:e1' }));
+
+    await downloadService.checkZombieTasks();
+
+    const row = await downloadRepo.get('zombie-settled');
+    expect(row?.status).toBe('paused');
+    expect(row?.pausedBy).toBe('background');
+    // 失败原因不许出现：下载阶段并没有中断，中断的是收尾
+    expect(row?.errorCode).toBeNull();
+    expect(row?.errorMessage).toBeNull();
+    // 进度与索引是 sink 采纳成品的依据，一条都不许丢
+    expect(row?.downloadedBytes).toBe(779_919_880);
+    expect(row?.completedSegments).toHaveLength(10);
+  });
+
+  it('索引还差 3 片：仍按原判「应用重启，下载中断」，不许被当成已下完', async () => {
+    await settingsService.update({ download: { autoResume: false } });
+    await downloadRepo.save(
+      hlsZombie({
+        id: 'zombie-half',
+        mediaId: 'demo:z2',
+        episodeId: 'demo:z2:e1',
+        completedSegments: [0, 1, 2, 3, 4, 5, 6],
+        downloadedBytes: 500_000_000,
+      }),
+    );
+    await downloadRepo.save(
+      hlsZombie({
+        id: 'zombie-direct',
+        mediaId: 'demo:z3',
+        episodeId: 'demo:z3:e1',
+        format: 'mp4',
+        url: 'https://cdn.example.com/720p.mp4',
+        completedSegments: undefined,
+        hlsTotalSegments: undefined,
+        downloadedBytes: 400,
+      }),
+    );
+
+    await downloadService.checkZombieTasks();
+
+    expect((await downloadRepo.get('zombie-half'))?.status).toBe('failed');
+    expect((await downloadRepo.get('zombie-half'))?.errorMessage).toBe('应用重启，下载中断');
+    // 直链没有分片索引这回事，永远走原判
+    expect((await downloadRepo.get('zombie-direct'))?.status).toBe('failed');
+  });
+});

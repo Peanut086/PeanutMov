@@ -9,6 +9,7 @@ import { ref } from 'vue';
 
 import { downloadService } from '@/services/downloadService';
 import { downloadRateLimiter, type RateStats } from '@/services/downloadRateLimiter';
+import { aggregateSummary } from '@/shared/downloadSummary';
 import { toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import type {
@@ -22,17 +23,9 @@ import type {
 } from '@/types';
 import type { PreflightOptions, PreflightResult } from '@/services/downloadPreflight';
 
+/** 空批次口径与 `aggregateSummary([])` 保持一致，避免卡片初始值和刷新后的值打架 */
 function emptySummary(): DownloadSummary {
-  return {
-    total: 0,
-    queued: 0,
-    downloading: 0,
-    paused: 0,
-    completed: 0,
-    failed: 0,
-    totalBytes: 0,
-    downloadedBytes: 0,
-  };
+  return aggregateSummary([]);
 }
 
 export const useDownloadStore = defineStore('download', () => {

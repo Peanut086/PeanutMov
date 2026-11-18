@@ -101,7 +101,7 @@ function mockFetch(): typeof fetch {
 }
 
 /** 只关心收尾阶段的落库内容，进度节流与真实 sink 不参与本用例 */
-function setup() {
+function setup(options: { findTwinArtifact?: (mediaId: string, taskId: string, digest: string) => Promise<string | null> } = {}) {
   const patches: Array<Partial<DownloadTask>> = [];
   const stages: string[] = [];
   const notifier: PostProcessNotifier = (_task, stage, state, extra) => {
@@ -126,6 +126,7 @@ function setup() {
       async abort() {},
     }),
     onPostProcess: notifier,
+    findTwinArtifact: options.findTwinArtifact,
   });
   const remuxPatch = () => patches.find((p) => p.remux !== undefined)?.remux;
   return { downloader, patches, stages, remuxPatch };
@@ -213,35 +214,78 @@ describe('OPT-05 转封装阶段状态', () => {
   });
 
   /**
-   * DL-P0-2 闭环：真机那批 881,720 字节的占位产物，6/6 都被原生时间轴自检判成
-   * `video-timeline-degenerate`（棘轮占比 44%，上限 5%），真实内容 0 命中。
-   * 过去这条判决只是落一个 `remux: failed` 就照常交付，于是库里留下一堆「已完成」，
-   * 用户点开才看见黑屏。现在它直接否决交付。
+   * DL-R0 同期更正（真机 11-18）：时间轴自检曾被当作占位内容的第二道证据，命中即删产物。
+   * 实测那条判决对真实内容也会触发——1920x1080 / 2h44m30s 的一集报
+   * `video-timeline-degenerate:ratchet=49%`（121,787/246,820 视频样本回退、音频 0 回退，
+   * 而 246,820 ÷ 9,870.08s 正好 25.0 fps），这是 B 帧流按解码序出样的正常形态。
+   * 原生侧对这条判决的定义本来就是「丢弃 `.mp4`、输入 `.ts` 保留、播放回落原生引擎」，
+   * 所以它只能算一次普通的转封装失败：不许删产物，更不许把已下完的一集判成下载失败。
    */
-  it('时间轴自检判退化：否决交付、删掉产物、清空 filePath', async () => {
-    const degenerate = 'video-timeline-degenerate:ratchet=44% (limit 5%)';
+  it('时间轴自检判退化：只算转封装失败，产物保留且照常交付', async () => {
+    const degenerate = 'video-timeline-degenerate:ratchet=49%';
     remuxMp4.mockResolvedValue({ ok: false, skipped: true, reason: degenerate });
-    const { downloader, patches } = setup();
+    const { downloader, stages, remuxPatch, patches } = setup();
+
+    await expect(downloader.run(task(), new AbortController().signal)).resolves.toBeUndefined();
+
+    expect(stages).toEqual(['remux:start', `remux:skipped:${degenerate}`]);
+    expect(remuxPatch()).toEqual({ status: 'skipped', reason: degenerate });
+    expect(deleteFile).not.toHaveBeenCalled();
+    // 没有任何一次落库把成品字段抹掉
+    expect(patches.some((p) => p.filePath === null || p.contentDigest === null)).toBe(false);
+  });
+
+  it('自检以异常形式抛出时同样只记失败：不许把整集删掉', async () => {
+    remuxMp4.mockRejectedValue(new Error('video-timeline-degenerate:audio span 0.90'));
+    const { downloader, stages } = setup();
+
+    await expect(downloader.run(task(), new AbortController().signal)).resolves.toBeUndefined();
+    expect(stages).toEqual(['remux:start', 'remux:failed:video-timeline-degenerate:audio span 0.90']);
+    expect(deleteFile).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 判废即清账：删掉产物必须把字节与分片索引一起归零。
+   * 真机那一集就是栽在这里——库里留着 `dbBytes: 779919880` 与 988/988 的索引，
+   * 磁盘上什么都没有，于是每一轮重新起跑都从零取回 780 MB，一天烧掉三轮。
+   */
+  it('跨集同指纹判废：删产物并把记账归零，且没有第二次落库把它写回去', async () => {
+    // 转封装失败但 `.ts` 保留：判废要删的就是这份还在库里的产物
+    remuxMp4.mockResolvedValue({ ok: false, skipped: false, code: 'E_FFMPEG_EXIT' });
+    const { downloader, patches } = setup({ findTwinArtifact: async () => '第 2 集' });
 
     await expect(downloader.run(task(), new AbortController().signal)).rejects.toMatchObject({
       code: 'E_FAKE_SOURCE_CONTENT',
       retryable: false,
-      message: expect.stringContaining('时间轴自检不通过'),
     });
 
     expect(deleteFile).toHaveBeenCalledWith(TS_PATH);
     const cleared = patches.find((p) => p.contentDigest === null);
-    expect(cleared?.filePath).toBeNull();
-    expect(cleared?.blobKey).toBeNull();
+    expect(cleared).toMatchObject({
+      filePath: null,
+      blobKey: null,
+      downloadedBytes: 0,
+      completedSegments: [],
+      hlsTotalSegments: 0,
+    });
+    expect(cleared?.totalBytes).toBeNull();
+    // 外层 catch 的那次「停笔即结算」不许把归零的账再写回 200 字节
+    expect(patches.filter((p) => p.downloadedBytes !== undefined).at(-1)).toBe(cleared);
   });
 
-  it('自检以异常形式抛出时同样否决（原生侧走的是 reject 通道）', async () => {
-    remuxMp4.mockRejectedValue(new Error('video-timeline-degenerate:audio span 0.90'));
-    const { downloader } = setup();
+  it('产物删不掉时把账留着：DL-R0 的采纳门槛才能零流量接回这份成品', async () => {
+    remuxMp4.mockResolvedValue({ ok: false, skipped: false, code: 'E_FFMPEG_EXIT' });
+    deleteFile.mockRejectedValue(new Error('EBUSY'));
+    const { downloader, patches } = setup({ findTwinArtifact: async () => '第 2 集' });
 
     await expect(downloader.run(task(), new AbortController().signal)).rejects.toMatchObject({
       code: 'E_FAKE_SOURCE_CONTENT',
     });
+
+    const cleared = patches.find((p) => p.contentDigest === null);
+    expect(cleared?.filePath).toBeNull();
+    expect(cleared?.downloadedBytes).toBeUndefined();
+    expect(cleared?.completedSegments).toBeUndefined();
   });
 
   it('其它原因的转封装失败不否决：真实内容不能因为容器问题被删掉', async () => {

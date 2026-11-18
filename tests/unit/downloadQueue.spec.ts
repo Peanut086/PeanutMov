@@ -84,10 +84,23 @@ describe('下载状态机（AC-74）', () => {
     expect(original.downloadedBytes).toBe(1000);
   });
 
-  it('done 补齐 totalBytes/completedAt；retry 清空重试计数与错误', () => {
+  it('done 以实际字节收口 totalBytes/completedAt；retry 清空重试计数与错误', () => {
     const done = transition(task({ status: 'downloading', totalBytes: null, downloadedBytes: 800 }), 'done', 999);
     expect(done.totalBytes).toBe(800);
     expect(done.completedAt).toBe(999);
+
+    /**
+     * P2-2：下载中的 `totalBytes` 是「均分片段 × 分片数」的估算值，完成时不能被抬成分子。
+     * 真机那一条：暂停瞬间 590508/1181016（50%），落盘实际 881720——抬上去等于虚报体积，
+     * 还会让 `checkCorruptedHlsTasks` 拿虚高的字节去比磁盘，把正常产物判成假完成。
+     */
+    const settled = transition(
+      task({ status: 'downloading', totalBytes: 1_181_016, downloadedBytes: 881_720 }),
+      'done',
+      999,
+    );
+    expect(settled.downloadedBytes).toBe(881_720);
+    expect(settled.totalBytes).toBe(881_720);
 
     const retried = transition(
       task({ status: 'failed', retries: 2, errorCode: 'E_NETWORK', errorMessage: '网络错误' }),

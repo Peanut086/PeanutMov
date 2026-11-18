@@ -2,7 +2,7 @@
 /**
  * 下载汇总卡（页面蓝图 §7）
  *
- * 总任务数、总进度、各状态计数；数据来自 `downloadStore.summary`。
+ * 总任务数、总进度（按任务加权，非字节比）、各状态计数；数据来自 `downloadStore.summary`。
  */
 import { computed, ref, watch } from 'vue';
 
@@ -17,14 +17,32 @@ const props = defineProps<{
   celebrate?: boolean;
 }>();
 
-const percent = computed(() => {
-  if (props.summary.totalBytes <= 0) {
-    return props.summary.completed > 0 ? 100 : 0;
-  }
-  return toPercent(props.summary.downloadedBytes / props.summary.totalBytes);
+/**
+ * 批次进度按任务加权（`summary.progress`），不用字节比：
+ * 未开始任务的体积还是 null，字节分母只含已经下过的那几项，
+ * 「13 集里 2 集完成」会被算成 100%（P2-1 真机现象）。
+ */
+const percent = computed(() => toPercent(props.summary.progress));
+
+/**
+ * 分母是不是估算值：只有全部完成时每一项的 `totalBytes` 才是落盘实际字节，
+ * 其余（在跑、等待、失败、被中断）都来自清单均分或还没拿到（P2-2）。
+ */
+const bytesEstimated = computed(() => props.summary.completed < props.summary.total);
+
+/**
+ * 体积行：只要有任务还没拿到体积，就只报已下载量——
+ * 报一个由已完成项凑出来的分母，读起来像"已经下满了"（P2-1 真机现象）。
+ */
+const sizeLabel = computed(() => {
+  const s = props.summary;
+  if (s.unknownSizeTasks > 0) return `已下载 ${formatBytes(s.downloadedBytes)}`;
+  return `${bytesEstimated.value ? '约 ' : ''}${formatBytes(s.downloadedBytes)} / ${formatBytes(s.totalBytes)}`;
 });
 
 const eta = computed(() => {
+  // 分母还不含未开始的任务时，「剩余」是从一个偏小的数里减出来的，不给结论
+  if (props.summary.unknownSizeTasks > 0) return '';
   const remain = props.summary.totalBytes - props.summary.downloadedBytes;
   if (!props.speedBps || props.speedBps <= 0 || remain <= 0) return '';
   return formatEta(remain, props.speedBps);
@@ -56,9 +74,7 @@ watch(percent, () => {
   >
     <div class="download-summary__head">
       <span class="download-summary__count">共 {{ summary.total }} 个任务</span>
-      <span class="download-summary__bytes">
-        {{ formatBytes(summary.downloadedBytes) }} / {{ formatBytes(summary.totalBytes) }}
-      </span>
+      <span class="download-summary__bytes">{{ sizeLabel }}</span>
     </div>
 
     <div

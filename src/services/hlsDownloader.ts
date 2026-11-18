@@ -553,8 +553,8 @@ function foldFingerprint(acc: number, part: string): number {
 /**
  * 源站失效后的常见形态之一：清单正常、每一片都是同一段素材，字节数/分片数/结构校验全能过，
  * 最后交出一部同一片重复 N 次拼成的假片——真机实测整批 13 集产物 md5 完全相同、时长 19.5 秒，
- * 却全部标成「已完成」。开了转封装还有原生时间轴自检报 video-timeline-degenerate，
- * 没开转封装就没人管，所以在落盘前用内容指纹拦一次。
+ * 却全部标成「已完成」。字节数、分片数、容器结构这些形式校验全能穿过去，
+ * 所以在落盘前用内容指纹拦一次。
  *
  * 只按重复度判定，不按「产物时长 / 声明时长」的比例——短节目、片头本来就短，
  * 比例门槛会误杀；而字节完全一致的片段重复到八片以上，本来就没有可看内容。
@@ -563,12 +563,6 @@ export function isPlaceholderContent(total: number, distinct: number): boolean {
   if (total < PLACEHOLDER_MIN_SEGMENTS) return false;
   return distinct / total < PLACEHOLDER_MIN_DISTINCT_RATIO;
 }
-
-/**
- * 原生转封装时间轴自检的判决前缀（`MediaRemuxer.REASON_VIDEO_TIMELINE`）。
- * 命中即「结构完整、时间轴不可信」：ExoPlayer 出首帧后永不推进。
- */
-const TIMELINE_DEGENERATE = 'video-timeline-degenerate';
 
 /**
  * 分片数据落盘前的结构校验。返回可安全写入的字节（可能截掉尾部残包），
@@ -827,7 +821,11 @@ export class HlsDownloader {
     // P1-2: 以 .part 实际大小为准，与 DB 不一致时从头下载避免错位
     const firstBegin = await sink.begin({ task: { ...task, resumable: true }, startBytes });
     let started = firstBegin;
-    if (firstBegin.actualStartBytes !== startBytes && startBytes > 0) {
+    // DL-R0：`adoptedArtifact` 意味着起点是 sink 采纳的已晋升成品——那份字节与
+    // `completedSegments` 是同一轮产出（采纳前核过索引完备性），此时两者之差是
+    // 「结算前最后一秒的节流没落库」，不是分片丢了。走下面那句清空重下会把一整集
+    // 重新取一遍，而产物本来就是完整的。
+    if (firstBegin.actualStartBytes !== startBytes && startBytes > 0 && !firstBegin.adoptedArtifact) {
       logger.warn(
         firstBegin.actualStartBytes > startBytes
           ? '磁盘比 DB 记账还多：上一轮停止时未结算，索引无从归属，从头下载'
@@ -862,9 +860,11 @@ export class HlsDownloader {
     });
 
     // 6. 写入初始化分片（FIX-D5：用独立标志，不再向 completedSegments 写入 -1）
+    // DL-R0：`-1` 从不进索引，所以「索引里没有 init」在采纳成品时是常态而不是缺片
+    // 证据——成品文件头已经带着这份 init box，再写一次等于在 780MB 尾部拼接第二份。
     let initCompleted = completedSegments.includes(-1);
     const initSegmentSize = playlist.initSegment?.data?.byteLength ?? 0;
-    if (playlist.initSegment?.data && !initCompleted) {
+    if (playlist.initSegment?.data && !initCompleted && !started.adoptedArtifact) {
       await sink.write(playlist.initSegment.data);
       downloaded += playlist.initSegment.data.byteLength;
       initCompleted = true;
@@ -873,9 +873,16 @@ export class HlsDownloader {
         completedSegments,
         updatedAt: now(),
       });
-    } else if (playlist.initSegment?.data) {
+    } else if (playlist.initSegment?.data && !started.adoptedArtifact) {
       downloaded += playlist.initSegment.data.byteLength;
     }
+
+    /**
+     * 判废分支已经自己结算过账（删掉产物就清零、没删成就留给 DL-R0 接回）。
+     * 外面那个 catch 会给「失败」统一补一次断点记账，若不隔开就会把刚清掉的
+     * 780 MB 又写回库裡——「有记账、无文件」正是整集重下的起点。
+     */
+    let refusalSettled = false;
 
     // 7. 并行下载分片
     try {
@@ -1184,7 +1191,13 @@ export class HlsDownloader {
         completedSegments,
         hlsTotalSegments: totalSegments,
         hlsDiscontinuities: playlist.discontinuityCount ?? 0,
-        contentDigest: artifactDigest.toString(16),
+        /*
+         * DL-R0：本轮一片都没新写（采纳了已晋升的成品）时，滚动指纹还停在种子值上，
+         * 那份数字不代表任何内容。写进库会让两条同样「只收尾」的任务互相认成双胞胎，
+         * 而 DL-P0-2 的跨集查重正是拿它当证据的——等于凭空造出「同一份素材」的误判。
+         * 没有新写入就保持原值（老记录本来就是 undefined，天然不参与查重）。
+         */
+        ...(pendingSegments.length === 0 ? {} : { contentDigest: artifactDigest.toString(16) }),
       });
 
       logger.debug('HLS 下载完成', {
@@ -1196,9 +1209,8 @@ export class HlsDownloader {
       });
 
       // D-06: HLS 下载完成后转封装 TS → MP4（无损，不重编码），让 WebView 原生播放器可播。
-      // 转封装失败不阻断下载——保留 .ts 文件，播放时由 PlayerController 走原生引擎。
-      // 唯一的例外是 DL-P0-2：时间轴自检是内容级判决，见下面 `timelineDegenerate` 的用法。
-      let timelineDegenerate: string | null = null;
+      // 转封装失败不阻断下载——保留 .ts 文件，播放时由 PlayerController 走原生引擎；
+      // 时间轴自检也归这一类（原生侧就是按「丢弃 mp4、留住 ts」设计的，详见下面判废处的说明）。
       // DL-P0-2：转封装成功会删掉 .ts（`deleteInput: true`）并把 filePath 换成 .mp4，
       // 拒交付时要删的是当下这份在库里的产物，不是下载器手里那个旧名字。
       let deliveredPath = result.filePath;
@@ -1235,12 +1247,6 @@ export class HlsDownloader {
               deleteInput: true,
               timeoutMs: 300_000,
             });
-            // DL-P0-2：时间轴自检判「结构完整但不可播」——原生侧按真机坏件校准
-            // （棘轮占比 44% vs 上限 5%），这批 881,720 字节的占位产物 6/6 命中、真实内容 0 命中。
-            const remuxReason = String(remuxResult.reason ?? '');
-            if ((!remuxResult.ok || remuxResult.skipped) && remuxReason.startsWith(TIMELINE_DEGENERATE)) {
-              timelineDegenerate = remuxReason;
-            }
             if (remuxResult.ok && !remuxResult.skipped) {
               // P0-2: 转封装后体积会变（MP4 容器开销小于 TS 包头），
               // 一并回写字节数，否则「本地存储」与任务详情会一直显示旧的 TS 体积。
@@ -1270,37 +1276,59 @@ export class HlsDownloader {
             /* reason 是给支持者看的技术线索：`toAppError` 会把无码异常统一洗成「操作失败，请重试」 */
             const message = remuxErr instanceof Error ? remuxErr.message || String(remuxErr) : String(remuxErr);
             logger.warn('转封装异常，保留 .ts', { taskId: task.id, error: message });
-            if (message.includes(TIMELINE_DEGENERATE)) timelineDegenerate = message;
             await record('failed', message);
             notify('failed', message);
           }
         }
       }
 
-      /**
-       * DL-P0-2 闭环：两道内容级证据，任一命中都不交付这份产物。
-       * - 跨集同指纹（构造上零误判）：同一部剧的不同集下到逐字节相同的素材，只可能是占位。
-       *   集内重复率看不见它——实测这条死线每集只发 2 片，永远进不了 ≥8 片的阈值。
-       * - 时间轴退化：真机这批 881,720 字节假成品 6/6 命中棘轮 44%（阈值 5%），真实内容 0 命中。
-       * 判失败宁可让用户换线路，也不要一个「已完成」骗人到点开为止；顺手删掉被拒的产物，
+      /*
+       * DL-P0-2 闭环：跨集同指纹——同一部剧的不同集下到逐字节相同的素材，只可能是占位。
+       * 集内重复率看不见它（实测这条死线每集只发 2 片，永远进不了 ≥8 片的阈值），
+       * 所以要在这份产物晋升成成品之后再拦一次。判失败宁可让用户换线路，
+       * 也不要一个「已完成」骗人到点开为止；顺手删掉被拒的产物，
        * 免得任务已失败、文件却还占着本地存储。
+       *
+       * 时间轴自检不在这道网里。原生侧对那条判决的定义正好相反
+       * （`MediaRemuxer.inspectTimeline`：不合格就丢弃 `.mp4`、**输入 `.ts` 保留**，
+       * 播放回落到原生引擎直接解封装 TS），拿它当占位证据等于把一整集真实内容删掉。
+       * 真机实测一份 1920x1080 / 2h44m30s 的片子被判 ratchet=49%：121,787/246,820 视频样本
+       * 时间戳回退、音频 0/28,627 回退，而 246,820 ÷ 9,870.08s = 25.0 fps、
+       * 779,919,880 ÷ 246,820 = 3,160 B/样本——这是 B 帧流按解码序出样的正常形态，不是坏件。
+       * 旧校准用的那批 881,720 字节假件太小，看不见这两种形态的重叠区。
        */
       // 查库失败只少一道网：一次读盘异常不该把已经下好的视频判成占位内容。
       const twinEpisode = await this.deps
         .findTwinArtifact?.(task.mediaId, task.id, artifactDigest.toString(16))
         .catch(() => null);
-      const refusal = twinEpisode
-        ? `与已下载的「${twinEpisode}」是同一份内容`
-        : timelineDegenerate
-          ? `时间轴自检不通过（${timelineDegenerate}）`
-          : null;
-      if (refusal) {
+      if (twinEpisode) {
+        const refusal = `与已下载的「${twinEpisode}」是同一份内容`;
         logger.error('HLS 产物被判为占位内容，拒绝交付', { taskId: task.id, reason: refusal, size: result.size });
+        /*
+         * 删得成就把账一起清零：产物已经不在了，库里却留着 779 MB 记账和一份 988/988 的
+         * 分片索引，下一轮无论走重试、开机恢复还是僵尸交回，都会先撞「有记账、无文件」
+         * 再整集重下——这一集今天已经这样烧掉三轮 780 MB。
+         * 删不成（权限/IO 失败）时反过来要留账：文件还在盘上，DL-R0 的采纳门槛能拿它
+         * 零流量接回，清零只是把一份可用产物换成一次 780 MB 的重下。
+         */
+        let artifactGone: boolean;
         if (deliveredPath && isNative()) {
-          await deleteFile(deliveredPath).catch(() => undefined);
+          artifactGone = await deleteFile(deliveredPath).then(() => true).catch(() => false);
+        } else {
+          // Web 的 Blob 产物：`blobKey` 一清就再也指不回那份数据，等同已删除
+          artifactGone = !deliveredPath;
         }
+        refusalSettled = true;
         await this.deps
-          .saveProgress(task.id, { filePath: null, blobKey: null, contentDigest: null, updatedAt: now() })
+          .saveProgress(task.id, {
+            filePath: null,
+            blobKey: null,
+            contentDigest: null,
+            ...(artifactGone
+              ? { downloadedBytes: 0, totalBytes: null, completedSegments: [], hlsTotalSegments: 0 }
+              : {}),
+            updatedAt: now(),
+          })
           .catch(() => undefined);
         throw new AppError('E_FAKE_SOURCE_CONTENT', `该线路的产物疑似占位内容（${refusal}），请更换线路或源`, {
           retryable: false,
@@ -1323,15 +1351,21 @@ export class HlsDownloader {
            * 47.8MB / 171MB / 254MB 的 .part 都比 DB 多一截，于是被判成损坏、
            * `completedSegments` 整段作废、重下全集。停笔即结算：刷完盘立刻把成对的真值写回去，
            * 下一轮 begin 就能对上号。
+           *
+           * 判废分支不走这段：它已经按「产物还在不在」自己结算过账，这里再写一遍等于把
+           * 刚清零的 779 MB 记账恢复回去——真机那条 `dbBytes: 779919880 / fileBytes: 0`
+           * 就是这么配对出来的。
            */
-          await this.deps
-            .saveProgress(task.id, {
-              downloadedBytes: downloaded,
-              completedSegments,
-              resumable: true,
-              updatedAt: now(),
-            })
-            .catch(() => undefined);
+          if (!refusalSettled) {
+            await this.deps
+              .saveProgress(task.id, {
+                downloadedBytes: downloaded,
+                completedSegments,
+                resumable: true,
+                updatedAt: now(),
+              })
+              .catch(() => undefined);
+          }
         }
       }
       throw appError;

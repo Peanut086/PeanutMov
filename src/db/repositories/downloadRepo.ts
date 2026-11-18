@@ -6,7 +6,8 @@
  */
 import { withTx } from '@/db/index';
 import { STORE_NAMES, type CinemaTx } from '@/db/schema';
-import type { DownloadStatus, DownloadTask } from '@/types';
+import { aggregateSummary } from '@/shared/downloadSummary';
+import type { DownloadStatus, DownloadSummary, DownloadTask } from '@/types';
 
 const STATUS_PRIORITY: Record<DownloadStatus, number> = {
   downloading: 0,
@@ -134,37 +135,8 @@ export const downloadRepo = {
   },
 
   /** 汇总统计（一次读取计算；任务量级为几十~几百，内存计算可接受） */
-  async summary(): Promise<{
-    total: number;
-    queued: number;
-    downloading: number;
-    paused: number;
-    completed: number;
-    failed: number;
-    totalBytes: number;
-    downloadedBytes: number;
-  }> {
-    const rows = await this.listAll();
-    const summary = {
-      total: rows.length,
-      queued: 0,
-      downloading: 0,
-      paused: 0,
-      completed: 0,
-      failed: 0,
-      totalBytes: 0,
-      downloadedBytes: 0,
-    };
-    for (const row of rows) {
-      if (row.status === 'queued') summary.queued += 1;
-      else if (row.status === 'downloading') summary.downloading += 1;
-      else if (row.status === 'paused') summary.paused += 1;
-      else if (row.status === 'completed') summary.completed += 1;
-      else if (row.status === 'failed') summary.failed += 1;
-      summary.totalBytes += row.totalBytes ?? 0;
-      summary.downloadedBytes += row.downloadedBytes;
-    }
-    return summary;
+  async summary(): Promise<DownloadSummary> {
+    return aggregateSummary(await this.listAll());
   },
 };
 

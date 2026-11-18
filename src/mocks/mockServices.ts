@@ -32,6 +32,7 @@ import type {
   Source,
 } from '@/types';
 import { COMPLIANCE_VERSION, PAGE_SIZE } from '@/shared/constants';
+import { aggregateSummary } from '@/shared/downloadSummary';
 import { AppError, toErrorShape } from '@/shared/errors';
 import { categoryIdOf, episodeIdOf, historyIdOf, lineIdOf, mediaIdOf, newId } from '@/shared/id';
 
@@ -699,40 +700,12 @@ export const useMockFavoriteStore = defineStore('mock/favorite', () => {
 /* -------- downloadStore -------- */
 export const useMockDownloadStore = defineStore('mock/download', () => {
   const tasks = ref<DownloadTask[]>([]);
-  const summary = ref<DownloadSummary>({
-    total: 0,
-    queued: 0,
-    downloading: 0,
-    paused: 0,
-    completed: 0,
-    failed: 0,
-    totalBytes: 0,
-    downloadedBytes: 0,
-  });
+  const summary = ref<DownloadSummary>(aggregateSummary([]));
   const state = ref<LoadState>('idle');
   const error = ref<AppErrorShape | null>(null);
 
   function recompute(): void {
-    const next: DownloadSummary = {
-      total: tasks.value.length,
-      queued: 0,
-      downloading: 0,
-      paused: 0,
-      completed: 0,
-      failed: 0,
-      totalBytes: 0,
-      downloadedBytes: 0,
-    };
-    for (const t of tasks.value) {
-      if (t.status === 'queued') next.queued += 1;
-      else if (t.status === 'downloading') next.downloading += 1;
-      else if (t.status === 'paused') next.paused += 1;
-      else if (t.status === 'completed') next.completed += 1;
-      else if (t.status === 'failed') next.failed += 1;
-      next.totalBytes += t.totalBytes ?? 0;
-      next.downloadedBytes += t.downloadedBytes;
-    }
-    summary.value = next;
+    summary.value = aggregateSummary(tasks.value);
     state.value = tasks.value.length === 0 ? 'empty' : 'success';
   }
 

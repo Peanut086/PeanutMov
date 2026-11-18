@@ -93,8 +93,10 @@ export function transition(
     case 'done':
       next.speedBps = 0;
       next.completedAt = now;
-      next.downloadedBytes = next.totalBytes ?? next.downloadedBytes;
-      if (next.totalBytes === null) next.totalBytes = next.downloadedBytes;
+      // P2-2：完成时以实际落盘字节为准。原先反过来把分子抬到 `totalBytes`，而下载中的
+      // `totalBytes` 是「均分片段大小 × 清单分片数」的估算值——抬上去等于虚报体积
+      // （设置页/存储统计与磁盘对不上），也把一个已经写实的分母留在了任务行上。
+      next.totalBytes = next.downloadedBytes;
       next.errorCode = null;
       next.errorMessage = null;
       break;
