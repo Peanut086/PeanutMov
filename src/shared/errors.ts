@@ -40,6 +40,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   E_INVALID_STATE: '当前状态不允许该操作',
   E_STORAGE_QUOTA: '存储空间不足',
   E_FILE_MISSING: '本地文件不可用，请重新下载',
+  E_NAME_TOO_LONG: '本地文件路径过长，无法保存，请更换线路或源后重试',
+  E_FAKE_SOURCE_CONTENT: '该线路返回的疑似占位内容（分片高度重复），请更换线路或源',
   E_DB: '本地数据读写失败，请重试',
   E_VERSION_UNSUPPORTED: '数据版本不支持，请升级 App',
   E_CANCELED: '已取消',

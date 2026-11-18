@@ -344,6 +344,21 @@ async function ensureQueue(): Promise<DownloadQueue> {
     // EXT-04/FR-60：转封装/字幕阶段的进度出口（HLS 收尾在下载器内部完成，走不到 status 迁移）
     onPostProcess: (task, stage, state, extra) =>
       emitDownload({ type: 'postprocess', task, stage, state, progress: extra?.progress, reason: extra?.reason }),
+    /**
+     * DL-P0-2：跨集产物指纹查重。同一 `mediaId` 下**另一集**的成品若与本集逐字节相同，
+     * 只可能是占位素材（真机实测：6 条不同集都是同一个 881,720 字节）。
+     * 同集排除是必需的——同一集从两条线路重复下载本来就内容相同，那不是占位。
+     * 老任务没有 `contentDigest`（undefined），永远匹配不上，天然不参与。
+     */
+    findTwinArtifact: async (mediaId, taskId, digest) => {
+      if (!digest) return null;
+      const self = await downloadRepo.get(taskId);
+      const siblings = await downloadRepo.listByMedia(mediaId);
+      const twin = siblings.find(
+        (t) => t.id !== taskId && t.status === 'completed' && t.episodeId !== self?.episodeId && t.contentDigest === digest,
+      );
+      return twin?.episodeTitle || twin?.title || null;
+    },
   });
   setDownloadEngine(engine);
 
@@ -694,9 +709,18 @@ export const downloadService = {
 
   /** 批量创建（AC-70：50 集不卡顿 —— 分批入队并让出事件循环） */
   async createMany(inputs: CreateDownloadInput[]): Promise<{ created: DownloadTask[]; skipped: DownloadTask[] }> {
+    /*
+     * DL-P1-3：整批共用一个 batchId。此前经这条路创建的任务 batchId 全是 null，
+     * 「下载」页按批分组时它们落进 batchId='' 的「单独下载」组，而那两个批操作按钮
+     * 对空 batchId 直接 return——详情页批量下载这条真实入口上，「重试本批失败项」
+     * 「删除本批已完成」点了没有任何反应。已有 batchId 的调用方（createBatch）不动。
+     */
+    const batchId = createBatchId();
+    const scoped = inputs.map((input) => (input.batchId ? input : { ...input, batchId }));
+
     const created: DownloadTask[] = [];
     const skipped: DownloadTask[] = [];
-    for (const [index, input] of inputs.entries()) {
+    for (const [index, input] of scoped.entries()) {
       const result = await this.create(input);
       if (result.existed) skipped.push(result.task);
       else created.push(result.task);

@@ -13,7 +13,7 @@ import { logger } from '@/shared/logger';
 import { DOWNLOAD_PROGRESS_PERSIST_MS, DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/shared/constants';
 import { isLocalArtifactUrl, isM3u8Url, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import { createSink, nativeFilePathOf, type DownloadSink } from '@/services/downloadSink';
-import { createHlsDownloader, type PostProcessNotifier } from '@/services/hlsDownloader';
+import { createHlsDownloader, type HlsDownloaderDeps, type PostProcessNotifier } from '@/services/hlsDownloader';
 import { appEvents } from '@/services/events';
 import { settingsService } from '@/services/settingsService';
 import { downloadRateLimiter } from '@/services/downloadRateLimiter';
@@ -44,6 +44,8 @@ export interface DownloadEngineDeps {
   now?: () => number;
   /** EXT-04/FR-60：后处理阶段（转封装发生在 HLS 下载器内部，需要把阶段状态带到 UI） */
   onPostProcess?: PostProcessNotifier;
+  /** DL-P0-2：跨集产物指纹查重，透传给 HLS 下载器（直链路径用不上） */
+  findTwinArtifact?: HlsDownloaderDeps['findTwinArtifact'];
 }
 
 export interface DownloadProgressEvent {
@@ -256,6 +258,17 @@ export class DownloadEngine {
           await sink.abort().catch(() => undefined);
         } else {
           await sink.suspend().catch(() => undefined);
+          // DL-P1-4：`suspend()` 刷完缓冲后文件已经比 DB 长一截，而下一轮的
+          // `Range: bytes=<DB值>-` 仍按旧值发起——服务端从 DB 处续发，本地却往更长的
+          // 文件尾部追加，中间凭空多出一个节流周期的重复字节（1.23GB 的直链文件一旦写坏无人发现）。
+          // 停笔即结算，让 DB 等于磁盘真值，下一轮的 Range 才对得上。
+          await this.deps
+            .saveProgress(task.id, {
+              downloadedBytes: downloaded,
+              resumable: true,
+              updatedAt: now(),
+            })
+            .catch(() => undefined);
         }
       }
       throw appError;
@@ -281,6 +294,7 @@ export class DownloadEngine {
       parallelSegments,
       quality,
       onPostProcess: this.deps.onPostProcess,
+      findTwinArtifact: this.deps.findTwinArtifact,
     });
     await hlsDownloader.run(task, signal);
   }

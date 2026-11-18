@@ -55,11 +55,29 @@ function isQuota({ code, message }: { code: string; message: string }): boolean 
   return /quota|space|ENOSPC|No space left/i.test(`${code} ${message}`);
 }
 
+/**
+ * 文件名/路径超出上限（OS-PLUG-FILE-0013 / ENAMETOOLONG）。
+ *
+ * 单列一类是因为它跟「暂时写坏一下」完全不同：路径由 mediaId/episodeId 决定，
+ * 同一条任务每次算出来的路径都一样，退避重试只是把同一个失败重复两遍。
+ * 归成可重试的 E_UNKNOWN，用户看到的就是「操作失败，请重试」然后一直重试下去。
+ */
+function isNameTooLong({ code, message }: { code: string; message: string }): boolean {
+  return code === 'OS-PLUG-FILE-0013' || /name too long|ENAMETOOLONG|File name too long/i.test(message);
+}
+
 function mapFsError(e: unknown): AppError {
   if (e instanceof AppError) return e;
   const info = describeRejection(e);
   if (isDoesNotExist(info)) return new AppError('E_FILE_MISSING', undefined, { detail: info.message, cause: e });
   if (isQuota(info)) return new AppError('E_STORAGE_QUOTA', undefined, { detail: info.message, cause: e });
+  if (isNameTooLong(info)) {
+    return new AppError('E_NAME_TOO_LONG', undefined, {
+      detail: info.message || info.code,
+      retryable: false,
+      cause: e,
+    });
+  }
   // 归不了类的文件系统故障（权限、插件未实现、已存在……）不能谎报成"文件不可用"：
   // 判成可重试的 E_UNKNOWN，交给上层的重试/续传，而不是把用户推向「重新下载」。
   return new AppError('E_UNKNOWN', undefined, {

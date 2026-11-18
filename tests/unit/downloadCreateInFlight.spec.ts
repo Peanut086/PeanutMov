@@ -97,6 +97,37 @@ describe('downloadService.create 在飞去重', () => {
     expect(await downloadRepo.listAll()).toHaveLength(1);
   });
 
+  /**
+   * DL-P1-3：详情页「下载全部」走的是 `createMany`，而它过去不给任务写 batchId。
+   * 这批任务在「下载」页落进 batchId='' 的「单独下载」组，而「重试本批失败项」
+   * 「删除本批已完成」对空 batchId 直接 return——真实入口上两个按钮点了没反应。
+   * 整批共用一个批次号，批内操作才有对象。
+   */
+  it('createMany 给整批共用一个 batchId', async () => {
+    const { created } = await downloadService.createMany([
+      makeInput({ episodeId: 'demo:m1:e1' }),
+      makeInput({ episodeId: 'demo:m1:e2' }),
+      makeInput({ episodeId: 'demo:m1:e3' }),
+    ]);
+
+    expect(created).toHaveLength(3);
+    expect(new Set(created.map((row) => row.batchId)).size).toBe(1);
+    expect(created[0]?.batchId).toBeTruthy();
+    const rows = await downloadRepo.listAll();
+    expect(rows.filter((row) => row.batchId === created[0]?.batchId)).toHaveLength(3);
+  });
+
+  it('createMany 不覆盖调用方自带的 batchId', async () => {
+    const { created } = await downloadService.createMany([
+      makeInput({ episodeId: 'demo:m1:e1', batchId: 'batch_given' }),
+      makeInput({ episodeId: 'demo:m1:e2' }),
+    ]);
+
+    expect(created[0]?.batchId).toBe('batch_given');
+    expect(created[1]?.batchId).not.toBe('batch_given');
+    expect(created[1]?.batchId).toBeTruthy();
+  });
+
   it('两个批量下单并发提交同一集：整库仍只有一个任务', async () => {
     const [x, y] = await Promise.all([
       downloadService.createBatch([makeInput()]),

@@ -175,7 +175,7 @@ export interface SpiderPlayerResult {
   url?: string | null;
   parse?: number | boolean | string | null;
   jx?: number | boolean | string | null;
-  header?: Record<string, string> | null;
+  header?: Record<string, string> | string | null;
   /** 部分爬虫把地址放在子字段里 */
   playUrl?: string | null;
   /** 1 = 地址需经爬虫的 proxy(Map) 换回直链（TVBox 约定） */
@@ -184,6 +184,33 @@ export interface SpiderPlayerResult {
   msg?: string | null;
   /** P1: 错误码（用于前端分类处理） */
   code?: string;
+}
+
+/**
+ * 把 playerContent 的 header 摊成真正的键值对。
+ *
+ * jar 爬虫常把 header 原样塞成 JSON 字符串（Java 侧 `JSONObject.toString()` 直接 put 进去），
+ * 类型声明却是对象。字符串一旦进 `{...played.header}` 会被摊成 `"0".."80"` 的字符下标头：
+ * 真机实测 UA 与 Referer 一个都没发出去，CDN 一律 403——而请求日志里只看见一堆单字符头，
+ * 排查时没人想到根因在这一行。
+ */
+function headerMapOf(header: SpiderPlayerResult['header']): Record<string, string> {
+  if (!header) return {};
+  let value: unknown = header;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return {};
+    }
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (raw === null || raw === undefined) continue;
+    out[key] = typeof raw === 'string' ? raw : String(raw);
+  }
+  return out;
 }
 
 function parsePlayerJson(json: string | null | undefined, sourceName?: string): SpiderPlayerResult {
@@ -1109,10 +1136,8 @@ export class SpiderAdapter extends BaseAdapter {
       });
     }
 
-    const headers = this.headersWith(
-      source,
-      proxyHeaders ? { ...played.header, ...proxyHeaders } : (played.header ?? undefined),
-    );
+    const playHeaders = headerMapOf(played.header);
+    const headers = this.headersWith(source, proxyHeaders ? { ...playHeaders, ...proxyHeaders } : playHeaders);
 
     const resolved = isPlayPageUrl(direct)
       ? await resolvePlayPage(direct, { headers, signal: params.signal })

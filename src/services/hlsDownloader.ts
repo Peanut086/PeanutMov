@@ -12,6 +12,7 @@
 import { AppError, toAppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
+import { deleteFile } from '@/native/fs';
 import { LocalProxy } from '@/native/localProxy';
 import { MediaTool, isMediaToolAvailable } from '@/native/mediaToolPlugin';
 import { findProtectedKeyEvidence } from '@/player/sourceGuard';
@@ -41,6 +42,11 @@ export interface HlsDownloaderDeps {
   /** P1-6: 下载质量选择（max=最高, 1080p=1080p封顶, 720p=720p封顶, auto=按网络） */
   quality?: 'max' | '1080p' | '720p' | 'auto';
   onPostProcess?: PostProcessNotifier;
+  /**
+   * DL-P0-2：在同一 `mediaId` 已完成的任务里找产物指纹相同的那一集，返回它的标题。
+   * 由 `downloadService` 注入（下载器不认识库）；缺省不查，只少一道网。
+   */
+  findTwinArtifact?: (mediaId: string, taskId: string, digest: string) => Promise<string | null>;
 }
 
 /** HLS 变体流（master playlist 中的选项） */
@@ -503,6 +509,67 @@ function segmentIntegrityError(reason: string, url: string): AppError {
   return new AppError('E_NETWORK', `分片数据异常：${reason}`, { detail: url });
 }
 
+/* ---------- DL-P0-2：占位内容闸门 ---------- */
+
+/** 参与判定的最少分片数：不足此数时重复也可能只是「这条流本来就短」 */
+const PLACEHOLDER_MIN_SEGMENTS = 8;
+/** 不同内容占总分片数的比例下限：低于它判定为占位资源 */
+const PLACEHOLDER_MIN_DISTINCT_RATIO = 0.2;
+/** 指纹采样窗口（首尾各 8KB）：判的是"这两片是不是同一份字节"，全量散列在 5MB 分片上是白花的钱 */
+const FINGERPRINT_SAMPLE_BYTES = 8192;
+
+function fnv1a32(bytes: Uint8Array): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < bytes.length; i += 1) {
+    hash ^= bytes[i]!;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+/** 分片内容指纹：长度 + 首尾采样散列 */
+function segmentFingerprint(data: Uint8Array): string {
+  const tail =
+    data.length > FINGERPRINT_SAMPLE_BYTES * 2
+      ? data.subarray(data.length - FINGERPRINT_SAMPLE_BYTES)
+      : new Uint8Array(0);
+  const head = data.subarray(0, Math.min(FINGERPRINT_SAMPLE_BYTES, data.length));
+  return `${data.length}:${fnv1a32(head).toString(16)}:${fnv1a32(tail).toString(16)}`;
+}
+
+/**
+ * DL-P0-2：集级滚动指纹——把每一片的内容指纹按写入顺序折进一个整型值。
+ * 顺序敏感（同一堆分片换个顺序就是另一个值），且不额外分配，边写边折零额外 I/O。
+ * 只作「同一次比对内部是否相等」用，不当校验和、不当安全原语。
+ */
+function foldFingerprint(acc: number, part: string): number {
+  let hash = acc;
+  for (let i = 0; i < part.length; i += 1) {
+    hash = Math.imul(hash ^ part.charCodeAt(i), 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+/**
+ * 源站失效后的常见形态之一：清单正常、每一片都是同一段素材，字节数/分片数/结构校验全能过，
+ * 最后交出一部同一片重复 N 次拼成的假片——真机实测整批 13 集产物 md5 完全相同、时长 19.5 秒，
+ * 却全部标成「已完成」。开了转封装还有原生时间轴自检报 video-timeline-degenerate，
+ * 没开转封装就没人管，所以在落盘前用内容指纹拦一次。
+ *
+ * 只按重复度判定，不按「产物时长 / 声明时长」的比例——短节目、片头本来就短，
+ * 比例门槛会误杀；而字节完全一致的片段重复到八片以上，本来就没有可看内容。
+ */
+export function isPlaceholderContent(total: number, distinct: number): boolean {
+  if (total < PLACEHOLDER_MIN_SEGMENTS) return false;
+  return distinct / total < PLACEHOLDER_MIN_DISTINCT_RATIO;
+}
+
+/**
+ * 原生转封装时间轴自检的判决前缀（`MediaRemuxer.REASON_VIDEO_TIMELINE`）。
+ * 命中即「结构完整、时间轴不可信」：ExoPlayer 出首帧后永不推进。
+ */
+const TIMELINE_DEGENERATE = 'video-timeline-degenerate';
+
 /**
  * 分片数据落盘前的结构校验。返回可安全写入的字节（可能截掉尾部残包），
  * 判定为坏件时抛可重试 AppError。
@@ -753,21 +820,33 @@ export class HlsDownloader {
     // 5. 初始化 sink
     const sink = sinkFactory(task.sink);
     // P0-3: 检查是否有已完成的分片（暂停续传）
-    let completedSegments = task.completedSegments ?? [];
+    // 拷贝一份：这一路会就地 push，而 `transition()` 只做了浅拷贝，
+    // 直接引用调用方数组会把上一跳持有的任务对象一起改写。
+    let completedSegments = [...(task.completedSegments ?? [])];
     const startBytes = completedSegments.length > 0 ? task.downloadedBytes : 0;
     // P1-2: 以 .part 实际大小为准，与 DB 不一致时从头下载避免错位
-    const beginResult = await sink.begin({ task: { ...task, resumable: true }, startBytes });
-    if (beginResult.actualStartBytes !== startBytes && startBytes > 0) {
-      logger.warn('续传状态与 .part 不一致，从头下载', {
-        taskId: task.id,
-        dbBytes: startBytes,
-        fileBytes: beginResult.actualStartBytes,
-      });
+    const firstBegin = await sink.begin({ task: { ...task, resumable: true }, startBytes });
+    let started = firstBegin;
+    if (firstBegin.actualStartBytes !== startBytes && startBytes > 0) {
+      logger.warn(
+        firstBegin.actualStartBytes > startBytes
+          ? '磁盘比 DB 记账还多：上一轮停止时未结算，索引无从归属，从头下载'
+          : '磁盘比 DB 记账少：分片确实丢了，从头下载',
+        {
+          taskId: task.id,
+          dbBytes: startBytes,
+          fileBytes: firstBegin.actualStartBytes,
+          delta: firstBegin.actualStartBytes - startBytes,
+        },
+      );
       completedSegments = [];
-      await sink.begin({ task: { ...task, resumable: false }, startBytes: 0 });
+      // 第二次 begin 会清空 .part 并从 0 重新计数；播种必须跟着换成它的返回值。
+      // 沿用第一次的 actualStartBytes 会让计数器凭空多出一整份旧文件（真机实测
+      // 磁盘 881,720 字节 / 计数 1,763,440 字节，正好两倍），进度条与大小校验一起失真。
+      started = await sink.begin({ task: { ...task, resumable: false }, startBytes: 0 });
     }
 
-    let downloaded = beginResult.actualStartBytes;
+    let downloaded = started.actualStartBytes;
     let lastPersist = now();
     let lastSampleAt = now();
     let lastSampleBytes = downloaded;
@@ -816,6 +895,15 @@ export class HlsDownloader {
       // FIX-D5：过滤时排除 -1（旧数据兼容），只检查媒体分片
       const pendingSegments = segmentsWithIndex.filter(({ index }) => index >= 0 && !doneSet.has(index));
       const writeBuffer = new Map<number, Uint8Array>();
+      /** DL-P0-2：本轮实际写入分片的内容指纹 → 次数（续传时只统计新写的尾巴，宁可漏判不误杀） */
+      const contentDigests = new Map<string, number>();
+      /**
+       * DL-P0-2：整集产物指纹。把每一片的内容指纹按写入顺序折进一个滚动值——
+       * 「不同集下到同一份素材」是集与集之间的现象，集内重复率看不见它（实测这条
+       * 死线每集只有 2 片，进不了 ≥8 片的阈值），所以边写边折，零额外 I/O。
+       * 断点续传的那一轮只折到本次新取的片，指纹会不同：只会漏判，不会误判。
+       */
+      let artifactDigest = 0x811c9dc5;
       let nextWriteIndex = completedCount;
       let queueIdx = 0;
       let inflight = 0;
@@ -960,6 +1048,9 @@ export class HlsDownloader {
         while (writeBuffer.has(nextWriteIndex)) {
           const data = writeBuffer.get(nextWriteIndex)!;
           writeBuffer.delete(nextWriteIndex);
+          const digest = segmentFingerprint(data);
+          contentDigests.set(digest, (contentDigests.get(digest) ?? 0) + 1);
+          artifactDigest = foldFingerprint(artifactDigest, digest);
           await sink.write(data);
           downloaded += data.byteLength;
           segmentBytes += data.byteLength;
@@ -1050,8 +1141,29 @@ export class HlsDownloader {
         );
       }
 
+      /*
+       * DL-P0-2：占位内容闸门。放在 finish() 之前——假片不该被 rename 成"成品"，
+       * 也不该在库里留下可播的 filePath。判成不可重试：同一份清单重试只会再拿到
+       * 同一堆重复分片，退避两次只是把失败推迟几秒、让列表反复闪「等待中」。
+       */
+      const digestTotal = [...contentDigests.values()].reduce((sum, count) => sum + count, 0);
+      if (isPlaceholderContent(digestTotal, contentDigests.size)) {
+        logger.error('HLS 分片内容高度重复，判定为占位资源', {
+          taskId: task.id,
+          segments: digestTotal,
+          distinct: contentDigests.size,
+        });
+        throw new AppError(
+          'E_FAKE_SOURCE_CONTENT',
+          `该线路的分片高度重复（${digestTotal} 片只有 ${contentDigests.size} 种内容），像是占位资源，请更换线路或源`,
+          { retryable: false },
+        );
+      }
+
       const result = await sink.finish();
-      // FIX-D8: 用 sink 实际写入大小回写，保证 DB 与磁盘一致
+      // FIX-D8: 用 sink 实际写入大小回写，保证 DB 与磁盘一致。
+      // 大小对不上的硬拦截在 `NativeFsSink.finish()` 里做（只有它量得到磁盘），
+      // 到这一步两边都是同一个真实字节数，剩下来的是 Web Blob 路径的兜底日志。
       if (result.size !== downloaded) {
         logger.error('HLS 产物大小与写入计数不一致', {
           taskId: task.id,
@@ -1072,6 +1184,7 @@ export class HlsDownloader {
         completedSegments,
         hlsTotalSegments: totalSegments,
         hlsDiscontinuities: playlist.discontinuityCount ?? 0,
+        contentDigest: artifactDigest.toString(16),
       });
 
       logger.debug('HLS 下载完成', {
@@ -1084,6 +1197,11 @@ export class HlsDownloader {
 
       // D-06: HLS 下载完成后转封装 TS → MP4（无损，不重编码），让 WebView 原生播放器可播。
       // 转封装失败不阻断下载——保留 .ts 文件，播放时由 PlayerController 走原生引擎。
+      // 唯一的例外是 DL-P0-2：时间轴自检是内容级判决，见下面 `timelineDegenerate` 的用法。
+      let timelineDegenerate: string | null = null;
+      // DL-P0-2：转封装成功会删掉 .ts（`deleteInput: true`）并把 filePath 换成 .mp4，
+      // 拒交付时要删的是当下这份在库里的产物，不是下载器手里那个旧名字。
+      let deliveredPath = result.filePath;
       if (isNative() && isMediaToolAvailable() && result.filePath && task.format === 'hls') {
         const inputPath = result.filePath;
         const outputPath = inputPath.replace(/\.ts$/, '.mp4');
@@ -1117,6 +1235,12 @@ export class HlsDownloader {
               deleteInput: true,
               timeoutMs: 300_000,
             });
+            // DL-P0-2：时间轴自检判「结构完整但不可播」——原生侧按真机坏件校准
+            // （棘轮占比 44% vs 上限 5%），这批 881,720 字节的占位产物 6/6 命中、真实内容 0 命中。
+            const remuxReason = String(remuxResult.reason ?? '');
+            if ((!remuxResult.ok || remuxResult.skipped) && remuxReason.startsWith(TIMELINE_DEGENERATE)) {
+              timelineDegenerate = remuxReason;
+            }
             if (remuxResult.ok && !remuxResult.skipped) {
               // P0-2: 转封装后体积会变（MP4 容器开销小于 TS 包头），
               // 一并回写字节数，否则「本地存储」与任务详情会一直显示旧的 TS 体积。
@@ -1131,6 +1255,7 @@ export class HlsDownloader {
                 updatedAt: now(),
               });
               logger.info('转封装完成', { taskId: task.id, outputBytes });
+              deliveredPath = outputPath;
               notify('done');
             } else if (remuxResult.skipped) {
               logger.debug('转封装跳过', { taskId: task.id, reason: remuxResult.reason });
@@ -1145,10 +1270,41 @@ export class HlsDownloader {
             /* reason 是给支持者看的技术线索：`toAppError` 会把无码异常统一洗成「操作失败，请重试」 */
             const message = remuxErr instanceof Error ? remuxErr.message || String(remuxErr) : String(remuxErr);
             logger.warn('转封装异常，保留 .ts', { taskId: task.id, error: message });
+            if (message.includes(TIMELINE_DEGENERATE)) timelineDegenerate = message;
             await record('failed', message);
             notify('failed', message);
           }
         }
+      }
+
+      /**
+       * DL-P0-2 闭环：两道内容级证据，任一命中都不交付这份产物。
+       * - 跨集同指纹（构造上零误判）：同一部剧的不同集下到逐字节相同的素材，只可能是占位。
+       *   集内重复率看不见它——实测这条死线每集只发 2 片，永远进不了 ≥8 片的阈值。
+       * - 时间轴退化：真机这批 881,720 字节假成品 6/6 命中棘轮 44%（阈值 5%），真实内容 0 命中。
+       * 判失败宁可让用户换线路，也不要一个「已完成」骗人到点开为止；顺手删掉被拒的产物，
+       * 免得任务已失败、文件却还占着本地存储。
+       */
+      // 查库失败只少一道网：一次读盘异常不该把已经下好的视频判成占位内容。
+      const twinEpisode = await this.deps
+        .findTwinArtifact?.(task.mediaId, task.id, artifactDigest.toString(16))
+        .catch(() => null);
+      const refusal = twinEpisode
+        ? `与已下载的「${twinEpisode}」是同一份内容`
+        : timelineDegenerate
+          ? `时间轴自检不通过（${timelineDegenerate}）`
+          : null;
+      if (refusal) {
+        logger.error('HLS 产物被判为占位内容，拒绝交付', { taskId: task.id, reason: refusal, size: result.size });
+        if (deliveredPath && isNative()) {
+          await deleteFile(deliveredPath).catch(() => undefined);
+        }
+        await this.deps
+          .saveProgress(task.id, { filePath: null, blobKey: null, contentDigest: null, updatedAt: now() })
+          .catch(() => undefined);
+        throw new AppError('E_FAKE_SOURCE_CONTENT', `该线路的产物疑似占位内容（${refusal}），请更换线路或源`, {
+          retryable: false,
+        });
       }
     } catch (e) {
       // 错误处理
@@ -1161,6 +1317,21 @@ export class HlsDownloader {
           await sink.abort().catch(() => undefined);
         } else {
           await sink.suspend().catch(() => undefined);
+          /**
+           * DL-P1-4：`suspend()` 会把写盘缓冲刷干净——文件长度从此等于 `downloaded`，
+           * 但 DB 里还是上一次节流（1s）的旧值。真机实测「暂停→立即继续」三次命中：
+           * 47.8MB / 171MB / 254MB 的 .part 都比 DB 多一截，于是被判成损坏、
+           * `completedSegments` 整段作废、重下全集。停笔即结算：刷完盘立刻把成对的真值写回去，
+           * 下一轮 begin 就能对上号。
+           */
+          await this.deps
+            .saveProgress(task.id, {
+              downloadedBytes: downloaded,
+              completedSegments,
+              resumable: true,
+              updatedAt: now(),
+            })
+            .catch(() => undefined);
         }
       }
       throw appError;

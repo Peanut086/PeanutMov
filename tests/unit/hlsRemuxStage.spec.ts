@@ -29,6 +29,12 @@ vi.mock('@/native/mediaToolPlugin', async (importOriginal) => {
   };
 });
 
+const { deleteFile } = vi.hoisted(() => ({ deleteFile: vi.fn(async () => undefined) }));
+vi.mock('@/native/fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/native/fs')>();
+  return { ...actual, deleteFile };
+});
+
 // 原生代理在测试环境不可用：让分片请求直接走注入的 fetchImpl
 vi.mock('@/native/localProxy', () => ({
   LocalProxy: { proxy: vi.fn().mockRejectedValue(new Error('proxy unavailable')) },
@@ -129,6 +135,8 @@ describe('OPT-05 转封装阶段状态', () => {
   beforeEach(async () => {
     await resetAll();
     remuxMp4.mockReset();
+    deleteFile.mockReset();
+    deleteFile.mockImplementation(async () => undefined);
   });
 
   it('成功：start → done，并回写 mp4 路径与体积', async () => {
@@ -202,5 +210,45 @@ describe('OPT-05 转封装阶段状态', () => {
     await expect(downloader.run(task(), new AbortController().signal)).resolves.toBeUndefined();
 
     expect(stages).toEqual(['remux:start', 'remux:skipped']);
+  });
+
+  /**
+   * DL-P0-2 闭环：真机那批 881,720 字节的占位产物，6/6 都被原生时间轴自检判成
+   * `video-timeline-degenerate`（棘轮占比 44%，上限 5%），真实内容 0 命中。
+   * 过去这条判决只是落一个 `remux: failed` 就照常交付，于是库里留下一堆「已完成」，
+   * 用户点开才看见黑屏。现在它直接否决交付。
+   */
+  it('时间轴自检判退化：否决交付、删掉产物、清空 filePath', async () => {
+    const degenerate = 'video-timeline-degenerate:ratchet=44% (limit 5%)';
+    remuxMp4.mockResolvedValue({ ok: false, skipped: true, reason: degenerate });
+    const { downloader, patches } = setup();
+
+    await expect(downloader.run(task(), new AbortController().signal)).rejects.toMatchObject({
+      code: 'E_FAKE_SOURCE_CONTENT',
+      retryable: false,
+      message: expect.stringContaining('时间轴自检不通过'),
+    });
+
+    expect(deleteFile).toHaveBeenCalledWith(TS_PATH);
+    const cleared = patches.find((p) => p.contentDigest === null);
+    expect(cleared?.filePath).toBeNull();
+    expect(cleared?.blobKey).toBeNull();
+  });
+
+  it('自检以异常形式抛出时同样否决（原生侧走的是 reject 通道）', async () => {
+    remuxMp4.mockRejectedValue(new Error('video-timeline-degenerate:audio span 0.90'));
+    const { downloader } = setup();
+
+    await expect(downloader.run(task(), new AbortController().signal)).rejects.toMatchObject({
+      code: 'E_FAKE_SOURCE_CONTENT',
+    });
+  });
+
+  it('其它原因的转封装失败不否决：真实内容不能因为容器问题被删掉', async () => {
+    remuxMp4.mockResolvedValue({ ok: false, skipped: false, code: 'E_FFMPEG_EXIT', reason: 'ffmpeg-exit-1' });
+    const { downloader } = setup();
+
+    await expect(downloader.run(task(), new AbortController().signal)).resolves.toBeUndefined();
+    expect(deleteFile).not.toHaveBeenCalled();
   });
 });

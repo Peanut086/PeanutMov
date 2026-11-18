@@ -38,6 +38,10 @@ export type ErrorCode =
   | 'E_INVALID_STATE'
   | 'E_STORAGE_QUOTA'
   | 'E_FILE_MISSING'
+  /** DL-P0-1：本地文件路径超出文件系统上限（ENAMETOOLONG），同一条 ID 重试必然再失败 */
+  | 'E_NAME_TOO_LONG'
+  /** DL-P0-2：线路分片内容高度重复（占位/循环片段），落盘也无可看内容 */
+  | 'E_FAKE_SOURCE_CONTENT'
   | 'E_DB'
   | 'E_VERSION_UNSUPPORTED'
   | 'E_CANCELED'
@@ -514,6 +518,11 @@ export interface DownloadTask {
   container?: DownloadContainer | null;
   /** 转封装结果（FR-60；前端只读展示） */
   remux?: DownloadRemuxInfo | null;
+  /**
+   * DL-P0-2：整集产物的内容指纹（分片指纹按写入顺序滚动折叠）。
+   * 同一 `mediaId` 下一集相同即判占位；被拒交付时置 null；断点续传的那一轮只折到本次新取的片。
+   */
+  contentDigest?: string | null;
   /** 预检估算体积（FR-65，仅展示与空间预留） */
   estimatedBytes?: number | null;
   /** 预检摘要（FR-65，任务详情与问题定位用） */

@@ -42,6 +42,8 @@ const ALL_ERROR_CODES = [
   'E_INVALID_STATE',
   'E_STORAGE_QUOTA',
   'E_FILE_MISSING',
+  'E_NAME_TOO_LONG',
+  'E_FAKE_SOURCE_CONTENT',
   'E_DB',
   'E_VERSION_UNSUPPORTED',
   'E_CANCELED',
@@ -50,7 +52,8 @@ const ALL_ERROR_CODES = [
 
 describe('AC-60 错误码 → 用户文案映射', () => {
   it('遍历 ErrorCode 全枚举：每项都有映射且非空', () => {
-    expect(ALL_ERROR_CODES).toHaveLength(31);
+    // 33 = 原 31 条 + DL-P0-1 `E_NAME_TOO_LONG` + DL-P0-2 `E_FAKE_SOURCE_CONTENT`
+    expect(ALL_ERROR_CODES).toHaveLength(33);
     for (const code of ALL_ERROR_CODES) {
       const text = ERROR_MESSAGES[code];
       expect(text, `${code} 缺少映射`).toBeTypeOf('string');

@@ -11,6 +11,7 @@
  * downloading --cancel-->  canceled
  * paused      --cancel-->  canceled
  * failed      --retry-->   queued
+ * queued      --retry-->   queued   (DL-P1-2：状态是等待中、队列里却没有它时的自助恢复入口)
  * queued      --cancel-->  canceled
  * completed/canceled --remove--> (删除记录)
  * ```
@@ -33,7 +34,8 @@ const TRANSITIONS: Record<Exclude<DownloadAction, 'remove'>, DownloadStatus[]> =
   done: ['downloading'],
   fail: ['downloading'],
   cancel: ['downloading', 'paused', 'queued'],
-  retry: ['failed'],
+  // queued 也允许 retry：见文件头迁移表，卡在等待中但已不在队列里的任务需要一条出路
+  retry: ['failed', 'queued'],
 };
 
 /** 动作 → 目标状态（remove 无目标状态） */
@@ -287,7 +289,16 @@ export class DownloadQueue {
 
   /** 加入待执行队列（去重；按 priority/createdAt 排序保证 FIFO，AC-71） */
   enqueue(task: DownloadTask): void {
-    if (this.active.has(task.id)) return;
+    if (this.active.has(task.id)) {
+      /**
+       * DL-P1-2：任务还占着执行槽（旧 runner 尚未退出）时，把它压进 pending 也没用——
+       * `pump()` 会按 active 去重直接丢弃，槽释放后也没人再捞它。真机实测
+       * 「暂停 → 立刻继续」5/6 次把任务永久留在 `queued`：状态显示等待中、队列里却没有它，
+       * 不重启 App 就再也起不来。与退避重试走同一条兜底：登记下来，等 finally 释放槽后重入队。
+       */
+      this.retryAfterActive.add(task.id);
+      return;
+    }
     if (this.pending.some((entry) => entry.id === task.id)) return;
     this.pending.push({ id: task.id, priority: task.priority, createdAt: task.createdAt });
     this.pending.sort((a, b) =>
@@ -433,12 +444,9 @@ export class DownloadQueue {
     const resumed = transition({ ...current }, 'resume', now());
     await this.opts.save(resumed);
     this.opts.onStatus?.(resumed, current.status);
-    // 当前执行槽尚未释放（本函数在 runner 的 promise 内）→ 交给 finally 重新入队
-    if (this.active.has(id)) {
-      this.retryAfterActive.add(id);
-    } else {
-      this.enqueue(resumed);
-    }
+    // 执行槽尚未释放（本函数在 runner 的 promise 内）→ `enqueue` 自己会登记，
+    // 交给 finally 释放槽后重入队
+    this.enqueue(resumed);
   }
 
   /** 暂停：abort 正在进行的下载（下载中）或标记等待（queued 不合法） */

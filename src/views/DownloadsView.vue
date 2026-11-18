@@ -307,7 +307,40 @@ async function batchDelete(): Promise<void> {
 
 // EXT-04：重试本批失败项
 async function retryBatch(batchId: string): Promise<void> {
-  if (!batchId || batchOperating.value) return;
+  if (batchOperating.value) return;
+
+  /*
+   * DL-P1-3：batchId 为空串是「单独下载」组（没有批次号的存量任务）。旧代码在这里
+   * 直接 return，按钮点下去毫无反应；服务层的 retryBatch('') 按批次号查也查不到任务，
+   * 只会回一句「未找到该批次任务」。所以这一组就地按任务重试，反馈与批量路径一致。
+   */
+  if (!batchId) {
+    const group = batchGroups.value.find((entry) => entry.batchId === '');
+    const failed = (group?.tasks ?? []).filter((task) => task.status === 'failed');
+    if (failed.length === 0) {
+      toast.info('本批没有失败项');
+      return;
+    }
+    batchOperating.value = true;
+    try {
+      let retried = 0;
+      let firstError: string | null = null;
+      for (const task of failed) {
+        try {
+          await downloads.retry(task.id);
+          retried += 1;
+        } catch (e) {
+          firstError ??= toErrorShape(e).message;
+        }
+      }
+      if (retried > 0) toast.success(`已重试 ${retried} 个失败任务`);
+      if (firstError) toast.error(firstError);
+    } finally {
+      batchOperating.value = false;
+    }
+    return;
+  }
+
   batchOperating.value = true;
   try {
     const result = await downloadService.retryBatch(batchId);
@@ -325,7 +358,8 @@ async function retryBatch(batchId: string): Promise<void> {
 
 // EXT-04：删除本批已完成
 async function deleteBatchCompleted(batchId: string): Promise<void> {
-  if (!batchId || batchOperating.value) return;
+  // DL-P1-3：空 batchId 是「单独下载」组，同样要能删（下面按组内任务操作，不依赖批次号）
+  if (batchOperating.value) return;
   const group = batchGroups.value.find((g) => g.batchId === batchId);
   if (!group) return;
   const completedCount = group.tasks.filter((t) => t.status === 'completed').length;
@@ -588,9 +622,10 @@ function goLibrary(): void {
 
         <!-- EXT-04：按批次分组展示 -->
         <div v-if="batchGroups.length > 0" class="downloads-batches state-enter">
-          <div v-for="group in batchGroups" :key="group.batchId" class="batch-group">
+          <div v-for="group in batchGroups" :key="group.batchId || '__solo__'" class="batch-group">
+            <!-- DL-P1-3：「单独下载」组（batchId 为空）也要有批次卡片：下面两个处理函数
+                 早就按组内任务操作了，卡片却被 v-if 挡住，等于那套逻辑永远点不到。 -->
             <DownloadBatchGroup
-              v-if="group.batchId"
               :progress="getBatchProgress(group.tasks)"
               :label="group.label"
               :busy="batchOperating"

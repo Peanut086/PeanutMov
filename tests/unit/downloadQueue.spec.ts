@@ -50,6 +50,7 @@ describe('下载状态机（AC-74）', () => {
       ['downloading', 'cancel', 'canceled'],
       ['paused', 'cancel', 'canceled'],
       ['failed', 'retry', 'queued'],
+      ['queued', 'retry', 'queued'],
       ['queued', 'cancel', 'canceled'],
     ];
     for (const [from, action, to] of legal) {
@@ -57,7 +58,7 @@ describe('下载状态机（AC-74）', () => {
       expect(next.status, `${from} --${action}-->`).toBe(to);
       expect(next.updatedAt).toBe(1234);
     }
-    // 第 10 条：completed --remove--> 删除（remove 不产生新状态，由 service 处理记录删除）
+    // 另有一条 remove：completed/canceled 之后只允许删除记录，不产生新状态（由 service 处理）
     expect(canTransition('completed', 'remove')).toBe(true);
     expect(canTransition('canceled', 'remove')).toBe(true);
   });
@@ -321,5 +322,73 @@ describe('停滞误报收口（11-17）', () => {
     expect(row?.pausedBy).toBe('background');
     // 留在 downloading 就是 watchdog 眼里的孤儿 → 用户看到「下载停滞」
     expect(row?.status).not.toBe('downloading');
+  });
+});
+
+describe('暂停后立即继续的竞态（DL-P1-2）', () => {
+  /**
+   * 真机实测：「暂停 → 立刻继续」6 次里 5 次把任务永久留在等待中——状态是 `queued`，
+   * 但 pending 里没有它、active 里也没有它，只能杀掉 App 才恢复。
+   * 原因是旧 runner 还占着执行槽，`enqueue` 的 active 去重把这次入队直接吞掉。
+   */
+  it('旧 runner 尚未释放槽时，继续操作仍然会把任务重新跑起来', async () => {
+    const store = new Map<string, DownloadTask>();
+    const first = task({ id: 'race' });
+    store.set(first.id, first);
+    let runs = 0;
+
+    const queue = new DownloadQueue({
+      load: async (id) => store.get(id) ?? null,
+      save: async (t) => {
+        store.set(t.id, t);
+      },
+      concurrency: 1,
+      sleep: async () => undefined,
+    });
+    queue.run(async (t, ctx) => {
+      runs += 1;
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      if (ctx.signal.aborted) throw new AppError('E_ABORTED');
+      store.set(t.id, { ...t, downloadedBytes: t.totalBytes ?? 0 });
+    });
+
+    queue.enqueue(first);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await queue.pause('race');
+    await queue.resume('race');
+
+    for (let i = 0; i < 100 && store.get('race')?.status !== 'completed'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+
+    expect(store.get('race')?.status).toBe('completed');
+    expect(runs).toBe(2);
+  });
+
+  it('已经卡在等待中的任务，用「重试」就能再进队列（自助出口）', async () => {
+    const store = new Map<string, DownloadTask>();
+    // 复现卡死现场：库里是 queued，队列里既不在 active 也不在 pending
+    store.set('stranded', task({ id: 'stranded', status: 'queued' }));
+
+    const queue = new DownloadQueue({
+      load: async (id) => store.get(id) ?? null,
+      save: async (t) => {
+        store.set(t.id, t);
+      },
+      concurrency: 1,
+      sleep: async () => undefined,
+    });
+    let started = false;
+    queue.run(async (t) => {
+      started = true;
+      store.set(t.id, { ...t, downloadedBytes: t.totalBytes ?? 0 });
+    });
+
+    const retried = await queue.retry('stranded');
+    expect(retried.status).toBe('queued');
+    await queue.drain();
+
+    expect(started).toBe(true);
+    expect(store.get('stranded')?.status).toBe('completed');
   });
 });

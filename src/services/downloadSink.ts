@@ -67,9 +67,52 @@ export function nativePartPathOf(task: DownloadTask): string {
   return `${nativeFilePathOf(task)}.part`;
 }
 
-/** 去掉文件名里的非法字符（ID 已含 `:` 与 `~`） */
+/** 去掉文件名里的非法字符（ID 已含 `:` 与 `~`），并把过长的段收进文件系统上限
+ *
+ * Android 底层按**字节**限制单个名字（ext4 为 255），而 ID 里常带中文（一个汉字 3 字节），
+ * 爬虫源的 `mediaId` 更能直接超过 255。超限的首次写盘就抛 ENAMETOOLONG，真机实测用户只看到
+ * 一句「操作失败，请重试」——那条路每次重试都会算出同一个超长路径，永远好不了。
+ * 超预算的段改成「前缀 + 全量哈希」：同一条任务永远得到同一个路径（续传、去重、自检都依赖它），
+ * 不同 ID 即便共享前缀也能区分。
+ */
 function sanitizeSegment(value: string): string {
-  return value.replace(/[\\/:*?"<>|]/g, '_');
+  const cleaned = value.replace(/[\\/:*?"<>|]/g, '_');
+  if (utf8Length(cleaned) <= MAX_SEGMENT_BYTES) return cleaned;
+  const head = sliceUtf8(cleaned, MAX_SEGMENT_BYTES - HASH_SUFFIX_BYTES);
+  return `${head}#${fnv1a32Hex(cleaned)}`;
+}
+
+/** 单个路径段的字节预算（最终名还要再拼 `.{ext}` ≤6 与下载期的 `.part` 5 字节） */
+const MAX_SEGMENT_BYTES = 180;
+/** `#` + 8 位十六进制哈希 */
+const HASH_SUFFIX_BYTES = 9;
+
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/** 按码点裁剪，不把多字节字符切成半个（残缺序列在部分 ROM 上仍是非法名字） */
+function sliceUtf8(value: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  let used = 0;
+  let out = '';
+  for (const char of value) {
+    const size = encoder.encode(char).length;
+    if (used + size > maxBytes) break;
+    used += size;
+    out += char;
+  }
+  return out;
+}
+
+/** FNV-1a/32：只用于截断后的去歧义，不作安全用途 */
+function fnv1a32Hex(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
 }
 
 /* =========================================================
@@ -173,6 +216,32 @@ export class NativeFsSink implements DownloadSink {
     // P1-1: 刷出剩余缓冲
     await this.flushBuffer();
 
+    /*
+     * DL-P1-1：先按磁盘真实大小对账，再决定要不要把 `.part` 晋升成成品。
+     *
+     * 旧顺序是「先 rename，再比较计数器」——两边都比的是内存计数，自己跟自己对账永远相等，
+     * 真截断反而查不出来，而且比较失败时文件已经叫成成品名、库里也已经写了 filePath。
+     * 现在不一致就不 rename：半截文件留在 `.part` 里既能续传，也不会被播放侧当成成品。
+     */
+    const partStat = await stat(this.partPath);
+    if (!partStat.exists) {
+      throw new AppError('E_FILE_MISSING', '下载写入的临时文件不见了，请重新下载这一集', {
+        detail: this.partPath,
+      });
+    }
+    if (partStat.size !== this.written) {
+      logger.error('.part 实际大小与写入计数不一致，不晋升为成品', {
+        partPath: this.partPath,
+        fileBytes: partStat.size,
+        written: this.written,
+      });
+      throw new AppError(
+        'E_LOCAL_CORRUPT',
+        `本地落盘大小与写入字节数不一致（磁盘 ${partStat.size} / 计数 ${this.written}），已保留断点`,
+        { retryable: true },
+      );
+    }
+
     // 原子 rename：.part → 最终路径
     try {
       await renameFile(this.partPath, this.filePath);
@@ -187,7 +256,9 @@ export class NativeFsSink implements DownloadSink {
       });
     }
 
-    return { filePath: this.filePath, blobKey: null, size: this.written };
+    // 以磁盘实际大小回报：引擎那句「产物大小 vs 写入计数」从此比的是真实文件，
+    // 不再是一个恒成立的等式。
+    return { filePath: this.filePath, blobKey: null, size: partStat.size };
   }
 
   async suspend(): Promise<void> {

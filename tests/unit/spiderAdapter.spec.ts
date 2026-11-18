@@ -304,6 +304,64 @@ describe('SpiderAdapter', () => {
     expect(play.headers['User-Agent']).toBe('Mozilla/5.0');
   });
 
+  /**
+   * 真机实测（DL-P1-3 jar 源）：XBPQ 这类爬虫把 header 塞成 JSON 字符串而不是对象
+   * （Java 侧 `JSONObject.toString()` 直接 put）。摊进 `{...played.header}` 就变成
+   * `"0".."80"` 一串单字符头——UA/Referer 一个都没发出去，CDN 一律 403。
+   */
+  it('resolvePlayUrl：header 是 JSON 字符串时先解析再合并，不摊成字符下标头', async () => {
+    mockPlugin({
+      ...ALL,
+      playerContent: JSON.stringify({
+        url: 'https://cdn.example.com/e2.m3u8',
+        header: '{"User-Agent":"Mozilla/5.0","Referer":"https://freeok.vip/"}',
+        parse: 0,
+      }),
+    });
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource();
+
+    const detail = await adapter.getDetail({ source, sourceItemId: '102' });
+    const play = await adapter.resolvePlayUrl({
+      source,
+      mediaId: detail.item.id,
+      sourceItemId: '102',
+      lineId: detail.lines[0]!.id,
+      episodeId: detail.episodes[1]!.id,
+    });
+
+    expect(play.headers['User-Agent']).toBe('Mozilla/5.0');
+    expect(play.headers['Referer']).toBe('https://freeok.vip/');
+    // 摊平的老毛病会留下一堆 "0"、"1"…… 的单字符键
+    expect(Object.keys(play.headers).filter((k) => /^\d+$/.test(k))).toEqual([]);
+  });
+
+  it('resolvePlayUrl：header 是不像 JSON 的垃圾串时忽略它，而不是发出字符头', async () => {
+    mockPlugin({
+      ...ALL,
+      playerContent: JSON.stringify({
+        url: 'https://cdn.example.com/e2.m3u8',
+        header: 'not-json',
+        parse: 0,
+      }),
+    });
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource({ headers: { Referer: 'https://freeok.vip' } });
+
+    const detail = await adapter.getDetail({ source, sourceItemId: '102' });
+    const play = await adapter.resolvePlayUrl({
+      source,
+      mediaId: detail.item.id,
+      sourceItemId: '102',
+      lineId: detail.lines[0]!.id,
+      episodeId: detail.episodes[1]!.id,
+    });
+
+    expect(play.headers).toEqual({ Referer: 'https://freeok.vip' });
+  });
+
   it('resolvePlayUrl：parse=1（需解析接口）→ E_NO_PLAY_URL', async () => {
     mockPlugin({ ...ALL, playerContent: JSON.stringify({ url: 'https://x.com/a.mp4', parse: 1 }) });
     const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
