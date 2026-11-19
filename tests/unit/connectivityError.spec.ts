@@ -46,7 +46,7 @@ describe('classifyConnectivityError（连接失败归因）', () => {
       new AppError('E_TIMEOUT'),
       new AppError('E_ABORTED'),
       new AppError('E_HTTP_403'),
-      new AppError('E_SOURCE_UNAVAILABLE', '该源上一次调用仍在原生侧执行，约 30 秒后可重试'),
+      new AppError('E_SOURCE_UNAVAILABLE', '该源正忙（上一次调用约 12 秒后结束），请稍后重试'),
     ]) {
       const e = classifyConnectivityError(input);
       expect(e.code).toBe(input.code);

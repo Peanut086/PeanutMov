@@ -285,6 +285,25 @@ const NATIVE_PROXY_TIMEOUT_MS = 25_000;
  * 会被直接拒绝，避免"重试失败源"往还在执行的实例上撞（原生侧另有 F1 同实例锁兜底）。
  */
 const ZOMBIE_COOLDOWN_MS = 30_000;
+/**
+ * P1-5：被原生 F1 闸门挡回（「源正忙」）时的排队预算。
+ *
+ * 真机实测：批量下载期间刷新详情页，同一秒里既有 `源正忙` 拒绝也有同源
+ * `exec=1037ms` 成功——挡回它的那次调用马上就要结束，冷却却按 30s 报。
+ * 现在按**在飞调用的真实截止时间**记冷却，剩余不超过这个预算的就等它落定重投一次；
+ * 超过的（真僵尸）仍然快速失败，不陪等 30 秒。
+ */
+const BUSY_WAIT_MAX_MS = 5_000;
+/** 原生说忙、但 JS 侧没记到在飞调用（预热等其它入口发的）时的保守冷却 */
+const BUSY_COOLDOWN_FALLBACK_MS = 6_000;
+/** 排队的轮询间隔（在飞调用落定时会主动摘掉冷却，通常一两次就能放行） */
+const BUSY_IDLE_POLL_MS = 150;
+/**
+ * 「上一次调用还在原生侧跑」的两种成因：
+ * - `busy`：原生 F1 锁挡回，报告的是**另一个**调用还在跑，它落定就有空位；
+ * - `zombie`：本次调用自己超时/被放弃，原生线程仍在跑到自身看门狗（≈30s）。
+ */
+type NativeBusyKind = 'busy' | 'zombie';
 
 /**
  * F4：本次会话内已知「jar 自带原生库」的源 id。
@@ -418,8 +437,17 @@ export class SpiderAdapter extends BaseAdapter {
   private readonly warmingUp = new Set<string>();
   /** P1-6：正在加载中的 sourceId → 加载 Promise（预热与真实调用共用一次加载） */
   private readonly loading = new Map<string, Promise<string>>();
-  /** F3：sourceId → 冷却截止时间戳（上一次原生调用被放弃但僵尸仍在跑，jar 爬虫专用） */
-  private readonly invokeCooldown = new Map<string, number>();
+  /**
+   * F3：sourceId → 冷却（截止时刻 + 成因，jar 爬虫专用）。
+   * 成因决定后来者怎么办：`busy` 排队等空位，`zombie` 不陪等直接快速失败。
+   */
+  private readonly invokeCooldown = new Map<string, { until: number; kind: NativeBusyKind }>();
+  /**
+   * P1-5：sourceId → 当前已发给原生、JS 侧仍在竞速的 jar 调用。
+   * 用集合而非单值：被 F1 挡回的那次调用自己也在里面，它落定时只能摘掉自己那一条
+   * （按对象引用删），否则会把真正在飞的那次的截止时间误删。
+   */
+  private readonly nativeCallDeadlines = new Map<string, Set<{ deadlineAt: number }>>();
 
   /* ---------------- 探活与加载 ---------------- */
 
@@ -730,57 +758,27 @@ export class SpiderAdapter extends BaseAdapter {
     timeoutMs?: number,
   ) {
     signal?.throwIfAborted();
-    // F3：上一次调用还在原生线程里跑（僵尸）时，不再对同一实例发第二次并发调用
-    this.assertNotCoolingDown(source);
+    // F3：上一次调用还在原生线程里跑时，不对同一实例发第二次并发调用；
+    // P1-5：剩余时间很短的「源忙」排队等它落定再投，不再把用户支去等 30 秒
+    await this.reserveNativeCall(source, signal);
     const handle = await this.ensureLoaded(source, signal);
     const effectiveTimeout = timeoutMs ?? NATIVE_INVOKE_TIMEOUT_MS;
     const isJar = extOf(source).kind !== 'js';
     try {
-      let result: { json: string | null; logs?: string[] };
-      if (!isJar) {
-        // CHG-16：drpy 路由——TVBox 方法名映射为编排方法，位置参数拼成单参 JSON。
-        // drpy 运行时自带引擎单线程队列，不存在并发重入，冷却逻辑不适用。
-        result = await raceNative(
-          () =>
-            DrpyNative.invoke({
-              handle,
-              method: drpyMethodOf(method),
-              arg: JSON.stringify(drpyArgOf(method, args)),
-            }),
-          signal,
-          effectiveTimeout,
-        );
-      } else {
-        // Promise.resolve().then 包装：mock/Web 代理可能**同步**抛错，直接取值会绕过 promise 轨道
-        const callPromise = Promise.resolve().then(() =>
-          SpiderNative.invoke({ handle, method, args, arrayArgs }),
-        );
-        // 僵尸真正结束时提前解除冷却（raceNative 的放弃 ≠ 原生任务的结束）。
-        // finally 的返回 promise 会原样转发拒绝，必须再 catch 兜住，否则 unhandled。
-        let callSettled = false;
-        void callPromise
-          .finally(() => {
-            callSettled = true;
-            this.invokeCooldown.delete(source.id);
-          })
-          .catch(() => {});
-        try {
-          result = await raceNative(() => callPromise, signal, effectiveTimeout);
-        } catch (e) {
-          if (isJar && this.isZombieSignal(e, callSettled)) {
-            this.invokeCooldown.set(source.id, Date.now() + ZOMBIE_COOLDOWN_MS);
-            if (!(e instanceof AppError)) {
-              // 原生忙拒绝（F1 锁）：文案对准真实状态，别让 nativeErrorOf 收敛成"执行失败"
-              throw new AppError(
-                'E_SOURCE_UNAVAILABLE',
-                '该源上一次调用仍在原生侧执行，本次已跳过，请稍候再试',
-                { detail: source.name, cause: e },
-              );
-            }
-          }
-          throw e;
-        }
-      }
+      const result = isJar
+        ? await this.invokeJar(source, handle, method, args, effectiveTimeout, arrayArgs, signal)
+        : // CHG-16：drpy 路由——TVBox 方法名映射为编排方法，位置参数拼成单参 JSON。
+          // drpy 运行时自带引擎单线程队列，不存在并发重入，冷却逻辑不适用。
+          await raceNative(
+            () =>
+              DrpyNative.invoke({
+                handle,
+                method: drpyMethodOf(method),
+                arg: JSON.stringify(drpyArgOf(method, args)),
+              }),
+            signal,
+            effectiveTimeout,
+          );
       return parseSpiderJson(result.json, method, source.name);
     } catch (e) {
       if (e instanceof AppError) throw e;
@@ -790,33 +788,144 @@ export class SpiderAdapter extends BaseAdapter {
   }
 
   /**
-   * F3：判定"上一次原生调用还在跑"。超时/取消都必须以底层 promise 未落定为前提
-   * （完成与到期同刻竞走时不应记冷却——僵尸已经没了）。原生忙拒绝（F1）恒为真：
-   * 它报告的是"另一个调用"还在跑。
+   * jar 爬虫的单次原生调用（F1 同实例串行的 JS 侧配合）。
+   *
+   * 被原生忙挡回时最多排队重投一次：第二次仍挡就直接抛，绝不循环——
+   * 「等空位」不等于「放开串行」，同一时刻仍然只有一个调用压在原生实例上。
    */
-  private isZombieSignal(e: unknown, callSettled: boolean): boolean {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes('源正忙')) return true;
-    if (e instanceof AppError) {
-      if (!callSettled && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED')) return true;
+  private async invokeJar(
+    source: Source,
+    handle: string,
+    method: SpiderMethod,
+    args: Array<string | number | boolean | Record<string, string> | string[]>,
+    timeoutMs: number,
+    /** 位置下标 → 数组值：List 形参必须走这里（桥接会展平嵌套数组） */
+    arrayArgs?: Record<number, string[]>,
+    signal?: AbortSignal,
+  ): Promise<{ json: string | null; logs?: string[] }> {
+    for (let attempt = 0; ; attempt += 1) {
+      // Promise.resolve().then 包装：mock/Web 代理可能**同步**抛错，直接取值会绕过 promise 轨道
+      const callPromise = Promise.resolve().then(() =>
+        SpiderNative.invoke({ handle, method, args, arrayArgs }),
+      );
+      // 僵尸真正结束时提前解除冷却（raceNative 的放弃 ≠ 原生任务的结束）。
+      // finally 的返回 promise 会原样转发拒绝，必须再 catch 兜住，否则 unhandled。
+      let callSettled = false;
+      const call = { deadlineAt: Date.now() + timeoutMs };
+      this.markNativeCall(source.id, call);
+      void callPromise
+        .finally(() => {
+          callSettled = true;
+          this.clearNativeCall(source.id, call);
+          this.invokeCooldown.delete(source.id);
+        })
+        .catch(() => {});
+      try {
+        return await raceNative(() => callPromise, signal, timeoutMs);
+      } catch (e) {
+        const busy = this.busyKindOf(e, callSettled);
+        if (busy) {
+          this.enterBusyCooldown(source.id, busy);
+          // 只对「另一个调用还在跑」排队：僵尸那 30 秒不该让详情页陪着卡
+          if (attempt === 0 && busy === 'busy' && (await this.waitForNativeIdle(source.id, signal))) {
+            logger.debug('源忙排队成功，重投一次', { sourceName: source.name, method });
+            continue;
+          }
+          if (!(e instanceof AppError)) {
+            // 原生忙拒绝（F1 锁）：文案对准真实状态，别让 nativeErrorOf 收敛成"执行失败"
+            throw new AppError('E_SOURCE_UNAVAILABLE', this.busyMessage(source.id), {
+              detail: source.name,
+              cause: e,
+            });
+          }
+        }
+        throw e;
+      }
     }
-    return false;
   }
 
-  /** F3：冷却窗口内直接快速失败，并给出剩余等待秒数 */
-  private assertNotCoolingDown(source: Source): void {
-    const until = this.invokeCooldown.get(source.id);
-    if (until === undefined) return;
-    const remainMs = until - Date.now();
-    if (remainMs <= 0) {
+  /** F3：判定"上一次原生调用还在跑"并分成因（完成与到期同刻竞走时不该记冷却） */
+  private busyKindOf(e: unknown, callSettled: boolean): NativeBusyKind | null {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('源正忙')) return 'busy';
+    if (e instanceof AppError && !callSettled && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED')) {
+      return 'zombie';
+    }
+    return null;
+  }
+
+  /**
+   * P1-5：冷却窗口对准真实在飞调用。
+   * `busy` 取其它在飞调用最迟的 JS 截止时刻（那是"最坏还要多久"的上界，
+   * 真机实测常态只有 1~2s，旧口径一律按 30s 报）；`zombie` 维持 F3 的 30s。
+   */
+  private enterBusyCooldown(sourceId: string, kind: NativeBusyKind): void {
+    const now = Date.now();
+    if (kind === 'zombie') {
+      this.invokeCooldown.set(sourceId, { until: now + ZOMBIE_COOLDOWN_MS, kind });
+      return;
+    }
+    let latest = 0;
+    for (const call of this.nativeCallDeadlines.get(sourceId) ?? []) {
+      latest = Math.max(latest, call.deadlineAt);
+    }
+    const until = latest === 0
+      ? now + BUSY_COOLDOWN_FALLBACK_MS
+      : Math.min(Math.max(latest, now + BUSY_IDLE_POLL_MS), now + ZOMBIE_COOLDOWN_MS);
+    this.invokeCooldown.set(sourceId, { until, kind });
+  }
+
+  /** 登记/摘掉一次已发给原生、JS 侧仍在竞速的调用（按对象引用删，只删自己那条） */
+  private markNativeCall(sourceId: string, call: { deadlineAt: number }): void {
+    const set = this.nativeCallDeadlines.get(sourceId) ?? new Set();
+    set.add(call);
+    this.nativeCallDeadlines.set(sourceId, set);
+  }
+
+  private clearNativeCall(sourceId: string, call: { deadlineAt: number }): void {
+    const set = this.nativeCallDeadlines.get(sourceId);
+    if (!set) return;
+    set.delete(call);
+    if (set.size === 0) this.nativeCallDeadlines.delete(sourceId);
+  }
+
+  /**
+   * P1-5：等这个源排到空位——在飞调用落定时它的 finally 会摘掉冷却，这里只是轮询确认，
+   * 不并发发第二次（串行闸门不松口）。预算就是预算：不超过 BUSY_WAIT_MAX_MS。
+   */
+  private async waitForNativeIdle(sourceId: string, signal?: AbortSignal): Promise<boolean> {
+    const giveUpAt = Date.now() + BUSY_WAIT_MAX_MS;
+    for (;;) {
+      // 与 raceNative 同一口径：排队等待被取消也是 E_ABORTED，不能让 DOMException 串到错误面板
+      if (signal?.aborted) throw new AppError('E_ABORTED');
+      const cooldown = this.invokeCooldown.get(sourceId);
+      if (cooldown === undefined) return true;
+      // 在飞调用中途变成僵尸（自己也没等到回执）：那是 30 秒量级，不陪等
+      if (cooldown.kind === 'zombie') return false;
+      if (Date.now() >= giveUpAt) return false;
+      await new Promise((resolve) => setTimeout(resolve, BUSY_IDLE_POLL_MS));
+    }
+  }
+
+  /** 忙到排不上时的文案：给真实剩余秒数，不指挥用户去查网络 */
+  private busyMessage(sourceId: string): string {
+    const remainMs = (this.invokeCooldown.get(sourceId)?.until ?? 0) - Date.now();
+    return remainMs > 0
+      ? `该源正忙（上一次调用约 ${Math.ceil(remainMs / 1000)} 秒后结束），请稍后重试`
+      : '该源正忙（上一次调用仍未结束），请稍后重试';
+  }
+
+  /** F3 + P1-5：冷却窗口内先按成因排队，排不上或僵尸窗口才快速失败 */
+  private async reserveNativeCall(source: Source, signal?: AbortSignal): Promise<void> {
+    const cooldown = this.invokeCooldown.get(source.id);
+    if (cooldown === undefined) return;
+    if (cooldown.kind === 'busy' && (await this.waitForNativeIdle(source.id, signal))) return;
+    if (cooldown.until <= Date.now()) {
+      // 窗口已过：摘掉冷却，允许下一次真正尝试，不再无限期锁死这个源
       this.invokeCooldown.delete(source.id);
       return;
     }
-    throw new AppError(
-      'E_SOURCE_UNAVAILABLE',
-      `该源上一次调用仍在原生侧执行，约 ${Math.ceil(remainMs / 1000)} 秒后可重试`,
-      { detail: source.name },
-    );
+    throw new AppError('E_SOURCE_UNAVAILABLE', this.busyMessage(source.id), { detail: source.name });
   }
 
   /* ---------------- 数据方法 ---------------- */
