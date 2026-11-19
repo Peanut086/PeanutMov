@@ -162,8 +162,8 @@ describe('libraryStore.retryFailedSources（OPT-04）', () => {
     // 平铺列表（原始）按标题去重：已有「庆余年」不重复插入，新片名照常追加
     expect(store.searchResultsAll).toHaveLength(2);
     expect(store.searchResultsAll.map((item) => item.title)).toEqual(['庆余年', '庆余年 第二季']);
-    // 聚合视图：同根标题归为一组，只返回代表条目
-    expect(store.searchResults).toHaveLength(1);
+    // 聚合视图：P1-7 后季号是二级归并键，「庆余年」与「庆余年 第二季」各成一组
+    expect(store.searchResults).toHaveLength(2);
     expect(store.searchState).toBe('success');
   });
 

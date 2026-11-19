@@ -1,22 +1,46 @@
 /**
  * 跨源聚合检索（v2.0 / P0-P1 搜索优化，纯函数无 IO）
  *
- * 把搜索结果按「归一化根标题 + 年份宽容归组」合并成组：
+ * 把搜索结果按「归一化根标题 + 季号二级归并 + 年份宽容归组」合并成组：
  * - 归一化复用 `stripTitleNoise`（去季/部/清晰度/年份后缀、全半角、繁简不区分）；
- * - 年份宽容：同一根标题下，一方缺年份则并入有年份组；双方年份冲突才拆分；
+ * - 季号（P1-7）：季号从分组键里剥出来再单独作一级——`第N季/Season N/S0N` 各成一组，
+ *   不再让「绝命毒师」171 条挤成一组、代表项随机落在第三季；
+ * - 年份宽容：同一根标题同同一季号下，一方缺年份则并入有年份组；双方年份冲突才拆分；
  * - 组内按 可播性 → 源健康 tier → 延迟 排序（P0-1 可播优先代表）；
- * - 组间按 相关度 → 已确认有集 → 健康 tier → 延迟 → 来源数 排序。
+ * - 组间按 相关度 → 查询词点名年份/季号的一致性 → 非正片 → 可播性 → 来源数 → 健康 tier → 延迟 排序。
  */
 import type { AppErrorShape, MediaItem, SearchResultGroup, SourceHealth } from '@/types';
 import type { PlayabilityStatus } from '@/services/playabilityService';
 import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
 import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
+import { parseSeasonNumber, parseYear } from '@/sources/mapping/TitleNormalizer';
 import { classifySourceFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import type { SourceFailureKind } from '@/shared/sourceFailure';
 
-/** 根标题（归一化后，用于归组） */
+/**
+ * 跨季打包写法（`1-5季`、`S01-S05`、`第1~3部`）。
+ *
+ * 这类条目覆盖整部剧：季号判成「第一季」会把全集包挤进第一季的组，
+ * 留在根标题里又会让它跟单季条目不同根。所以从根里剥掉、季号记为未知，落到主条目那一组。
+ */
+const CROSS_SEASON_RANGE_SRC =
+  '(?:[0-9]{1,3}|[一二两三四五六七八九十]{1,4})\\s*[-–~至]\\s*(?:s?\\s*[0-9]{1,3}|[一二两三四五六七八九十]{1,4})\\s*[季部篇]?|\\bs\\s*[0-9]{1,2}\\s*[-–~至]\\s*s?\\s*[0-9]{1,2}';
+const CROSS_SEASON_TEST = new RegExp(CROSS_SEASON_RANGE_SRC, 'i');
+const CROSS_SEASON_STRIP = new RegExp(CROSS_SEASON_RANGE_SRC, 'gi');
+
+/**
+ * 单季写法（`第N季/部/篇`、`Season N`、`Series N`、`S0N`）。
+ *
+ * `stripTitleNoise` 只认前三种，`S03` 这种短写会留在根里，导致「绝命毒师 S03」与
+ * 「绝命毒师 第三季」不同根、各成一组——季号写法互认必须连短写一起剥。
+ * 不剥裸尾数（`庆余年2`、`流浪地球2`）：那是续集号，语义不是季。
+ */
+const SEASON_TOKEN_STRIP = /第\s*(?:[0-9]{1,3}|[一二两三四五六七八九十百零]{1,4})\s*[季部篇]|\b(?:season|series)\s*[0-9]{1,2}\b|\bs\s*[0-9]{1,2}\b/gi;
+
+/** 根标题（归一化后，用于归组）：季号写法一律剥干净，季号本身另算 */
 function rootTitleOf(title: string): string {
-  return stripTitleNoise(title) || normalizeTitleForMatch(title) || title.trim().toLowerCase();
+  const withoutSeason = title.replace(CROSS_SEASON_STRIP, ' ').replace(SEASON_TOKEN_STRIP, ' ');
+  return stripTitleNoise(withoutSeason) || normalizeTitleForMatch(withoutSeason) || withoutSeason.trim().toLowerCase();
 }
 
 /** 从标题推断年份（item.year 为 null 时的兜底） */
@@ -28,67 +52,128 @@ function inferYear(item: MediaItem): number | null {
   return y >= 1900 && y <= 2099 ? y : null;
 }
 
+/** 季号（复用「别名图谱」同一套解析，不再另立口径）；跨季打包记为未知 */
+function seasonOf(title: string): number | null {
+  if (CROSS_SEASON_TEST.test(title)) return null;
+  return parseSeasonNumber(title);
+}
+
+/**
+ * 查询词里的季号/年份标注词。
+ *
+ * P1-7：搜「绝命毒师 第三季」时，这些词不参与「分词都命中」的相关度判定——
+ * 否则主条目「绝命毒师」会因为标题里没有「第三季」被判成无关（0 分）折进「其它匹配」。
+ */
+const QUERY_SEASON_YEAR_TOKEN =
+  /^(?:第\s*(?:[0-9]{1,3}|[一二两三四五六七八九十]{1,4})\s*[季部篇]|[0-9]{1,3}\s*[季部篇]|season\s*[0-9]{1,2}|series\s*[0-9]{1,2}|s\s*[0-9]{1,2}|[（(]?(?:19|20)[0-9]{2}[）)]?年?|(?:19|20)[0-9]{2}年度)$/i;
+
+function isQueryMarkerToken(token: string): boolean {
+  return QUERY_SEASON_YEAR_TOKEN.test(token.trim());
+}
+
 interface RawGroup {
   key: string;
   title: string;
   year: number | null;
+  season: number | null;
   items: MediaItem[];
   order: number;
+}
+
+/**
+ * 组名取哪个标题：最贴查询词的优先，同分取更短的（后缀噪声更少），再同分取先到。
+ *
+ * 原来固定取到达顺序第一条，实测代表项就成了「绝命毒师 第三季」这种随机某季的名字。
+ */
+function pickDisplayTitle(items: MediaItem[], keyword: string): string {
+  let best = items[0]!;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  let bestLength = Number.POSITIVE_INFINITY;
+  for (const item of items) {
+    const score = scoreRelevance(item.title, keyword);
+    const length = normalizeTitleForMatch(item.title).length;
+    if (score > bestScore || (score === bestScore && length < bestLength)) {
+      best = item;
+      bestScore = score;
+      bestLength = length;
+    }
+  }
+  return best.title;
 }
 
 /**
  * 年份宽容归组（P1-5）：
  * 同一根标题下，一方缺年份则并入有年份组；双方年份冲突才拆分。
  */
-function buildYearTolerantGroups(items: MediaItem[]): Map<string, RawGroup> {
-  const buckets = new Map<string, MediaItem[]>();
-  const bucketOrder = new Map<string, number>();
+function splitByYearTolerance(bucketItems: MediaItem[]): Array<{ year: number | null; items: MediaItem[] }> {
+  const yearGroups = new Map<number, MediaItem[]>();
+  const nullItems: MediaItem[] = [];
+  for (const item of bucketItems) {
+    const y = inferYear(item);
+    if (y === null) {
+      nullItems.push(item);
+      continue;
+    }
+    const sameYear = yearGroups.get(y);
+    if (sameYear) sameYear.push(item);
+    else yearGroups.set(y, [item]);
+  }
+  if (yearGroups.size <= 1) {
+    const year = yearGroups.keys().next().value ?? null;
+    return [{ year, items: [...bucketItems] }];
+  }
+  // 缺年份的条目并入条目最多的那一年，而不是另开一组
+  let largestYear = yearGroups.keys().next().value as number;
+  let largestSize = yearGroups.get(largestYear)?.length ?? 0;
+  for (const [year, sameYear] of yearGroups) {
+    if (sameYear.length > largestSize) {
+      largestSize = sameYear.length;
+      largestYear = year;
+    }
+  }
+  yearGroups.get(largestYear)!.push(...nullItems);
+  return [...yearGroups.entries()].map(([year, items]) => ({ year, items }));
+}
+
+/**
+ * 根标题 → 季号 → 年份，三层归组（P1-7 改动点在中间那层）。
+ */
+function buildYearTolerantGroups(items: MediaItem[], keyword: string): Map<string, RawGroup> {
+  const rootBuckets = new Map<string, MediaItem[]>();
+  const rootOrder = new Map<string, number>();
   let orderCounter = 0;
   for (const item of items) {
     const root = rootTitleOf(item.title);
-    let bucket = buckets.get(root);
+    let bucket = rootBuckets.get(root);
     if (!bucket) {
       bucket = [];
-      buckets.set(root, bucket);
-      bucketOrder.set(root, orderCounter++);
+      rootBuckets.set(root, bucket);
+      rootOrder.set(root, orderCounter++);
     }
     bucket.push(item);
   }
 
   const groups = new Map<string, RawGroup>();
-  for (const [root, bucketItems] of buckets) {
-    const yearCounts = new Map<number, number>();
-    const nullItems: MediaItem[] = [];
-    for (const item of bucketItems) {
-      const y = inferYear(item);
-      if (y === null) nullItems.push(item);
-      else yearCounts.set(y, (yearCounts.get(y) ?? 0) + 1);
+  for (const [root, rootItems] of rootBuckets) {
+    const order = rootOrder.get(root)!;
+    const seasonBuckets = new Map<number | null, MediaItem[]>();
+    for (const item of rootItems) {
+      const season = seasonOf(item.title);
+      const sameSeason = seasonBuckets.get(season);
+      if (sameSeason) sameSeason.push(item);
+      else seasonBuckets.set(season, [item]);
     }
-    const distinctYears = [...yearCounts.keys()];
-    const order = bucketOrder.get(root)!;
-
-    if (distinctYears.length <= 1) {
-      const year = distinctYears[0] ?? null;
-      const key = `${root}:${year ?? 'unknown'}`;
-      groups.set(key, { key, title: bucketItems[0].title, year, items: [...bucketItems], order });
-    } else {
-      const yearGroups = new Map<number, MediaItem[]>();
-      for (const item of bucketItems) {
-        const y = inferYear(item);
-        if (y === null) continue;
-        let g = yearGroups.get(y);
-        if (!g) { g = []; yearGroups.set(y, g); }
-        g.push(item);
-      }
-      let largestYear = distinctYears[0];
-      let largestSize = yearGroups.get(largestYear)?.length ?? 0;
-      for (const [y, g] of yearGroups) {
-        if (g.length > largestSize) { largestSize = g.length; largestYear = y; }
-      }
-      yearGroups.get(largestYear)!.push(...nullItems);
-      for (const [year, groupItems] of yearGroups) {
-        const key = `${root}:${year}`;
-        groups.set(key, { key, title: groupItems[0].title, year, items: groupItems, order });
+    for (const [season, seasonItems] of seasonBuckets) {
+      for (const { year, items: groupItems } of splitByYearTolerance(seasonItems)) {
+        const key = `${root}:${year ?? 'unknown'}:${season ?? 'na'}`;
+        groups.set(key, {
+          key,
+          title: pickDisplayTitle(groupItems, keyword),
+          year,
+          season,
+          items: groupItems,
+          order,
+        });
       }
     }
   }
@@ -174,9 +259,25 @@ export function isNonFeatureContent(title: string, keyword = ''): boolean {
 }
 
 /**
- * 聚合分组（v2.0）：年份宽容归组 + 可播性优先排序。
+ * P1-7：查询词点名的年份/季号参与组间排序。
+ * 0=与查询一致，1=这一项未知（主条目常不带季号、采集站常缺年份），2=与查询冲突。
+ * 查询没点名的维度恒为 0——不猜用户想要哪一季、哪一年。
+ */
+function queryAffinity(keyword: string, year: number | null, season: number | null): number {
+  const queryYear = parseYear(keyword);
+  const querySeason = seasonOf(keyword);
+  let worst = 0;
+  if (queryYear !== null) worst = Math.max(worst, year === null ? 1 : year === queryYear ? 0 : 2);
+  if (querySeason !== null) worst = Math.max(worst, season === null ? 1 : season === querySeason ? 0 : 2);
+  return worst;
+}
+
+/**
+ * 聚合分组（v2.0）：根标题 + 季号二级归并 + 年份宽容 + 可播性优先排序。
  *
- * 组间排序：**相关度 → 是否非正片 → 已确认有集 → 健康 tier → 延迟 → 来源数 → 首次出现顺序**。
+ * 组间排序：**相关度 → 年份/季号一致性 → 是否非正片 → 已确认有集 → 来源数 → 健康 tier → 延迟 → 首次出现顺序**。
+ * 来源数（同一作品被多少个来源命中）提到健康档位之前，是「首位命中错误作品」的对症修法：
+ * 真机上 2023 年同名动画只有 1~2 个来源，2008 剧版有几十个，档位/延迟却可能反过来。
  */
 export function groupSearchResults(
   items: MediaItem[],
@@ -185,7 +286,7 @@ export function groupSearchResults(
   latencyOf: (sourceId: string) => number | null = () => null,
   playabilityOf: (mediaId: string) => PlayabilityStatus = () => 'unknown',
 ): SearchResultGroup[] {
-  const rawGroups = buildYearTolerantGroups(items);
+  const rawGroups = buildYearTolerantGroups(items, keyword);
 
   const list: Array<RawGroup & { items: MediaItem[] }> = [];
   for (const group of rawGroups.values()) {
@@ -195,7 +296,7 @@ export function groupSearchResults(
     });
   }
 
-  type RankTuple = [number, number, number, number, number, number];
+  type RankTuple = [number, number, number, number, number, number, number];
   const rankOf = (group: (typeof list)[number]): RankTuple => {
     const rep = group.items[0];
     const pRank = rep ? playabilityRank(playabilityOf(rep.id)) : 1;
@@ -206,7 +307,15 @@ export function groupSearchResults(
     const latencyRank = latency === null || !Number.isFinite(latency) ? Number.POSITIVE_INFINITY : latency;
     // F6：非正片（解说/reaction/ASMR/网盘垃圾命名）整组沉到正片之后，但不删除
     const nonFeature = isNonFeatureContent(group.title, keyword) ? 1 : 0;
-    return [-scoreRelevance(group.title, keyword), nonFeature, pRank, tier, latencyRank, -group.items.length];
+    return [
+      -scoreRelevance(group.title, keyword),
+      queryAffinity(keyword, group.year, group.season),
+      nonFeature,
+      pRank,
+      -group.items.length,
+      tier,
+      latencyRank,
+    ];
   };
 
   return list
@@ -262,6 +371,10 @@ export function selectRepresentative(
 
 /**
  * 相关度打分（v1.9/AC-121）：精确(4) > 前缀(3) > 包含(2) > 分词包含(1) > 无关(0)。
+ *
+ * P1-7：分词那一步跳过查询词里的季号/年份标注词——搜「绝命毒师 第三季」时主条目
+ * 「绝命毒师」仍算同作品命中（1 分、留在结果里），季号本身的一致性由 `queryAffinity`
+ * 负责排序，不该把整部剧判定成无关。
  */
 export function scoreRelevance(title: string, keyword: string): number {
   const t = normalizeTitleForMatch(title);
@@ -270,8 +383,15 @@ export function scoreRelevance(title: string, keyword: string): number {
   if (t === k) return 4;
   if (t.startsWith(k)) return 3;
   if (t.includes(k)) return 2;
-  const words = keyword.trim().split(/\s+/).map((w) => normalizeTitleForMatch(w)).filter((w) => w.length > 0);
-  if (words.length > 1 && words.every((w) => t.includes(w))) return 1;
+  const words = keyword
+    .trim()
+    .split(/\s+/)
+    .filter((token) => !isQueryMarkerToken(token))
+    .map((token) => normalizeTitleForMatch(token))
+    .filter((token) => token.length > 0);
+  if (words.length === 0) return 0;
+  // 单 token 的情形只可能是"原词被季号/年份拆出来的剩余部分"：多 token 的 AND 判定沿用旧口径
+  if (words.every((token) => t.includes(token))) return 1;
   return 0;
 }
 
