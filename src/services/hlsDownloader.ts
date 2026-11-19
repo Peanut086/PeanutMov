@@ -17,6 +17,7 @@ import { LocalProxy } from '@/native/localProxy';
 import { MediaTool, isMediaToolAvailable } from '@/native/mediaToolPlugin';
 import { findProtectedKeyEvidence } from '@/player/sourceGuard';
 import { createSink, type DownloadSink } from '@/services/downloadSink';
+import { classifyConnectivityError } from '@/services/connectivityError';
 import type { DownloadTask } from '@/types';
 
 /**
@@ -707,7 +708,8 @@ export class HlsDownloader {
       unwrapPlaylistUrls(playlist, proxyBase);
     } catch (e) {
       if (e instanceof AppError) throw e;
-      throw toAppError(e, 'E_NETWORK');
+      // 清单一条都没拿到：先分清设备断网还是这个源/线路进不去（P1-6）
+      throw classifyConnectivityError(e);
     }
 
     // 2. 如果是 master playlist，选择码率并获取 media playlist
@@ -730,7 +732,7 @@ export class HlsDownloader {
         unwrapPlaylistUrls(playlist, proxyBase);
       } catch (e) {
         if (e instanceof AppError) throw e;
-        throw toAppError(e, 'E_NETWORK');
+        throw classifyConnectivityError(e);
       }
     }
 

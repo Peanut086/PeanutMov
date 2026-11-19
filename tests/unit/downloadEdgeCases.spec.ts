@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** P1-6 归因依赖在线判定：钉成变量，别靠宿主环境的 `navigator.onLine` 默认值 */
+let online = true;
+vi.mock('@/native/network', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/native/network')>();
+  return { ...actual, isOnline: () => online };
+});
+
 import { resetAll } from './helpers';
 import { createDownloadEngine } from '@/services/downloadEngine';
 import { IdbBlobSink } from '@/services/downloadSink';
@@ -57,12 +64,31 @@ function streamResponse(bytes: Uint8Array, init?: { status?: number; headers?: R
 
 describe('边界场景测试（Phase 3）', () => {
   beforeEach(async () => {
+    online = true;
     await resetAll();
     settingsService.__resetCache();
   });
 
   describe('网络错误', () => {
-    it('fetch 抛网络错误 → E_NETWORK', async () => {
+    it('fetch 抛网络错误（设备在线）→ 归因到线路', async () => {
+      const fetchImpl = vi.fn(async () => {
+        throw new TypeError('Failed to fetch');
+      });
+
+      const engine = createDownloadEngine({
+        load: async () => task(),
+        saveProgress: async () => undefined,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        persistIntervalMs: 0,
+      });
+
+      await expect(engine.run(task(), new AbortController().signal)).rejects.toMatchObject({
+        code: 'E_SOURCE_UNAVAILABLE',
+      });
+    });
+
+    it('fetch 抛网络错误（设备离线）→ E_NETWORK', async () => {
+      online = false;
       const fetchImpl = vi.fn(async () => {
         throw new TypeError('Failed to fetch');
       });

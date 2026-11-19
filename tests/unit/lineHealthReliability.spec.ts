@@ -103,3 +103,34 @@ describe('线路可靠度（OPT-16）', () => {
     expect(lineHealthService.sourceReliability('s3')).toBe(0.5);
   });
 });
+
+/**
+ * P1-4：`immediate` 是给**确定性证据**留的口子
+ *
+ * 连败门槛（≥2）防的是瞬时抖动；但地址探活拿到明确 404/410、或代理与直连都建不起连接，
+ * 这类结论不会因为再试一次翻盘，还按门槛走就等于让死线路再多骗用户一次。
+ */
+describe('确定性证据单次沉底（P1-4）', () => {
+  it('普通失败要连败 2 次才标 fail，探活判死单次即 fail', () => {
+    const jitter = lineKey('s4', 'item1', '抖动线');
+    lineHealthService.recordFail(jitter, 'E_PARSE');
+    expect(lineHealthService.statusOf(jitter)).toBe('unknown');
+    lineHealthService.recordFail(jitter, 'E_PARSE');
+    expect(lineHealthService.statusOf(jitter)).toBe('fail');
+
+    const dead = lineKey('s4', 'item1', '死线');
+    lineHealthService.recordFail(dead, 'E_SOURCE_UNAVAILABLE', { immediate: true });
+    expect(lineHealthService.statusOf(dead)).toBe('fail');
+    expect(lineHealthService.entryOf(dead)?.failStreak).toBe(1);
+  });
+
+  it('单次沉底不改变计数口径，一次成功仍能翻回 ok', () => {
+    const key = lineKey('s5', 'item1', '线A');
+    lineHealthService.recordFail(key, 'E_SOURCE_UNAVAILABLE', { immediate: true });
+    expect(lineHealthService.entryOf(key)?.failCount).toBe(1);
+
+    lineHealthService.recordSuccess(key, 260);
+    expect(lineHealthService.statusOf(key)).toBe('ok');
+    expect(lineHealthService.entryOf(key)?.failCount).toBe(1);
+  });
+});

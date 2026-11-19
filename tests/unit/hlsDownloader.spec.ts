@@ -1,9 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** P1-6 归因依赖在线判定：钉成变量，别靠宿主环境的 `navigator.onLine` 默认值 */
+let online = true;
+vi.mock('@/native/network', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/native/network')>();
+  return { ...actual, isOnline: () => online };
+});
+
 import { resetAll, tsSegment, fmp4Segment } from './helpers';
 import { createHlsDownloader, screenSegmentBytes } from '@/services/hlsDownloader';
 import { blobRepo } from '@/db/repositories/blobRepo';
 import { settingsService } from '@/services/settingsService';
+import { AppError } from '@/shared/errors';
 import type { DownloadTask } from '@/types';
 
 /**
@@ -108,6 +116,7 @@ function createMockFetch(responses: Map<string, { body: string | Uint8Array; sta
 
 describe('HLS 下载（Phase 2）', () => {
   beforeEach(async () => {
+    online = true;
     await resetAll();
     settingsService.__resetCache();
   });
@@ -503,5 +512,61 @@ https://cdn.example.com/big.ts
       expect(finalPatch.hlsTotalSegments).toBe(3);
       expect(finalPatch.hlsDiscontinuities).toBe(1);
     }, 15_000);
+  });
+});
+
+/**
+ * P1-6：清单进不去时的归因
+ *
+ * 死线路的 DNS 解析失败在旧实现里一律报成「网络不可用，请检查网络后重试」，
+ * 用户照着去查自己的网络，查不到任何东西——那台设备是在线的，挂的是这个源。
+ */
+describe('m3u8 清单连不上时的归因（P1-6）', () => {
+  async function runWith(rejectWith: unknown): Promise<unknown> {
+    online = true;
+    await resetAll();
+    settingsService.__resetCache();
+    const fetchImpl = vi.fn(async () => {
+      throw rejectWith;
+    });
+    const downloader = createHlsDownloader({
+      load: async () => task(),
+      saveProgress: async () => undefined,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    return downloader.run(task(), new AbortController().signal).catch((e: unknown) => e);
+  }
+
+  it('设备在线但清单连不上 → 归因到线路', async () => {
+    const err = await runWith(new TypeError('Failed to fetch'));
+    expect(err).toMatchObject({
+      code: 'E_SOURCE_UNAVAILABLE',
+      message: expect.stringContaining('本机网络正常'),
+    });
+  });
+
+  it('设备真离线 → 保留原文案 E_NETWORK', async () => {
+    online = false;
+    await resetAll();
+    settingsService.__resetCache();
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+    const downloader = createHlsDownloader({
+      load: async () => task(),
+      saveProgress: async () => undefined,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const err = await downloader.run(task(), new AbortController().signal).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'E_NETWORK' });
+    online = true;
+  });
+
+  it('已明说成因的错误不改写（超时/取消仍按原结论上报）', async () => {
+    const timeout = await runWith(new AppError('E_NETWORK', '清单直连请求超时: https://cdn.example.com/master.m3u8'));
+    expect(timeout).toMatchObject({ code: 'E_NETWORK', message: '清单直连请求超时: https://cdn.example.com/master.m3u8' });
+
+    const aborted = await runWith(new AppError('E_ABORTED', 'aborted'));
+    expect(aborted).toMatchObject({ code: 'E_ABORTED' });
   });
 });

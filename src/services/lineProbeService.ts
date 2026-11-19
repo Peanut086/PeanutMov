@@ -8,6 +8,8 @@
  * - 按 lineRanking 排序，优先探测评分高的线路；
  * - 单条超时 8s、总预算 15s，避免拖慢详情页加载；
  * - 并发 1（顺序探测），避免爬虫源并发请求被限流；
+ * - 成功口径 = `resolvePlay` 返回 **且** 该地址空读拿到字节（P1-4：爬虫答了不等于能播）；
+ *   判死单次即沉底，判不出（超时/被 CORS 挡住）不记失败，探活结论按 URL 缓存 5 分钟；
  * - 离线跳过；
  * - 探测成功的地址进 resolvePlay 内存缓存（复用现有机制），点播放时零成本命中。
  */
@@ -15,6 +17,7 @@ import type { Episode, MediaItem, PlayLine } from '@/types';
 import { libraryService } from '@/services/libraryService';
 import { lineHealthService, lineKey } from '@/services/lineHealthService';
 import { rankLines } from '@/services/lineRanking';
+import { probeUrlLiveness, type LivenessResult } from '@/services/urlLivenessProbe';
 import { isOnline } from '@/native/network';
 import { logger } from '@/shared/logger';
 
@@ -81,13 +84,39 @@ export async function probeLines(ctx: ProbeContext): Promise<ProbeResult> {
         setTimeout(() => reject(new Error('E_TIMEOUT')), PROBE_TIMEOUT_MS),
       );
 
-      await Promise.race([probePromise, timeoutPromise]);
+      const resolved = await Promise.race([probePromise, timeoutPromise]);
       const resolveMs = Date.now() - startTime;
 
-      // 探测成功
-      lineHealthService.recordSuccess(key, resolveMs);
+      /*
+       * P1-4：爬虫答了不等于地址能取到字节。真机实测默认第一条线路指向
+       * `mv.gzlcl.com`（DNS 都解析不了），而 `resolvePlay` 照样成功返回——旧探测
+       * 因此在第一条就"通过"并停住，用户点播放/下载才撞上失败。
+       */
+      const live: LivenessResult = resolved.isLocal
+        ? { verdict: 'alive', latencyMs: 0, status: null, viaProxy: false }
+        : await probeUrlLiveness(resolved.url, resolved.headers);
+
+      if (live.verdict === 'dead') {
+        // 确定性证据：单次即沉底，不等连败门槛再骗用户一次
+        lineHealthService.recordFail(key, 'E_SOURCE_UNAVAILABLE', { immediate: true });
+        logger.debug('线路地址探活判死，继续探下一条', {
+          lineId: line.id,
+          lineName: line.name,
+          status: live.status,
+        });
+        continue;
+      }
+
+      // `unknown`（超时 / CORS 挡住的裸读）不泼脏水，退回旧口径：以 resolvePlay 耗时记成功
+      lineHealthService.recordSuccess(key, live.verdict === 'alive' ? live.latencyMs : resolveMs);
       successLineId = line.id;
-      logger.debug('线路探测成功', { lineId: line.id, lineName: line.name, resolveMs });
+      logger.debug('线路探测成功', {
+        lineId: line.id,
+        lineName: line.name,
+        resolveMs,
+        liveness: live.verdict,
+        latencyMs: live.latencyMs,
+      });
       break; // 第一条成功即停
     } catch (e) {
       // 探测失败（按错误分类记录）

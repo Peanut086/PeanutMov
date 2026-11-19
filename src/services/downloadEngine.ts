@@ -14,6 +14,7 @@ import { DOWNLOAD_PROGRESS_PERSIST_MS, DOWNLOAD_WEB_SIZE_WARN_BYTES } from '@/sh
 import { isLocalArtifactUrl, isM3u8Url, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import { createSink, nativeFilePathOf, type DownloadSink } from '@/services/downloadSink';
 import { createHlsDownloader, type HlsDownloaderDeps, type PostProcessNotifier } from '@/services/hlsDownloader';
+import { classifyConnectivityError } from '@/services/connectivityError';
 import { appEvents } from '@/services/events';
 import { settingsService } from '@/services/settingsService';
 import { downloadRateLimiter } from '@/services/downloadRateLimiter';
@@ -117,7 +118,9 @@ export class DownloadEngine {
     try {
       response = await fetchImpl(task.url, { method: 'GET', headers, signal, cache: 'no-store' });
     } catch (e) {
-      throw toAppError(e, 'E_NETWORK');
+      // P1-6：连接根本没建立起来时，先分清是设备断网还是这条线路/源站进不去，
+      // 一律报 E_NETWORK 会把用户引去查 WiFi。
+      throw classifyConnectivityError(e);
     }
 
     if (!response.ok && response.status !== 206) {

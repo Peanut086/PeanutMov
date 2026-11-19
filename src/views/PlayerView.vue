@@ -294,6 +294,19 @@ const lineStatuses = computed(() => {
   return map;
 });
 
+/** P1-4：线路最近一次探测耗时（ms）；未探测过的线路不给数字，不编造 */
+const lineLatencies = computed(() => {
+  const it = item.value;
+  const map = new Map<string, number | null>();
+  if (!it) return map;
+  for (const line of lines.value) {
+    const key = lineKey(it.sourceId, it.sourceItemId, line.name);
+    const known = lineHealthService.statusOf(key) !== 'unknown';
+    map.set(line.id, known ? (lineHealthService.entryOf(key)?.lastResolveMs ?? null) : null);
+  }
+  return map;
+});
+
 /** 批次1：推荐的线路 ID（评分最高） */
 const recommendedLineId = computed(() => {
   const it = item.value;
@@ -3267,6 +3280,7 @@ onBeforeUnmount(() => {
               :lines="lines"
               :model-value="currentLineId"
               :line-statuses="lineStatuses"
+              :line-latencies="lineLatencies"
               :recommended-line-id="recommendedLineId"
               @update:model-value="onSwitchLineById"
             />

@@ -5,6 +5,8 @@
  * 形态：SegmentedControl（≤4 条线路）或 BottomSheet 列表（>4 条）。
  * 切换后保持当前集号（AC-31 的 UI 侧保证）。
  * 批次1：新增线路健康状态点 + 推荐徽章。
+ * P1-4：健康状态补上**文字**口径（可播 / 不可用 + 探测耗时），并把「当前线路不可用」
+ *       提到收起态——只有一枚色点时，用户看不出 27 条里哪条是死的。
  */
 import { computed, ref } from 'vue';
 
@@ -21,6 +23,8 @@ const props = defineProps<{
   lineStatuses?: Map<string, LineHealthStatus>;
   /** 批次1：推荐的线路 ID */
   recommendedLineId?: string | null;
+  /** P1-4：最近一次探测耗时（ms），仅在状态已知时展示 */
+  lineLatencies?: Map<string, number | null>;
 }>();
 
 const emit = defineEmits<{ (e: 'update:modelValue', v: string): void }>();
@@ -52,8 +56,7 @@ function chooseFromSheet(id: string): void {
 }
 
 function statusClass(lineId: string): string {
-  const status = props.lineStatuses?.get(lineId) ?? 'unknown';
-  switch (status) {
+  switch (statusOf(lineId)) {
     case 'ok':
       return 'line-status--ok';
     case 'fail':
@@ -66,6 +69,25 @@ function statusClass(lineId: string): string {
 function isRecommended(lineId: string): boolean {
   return props.recommendedLineId === lineId;
 }
+
+function statusOf(lineId: string): LineHealthStatus {
+  return props.lineStatuses?.get(lineId) ?? 'unknown';
+}
+
+function formatLatency(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+}
+
+/** P1-4：文字化的可用性 + 探测耗时；未探测过的线路留白，不假装知道 */
+function metaLabel(lineId: string): string {
+  const status = statusOf(lineId);
+  if (status === 'fail') return '不可用';
+  if (status !== 'ok') return '';
+  const ms = props.lineLatencies?.get(lineId) ?? null;
+  return ms && ms > 0 ? `可播 · ${formatLatency(ms)}` : '可播';
+}
+
+const currentLineIsDead = computed(() => statusOf(props.modelValue ?? '') === 'fail');
 </script>
 
 <template>
@@ -85,6 +107,7 @@ function isRecommended(lineId: string): boolean {
     <button v-else class="line-selector__trigger" type="button" @click="sheetOpen = true">
       <span class="line-selector__label">线路</span>
       <span class="line-selector__value">{{ currentName }}</span>
+      <span v-if="currentLineIsDead" class="line-selector__warn">不可用</span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
         <path d="m6 9.5 6 6 6-6" />
       </svg>
@@ -102,6 +125,11 @@ function isRecommended(lineId: string): boolean {
             <span :class="['line-list__status', statusClass(line.id)]" aria-hidden="true"></span>
             <span class="line-list__name">{{ line.name }}</span>
             <span v-if="line.quality" class="line-list__quality">{{ line.quality }}</span>
+            <span
+              v-if="metaLabel(line.id)"
+              :class="['line-list__meta', statusOf(line.id) === 'fail' ? 'line-list__meta--fail' : 'line-list__meta--ok']"
+              >{{ metaLabel(line.id) }}</span
+            >
             <span v-if="isRecommended(line.id)" class="line-list__recommended">推荐</span>
             <span v-if="line.id === modelValue" class="line-list__current">当前</span>
           </button>
@@ -190,6 +218,24 @@ function isRecommended(lineId: string): boolean {
 .line-list__quality {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+/* P1-4：可用性文字口径（色点不足以传达「这条线路是死的」） */
+.line-list__meta {
+  font: var(--text-caption);
+  flex-shrink: 0;
+}
+
+.line-list__meta--ok {
+  color: var(--color-success, #10b981);
+}
+
+.line-list__meta--fail {
+  color: var(--color-error, #ef4444);
+}
+
+.line-selector__warn {
+  color: var(--color-error, #ef4444);
 }
 
 .line-list__current {

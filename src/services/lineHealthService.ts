@@ -7,7 +7,7 @@
  * 设计要点：
  * - Key 用 flag（线路名）而非 lineId（mediaId:index），因为 index 会随源返回顺序漂移；
  * - 错误分类：瞬时网络/账号/取消不计线路失败，避免误伤；
- * - failStreak ≥ 2 才标 fail，防瞬时抖动；
+ * - failStreak ≥ 2 才标 fail，防瞬时抖动；确定性证据（地址探活明确判死）单次即沉底；
  * - 源级可靠度另用累计 failCount（成功不清零）+ 7 天半衰期 + 1:1 伪计数；
  * - TTL：ok 24h / fail 30min（过期降 unknown 允许重试）；
  * - 真实播放反馈立即生效，不受 TTL 限制；
@@ -191,13 +191,19 @@ export const lineHealthService = {
     scheduleFlush();
   },
 
-  /** 记录失败（按错误分类，failStreak ≥ 2 才标 fail） */
-  recordFail(key: string, errorCode: ErrorCode): void {
+  /**
+   * 记录失败（按错误分类，failStreak ≥ 2 才标 fail）。
+   *
+   * `immediate` 只给**确定性证据**用（如线路地址探活拿到明确 404/410/403，或代理与
+   * 直连都建立不起连接）：这类结论不会因为再试一次就翻盘，连败门槛只会让死线路
+   * 再多骗用户一次。瞬时抖动（超时、5xx）不许走这条路。
+   */
+  recordFail(key: string, errorCode: ErrorCode, opts?: { immediate?: boolean }): void {
     if (!shouldCountAsFailure(errorCode)) return;
     const existing = cache.get(key) ?? emptyEntry();
     const newStreak = existing.failStreak + 1;
     const entry: LineHealthEntry = {
-      status: newStreak >= FAIL_STREAK_THRESHOLD ? 'fail' : existing.status,
+      status: opts?.immediate === true || newStreak >= FAIL_STREAK_THRESHOLD ? 'fail' : existing.status,
       failStreak: newStreak,
       failCount: failCountOf(existing) + 1,
       successCount: existing.successCount,

@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+/** P1-6 归因依赖在线判定，测试里把它钉成变量（其余导出保持真实实现） */
+let online = true;
+vi.mock('@/native/network', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/native/network')>();
+  return { ...actual, isOnline: () => online };
+});
+
 import { resetAll } from './helpers';
 import { closeDb } from '@/db/index';
 import { createDownloadEngine } from '@/services/downloadEngine';
@@ -70,6 +77,7 @@ interface SavedProgress {
 
 describe('下载引擎（AC-73 / AC-76）', () => {
   beforeEach(async () => {
+    online = true;
     await resetAll();
     settingsService.__resetCache();
   });
@@ -268,7 +276,23 @@ describe('下载引擎（AC-73 / AC-76）', () => {
     await closeDb();
   });
 
-  it('fetch 网络异常 → E_NETWORK', async () => {
+  it('设备在线但 fetch 连不上 → 归因到线路（P1-6：不再让用户去查网络）', async () => {
+    const engine = createDownloadEngine({
+      load: async () => task(),
+      saveProgress: async () => undefined,
+      fetchImpl: (async () => {
+        throw new TypeError('Failed to fetch');
+      }) as unknown as typeof fetch,
+      createSinkImpl: () => new IdbBlobSink(),
+    });
+    await expect(engine.run(task(), new AbortController().signal)).rejects.toMatchObject({
+      code: 'E_SOURCE_UNAVAILABLE',
+      retryable: true,
+    });
+  });
+
+  it('设备真离线 → 保留 E_NETWORK 文案', async () => {
+    online = false;
     const engine = createDownloadEngine({
       load: async () => task(),
       saveProgress: async () => undefined,
@@ -279,6 +303,7 @@ describe('下载引擎（AC-73 / AC-76）', () => {
     });
     await expect(engine.run(task(), new AbortController().signal)).rejects.toMatchObject({
       code: 'E_NETWORK',
+      message: '网络不可用，请检查网络后重试',
     });
   });
 });
