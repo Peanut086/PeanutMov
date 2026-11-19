@@ -109,6 +109,8 @@ import BingeCelebration from '@/components/player/BingeCelebration.vue';
 import { useAchievementStore } from '@/stores/achievementStore';
 import { useHaptic } from '@/composables/useHaptic';
 import { playDing } from '@/services/sfxService';
+// P3-3：换线路重复下载校验（与详情页同一个闸门）
+import { useDownloadGuards } from '@/composables/useDownloadGuards';
 
 const route = useRoute();
 const router = useRouter();
@@ -120,6 +122,8 @@ const settings = useSettingsStore();
 const sources = useSourceStore();
 const ui = useUiStore();
 const toast = useToast();
+// P3-3：换线路重复下载校验闸门（与详情页同一个入口）
+const guards = useDownloadGuards();
 const achievements = useAchievementStore();
 const { haptic } = useHaptic();
 
@@ -1935,6 +1939,9 @@ async function onDownloadCurrent(): Promise<void> {
   downloading.value = true;
   try {
     const inputs = await library.toDownloadInputs(it.id, [ep.id]);
+    // P3-3：换一条线路（不同源、不同 id）时，`createMany` 的字面判重认不出来，本地能攒下
+    // 同一集的若干份；下单前把重复摊开说清楚，但只确认不拦截——换线路常正因为上一份下不动。
+    if (!(await guards.confirmCrossLineDuplicates(inputs, downloads.tasks))) return;
     // REV-07 / AC-76：Web 端 >1GB 在下单前提示改用 App；确认后仍可继续
     const largeFileHint = await downloads.checkLargeFile(inputs);
     if (largeFileHint !== null) {
@@ -2896,7 +2903,7 @@ onBeforeUnmount(() => {
             <div class="audio-stage__scrim" aria-hidden="true" />
             <div class="audio-stage__body">
               <div class="audio-stage__cover">
-                <PosterImage :src="item?.posterUrl ?? null" :alt="titleText" eager />
+                <PosterImage :src="item?.posterUrl ?? null" :alt="titleText" :fallback-title="titleText" eager />
               </div>
               <div class="audio-stage__meta">
                 <span class="audio-stage__badge">纯音频</span>

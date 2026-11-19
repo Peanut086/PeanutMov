@@ -114,6 +114,28 @@ describe('DownloadItem', () => {
     }
   });
 
+  // P3-1：真机上下载页没有任何优先级入口（priority 创建时写成 now = 纯 FIFO）。
+  it('等待中：额外显示置顶按钮，点击 emit front，且暂停按钮仍在', async () => {
+    const task = makeTask({ status: 'queued' });
+    const wrapper = mount(DownloadItem, { props: { task } });
+    expect(actionLabels(wrapper)).toContain('置顶，下一个空位先下这一集');
+    expect(actionLabels(wrapper)).toContain('暂停下载');
+
+    const front = wrapper
+      .findAll('.download-item__action')
+      .find((b) => b.attributes('aria-label') === '置顶，下一个空位先下这一集');
+    await front!.trigger('click');
+    expect(wrapper.emitted('front')).toHaveLength(1);
+    expect(wrapper.emitted('front')?.[0]?.[0]).toMatchObject({ id: task.id });
+  });
+
+  it('非等待中的任务不出置顶按钮（改顺序对它没有意义）', () => {
+    for (const status of ['downloading', 'paused', 'failed', 'completed'] as const) {
+      const wrapper = mount(DownloadItem, { props: { task: makeTask({ status }) } });
+      expect(actionLabels(wrapper)).not.toContain('置顶，下一个空位先下这一集');
+    }
+  });
+
   it('离线时暂停任务文案标注「等待网络」（AC-77 的 UI 提示）', () => {
     const wrapper = mount(DownloadItem, {
       props: { task: makeTask({ status: 'paused' }), offline: true },

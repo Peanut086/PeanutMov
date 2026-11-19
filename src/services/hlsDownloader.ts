@@ -17,6 +17,7 @@ import { LocalProxy } from '@/native/localProxy';
 import { MediaTool, isMediaToolAvailable } from '@/native/mediaToolPlugin';
 import { findProtectedKeyEvidence } from '@/player/sourceGuard';
 import { createSink, type DownloadSink } from '@/services/downloadSink';
+import { appEvents } from '@/services/events';
 import { classifyConnectivityError } from '@/services/connectivityError';
 import type { DownloadTask } from '@/types';
 
@@ -840,6 +841,10 @@ export class HlsDownloader {
         },
       );
       completedSegments = [];
+      // P2-6：整集重下要烧掉一整份流量（实测一集 780MB），不能像现在这样只在日志里留一行。
+      // 直链侧同样的处境早就有话术（`downloadEngine` 的「该地址不支持断点续传，将重新下载」），
+      // 这里补齐，用户至少知道进度为什么没了、不是 App 在下错东西。
+      appEvents.emit('toast', { text: '本地进度与文件对不上，本集将重新下载', type: 'info' });
       // 第二次 begin 会清空 .part 并从 0 重新计数；播种必须跟着换成它的返回值。
       // 沿用第一次的 actualStartBytes 会让计数器凭空多出一整份旧文件（真机实测
       // 磁盘 881,720 字节 / 计数 1,763,440 字节，正好两倍），进度条与大小校验一起失真。

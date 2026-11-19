@@ -212,6 +212,57 @@ describe('下载队列调度（AC-71）', () => {
     expect(started).toEqual(['a', 'b', 'c']);
   });
 
+  it('P3-1：setPriority 改写后重排，置顶的等待任务下一个起跑', async () => {
+    const store = new Map<string, DownloadTask>();
+    const started: string[] = [];
+    const queue = new DownloadQueue({
+      load: async (id) => store.get(id) ?? null,
+      save: async (t) => {
+        store.set(t.id, t);
+      },
+      concurrency: 1,
+      sleep: async () => undefined,
+    });
+    queue.run(async (t) => {
+      started.push(t.id);
+    });
+
+    const tasks = [
+      task({ id: 'a', priority: 1, createdAt: 1 }),
+      task({ id: 'b', priority: 2, createdAt: 2 }),
+      task({ id: 'c', priority: 3, createdAt: 3 }),
+    ];
+    for (const t of tasks) store.set(t.id, t);
+    tasks.forEach((t) => queue.enqueue(t));
+    // 服务层先把新值落库，再只把新优先级交给队列
+    store.set('c', { ...tasks[2]!, priority: 0 });
+    queue.setPriority('c', 0);
+    await queue.drain();
+
+    expect(started).toEqual(['c', 'a', 'b']);
+  });
+
+  it('P3-1：setPriority 只动已在等待队列里的条目，未知 id 不入队', async () => {
+    const store = new Map<string, DownloadTask>();
+    const queue = new DownloadQueue({
+      load: async (id) => store.get(id) ?? null,
+      save: async (t) => {
+        store.set(t.id, t);
+      },
+      concurrency: 1,
+      sleep: async () => undefined,
+    });
+    const queued = task({ id: 'a', priority: 1, createdAt: 1 });
+    store.set('a', queued);
+    queue.run(async () => undefined);
+    queue.enqueue(queued);
+
+    queue.setPriority('ghost', 0);
+    expect(queue.pendingIds).toEqual(['a']);
+    await queue.drain();
+    expect(queue.pendingIds).toEqual([]);
+  });
+
   it('暂停会 abort 正在执行的任务，且状态为 paused 不是 completed', async () => {
     const store = new Map<string, DownloadTask>();
     const first = task({ id: 'x' });

@@ -12,13 +12,16 @@ import {
   episodeCountFromRemarks,
   fallbackPoster,
   inferMediaType,
+  inferTypeFromShape,
   normalizeDurationSec,
   normalizeFormat,
   normalizeRating,
   normalizeStringList,
+  normalizeTags,
   normalizeTitle,
   normalizeYear,
   stripHtml,
+  yearFromTitle,
 } from '@/sources/base/normalize';
 import {
   episodeTitleOf,
@@ -121,19 +124,23 @@ export function filterDimensionsOf(
 /** TVBox `vod_*` → 统一 MediaItem */
 export function toItemFromVod(source: Source, vod: TvboxVod, makeItem: ItemFactory): MediaItem {
   const title = normalizeTitle(vod.vod_name);
+  // 类型/集数/时长都来自 `vod_remarks` 这类自由文本，先算一次再分发给各字段，避免同一串备注被反复猜
+  const episodeCount = episodeCountFromRemarks(vod.vod_remarks);
+  const durationSec = normalizeDurationSec(vod.vod_remarks);
+  const inferredType = inferMediaType(vod.type_name, vod.vod_name);
   return makeItem({
     sourceItemId: vodIdOf(vod),
     title: title || '未命名',
-    type: inferMediaType(vod.type_name, vod.vod_name),
-    year: normalizeYear(vod.vod_year),
+    type: inferredType === 'other' ? inferTypeFromShape(vod.vod_remarks, episodeCount) ?? 'other' : inferredType,
+    year: normalizeYear(vod.vod_year) ?? yearFromTitle(title),
     area: vod.vod_area ? normalizeTitle(vod.vod_area) : null,
     genres: normalizeStringList(vod.type_name),
-    tags: normalizeStringList(vod.vod_remarks).slice(0, 3),
+    tags: normalizeTags(vod.vod_remarks).slice(0, 3),
     rating: normalizeRating(vod.vod_score),
     posterUrl: toAbsoluteUrl(source.baseUrl, vod.vod_pic) ?? fallbackPoster(title),
     description: stripHtml(vod.vod_content),
-    durationSec: normalizeDurationSec(vod.vod_remarks),
-    episodeCount: episodeCountFromRemarks(vod.vod_remarks),
+    durationSec,
+    episodeCount,
     now: Date.now(),
   });
 }

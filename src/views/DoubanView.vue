@@ -140,7 +140,12 @@ onMounted(() => {
               @click="searchItem(item)"
             >
               <div class="douban-card__frame">
-                <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_CARD" />
+                <PosterImage
+                  :src="item.posterUrl"
+                  :alt="item.title"
+                  :fallback-title="item.title"
+                  :width-px="IMG_W_CARD"
+                />
                 <span v-if="item.rating" class="douban-card__rating" aria-hidden="true">
                   <IconStar :size="10" />
                   {{ item.rating.toFixed(1) }}

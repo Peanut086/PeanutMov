@@ -4,6 +4,7 @@
  *
  * - `loading="lazy"` + `decoding="async"`，首屏外不请求（NFR-P02）
  * - 加载完成前显示骨架；失败切成占位图标（不显示破图）
+ * - 传 `fallbackTitle` 时，地址缺失或加载失败先用片名生成一张兜底海报，兜底图也渲染不出来才切占位
  * - 容器固定 2:3 比例，CLS = 0
  * - `widthPx`（设备像素）决定向源站要多大的图：只有对象存储主机才会真的被缩放，
  *   其余主机原样请求，所以传与不传都不会让图裂（详见 `@/shared/imageSize`）
@@ -13,6 +14,7 @@
 import { computed, ref, watch } from 'vue';
 
 import { sizedImage } from '@/shared/imageSize';
+import { titlePoster } from '@/shared/posterFallback';
 
 const props = withDefaults(
   defineProps<{
@@ -26,24 +28,46 @@ const props = withDefaults(
     coverKey?: string | null;
     /** 目标显示宽度（设备像素）；0 = 不协商尺寸，直接请求原图 */
     widthPx?: number;
+    /**
+     * 地址缺失或加载失败时用片名生成一张兜底海报，而不是退回「无封面」。
+     *
+     * 真机实测：设备缓存里 947 条条目的 `posterUrl` 没有一条为空（890 条 http + 57 条生成图），
+     * 但下载列表仍是「无封面」——抽样 6 个主机（gimg0.baidu.com / fffgood.com / i1.hdslb.com 等）
+     * 3 个加载不出来（超时或 error）。采集站图片要么防盗链要么域名已死，字段有值不等于渲染得出来。
+     */
+    fallbackTitle?: string | null;
   }>(),
-  { rounded: true, eager: false, coverKey: null, widthPx: 0 },
+  { rounded: true, eager: false, coverKey: null, widthPx: 0, fallbackTitle: null },
 );
 
 const failed = ref(false);
 const loaded = ref(false);
+/** 连兜底图都渲染不出来（正常不会发生）才允许退回「无封面」占位 */
+const fallbackFailed = ref(false);
 
 watch(
-  () => props.src,
+  [() => props.src, () => props.fallbackTitle],
   () => {
     failed.value = false;
     loaded.value = false;
+    fallbackFailed.value = false;
   },
 );
 
-const resolvedSrc = computed(() => sizedImage(props.src, props.widthPx));
-const showPlaceholder = computed(() => !resolvedSrc.value || failed.value);
+const networkSrc = computed(() => sizedImage(props.src, props.widthPx));
+const fallbackSrc = computed(() => {
+  const title = props.fallbackTitle?.trim();
+  return title ? titlePoster(title) : null;
+});
+/** 网络地址缺失或加载失败后退到生成图；两者都没有才留空 */
+const shownSrc = computed(() => (networkSrc.value && !failed.value ? networkSrc.value : fallbackSrc.value));
+const showPlaceholder = computed(() => !shownSrc.value || fallbackFailed.value);
 const loadingAttr = computed(() => (props.eager ? 'eager' : 'lazy'));
+
+function onImgError(): void {
+  if (shownSrc.value === fallbackSrc.value) fallbackFailed.value = true;
+  else failed.value = true;
+}
 </script>
 
 <template>
@@ -51,15 +75,15 @@ const loadingAttr = computed(() => (props.eager ? 'eager' : 'lazy'));
     <div v-if="!loaded && !showPlaceholder" class="skeleton poster-image__skeleton" aria-hidden="true" />
 
     <img
-      v-if="resolvedSrc && !failed"
+      v-if="shownSrc && !showPlaceholder"
       class="poster-image__img"
       :class="{ 'poster-image__img--loaded': loaded }"
-      :src="resolvedSrc"
+      :src="shownSrc"
       :alt="alt"
       :loading="loadingAttr"
       decoding="async"
       @load="loaded = true"
-      @error="failed = true"
+      @error="onImgError"
     />
 
     <div v-if="showPlaceholder" class="poster-image__placeholder" aria-hidden="true">

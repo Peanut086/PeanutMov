@@ -21,6 +21,7 @@ import IconPlay from '@/components/icons/IconPlay.vue';
 import IconPause from '@/components/icons/IconPause.vue';
 import IconRefresh from '@/components/icons/IconRefresh.vue';
 import IconTrash from '@/components/icons/IconTrash.vue';
+import IconChevron from '@/components/icons/IconChevron.vue';
 
 const props = defineProps<{
   task: DownloadTask;
@@ -43,6 +44,7 @@ const emit = defineEmits<{
   (e: 'pause', task: DownloadTask): void;
   (e: 'resume', task: DownloadTask): void;
   (e: 'retry', task: DownloadTask): void;
+  (e: 'front', task: DownloadTask): void;
   (e: 'remove', task: DownloadTask): void;
   (e: 'select', task: DownloadTask): void;
   (e: 'toggleSelect', task: DownloadTask): void;
@@ -193,7 +195,12 @@ const sparklinePath = computed(() => {
     <button class="download-item__main" type="button" @click="emit('select', task)">
       <span class="download-item__thumb">
         <span class="download-item__poster">
-          <PosterImage :src="task.posterUrl" :alt="task.title" :width-px="IMG_W_INLINE" />
+          <PosterImage
+            :src="task.posterUrl"
+            :alt="task.title"
+            :fallback-title="task.title"
+            :width-px="IMG_W_INLINE"
+          />
         </span>
         <!-- C-11：完成勾是常驻终态，收尾动画只负责"画出来"这一下 -->
         <span v-if="canPlay" ref="checkEl" class="download-item__check" aria-hidden="true">
@@ -255,6 +262,17 @@ const sparklinePath = computed(() => {
 
     <!-- 功能扩展-10：批量模式下隐藏操作按钮 -->
     <div v-if="!batchMode" class="download-item__actions">
+      <!-- P3-1：置顶。只给还在等待队列里的任务——正在跑的那路槽位由并发上限决定，改顺序也抢不过来 -->
+      <button
+        v-if="task.status === 'queued'"
+        class="download-item__action"
+        type="button"
+        aria-label="置顶，下一个空位先下这一集"
+        @click.stop="emit('front', task)"
+      >
+        <IconChevron :size="20" direction="up" />
+      </button>
+
       <button
         v-if="canPlay"
         class="download-item__action download-item__action--play"

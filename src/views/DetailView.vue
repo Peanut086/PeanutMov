@@ -54,6 +54,8 @@ import { useHaptic } from '@/composables/useHaptic';
 import { animateSpring, prefersReducedMotion, SPRING_DEFAULT } from '@/composables/useSpring';
 import { toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
+// P3-3：换线路重复下载校验（与播放页同一个闸门）
+import { useDownloadGuards } from '@/composables/useDownloadGuards';
 import { hasAllFilesAccess, readCookieFile } from '@/native/netdiskPlugin';
 import { offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
 import { formatBytes } from '@/components/common/format';
@@ -69,6 +71,8 @@ const settings = useSettingsStore();
 const history = useHistoryStore();
 const favorites = useFavoriteStore();
 const downloads = useDownloadStore();
+// P3-3：换线路重复下载校验闸门（与播放页同一个入口）
+const guards = useDownloadGuards();
 const cache = useCacheStore();
 const ui = useUiStore();
 const toast = useToast();
@@ -943,6 +947,9 @@ async function downloadEpisodes(episodeIds: string[]): Promise<void> {
       return;
     }
     // REV-15 / FR-30：重复下载必须提示，不能静默忽略（AC-70 的 skipped 分支）
+    // P3-3：上面那条只认字面 `mediaId+episodeId`——换一条线路（不同源、不同 id）就判不出重复，
+    // 真机上同一集能攒下好几份；判定与文案都在闸门里，播放页走的是同一个入口。
+    if (!(await guards.confirmCrossLineDuplicates(inputs, downloads.tasks))) return;
     // REV-07 / AC-76：先做 HEAD 体积预检，Web 端 >1GB 在下单前提示改用 App；确认后仍可继续
     const largeFileHint = await downloads.checkLargeFile(inputs);
     if (largeFileHint !== null) {
@@ -1149,7 +1156,13 @@ function openCompliance(): void {
       <template v-else-if="item">
         <section ref="heroEl" class="detail-hero">
           <div ref="posterRef" class="detail-hero__poster">
-            <PosterImage :src="item.posterUrl" :alt="item.title" :cover-key="item.id" :width-px="IMG_W_POSTER" />
+            <PosterImage
+              :src="item.posterUrl"
+              :alt="item.title"
+              :fallback-title="item.title"
+              :cover-key="item.id"
+              :width-px="IMG_W_POSTER"
+            />
           </div>
           <div class="detail-hero__meta">
             <h1 class="detail-hero__title" data-narrative-title>{{ item.title }}</h1>

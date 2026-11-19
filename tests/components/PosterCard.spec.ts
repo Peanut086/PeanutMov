@@ -121,8 +121,17 @@ describe('PosterCard', () => {
     expect(emitted?.[0]?.[0]).toMatchObject({ id: item.id, title: item.title });
   });
 
-  it('图片加载失败时显示占位（不出现破图）', async () => {
+  // P2-3：卡片把片名交给 PosterImage 做兜底，所以首次加载失败先换成生成图，
+  // 连生成图都渲染不出来才落到「无封面」占位（逐档行为在 PosterImageFallback.spec 覆盖）。
+  it('图片加载失败先用片名生成兜底海报，兜底也失败才显示占位', async () => {
     const wrapper = mount(PosterCard, { props: { item: makeItem() } });
+    const firstSrc = wrapper.find('img').attributes('src');
+
+    await wrapper.find('img').trigger('error');
+    expect(wrapper.find('img').exists()).toBe(true);
+    expect(wrapper.find('img').attributes('src')).not.toBe(firstSrc);
+    expect(wrapper.text()).not.toContain('无封面');
+
     await wrapper.find('img').trigger('error');
     expect(wrapper.find('img').exists()).toBe(false);
     expect(wrapper.text()).toContain('无封面');

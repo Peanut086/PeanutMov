@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { buildTailSuggestions, groupSearchResults, isKeywordIgnored, isNonFeatureContent, normalizeSearchKeyword, scoreRelevance, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
+import { buildTailSuggestions, countDirectMatches, groupSearchResults, isKeywordIgnored, isNonFeatureContent, normalizeSearchKeyword, scoreRelevance, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
 import type { MediaItem } from '@/types';
 
 function makeItem(overrides: Partial<MediaItem> & { sourceId: string; title: string }): MediaItem {
@@ -122,6 +122,25 @@ describe('scoreRelevance（AC-121）', () => {
     expect(prefix).toBeGreaterThan(contains);
     expect(contains).toBeGreaterThan(tokens);
     expect(tokens).toBeGreaterThan(none);
+  });
+});
+
+describe('countDirectMatches（P2-8：直接命中计数口径）', () => {
+  it('精确/前缀/包含算直接命中，分词档与无关都不算', () => {
+    const titles = ['庆余年', '庆余年第二季', '新庆余年', '三体'];
+    // 前三条分别是 4/3/2 分，最后一条无关
+    expect(countDirectMatches(titles, '庆余年')).toBe(3);
+    // 只有分词档（1 分）：两个词都出现，但不是连续子串——只是沾边
+    expect(countDirectMatches(['流浪的庆余年传'], '庆余年 流浪')).toBe(0);
+  });
+
+  it('整屏只是沾边时计数为 0（结果区据此改口径并给改写建议）', () => {
+    expect(countDirectMatches(['某综艺第 3 期', '某纪录片', '另一部剧'], '庆余年')).toBe(0);
+    expect(countDirectMatches([], '庆余年')).toBe(0);
+  });
+
+  it('关键词归一化后为空时不把所有标题判成命中', () => {
+    expect(countDirectMatches(['庆余年', '三体'], '！！！')).toBe(0);
   });
 });
 

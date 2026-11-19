@@ -333,6 +333,23 @@ export class DownloadQueue {
     if (index >= 0) this.pending.splice(index, 1);
   }
 
+  /**
+   * P3-1：改写已在等待队列中的任务优先级并按同一口径重排。
+   *
+   * 只做 pending 内的事：正在跑的任务优先级改了也不会让它跑得更快，槽位是并发上限
+   * 决定的，不是抢出来的。任务此刻不在 pending（已起跑或正在退避等槽）就忽略——
+   * 服务层已经把新值落库，它下次 `enqueue` 自然带上。
+   */
+  setPriority(id: string, priority: number): void {
+    const entry = this.pending.find((item) => item.id === id);
+    if (!entry) return;
+    entry.priority = priority;
+    this.pending.sort((a, b) =>
+      a.priority !== b.priority ? a.priority - b.priority : a.createdAt - b.createdAt,
+    );
+    this.schedulePump();
+  }
+
   /** 注册 runner 并启动调度 */
   run(runner: DownloadRunner): void {
     this.runner = runner;

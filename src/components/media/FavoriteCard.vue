@@ -57,7 +57,7 @@ function onClick(): void {
     @click="onClick"
   >
     <div class="favorite-card__frame">
-      <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_CARD" />
+      <PosterImage :src="item.posterUrl" :alt="item.title" :fallback-title="item.title" :width-px="IMG_W_CARD" />
       <span v-if="item.sourceRemoved" class="favorite-card__warning">源已移除</span>
     </div>
     <span class="favorite-card__title clamp-2">{{ item.title }}</span>

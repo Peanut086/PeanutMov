@@ -42,7 +42,13 @@ const emit = defineEmits<{
         @click="emit('select', rec, $event.currentTarget as HTMLElement)"
       >
         <div class="continue-compact__thumb">
-          <PosterImage :src="rec.posterUrl" :alt="rec.title" :cover-key="rec.mediaId" :width-px="IMG_W_COMPACT" />
+          <PosterImage
+            :src="rec.posterUrl"
+            :alt="rec.title"
+            :fallback-title="rec.title"
+            :cover-key="rec.mediaId"
+            :width-px="IMG_W_COMPACT"
+          />
         </div>
         <div class="continue-compact__info">
           <span class="continue-compact__title truncate-1">
@@ -92,7 +98,13 @@ const emit = defineEmits<{
         @click="emit('select', rec, $event.currentTarget as HTMLElement)"
       >
         <div class="continue-card__poster">
-          <PosterImage :src="rec.posterUrl" :alt="rec.title" :cover-key="rec.mediaId" :width-px="IMG_W_COMPACT" />
+          <PosterImage
+            :src="rec.posterUrl"
+            :alt="rec.title"
+            :fallback-title="rec.title"
+            :cover-key="rec.mediaId"
+            :width-px="IMG_W_COMPACT"
+          />
           <span class="continue-card__scrim" aria-hidden="true" />
           <div
             class="continue-card__progress"

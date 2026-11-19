@@ -18,6 +18,7 @@ import SegmentedControl from '@/components/common/SegmentedControl.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import PullToRefresh from '@/components/common/PullToRefresh.vue';
 import DownloadSummary from '@/components/download/DownloadSummary.vue';
+import { formatBytes } from '@/components/common/format';
 import DownloadItem from '@/components/download/DownloadItem.vue';
 import DownloadBatchGroup from '@/components/download/DownloadBatchGroup.vue';
 import SkeletonPoster from '@/components/media/SkeletonPoster.vue';
@@ -29,10 +30,13 @@ import { useCompletionCeremony } from '@/composables/useCompletionCeremony';
 import { attachSparkCanvas } from '@/services/sparkField';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
+import { planCompletionToasts } from '@/services/downloadBatch';
 import type { BatchProgress } from '@/services/downloadBatch';
+import type { StorageUsage } from '@/services/downloadService';
 import { downloadService } from '@/services/downloadService';
 import { appEvents, type OfflineOptimizeSnapshot } from '@/services/events';
 import { getOfflineOptimizeState } from '@/services/offlineRemuxMigration';
+import { useDebounce } from '@/composables/useDebounce';
 
 const router = useRouter();
 const downloads = useDownloadStore();
@@ -66,7 +70,7 @@ const detailRemuxText = computed(() => (detailTask.value?.remux ? remuxDetailTex
 const batchMode = ref(false);
 const selectedIds = ref<Set<string>>(new Set());
 const batchOperating = ref(false);
-const storageUsage = ref<{ totalBytes: number; fileCount: number } | null>(null);
+const storageUsage = ref<StorageUsage | null>(null);
 
 const FILTER_OPTIONS = [
   { value: 'all', label: '全部' },
@@ -80,33 +84,73 @@ const isEmpty = computed(() => downloads.state === 'empty' || downloads.tasks.le
 
 /**
  * C-11 完成收尾仪式：一次只完成一项 → 那一行放收尾动画；一次完成一批 → 只有汇总卡庆祝，
- * 各行静默变勾。触觉与 Toast 也收在这里一起发（原先逐项各震一次，缓存 12 集会连震 12 下）。
+ * 各行静默变勾。触觉与 Toast 不在这里发，由下面的完成提示窗口统一发。
  */
 const { celebrateId, celebrateSummary, observe: observeCompletions } = useCompletionCeremony();
 const sparkCanvas = ref<HTMLCanvasElement | null>(null);
+
+/**
+ * P2-4：完成提示按批聚合。
+ *
+ * 仪式（`observeCompletions`）必须在完成的那一刻按 tick 判定，动画才跟得上；提示则攒一个
+ * 短窗口再一起算——缓存整季时逐条报片名的十几条 toast 收敛成一条批次进展，触觉也只震一次。
+ * `NOTICE_MAX_WAIT_MS` 是兜底上限：持续有新集落地时，先到的那条提示不至于被一直推后。
+ */
+const NOTICE_WINDOW_MS = 1200;
+const NOTICE_MAX_WAIT_MS = 3000;
+const noticeBuffer = new Map<string, DownloadTask>();
+let noticeEarliestAt = 0;
+
+function flushCompletionNotices(): void {
+  const fresh = [...noticeBuffer.values()];
+  noticeBuffer.clear();
+  noticeEarliestAt = 0;
+  const lines = planCompletionToasts(fresh);
+  if (lines.length === 0) return;
+  haptic('medium');
+  for (const line of lines) toast.success(line);
+}
+
+const scheduleNoticeFlush = useDebounce(flushCompletionNotices, NOTICE_WINDOW_MS);
+
+function noticeCompletions(fresh: DownloadTask[]): void {
+  const now = Date.now();
+  if (noticeBuffer.size === 0) noticeEarliestAt = now;
+  for (const task of fresh) noticeBuffer.set(task.id, task);
+  if (now - noticeEarliestAt >= NOTICE_MAX_WAIT_MS) scheduleNoticeFlush.flush();
+  else scheduleNoticeFlush();
+}
 
 /** OPT-16: 去掉 deep:true（store 每次不可变替换数组，浅 watch 已能触发） */
 watch(
   () => downloads.tasks,
   (tasks) => {
-    const { fresh, bulk } = observeCompletions(tasks);
-    if (fresh.length === 0) return;
-    haptic('medium');
-    if (bulk) toast.success(`${fresh.length} 个下载完成`);
-    else toast.success(`「${fresh[0]?.title ?? ''}」下载完成`);
+    const { fresh } = observeCompletions(tasks);
+    if (fresh.length > 0) noticeCompletions(fresh);
   },
 );
+
+/**
+ * P3-1：列表次序 = 队列次序。
+ *
+ * `downloadRepo.listAll` 本来就按 `priority` 升序、同值按 `createdAt` 升序返回，所以这个
+ * 排序对首次加载是恒等的；但 store 收到状态事件是**原位替换**元素，置顶之后数组顺序会
+ * 落后于真实队列。不重排的话，用户点了「置顶」、行却不动，只能靠 toast 相信它。
+ */
+function inQueueOrder(rows: DownloadTask[]): DownloadTask[] {
+  return [...rows].sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
+}
 
 const filtered = computed(() => {
   switch (filter.value) {
     case 'active':
-      return downloads.tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused');
+      return inQueueOrder(downloads.tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused'));
     case 'completed':
-      return downloads.tasks.filter((t) => t.status === 'completed');
+      return inQueueOrder(downloads.tasks.filter((t) => t.status === 'completed'));
     case 'failed':
-      return downloads.tasks.filter((t) => t.status === 'failed');
+      return inQueueOrder(downloads.tasks.filter((t) => t.status === 'failed'));
     default:
-      return downloads.tasks;
+      return inQueueOrder(downloads.tasks);
   }
 });
 
@@ -184,12 +228,14 @@ const canBatchDelete = computed(() => selectedCount.value > 0);
 /** 功能扩展-10：格式化存储大小 */
 const storageText = computed(() => {
   if (!storageUsage.value) return '计算中…';
-  const { totalBytes, fileCount } = storageUsage.value;
+  const { totalBytes, fileCount, partialBytes } = storageUsage.value;
   if (totalBytes === 0) return '暂无占用';
   const mb = totalBytes / 1024 / 1024;
   const gb = mb / 1024;
   const sizeText = gb >= 1 ? `${gb.toFixed(2)} GB` : `${mb.toFixed(1)} MB`;
-  return `${sizeText}（${fileCount} 个文件）`;
+  // P2-3：残片单独点出来——只暂停不删的集数确实占着盘，但不该混进「几个文件」里
+  if (partialBytes <= 0) return `${sizeText}（${fileCount} 个文件）`;
+  return `${sizeText}（${fileCount} 个文件 · 含 ${formatBytes(partialBytes)} 未完成残片）`;
 });
 
 /** P0-1：离线文件后台优化（.ts → .mp4）状态 */
@@ -208,8 +254,15 @@ const offOptimize = appEvents.on('offline:optimize', (state) => {
     void loadStorageUsage();
   }
 });
+/**
+ * P2-3：占用数字要跟着队列动。旧实现只在进页面时算一次，删完 8 个集数字还挂在屏幕上，
+ * 看起来就是「删除没生效」。一次批量操作会连发多条队列事件，防抖 400ms 合并成一次查库。
+ */
+const reloadUsage = useDebounce(() => void loadStorageUsage(), 400);
+const offUsageDirty = appEvents.on('downloads:changed', () => reloadUsage());
 onBeforeUnmount(() => {
   offOptimize();
+  offUsageDirty();
   // 火花画布是模块级单例：切走页面必须交还，否则 rAF 循环会留在后台空转
   attachSparkCanvas(null);
 });
@@ -424,6 +477,8 @@ async function refresh(): Promise<void> {
   refreshing.value = true;
   try {
     await downloads.load();
+    // P2-3：手动刷新是用户唯一的「重算一次」入口，占用数字必须一起重算
+    await loadStorageUsage();
   } finally {
     refreshing.value = false;
   }
@@ -483,6 +538,22 @@ async function onRetry(task: DownloadTask): Promise<void> {
   try {
     await downloads.retry(task.id);
     toast.info('已重新加入队列');
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  }
+}
+
+/**
+ * P3-1：置顶。
+ *
+ * 提示只承诺「下一个空出的下载位」——并发上限 2 时正在跑的两路不会因为置顶提前结束，
+ * 说「开始下载」就是在骗人。行位置由 `inQueueOrder` 跟着新 `priority` 走，队列次序是看得见的。
+ */
+async function onFront(task: DownloadTask): Promise<void> {
+  try {
+    await downloadService.bringToFront(task.id);
+    haptic('light');
+    toast.info('已置顶：下一个空出的下载位先跑这一集');
   } catch (e) {
     toast.error(toErrorShape(e).message);
   }
@@ -645,6 +716,7 @@ function goLibrary(): void {
                   @pause="onPause"
                   @resume="onResume"
                   @retry="onRetry"
+                  @front="onFront"
                   @remove="onRemove"
                   @select="onSelect"
                   @toggle-select="toggleSelect"

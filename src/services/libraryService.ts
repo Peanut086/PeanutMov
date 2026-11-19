@@ -30,7 +30,7 @@ import {
 import { AppError, isCanceled, toAppError, toErrorShape } from '@/shared/errors';
 import { HEALTH_TIER_ORDER, healthTierOf } from '@/shared/healthTier';
 import { mediaIdOf } from '@/shared/id';
-import { resolveGlobalDeadlineMs, resolveSearchTimeoutMs } from '@/shared/searchBudget';
+import { SEARCH_BUDGET_MIN_MS, resolveGlobalDeadlineMs, resolveSearchTimeoutMs } from '@/shared/searchBudget';
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { classifySourceFailure, isTransientFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { isKeywordIgnored } from '@/services/searchAggregate';
@@ -546,6 +546,7 @@ async function searchOneSource(
   signal: AbortSignal | undefined,
   pageSize: number,
   preset: SearchBudgetPreset | undefined,
+  deadlineAt = Number.POSITIVE_INFINITY,
 ): Promise<MediaItem[]> {
   const adapter = await adapterFor(source);
   // P1-6：搜索扇出前预热，让 jar 加载尽早开始。
@@ -565,19 +566,38 @@ async function searchOneSource(
   const coldAtStart = adapter.isSourceCold?.(source) === true;
   const loadAllowanceMs = coldAtStart ? resolveSearchTimeoutMs(TIMEOUT_SEARCH_LOAD_ALLOWANCE_MS, preset) : 0;
   const umbrellaMs = budgetMs + loadAllowanceMs;
+  /**
+   * P3-2：全局截止必须真的约束「已经在跑的这一路」，不能只当「要不要再领一个新源」的判据。
+   *
+   * 旧写法下并发 8 的最后一批可以在 27.9s 领到、再各自跑满 20s：真机 96 源全量扇出实测
+   * 44.8s 才 success，而设置页承诺的是「总窗口 28s」——数字对不上，用户只能一直干等。
+   * 现在按剩余预算收口，只保留 `SEARCH_BUDGET_MIN_MS` 的收尾下限（领到却只给 0.5s 等于白领，
+   * 结果比不领更糟），所以最坏是「窗口 + 3s」而不是「窗口 + 一整笔单源预算」。
+   */
+  const remainingMs = deadlineAt - Date.now();
+  const effectiveMs = Math.min(umbrellaMs, Math.max(remainingMs, SEARCH_BUDGET_MIN_MS));
+  const cutByGlobalDeadline = remainingMs < umbrellaMs;
   // SO-01：区分「预算到期」与「用户取消」——预算到期抛 E_TIMEOUT（计入失败/触发退避），
   // 用户取消仍走 E_ABORTED（静默）。之前两者都 abort 同一个 controller，超时被 isCanceled 吞掉。
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, umbrellaMs);
+  }, effectiveMs);
   const onAbort = (): void => controller.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
     return await adapter.search({ source, keyword, page: 1, pageSize, signal: controller.signal, budgetMs });
   } catch (e) {
     if (timedOut) {
+      // P3-2：被全局窗口打断和「自己跑满预算」是两件事——前者再多等一会儿也不会有结果
+      if (cutByGlobalDeadline) {
+        throw new AppError(
+          'E_TIMEOUT',
+          `本轮搜索窗口到期（第 ${Math.round(Math.max(remainingMs, 0) / 1000)} 秒收尾），该源未跑完`,
+          { detail: source.name },
+        );
+      }
       // F10：到期时还没拿到句柄说明卡在加载阶段，文案对准真实瓶颈，不再一律记「搜索超时」
       const loadBound = coldAtStart && adapter.isSourceCold?.(source) === true;
       throw new AppError('E_TIMEOUT', `${loadBound ? '源加载超时' : '搜索超时'}（${Math.round(umbrellaMs / 1000)} 秒）`, {
@@ -869,10 +889,12 @@ export const libraryService: LibraryService = {
       const preset = await searchBudgetPreset();
       const globalDeadlineMs = resolveGlobalDeadlineMs(preset);
       const searchStartedAt = Date.now();
+      // P3-2：这一轮的绝对到期时刻——领新源要认它，已经领到的这一路也照它收口
+      const deadlineAt = searchStartedAt + globalDeadlineMs;
       /** 单源完成即通知（CHG-12 渐进搜索）；取消的源不计入失败、不回调 */
       const settleOne = async (source: Source, index: number): Promise<void> => {
         try {
-          const items = await searchOneSource(source, keyword, params.signal, pageSize, preset);
+          const items = await searchOneSource(source, keyword, params.signal, pageSize, preset, deadlineAt);
           // P0-1：识别"源忽略关键词"（采集站关闭搜索，返回目录页冒充结果）
           // 命中则不上屏、不落库、不判活，记一条 keyword_ignored 失败
           if (isKeywordIgnored(items, keyword)) {

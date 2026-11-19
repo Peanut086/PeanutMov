@@ -33,7 +33,9 @@ import { useToast } from '@/composables/useToast';
 import { mediaSubtitle } from '@/components/common/format';
 import { toErrorShape } from '@/shared/errors';
 import { playabilityService } from '@/services/playabilityService';
-import { scoreRelevance } from '@/services/searchAggregate';
+import { buildTailSuggestions, countDirectMatches, scoreRelevance } from '@/services/searchAggregate';
+// P3-2：进度行里的「约 N 秒内收口」必须和设置页/服务层是同一个数
+import { SEARCH_BUDGET_DEFAULT, resolveGlobalDeadlineMs } from '@/shared/searchBudget';
 // SHARE-CODE / SO-ALIAS：口令解析与别名学习
 import { decodeShareCode, looksLikeShareCode } from '@/services/shareCodeService';
 import { learnPair } from '@/services/aliasService';
@@ -112,6 +114,17 @@ const zeroCandidates = computed(
 );
 /** SO-02：有因全局截止而未搜索的源 */
 const hasSkipped = computed(() => library.searchSkippedIds.length > 0);
+/**
+ * P3-2：把「还要等多久」写成看得见的数。
+ *
+ * 真机 96 源全量扇出跑到 44.8s 才收敛，屏幕上只有「仍在搜索其它源（94/96）」——既不知道
+ * 会不会停在这一秒，也不知道 28s 这个数字从哪来。这里取与设置页「总窗口」同一个函数的值，
+ * 服务层也已让这笔预算真的约束到在跑的每一路，屏幕上的数和实际收口时间从此是一对。
+ */
+const searchWindowSec = computed(() => {
+  const preset = settings.settings?.searchBudget ?? SEARCH_BUDGET_DEFAULT;
+  return Math.round(resolveGlobalDeadlineMs(preset) / 1000);
+});
 /** P0-1：忽略关键词的源数量 */
 const keywordIgnoredCount = computed(() =>
   library.searchFailed.filter((f) => f.error.code === 'E_KEYWORD_IGNORED').length,
@@ -419,6 +432,35 @@ const otherGroups = computed(() =>
   library.searchGroups.filter((g) => scoreRelevance(g.title, library.searchKeyword) === 0),
 );
 
+/**
+ * P2-8：整屏没有一条「精确/前缀/包含」命中时，这些结果全是拆词沾边的噪声，不能当有效命中摆出来。
+ *
+ * 查询扩展救回的那一批不适用（原词本就 0 结果，屏上已有「已按××扩展查找」说明）。
+ */
+const directGroupCount = computed(() =>
+  countDirectMatches(
+    library.searchGroups.map((group) => group.title),
+    library.searchKeyword,
+  ),
+);
+const weakGroupCount = computed(() => library.searchGroups.length - directGroupCount.value);
+const directItemCount = computed(() =>
+  countDirectMatches(
+    library.searchResults.map((item) => item.title),
+    library.searchKeyword,
+  ),
+);
+const noDirectMatch = computed(
+  () =>
+    hasResults.value &&
+    !isSearching.value &&
+    !library.searchExpandedNote &&
+    directGroupCount.value === 0,
+);
+const noDirectSuggestions = computed(() =>
+  noDirectMatch.value ? buildTailSuggestions(library.searchKeyword) : [],
+);
+
 /** P0-1：相关度 0 的结果默认折叠，不再自动展开 */
 const otherGroupsExpanded = ref(false);
 
@@ -677,15 +719,42 @@ function openSourceManage(): void {
           原词没搜到，已按「{{ library.searchExpandedNote }}」扩展查找
         </div>
 
+        <!-- P2-8：整屏只有拆词沾边的命中时先把话说清楚，别让用户把噪声当成结果 -->
+        <div v-if="noDirectMatch" class="search-no-direct" role="status">
+          <p class="search-no-direct__title">没有与「{{ library.searchKeyword }}」直接匹配的片名</p>
+          <p class="search-no-direct__desc">
+            这 {{ library.searchGroups.length }} 部都只是按关键词拆词后沾边凑出来的，未必有你要找的那一部。
+          </p>
+          <div v-if="noDirectSuggestions.length > 0" class="search-tail-chips">
+            <p class="search-tail-chips__label">换个说法试试</p>
+            <div class="search-tail-chips__row">
+              <button
+                v-for="tail in noDirectSuggestions"
+                :key="tail"
+                class="suggest-chip"
+                type="button"
+                @click="searchWithTail(tail)"
+              >
+                {{ tail }}
+              </button>
+            </div>
+          </div>
+        </div>
+
         <section class="search-section">
           <div class="section-head">
             <h2 class="section-title">搜索结果</h2>
             <div class="section-head__tools">
               <span class="search-count">
                 <template v-if="library.searchViewMode === 'grouped'">
-                  {{ library.searchGroups.length }} 部 · 来源 {{ library.searchResultsAll.length }} 条
+                  <template v-if="directGroupCount > 0">
+                    {{ directGroupCount }} 部<template v-if="weakGroupCount > 0"> · 另有 {{ weakGroupCount }} 部仅沾边</template>
+                  </template>
+                  <template v-else>{{ library.searchGroups.length }} 部沾边候选</template>
+                  · 来源 {{ library.searchResultsAll.length }} 条
                 </template>
-                <template v-else>{{ library.searchResults.length }} 条</template>
+                <template v-else-if="directItemCount > 0">{{ directItemCount }} 条</template>
+                <template v-else>{{ library.searchResults.length }} 条沾边候选</template>
               </span>
               <button
                 class="view-toggle"
@@ -722,7 +791,12 @@ function openSourceManage(): void {
               <li v-for="(group, i) in relevantGroups" :key="group.key" v-reveal="i">
                 <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
                   <span class="result-row__poster">
-                    <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" :width-px="IMG_W_INLINE" />
+                    <PosterImage
+                      :src="group.items[0]!.posterUrl"
+                      :alt="group.title"
+                      :fallback-title="group.title"
+                      :width-px="IMG_W_INLINE"
+                    />
                   </span>
                   <span class="result-row__body">
                     <span class="result-row__title">
@@ -778,7 +852,12 @@ function openSourceManage(): void {
                 <li v-for="(group, i) in otherGroups" :key="group.key" v-reveal="i">
                   <button class="result-row" type="button" @click="openDetail(group.items[0]!)">
                     <span class="result-row__poster">
-                      <PosterImage :src="group.items[0]!.posterUrl" :alt="group.title" :width-px="IMG_W_INLINE" />
+                      <PosterImage
+                        :src="group.items[0]!.posterUrl"
+                        :alt="group.title"
+                        :fallback-title="group.title"
+                        :width-px="IMG_W_INLINE"
+                      />
                     </span>
                     <span class="result-row__body">
                       <span class="result-row__title">
@@ -817,7 +896,12 @@ function openSourceManage(): void {
               <li v-for="(item, i) in relevantFlat" :key="item.id" v-reveal="i">
                 <button class="result-row" type="button" @click="openDetail(item)">
                   <span class="result-row__poster">
-                    <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_INLINE" />
+                    <PosterImage
+                      :src="item.posterUrl"
+                      :alt="item.title"
+                      :fallback-title="item.title"
+                      :width-px="IMG_W_INLINE"
+                    />
                   </span>
                   <span class="result-row__body">
                     <span class="result-row__title">
@@ -855,7 +939,12 @@ function openSourceManage(): void {
                 <li v-for="(item, i) in otherFlat" :key="item.id" v-reveal="i">
                   <button class="result-row" type="button" @click="openDetail(item)">
                     <span class="result-row__poster">
-                      <PosterImage :src="item.posterUrl" :alt="item.title" :width-px="IMG_W_INLINE" />
+                      <PosterImage
+                        :src="item.posterUrl"
+                        :alt="item.title"
+                        :fallback-title="item.title"
+                        :width-px="IMG_W_INLINE"
+                      />
                     </span>
                     <span class="result-row__body">
                       <span class="result-row__title">
@@ -886,6 +975,7 @@ function openSourceManage(): void {
             仍在搜索其它源{{
               library.searchProgress ? `（${library.searchProgress.done}/${library.searchProgress.total}）` : '…'
             }}
+            · 约 {{ searchWindowSec }} 秒内收口
           </span>
         </div>
       </template>
@@ -1445,6 +1535,26 @@ function openSourceManage(): void {
   background-color: var(--color-info-soft);
   font: var(--text-caption);
   color: var(--color-info);
+}
+
+/* P2-8：拆词噪声提示——比中性说明更醒一档，但不用告警色（不是故障，是"结果未必是你要的"） */
+.search-no-direct {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-warning-soft);
+}
+
+.search-no-direct__title {
+  font: var(--text-footnote-medium);
+  color: var(--color-text-primary);
+}
+
+.search-no-direct__desc {
+  margin-top: var(--space-1);
+  font: var(--text-caption);
+  line-height: 1.5;
+  color: var(--color-text-secondary);
 }
 
 .search-diagnose {

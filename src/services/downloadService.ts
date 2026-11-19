@@ -95,6 +95,15 @@ export interface LocalPlayResult {
   revoke(): void;
 }
 
+/** 存储占用（AC-79 / P2-3）：只算落盘字节，`partialBytes` 是其中未完成的残片 */
+export interface StorageUsage {
+  /** 成品 + 残片的真实占用 */
+  totalBytes: number;
+  /** 成品文件数（残片不计） */
+  fileCount: number;
+  partialBytes: number;
+}
+
 type DownloadListener = (e: DownloadEvent) => void;
 
 const listeners = new Set<DownloadListener>();
@@ -1031,6 +1040,33 @@ export const downloadService = {
     return task;
   },
 
+  /**
+   * P3-1：把等待中的任务提到队列最前（下载页「置顶」）。
+   *
+   * 队列按 `priority` 升序、`createdAt` 升序派发，而创建时写的是 `priority = now`——
+   * 也就是纯 FIFO，用户想让第 7 集先下没有任何入口。这里只改 `priority`：取所有等待中
+   * 任务的最小值再减 1，保证它排在其余 queued 之前（含同批一起创建、`createdAt` 相同的兄弟集）。
+   *
+   * 只认 `queued`：正在跑的任务改优先级也不会更快——槽位是并发上限决定的，不是抢出来的；
+   * 暂停/失败的任务则要先「继续」/「重试」回到 queued，那时会带着这个新值入队。
+   */
+  async bringToFront(id: string): Promise<DownloadTask> {
+    const task = await downloadRepo.get(id);
+    if (!task) throw new AppError('E_NOT_FOUND');
+    if (task.status !== 'queued') {
+      throw new AppError('E_INVALID_STATE', '只有等待中的任务可以置顶', { retryable: false });
+    }
+    const waiting = await downloadRepo.listByStatus(['queued']);
+    const lowest = waiting.reduce((min, row) => Math.min(min, row.priority), task.priority);
+    const next: DownloadTask = { ...task, priority: lowest - 1, updatedAt: Date.now() };
+    await persist(next);
+    const q = await ensureQueue();
+    q.setPriority(next.id, next.priority);
+    emitDownload({ type: 'status', task: next, previous: 'queued' });
+    await emitQueueSummary();
+    return next;
+  },
+
   async cancel(id: string): Promise<void> {
     const q = await ensureQueue();
     await q.cancel(id);
@@ -1226,18 +1262,38 @@ export const downloadService = {
     return { removed: failedTasks.length, filesLeftBehind };
   },
 
-  /** 功能扩展-10：计算存储占用（AC-79） */
-  async calculateStorageUsage(): Promise<{ totalBytes: number; fileCount: number }> {
+  /**
+   * 功能扩展-10：计算存储占用（AC-79）
+   *
+   * 口径只认**已经落盘的字节**。旧实现把每条任务的 `totalBytes`（源站预估的成品大小）
+   * 全加起来，于是「排队中/失败/取消」也算钱：预检一次 12 集、一集没下完，
+   * 页面就报「本地存储 78 GB（12 个文件）」，删完文件数字还不回到 0。
+   *
+   * - `completed`：成品大小（`totalBytes` 缺失时回退已写字节）；
+   * - `canceled`：取消走 abort，`.part` 当场删掉（`downloadQueue.cancel` → 引擎 abort 分支），
+   *   落盘为 0，不计；
+   * - 其余状态：只加 `downloadedBytes`，这是断点续传留着的那截残片，确实占着盘。
+   */
+  async calculateStorageUsage(): Promise<StorageUsage> {
     const all = await downloadRepo.listAll();
     let totalBytes = 0;
+    let partialBytes = 0;
     let fileCount = 0;
     for (const task of all) {
-      if (task.totalBytes) {
-        totalBytes += task.totalBytes;
-        fileCount++;
+      if (task.status === 'completed') {
+        const bytes = task.totalBytes && task.totalBytes > 0 ? task.totalBytes : task.downloadedBytes;
+        totalBytes += bytes;
+        fileCount += 1;
+        continue;
       }
+      if (task.status === 'canceled') continue;
+      const cap = task.totalBytes && task.totalBytes > 0 ? task.totalBytes : Number.MAX_SAFE_INTEGER;
+      const leftover = Math.max(0, Math.min(task.downloadedBytes, cap));
+      if (leftover === 0) continue;
+      totalBytes += leftover;
+      partialBytes += leftover;
     }
-    return { totalBytes, fileCount };
+    return { totalBytes, fileCount, partialBytes };
   },
 
   /** 本地播放地址（文件缺失 → E_FILE_MISSING，AC-78；桥调用挂死 → E_TIMEOUT，P1-4） */

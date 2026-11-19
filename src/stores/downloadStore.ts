@@ -22,6 +22,7 @@ import type {
   LoadState,
 } from '@/types';
 import type { PreflightOptions, PreflightResult } from '@/services/downloadPreflight';
+import type { StorageUsage } from '@/services/downloadService';
 
 /** 空批次口径与 `aggregateSummary([])` 保持一致，避免卡片初始值和刷新后的值打架 */
 function emptySummary(): DownloadSummary {
@@ -204,7 +205,7 @@ export const useDownloadStore = defineStore('download', () => {
   }
 
   /** 功能扩展-10：存储占用 */
-  async function calculateStorageUsage(): Promise<{ totalBytes: number; fileCount: number }> {
+  async function calculateStorageUsage(): Promise<StorageUsage> {
     return downloadService.calculateStorageUsage();
   }
 

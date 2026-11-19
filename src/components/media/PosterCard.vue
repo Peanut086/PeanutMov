@@ -309,7 +309,13 @@ onBeforeUnmount(() => {
     @keydown="onCardKeydown"
   >
     <div class="poster-card__frame">
-      <PosterImage :src="item.posterUrl" :alt="item.title" :cover-key="coverKey" :width-px="IMG_W_CARD" />
+      <PosterImage
+        :src="item.posterUrl"
+        :alt="item.title"
+        :fallback-title="item.title"
+        :cover-key="coverKey"
+        :width-px="IMG_W_CARD"
+      />
 
       <!-- C-08：跟随指针的镜面高光，只在倾斜期间点亮 -->
       <span ref="sheen" class="poster-card__sheen" aria-hidden="true" />

@@ -58,6 +58,31 @@ function seasonOf(title: string): number | null {
   return parseSeasonNumber(title);
 }
 
+/** 一部作品的身份：根标题 + 季号（与 P1-7 归组、搜索相关度同一口径） */
+export interface ShowIdentity {
+  /** 根标题：季号写法已剥净，后缀噪声按 `stripTitleNoise` 同一规则去除 */
+  root: string;
+  /** 季号；无季号写法（电影、单季不带号）为 null */
+  season: number | null;
+  /** 跨季打包写法（`1-5季` / `S01-S05`）：它覆盖整部，集号与单季条目不可比 */
+  crossSeason: boolean;
+}
+
+/**
+ * P3-3：把「是不是同一部内容」这个问题交给 P1-7 已经验收过的归组口径。
+ *
+ * 换线路下载时 `mediaId` 必然不同（不同源、不同 id），`existingKeyOf` 那种字面键判不出来，
+ * 用户就可能在本地攒下两份同样的集。这里不另立一套相似标题算法：根标题、季号、跨季写法
+ * 全部复用上面的私有实现，避免搜索结果里合并成一组、下载列表里却判成两部。
+ */
+export function showIdentityOf(title: string): ShowIdentity {
+  return {
+    root: rootTitleOf(title),
+    season: seasonOf(title),
+    crossSeason: CROSS_SEASON_TEST.test(title),
+  };
+}
+
 /**
  * 查询词里的季号/年份标注词。
  *
@@ -375,6 +400,10 @@ export function selectRepresentative(
  * P1-7：分词那一步跳过查询词里的季号/年份标注词——搜「绝命毒师 第三季」时主条目
  * 「绝命毒师」仍算同作品命中（1 分、留在结果里），季号本身的一致性由 `queryAffinity`
  * 负责排序，不该把整部剧判定成无关。
+ *
+ * P2-8 曾想给分词档加「词长 ≥2」下限压噪声，但那会让「庆余年 2」这类查询整批判 0，
+ * 连带被 `isKeywordIgnored` 当成"源忽略关键词"整源丢弃——召回代价大于收益，改为
+ * 由结果区直接说明「没有直接匹配」（见 `countDirectMatches` 的调用方）。
  */
 export function scoreRelevance(title: string, keyword: string): number {
   const t = normalizeTitleForMatch(title);
@@ -393,6 +422,21 @@ export function scoreRelevance(title: string, keyword: string): number {
   // 单 token 的情形只可能是"原词被季号/年份拆出来的剩余部分"：多 token 的 AND 判定沿用旧口径
   if (words.every((token) => t.includes(token))) return 1;
   return 0;
+}
+
+/**
+ * P2-8：直接命中（精确/前缀/包含）的条数。
+ *
+ * 只有分词档（1 分）或完全无关（0 分）时，屏上那些片子其实都是"拆词沾边"，不能当成有效命中
+ * 摆出来——调用方据此把计数口径改成「沾边候选」，并给出「没有直接匹配」的说明与改写建议。
+ * 真机实测：乱码关键词返回 37~44 部，页头仍写「N 部 · 来源 M 条」，用户无从判断是命中还是凑数。
+ */
+export function countDirectMatches(titles: Iterable<string>, keyword: string): number {
+  let hits = 0;
+  for (const title of titles) {
+    if (scoreRelevance(title, keyword) >= 2) hits += 1;
+  }
+  return hits;
 }
 
 /**
