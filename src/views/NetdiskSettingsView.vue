@@ -366,6 +366,9 @@ async function requestAllFilesAccess() {
   }
 }
 
+/** 原生在取不到真实昵称时写入的兜底占位，不能当成「已验证的真实账号」展示 */
+const UNKNOWN_ACCOUNT_PLACEHOLDER = '未知账号';
+
 /** 解析 cookie 文件内容：`a`=昵称（仅账号校验通过时非空）、`b`=会员类型、`c`=cookie */
 function parseCookieAccount(content: string | undefined): {
   nickname: string | null;
@@ -374,8 +377,12 @@ function parseCookieAccount(content: string | undefined): {
   if (!content) return { nickname: null, memberType: null };
   try {
     const parsed = JSON.parse(content) as { a?: unknown; b?: unknown };
-    const nickname =
+    const rawNickname =
       typeof parsed.a === 'string' && parsed.a.trim().length > 0 ? parsed.a.trim() : null;
+    // 兜底占位与真实昵称区分：历史文件里的「未知账号」只代表「有 cookie 但没拿到身份」，
+    // 若照原样显示会变成误导性的「已登录（未知账号）」，掩盖真实问题。
+    const nickname =
+      rawNickname && rawNickname !== UNKNOWN_ACCOUNT_PLACEHOLDER ? rawNickname : null;
     const memberType =
       typeof parsed.b === 'string' && parsed.b.trim().length > 0 && parsed.b.trim() !== '0'
         ? parsed.b.trim()

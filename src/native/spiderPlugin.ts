@@ -81,6 +81,20 @@ export interface SpiderPlugin {
   getPrewarmState(): Promise<{ throttled: boolean; safeMode: boolean }>;
   /** 手动退出安全模式并清空崩溃历史，恢复爬虫源加载 */
   exitSafeMode(): Promise<{ ok: boolean }>;
+  /**
+   * REV-24：查询当前崩溃隔离名单（同 jar+api 签名 24h 内崩 2 次→隔 7 天）。
+   * `items` 为隔离签名数组（形如 `spider:<jarMd5>:<api>` 或 `spider:<jarMd5>:*`）。
+   *
+   * P0-1：`cooldowns` 是「短时冷却」档——单次可疑崩溃（无 tombstone 实锤）只拦 30 分钟，
+   * 不占用隔离名单，所以必须单独列出，否则健康中心会显示「没有隔离任何源」而源仍然打不开。
+   * `remainMs` 为距自动放行的剩余毫秒。
+   */
+  getQuarantined(): Promise<{
+    items: string[];
+    cooldowns: Array<{ signature: string; remainMs: number }>;
+  }>;
+  /** REV-24：手动解除某个签名的隔离（冷却档一并清除：一次点击就放行到底） */
+  unquarantine(options: { signature: string }): Promise<{ ok: boolean }>;
   /** 设置详细日志开关 */
   setDebugLog(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
   /** 获取日志状态（开关、文件数、总字节、保留天数） */

@@ -24,6 +24,7 @@ import BatchActions from '@/components/health/BatchActions.vue';
 import FailureDistribution from '@/components/health/FailureDistribution.vue';
 import HealthSummary from '@/components/health/HealthSummary.vue';
 import HealthTrend from '@/components/health/HealthTrend.vue';
+import QuarantinePanel from '@/components/health/QuarantinePanel.vue';
 
 import { useSourceStore } from '@/stores/sourceStore';
 import { useUiStore } from '@/stores/uiStore';
@@ -240,6 +241,8 @@ async function onRestore(): Promise<void> {
           @restore="onRestore"
           @cancel="onCancelRecheck"
         />
+
+        <QuarantinePanel />
 
         <p class="health-center__footer">
           趋势快照保存在本机（最多保留 30 天）；「已禁用」的失败源需先恢复才会重新参与复检。

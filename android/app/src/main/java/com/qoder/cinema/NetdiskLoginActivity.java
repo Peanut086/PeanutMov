@@ -16,6 +16,7 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -26,7 +27,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -242,12 +242,17 @@ public class NetdiskLoginActivity extends Activity {
                 }
 
                 saved = true;
-                showMessage(info.verified
+                final String successText = info.verified
                         ? "登录成功（账号：" + info.nickname + "）"
-                        : "Cookie 已保存（账号信息未验证）");
+                        : "Cookie 已保存（账号信息未验证）";
+                showMessage(successText);
 
                 runOnUiThread(() -> {
                     if (isFinishing()) return;
+                    // 自动跳转命中后页面会秒退，statusText 来不及被看到；
+                    // 用 application-context 的 Toast 让「登录成功」在关闭后仍然可见，
+                    // 免得用户误以为没登上而反复点开登录页。
+                    Toast.makeText(getApplicationContext(), successText, Toast.LENGTH_SHORT).show();
                     Intent data = new Intent();
                     data.putExtra(EXTRA_PLATFORM, platform);
                     data.putExtra(EXTRA_VERIFIED, info.verified);
@@ -342,7 +347,12 @@ public class NetdiskLoginActivity extends Activity {
             if (accountBody != null) {
                 try {
                     JSONObject account = new JSONObject(accountBody);
-                    if (account.optInt("status", -1) == 200) {
+                    // account/info 接口顶层只有 success/data/code（code="OK"），没有 member 接口那样的 status 字段；
+                    // 旧实现强求 status==200 → 恒不成立 → 昵称永远取不到，落盘成「未知账号」误导用户。
+                    boolean accountOk = account.optBoolean("success", false)
+                            || "ok".equalsIgnoreCase(account.optString("code", ""))
+                            || account.optInt("status", -1) == 200;
+                    if (accountOk) {
                         JSONObject accountData = account.optJSONObject("data");
                         if (accountData != null) {
                             nickname = firstNonEmpty(accountData, "nickname", "nick_name", "user_name");
@@ -436,22 +446,37 @@ public class NetdiskLoginActivity extends Activity {
         }
     }
 
+    /**
+     * jar 登录闸门自检（FIX-5）：读回刚落盘的 cookie 文件，确认是合法 JSON 且
+     * a/b/c 三字段均非空——这正是夸克 jar `o().d()` 的判据。
+     *
+     * 旧实现反射 `Class.forName("com.github.catvod.spider.merge.b.w")`，但爬虫类在
+     * DexClassLoader 里、登录页又未加载该 jar，默认 ClassLoader 必然抛
+     * ClassNotFoundException，自检恒失败且只留下误导性日志，故改为直接核验落盘产物。
+     */
     private boolean checkJarGate() {
-        try {
-            // 反射调用 merge.b.w.e().o().d()
-            Class<?> wClass = Class.forName("com.github.catvod.spider.merge.b.w");
-            Method eMethod = wClass.getMethod("e");
-            Object wInstance = eMethod.invoke(null);
-
-            Method oMethod = wClass.getMethod("o");
-            Object account = oMethod.invoke(wInstance);
-
-            Method dMethod = account.getClass().getMethod("d");
-            Boolean result = (Boolean) dMethod.invoke(account);
-
-            return result != null && result;
+        File dir = new File(Environment.getExternalStorageDirectory(), "TVBox");
+        File target = new File(dir, platform + "_cookie.txt");
+        if (!target.exists()) {
+            Log.w(TAG, "Jar gate self-check: cookie file not found");
+            return false;
+        }
+        try (InputStream in = new java.io.FileInputStream(target)) {
+            byte[] buf = new byte[(int) Math.min(target.length(), MAX_RESPONSE_CHARS)];
+            int read = 0;
+            while (read < buf.length) {
+                int n = in.read(buf, read, buf.length - read);
+                if (n <= 0) break;
+                read += n;
+            }
+            JSONObject json = new JSONObject(new String(buf, 0, read, StandardCharsets.UTF_8));
+            boolean passed = !json.optString("a", "").isEmpty()
+                    && !json.optString("b", "").isEmpty()
+                    && !json.optString("c", "").isEmpty();
+            if (!passed) Log.w(TAG, "Jar gate self-check: a/b/c not all present");
+            return passed;
         } catch (Exception e) {
-            Log.w(TAG, "Gate check failed (jar may not be loaded yet)", e);
+            Log.w(TAG, "Jar gate self-check failed", e);
             return false;
         }
     }

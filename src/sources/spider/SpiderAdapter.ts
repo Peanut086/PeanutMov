@@ -25,6 +25,7 @@ import {
 import { logger } from '@/shared/logger';
 import {
   isMagnetUrl,
+  COOLDOWN_MESSAGE,
   MAGNET_MESSAGE,
   QUARANTINE_MESSAGE,
   SAFE_MODE_MESSAGE,
@@ -377,6 +378,10 @@ function nativeErrorOf(e: unknown, fallback: AppError): AppError {
   }
   if (message.includes('quarantined')) {
     return new AppError('E_SOURCE_UNAVAILABLE', QUARANTINE_MESSAGE, { detail: message, cause: e });
+  }
+  // P0-1：冷却档单独成类。归进 quarantined 会让 UI 让用户去解一份并不存在的隔离。
+  if (message.includes('cooling down')) {
+    return new AppError('E_SOURCE_UNAVAILABLE', COOLDOWN_MESSAGE, { detail: message, cause: e });
   }
   if (message.includes('超时')) {
     return new AppError('E_TIMEOUT', message);
@@ -1448,14 +1453,27 @@ function parseFlagIsEnabled(value: SpiderPlayerResult['parse']): boolean {
   return false;
 }
 
-/** P1: 识别网盘登录错误 */
-function detectNetdiskError(msg: string): 'E_NETDISK_LOGIN_REQUIRED' | undefined {
+/**
+ * P1: 识别网盘登录错误。
+ *
+ * 只认明确的「登录/凭证缺失」文案。旧实现把任意含 `cookie` / `账号` 的 msg 都判为
+ * 未登录，导致夸克分享类错误（如 41031「分享者账号已被封禁」、失效分享提示）被误映射成
+ * `E_NETDISK_LOGIN_REQUIRED`，把已登录的用户反复弹去登录页。现改为：登录短语直接命中；
+ * `cookie/凭证/token` 必须配合「失效/过期/为空」等限定词才算登录态问题。
+ */
+export function detectNetdiskError(msg: string): 'E_NETDISK_LOGIN_REQUIRED' | undefined {
   if (!msg) return undefined;
   const lower = msg.toLowerCase();
-  if (lower.includes('未登录') || lower.includes('还未登录') || lower.includes('未配置') || lower.includes('请登录')) {
-    return 'E_NETDISK_LOGIN_REQUIRED';
-  }
-  if (lower.includes('cookie') || lower.includes('账号')) {
+  // 播放失败文案里出现「登录」基本就是登录态问题（未登录/请先登录/重新登录/登录失效/扫码登录）；
+  // 夸克分享与死链文案（分享者账号已被封禁、分享地址已失效）不含「登录」，因此不会误判。
+  if (lower.includes('登录')) return 'E_NETDISK_LOGIN_REQUIRED';
+  if (/未配置|请配置|配置中心/.test(lower)) return 'E_NETDISK_LOGIN_REQUIRED';
+  // cookie/凭证类：需带失效限定词，避免分享文案里出现「cookie」二字就误判
+  if (
+    /(cookie|凭证|令牌|token)[^。]*?(失效|过期|无效|错误|为空|未设置|缺失|missing|invalid|expired)/.test(
+      lower,
+    )
+  ) {
     return 'E_NETDISK_LOGIN_REQUIRED';
   }
   return undefined;
