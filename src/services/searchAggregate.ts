@@ -487,6 +487,7 @@ export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
   source_internal: '源侧执行异常',
   safe_mode: '安全模式暂停',
   quarantined: '爬虫被隔离',
+  cooldown: '爬虫冷却中',
   spider_mismatch: '爬虫类缺失',
   jar_conflict: 'jar 依赖冲突',
   auth: '需要登录',

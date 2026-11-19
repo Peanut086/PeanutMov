@@ -17,6 +17,8 @@ import { useRoute, useRouter } from 'vue-router';
 
 import type { EpgProgramme } from '@/services/epgService';
 import type { CatchupPlan } from '@/services/replayService';
+import type { ReminderSettingsTarget } from '@/native/notificationScheduler';
+import type { ReminderDeliveryAssessment } from '@/services/reminderService';
 import type { CatchupCapability, ChannelEpgResult, EpgChannelRef, Reminder, ReminderLead } from '@/types';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
@@ -27,7 +29,12 @@ import ReminderSheet from '@/components/live/ReminderSheet.vue';
 import { epgService } from '@/services/epgService';
 import { epgSourceService } from '@/services/epgSourceService';
 import { liveService } from '@/services/liveService';
-import { reminderService } from '@/services/reminderService';
+import {
+  describeReminderDelivery,
+  openReminderDeliverySettings,
+  probeReminderDelivery,
+  reminderService,
+} from '@/services/reminderService';
 import { replayService } from '@/services/replayService';
 import { channelKeyFromLive } from '@/services/channelIdentity';
 import { appEvents } from '@/services/events';
@@ -373,6 +380,8 @@ const reminderOpen = ref(false);
 const reminderSaving = ref(false);
 const reminderNotice = ref<string | null>(null);
 const reminderTarget = ref<{ title: string; startAt: number; endAt: number; key: string } | null>(null);
+/** P2-2：当前投递档位（打开弹层时只读探测 / 刚排完期的结论）；null = 还没拿到 */
+const reminderDelivery = ref<ReminderDeliveryAssessment | null>(null);
 
 const reminderStartAt = computed(() => reminderTarget.value?.startAt ?? 0);
 
@@ -385,6 +394,20 @@ const activeReminder = computed<Reminder | null>(() => {
   if (!target) return null;
   return reminderMap.value.get(reminderKeyOf(target.startAt)) ?? null;
 });
+
+/** 投递说明：优先当前系统状态，退回排期台账（弹层里那一行 + 设置入口） */
+const reminderDeliveryView = computed(() =>
+  describeReminderDelivery(reminderDelivery.value, activeReminder.value),
+);
+
+/** 只读探测投递档位：不申请权限、不重排，失败就退回台账口径 */
+async function refreshReminderDelivery(): Promise<void> {
+  try {
+    reminderDelivery.value = await probeReminderDelivery();
+  } catch {
+    reminderDelivery.value = null;
+  }
+}
 
 /**
  * REV-21：读取**全部**提醒（含 fired / missed），不再只取 scheduled，
@@ -445,6 +468,7 @@ function showsReminder(prog: EpgProgramme): boolean {
 function openReminder(prog: EpgProgramme): void {
   if (!canEditReminder(prog)) return;
   reminderNotice.value = null;
+  reminderDelivery.value = null;
   reminderTarget.value = {
     title: prog.title,
     startAt: startAtOf(prog),
@@ -452,6 +476,24 @@ function openReminder(prog: EpgProgramme): void {
     key: prog.key ?? `${startAtOf(prog)}:${prog.title}`,
   };
   reminderOpen.value = true;
+  void refreshReminderDelivery();
+}
+
+/** 从系统设置页回来后重新探测；档位好转就提示用户重排（旧排期不会自己改期） */
+async function openReminderSettings(target: ReminderSettingsTarget | null): Promise<void> {
+  if (!target) return;
+  const result = await openReminderDeliverySettings(target);
+  if (!result.opened) {
+    reminderNotice.value = result.reason ?? '当前系统没有提供这个设置页';
+    return;
+  }
+  const before = activeReminder.value?.delivery ?? null;
+  await refreshReminderDelivery();
+  const after = reminderDelivery.value?.tier ?? null;
+  if (activeReminder.value && after === 'exact' && before !== 'exact') {
+    // 授权生效只影响之后的排期，说清要点「更新提醒」才按新状态重排
+    reminderNotice.value = '已按当前系统状态重判档位，点「更新提醒」可让这次提醒按新状态重排';
+  }
 }
 
 async function confirmReminder(leadMinutes: ReminderLead): Promise<void> {
@@ -476,13 +518,19 @@ async function confirmReminder(leadMinutes: ReminderLead): Promise<void> {
       leadMinutes,
     });
     await loadReminders();
+    reminderDelivery.value = saved.native.delivery;
     if (saved.native.permission === 'granted' && saved.native.scheduled) {
-      reminderOpen.value = false;
-      toast.success(`已设置提醒：开播前 ${leadMinutes} 分钟通知你`);
-    } else {
-      // AC-168 降级：无通知权限 / 排期失败时明确告知「仅 App 内提醒」
-      reminderNotice.value = saved.lastError ?? '通知权限未授予，将只在 App 内提醒';
+      if (saved.native.delivery.tier === 'exact') {
+        reminderOpen.value = false;
+        toast.success(`已设置提醒：开播前 ${leadMinutes} 分钟通知你`);
+        return;
+      }
+      // 排期成功但投递退化（延迟 / 仅 App 内）：不把黄灯报成绿灯，缺口留在弹层里说清
+      reminderNotice.value = `提醒已排期，但${reminderDeliveryView.value?.text ?? '投递档位未知'}`;
+      return;
     }
+    // AC-168 降级：无通知权限 / 排期失败时明确告知「仅 App 内提醒」
+    reminderNotice.value = saved.lastError ?? '通知权限未授予，将只在 App 内提醒';
   } catch (e) {
     reminderNotice.value = toErrorShape(e).message;
   } finally {
@@ -771,8 +819,10 @@ function formatDuration(startSec: number, endSec: number): string {
       :reminder="activeReminder"
       :saving="reminderSaving"
       :notice="reminderNotice"
+      :delivery-view="reminderDeliveryView"
       @confirm="confirmReminder"
       @cancel-reminder="cancelReminder"
+      @open-settings="openReminderSettings"
     />
   </SafeArea>
 </template>

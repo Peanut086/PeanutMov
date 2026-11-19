@@ -5,6 +5,9 @@
  * 按 `Source.subscriptionId`（订阅来源标识：URL / 文件名，CHG-11 口径）聚合展示
  * 已导入的订阅：贡献源数、启用/失效概览、最近导入时间（`ImportRecord`）。
  * 操作：刷新（仅覆盖已有源，jar 判死不覆盖）/ 删除该订阅全部源 / 跳批量评测。
+ *
+ * P2-1：每行显示刷新台账（最近尝试 / 最近成功 / 失败或部分成功原因 / 退避剩余），
+ * 手动与自动刷新共用 `refreshTracked`，所以这里看到的口径与后台链路完全一致。
  */
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
@@ -16,7 +19,14 @@ import EmptyState from '@/components/common/EmptyState.vue';
 import ErrorState from '@/components/common/ErrorState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import { useSourceStore } from '@/stores/sourceStore';
-import { importService, listImportRecords, type ImportRecord } from '@/services/importService';
+import { listImportRecords, type ImportRecord } from '@/services/importService';
+import {
+  describeRefreshOutcome,
+  listRefreshOutcomes,
+  refreshSummaryText,
+  refreshTracked,
+  type SubscriptionRefreshOutcome,
+} from '@/services/subscriptionLifecycleService';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { useUiStore } from '@/stores/uiStore';
@@ -30,6 +40,8 @@ const ui = useUiStore();
 const { isOffline } = useOnlineStatus();
 
 const records = ref<ImportRecord[]>([]);
+/** P2-1：逐订阅刷新台账（自动与手动共用，所以这里显示的就是后台真实的尝试结果） */
+const outcomes = ref<Record<string, SubscriptionRefreshOutcome>>({});
 const loading = ref(true);
 const error = ref<string | null>(null);
 const refreshingId = ref<string | null>(null);
@@ -43,6 +55,7 @@ interface SubscriptionRow {
   enabledCount: number;
   unhealthyCount: number;
   importedAt: number | null;
+  outcome: SubscriptionRefreshOutcome | null;
   /** 是否可刷新（URL 形态；文件导入的订阅无法重新拉取） */
   refreshable: boolean;
 }
@@ -65,14 +78,27 @@ const rows = computed<SubscriptionRow[]>(() => {
         (s) => s.healthCheckedAt !== null && s.health !== 'ok' && s.health !== 'unknown',
       ).length,
       importedAt: recordAt.get(id) ?? list.reduce((acc, s) => Math.max(acc, s.createdAt), 0),
+      outcome: outcomes.value[id] ?? null,
       refreshable: /^https?:\/\//i.test(id),
     }))
     .sort((a, b) => (b.importedAt ?? 0) - (a.importedAt ?? 0));
 });
 
+/**
+ * 台账一行话（P2-1）。
+ *
+ * 文案与语气都由 `describeRefreshOutcome` 生成：界面只负责渲染，
+ * 重启后再进这一页看到的还是同一句，不会出现两套口径。
+ */
+function refreshNote(row: SubscriptionRow) {
+  return row.outcome ? describeRefreshOutcome(row.outcome) : null;
+}
+
 onMounted(async () => {
   try {
-    records.value = await listImportRecords();
+    const [rs, oc] = await Promise.all([listImportRecords(), listRefreshOutcomes()]);
+    records.value = rs;
+    outcomes.value = oc;
     await sources.load();
     void sources.loadSummaries();
   } catch (e) {
@@ -84,16 +110,15 @@ onMounted(async () => {
 
 /* ---------- v1.7/CHG-19：全部刷新与自动禁用恢复 ---------- */
 
-/** 一键刷新全部 URL 订阅（TTL 内的自动跳过） */
+/** 一键刷新全部订阅（TTL 内或失败退避中的直接跳过，跳过数单独披露） */
 async function refreshAll(): Promise<void> {
   if (isOffline.value) {
     toast.info('当前离线，无法刷新订阅');
     return;
   }
-  const { refreshed, failed } = await sources.refreshAllSubscriptions();
-  if (refreshed === 0 && failed === 0) toast.info('所有订阅都在 24h 内刷新过，暂无需刷新');
-  else if (failed === 0) toast.success(`已刷新 ${refreshed} 个订阅`);
-  else toast.error(`刷新完成：成功 ${refreshed}，失败 ${failed}（失败项已静默，可稍后重试）`);
+  const summary = refreshSummaryText(await sources.refreshAllSubscriptions());
+  outcomes.value = await listRefreshOutcomes();
+  toast[summary.tone](summary.text);
 }
 
 /** 恢复被自动禁用的源 */
@@ -117,14 +142,20 @@ async function refresh(row: SubscriptionRow): Promise<void> {
   }
   refreshingId.value = row.id;
   try {
-    const { updated, newCount, jarDead, livesFailed } = await importService.refreshSubscription(row.id);
-    const parts = [`覆盖 ${updated} 个源`];
-    if (newCount > 0) parts.push(`新增 ${newCount} 条未导入`);
-    if (jarDead > 0) parts.push(`${jarDead} 个 jar 已失效未覆盖`);
-    if (livesFailed > 0) parts.push(`${livesFailed} 个直播源同步失败`);
+    // 走与后台自动刷新同一个入口：手动刷新的结果同样进台账，退避状态也因此清零
+    const { ok, reason, outcome, counts } = await refreshTracked(row.id);
+    outcomes.value = { ...outcomes.value, [row.id]: outcome };
+    if (!ok) {
+      toast.error(`「${row.id}」刷新失败：${reason ?? '未知原因'}`);
+      return;
+    }
+    const parts = [`覆盖 ${counts?.updated ?? 0} 个源`];
+    if (counts && counts.newCount > 0) parts.push(`新增 ${counts.newCount} 条未导入`);
+    if (counts && counts.jarDead > 0) parts.push(`${counts.jarDead} 个 jar 已失效未覆盖`);
+    if (counts && counts.livesFailed > 0) parts.push(`${counts.livesFailed} 个直播源同步失败`);
     const text = `「${row.id}」已刷新：${parts.join('，')}`;
     // 直播源没同步上就不算「全绿」：用 info 说完成绩，也把缺口留在屏幕上
-    if (livesFailed > 0) toast.info(text);
+    if (counts && counts.livesFailed > 0) toast.info(text);
     else toast.success(text);
   } catch (e) {
     toast.error(toErrorShape(e).message);
@@ -224,9 +255,13 @@ async function retry(): Promise<void> {
               <template v-if="row.unhealthyCount > 0"> · 失效 {{ row.unhealthyCount }}</template>
               <template v-if="summaryOf(row.id)?.jarDead"> · jar 死 {{ summaryOf(row.id)?.jarDead }}</template>
               <template v-if="row.importedAt"> · {{ formatRelativeTime(row.importedAt) }}</template>
-              <template v-if="summaryOf(row.id)?.lastRefreshAt">
-                · 上次刷新 {{ formatRelativeTime(summaryOf(row.id)!.lastRefreshAt!) }}
-              </template>
+            </p>
+            <p
+              v-if="refreshNote(row)"
+              class="subs-row__outcome"
+              :class="`subs-row__outcome--${refreshNote(row)?.tone}`"
+            >
+              {{ refreshNote(row)?.text }}
             </p>
           </div>
           <div class="subs-row__actions">
@@ -334,6 +369,26 @@ async function retry(): Promise<void> {
 .subs-row__meta {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+/* P2-1：刷新台账（成功/部分成功/失败三档，失败才用强调色） */
+.subs-row__outcome {
+  margin-top: var(--space-1);
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.subs-row__outcome--ok {
+  color: var(--color-success);
+}
+
+.subs-row__outcome--warn {
+  color: var(--color-warning);
+}
+
+.subs-row__outcome--bad {
+  color: var(--color-danger);
 }
 
 .subs-row__actions {

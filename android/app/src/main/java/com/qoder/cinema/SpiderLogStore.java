@@ -40,7 +40,8 @@ import java.util.zip.GZIPOutputStream;
  * - 保留 3 天，启动时清理一次
  * - 开关持久化到 SharedPreferences，默认跟随 BuildConfig.DEBUG
  * - 关闭时仍写 W/E，保证崩溃可诊断
- * - 写入前脱敏 URL 中的 token/password/cookie 等
+ * - 写入前脱敏（{@link LogRedactor}：凭据键值、cookie 续段、会话型长值）
+ * - 导出时再脱敏一遍：磁盘上可能还有旧版本落的原文，tombstone 与崩溃栈也不走写入路径
  */
 public final class SpiderLogStore {
     private static final String TAG = "SpiderLogStore";
@@ -176,9 +177,9 @@ public final class SpiderLogStore {
         return ts + " " + level + " [" + thread + "] " + tag + ": " + redacted + "\n";
     }
 
+    /** 写入前脱敏：口径与导出时完全一致，统一在 {@link LogRedactor} 里定义 */
     private String redact(String s) {
-        if (s == null || s.isEmpty()) return s;
-        return s.replaceAll("(?i)(token|password|pwd|authorization|cookie|api_?key)=([^&\\s\"']+)", "$1=***");
+        return LogRedactor.redact(s);
     }
 
     private void drain() {
@@ -623,7 +624,9 @@ public final class SpiderLogStore {
         long cutoff = "recent1h".equals(scope)
                 ? System.currentTimeMillis() - 60L * 60 * 1000 : 0L;
         String today = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
-        try (BufferedWriter w = new BufferedWriter(new FileWriter(exportFile))) {
+        // 导出再走一遍脱敏：日志文件里可能混着旧版本落的原文，tombstone / 崩溃栈本来也不经过写入脱敏
+        try (BufferedWriter w = new BufferedWriter(
+                new LogRedactor.RedactingWriter(new FileWriter(exportFile)))) {
             if (!crashOnly) {
                 for (File f : files) {
                     if ("today".equals(scope) && !f.getName().contains(today)) continue;

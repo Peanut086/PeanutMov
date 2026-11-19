@@ -26,6 +26,15 @@ const { schedulerMock } = vi.hoisted(() => {
     schedulerMock: {
       state,
       ensurePermission: vi.fn(async () => 'granted' as const),
+      peekPermission: vi.fn(async () => 'granted' as const),
+      // P2-2：排期路径会读投递快照，桩里给一个「全绿」状态，档位判成 exact
+      getDeliveryState: vi.fn(async () => ({
+        notificationsEnabled: true,
+        channelExists: true,
+        channelImportance: 4,
+        exactAlarmsAllowed: true,
+        batteryOptimizationIgnored: true,
+      })),
       schedule: vi.fn(async () => ({ scheduled: true })),
       getPendingIds: vi.fn(async () => state.pendingSchedules.map((item) => item.nativeId)),
       getPendingSchedules: vi.fn(async () => state.pendingSchedules),

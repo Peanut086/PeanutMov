@@ -2204,6 +2204,9 @@ async function startForegroundServiceIfNeeded(): Promise<void> {
   } catch (e) {
     logger.warn('启动前台 Service 失败', toAppError(e).message);
   }
+  // P0-2：原生侧现在不会因前台资格被拒而抛（那条路会把进程带走），所以 bridge 即使 resolve
+  // 也可能只代表「申请已发出」。真被拒时这一轮后台窗口没有保活，下载仍在跑但可能被系统回收；
+  // 回前台 `stopForegroundServiceSafe()` 会把标记清掉，下次转后台重新申请——不需要额外重试环。
 }
 
 async function stopForegroundServiceSafe(): Promise<void> {

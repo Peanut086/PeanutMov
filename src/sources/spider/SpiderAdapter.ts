@@ -32,6 +32,12 @@ import {
   SPIDER_MISMATCH_MESSAGE,
   sanitizeSourceMessage,
 } from '@/shared/sourceFailure';
+import {
+  LOAD_FAILURE_LABELS,
+  classifyDeterministicLoadFailure,
+  findSuppressedLoadFailure,
+  noteLoadFailure,
+} from '@/services/spiderLoadLedger';
 import { isNative } from '@/shared/platform';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { httpClient } from '@/sources/base/httpClient';
@@ -409,7 +415,13 @@ function nativeErrorOf(e: unknown, fallback: AppError): AppError {
   if (/md5/i.test(message)) {
     return new AppError('E_PARSE', 'jar 校验失败，源文件已损坏或被替换', { detail: message, cause: e });
   }
-  if (/ClassNotFound|ClassCastException|NoSuchMethod/.test(message)) {
+  // P1-2：链接期/二进制不兼容的错都归到同一句人话——对用户都是「这个 jar 跟当前 App 装不上」，
+  // 逐个透出 `IncompatibleClassChangeError` 只会变成看不懂的英文堆栈词。
+  if (
+    /ClassNotFound|NoClassDefFound|NoSuchMethod|NoSuchField|ClassCastException|IncompatibleClassChange|UnsupportedClassVersion|VerifyError|ExceptionInInitializer/.test(
+      message,
+    )
+  ) {
     return new AppError('E_PARSE', SPIDER_MISMATCH_MESSAGE, { detail: message, cause: e });
   }
   if (message.includes('jar too large')) {
@@ -613,6 +625,9 @@ export class SpiderAdapter extends BaseAdapter {
     if (source.health === 'unreachable' || source.health === 'bad_config' || source.health === 'auth_failed') {
       return;
     }
+    // P1-2：同一版 jar/规则已经确定崩过一次的，不再每轮冷启动重下一遍
+    // （真实搜索仍照常发起，判错种类不会让用户拿不到结果）
+    if (await this.isLoadSuppressed(source, ext)) return;
     if (this.handles.has(source.id) || this.warmingUp.has(source.id)) return;
     this.warmingUp.add(source.id);
     try {
@@ -622,6 +637,48 @@ export class SpiderAdapter extends BaseAdapter {
       logger.debug('爬虫源预热失败（静默）', source.name, e);
     } finally {
       this.warmingUp.delete(source.id);
+    }
+  }
+
+  /**
+   * P1-2：账本用的「规则 / JAR 版本」标识。
+   *
+   * jar 用配置里的原始 `jarUrl`（含 `;md5;` 后缀）——后缀就是版本，源站换文件即新版本；
+   * drpy 用规则地址。镜像变体是同一个文件的不同入口，不参与版本判定。
+   */
+  private loadVersionTarget(source: Source, ext: SpiderSourceExt): string {
+    if (ext.kind === 'js') return this.ruleUrlCandidates(source, ext)[0] ?? '';
+    return (ext.jarUrl ?? '').trim();
+  }
+
+  /** 命中确定性失败账本时记一条日志并返回 true（跳过预热的唯一依据） */
+  private async isLoadSuppressed(source: Source, ext: SpiderSourceExt): Promise<boolean> {
+    const target = this.loadVersionTarget(source, ext);
+    if (!target) return false;
+    const hit = await findSuppressedLoadFailure(source, target);
+    if (!hit) return false;
+    logger.debug('跳过确定性坏源的预热', source.name, LOAD_FAILURE_LABELS[hit.kind]);
+    return true;
+  }
+
+  /**
+   * P1-2：所有候选地址都失败后，判一次是不是「同一输入必然同样失败」。
+   *
+   * 记账只影响后台预热，不改这次的报错——用户看到的仍然是对症错误。
+   */
+  private async noteLoadFailureIfNeeded(
+    source: Source,
+    ext: SpiderSourceExt,
+    lastError: unknown,
+  ): Promise<void> {
+    const message = lastError instanceof Error ? lastError.message : String(lastError ?? '');
+    const kind = classifyDeterministicLoadFailure(message);
+    const target = this.loadVersionTarget(source, ext);
+    if (!kind || !target) return;
+    try {
+      await noteLoadFailure(source, kind, target, message);
+    } catch (e) {
+      logger.debug('确定性失败记账失败（忽略）', e);
     }
   }
 
@@ -708,6 +765,7 @@ export class SpiderAdapter extends BaseAdapter {
         logger.warn('爬虫 jar 加载失败（本次变体）', source.name, candidate, e);
       }
     }
+    await this.noteLoadFailureIfNeeded(source, ext, lastError);
     throw nativeErrorOf(lastError, new AppError('E_SOURCE_UNAVAILABLE', '爬虫加载失败，请检查网络或更换源'));
   }
 
@@ -749,6 +807,7 @@ export class SpiderAdapter extends BaseAdapter {
         }
       }
     }
+    await this.noteLoadFailureIfNeeded(source, ext, lastError);
     throw nativeErrorOf(lastError, new AppError('E_SOURCE_UNAVAILABLE', 'drpy 规则加载失败，请检查网络或更换源'));
   }
 

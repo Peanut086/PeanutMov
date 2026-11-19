@@ -87,7 +87,11 @@ describe('reminderService.upsert（CRUD + 校验）', () => {
     // Web/happy-dom 无原生通知 → 降级「仅 App 内提醒」，不静默失败
     expect(created.native.permission).toBe('unsupported');
     expect(created.native.scheduled).toBe(false);
-    expect(created.lastError).toBe('仅 App 内提醒');
+    expect(created.lastError).toContain('仅 App 内提醒');
+    // P2-2：档位与原因随记录落库，重启后界面显示的还是这一句
+    expect(created.native.delivery.tier).toBe('in-app');
+    expect(created.delivery).toBe('in-app');
+    expect(created.deliveryNote).toBe(created.lastError);
 
     const stored = await reminderService.get(created.id);
     expect(stored?.state).toBe('scheduled');

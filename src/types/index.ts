@@ -1203,6 +1203,15 @@ export type LiveChannelExtrasMap = Record<string /* channel url */, LiveChannelE
 /* ---------- FR-71：节目提醒 ---------- */
 export type ReminderState = 'scheduled' | 'firing' | 'fired' | 'missed' | 'cancelled';
 
+/**
+ * 提醒投递档位（P2-2 / AC-169）：排期时按当时的系统状态判定并随记录持久化。
+ *
+ * - `exact`：系统通知会按时弹出；
+ * - `delayed`：通知能出但可能被 Doze / 省电策略推迟，或渠道已被降级（不再横幅）；
+ * - `in-app`：只剩 App 内页内提示（通知权限被拒、渠道不可用、Web 环境）。
+ */
+export type ReminderDeliveryTier = 'exact' | 'delayed' | 'in-app';
+
 /** 提醒提前量（分钟）；0 = 节目开播时刻提醒（REV-20） */
 export type ReminderLead = 0 | 5 | 10 | 15 | 30;
 
@@ -1222,6 +1231,13 @@ export interface Reminder {
   /** 原生通知 id（32 位正整数，稳定哈希） */
   nativeId: number;
   lastError: string | null;
+  /**
+   * P2-2：排期当时的投递档位（`exact` / `delayed` / `in-app`）。
+   * 可选——本字段上线前的历史记录没有它，界面显示「投递状态未记录」，不猜成能准时。
+   */
+  delivery?: ReminderDeliveryTier;
+  /** 档位对应的一句话原因（为什么可能延迟 / 为什么只剩 App 内），随档位一起持久化 */
+  deliveryNote?: string | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }

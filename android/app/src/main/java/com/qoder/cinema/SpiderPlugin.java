@@ -9,6 +9,7 @@ import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.View;
 import android.view.WindowManager;
@@ -1000,6 +1001,25 @@ public class SpiderPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /**
+     * P0-1：拦截原因 → 异常文案。
+     *
+     * <p JS 侧按关键字分类（`quarantined` / `cooling down`，见
+     * {@code src/shared/sourceFailure.ts#classifySourceFailure}），改这里的措辞要同步改那边，
+     * 否则冷却会被归成「源侧执行异常」这类可重试错误，自动换源链也跟着判错。
+     */
+    private static String spiderBlockMessage(String blockReason, String jarMd5, String api) {
+        if ("cooldown".equals(blockReason)) {
+            return "spider cooling down (suspicious crash, auto-release in "
+                    + (CrashResponse.SPIDER_COOLDOWN_MS / 60000L) + "min): spider:" + jarMd5 + ":" + api;
+        }
+        if ("jar-quarantined".equals(blockReason)) {
+            // 明确说整 jar：这条 api 自己可能从没崩过，只报 api 级签名会把用户引向错的源
+            return "spider quarantined (crash, whole jar): spider:" + jarMd5 + ":*";
+        }
+        return "spider quarantined (crash): spider:" + jarMd5 + ":" + api;
+    }
+
     /** REV-24：查询当前隔离名单（供前端健康管理页展示） */
     @PluginMethod
     public void getQuarantined(PluginCall call) {
@@ -1010,6 +1030,19 @@ public class SpiderPlugin extends Plugin {
             arr.put(sig);
         }
         ret.put("items", arr);
+        // P0-1：冷却档不进隔离名单，健康中心必须另列——否则用户看到的是「源打不开，但名单是空的」，
+        // 而唯一的排查入口正是这份名单（入口不能被它要解释的问题挡住）。
+        JSArray cooldowns = new JSArray();
+        JSONObject snapshot = CrashSentinel.cooldownSnapshot(getContext());
+        java.util.Iterator<String> keys = snapshot.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            JSObject item = new JSObject();
+            item.put("signature", key);
+            item.put("remainMs", snapshot.optLong(key, 0L));
+            cooldowns.put(item);
+        }
+        ret.put("cooldowns", cooldowns);
         call.resolve(ret);
     }
 
@@ -1333,8 +1366,12 @@ public class SpiderPlugin extends Plugin {
 
         // REV-24：隔离检查——同 jar+api 签名若已崩溃 2 次被隔离，直接拒绝加载
         // F2'：额外认 jar 级通配签名（spider:<md5>:*），原生 tombstone 命中即整 jar 拉黑
-        if (CrashSentinel.isSpiderQuarantined(context, jarMd5, api)) {
-            throw new IllegalStateException("spider quarantined (crash): spider:" + jarMd5 + ":" + api);
+        // P0-1：分「隔离 / 短时冷却」两档报原因。旧文案对两种拦截都说成
+        // "quarantined (crash): spider:<md5>:<api>"，而日志里出现过 jar 被整体拉黑后，
+        // 从未崩过的 api（csp_BpanSoGuard）也被这句提示成"这个 api 崩过"。
+        String blockReason = CrashSentinel.spiderBlockReason(context, jarMd5, api);
+        if (blockReason != null) {
+            throw new IllegalStateException(spiderBlockMessage(blockReason, jarMd5, api));
         }
 
         // F1：带原生库的 jar 并发初始化是闪退头号触发条件（文件 B 两例同 jar 加载仅隔 24ms）。
@@ -1620,13 +1657,15 @@ public class SpiderPlugin extends Plugin {
 
             // 首次尝试
             Throwable firstError = null;
+            long initStartedAt = SystemClock.elapsedRealtime();
             try {
                 initMethod.invoke(null, app);
                 verifyGuardLoader(initClass, api);
                 guardInitDone.put(lockKey, Boolean.TRUE);
                 suppressGuardJarFloatingUi(context, baseline);
                 Log.i(TAG, "guard jar initialized: " + api);
-                d("guard jar initialized successfully: %s", api);
+                d("guard jar initialized successfully: %s in %dms",
+                        api, SystemClock.elapsedRealtime() - initStartedAt);
                 return;
             } catch (Throwable e) {
                 firstError = unwrap(e);
@@ -1651,9 +1690,13 @@ public class SpiderPlugin extends Plugin {
                 guardInitDone.put(lockKey, Boolean.TRUE);
                 suppressGuardJarFloatingUi(context, baseline);
                 Log.i(TAG, "guard jar initialized (retry): " + api);
+                d("guard jar initialized successfully (retry): %s in %dms",
+                        api, SystemClock.elapsedRealtime() - initStartedAt);
                 return;
             } catch (Throwable e) {
                 Throwable cause = unwrap(e);
+                d("guard jar init failed: %s after %dms -> %s",
+                        api, SystemClock.elapsedRealtime() - initStartedAt, describeFailure(cause));
                 Log.e(TAG, "guard jar init failed (retry): " + api + " -> " + describeFailure(cause), cause);
                 throw new IllegalStateException(
                         "guard 类型爬虫初始化失败（" + api + "）：" + describeFailure(cause), cause);

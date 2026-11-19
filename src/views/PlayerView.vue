@@ -77,7 +77,12 @@ import { useDanmakuPick } from '@/composables/useDanmakuPick';
 import { useDanmakuContrast } from '@/composables/useDanmakuContrast';
 import { prefersReducedMotion } from '@/composables/useSpring';
 import type { AmbilightBlockReason } from '@/composables/useAmbilight';
-import { findEpisodeOwnerLineId, offlineEpisodeMessage, resolveTargetEpisode } from '@/player/episodeFallback';
+import {
+  findEpisodeOwnerLineId,
+  offlineEpisodeMessage,
+  resolvePlaybackEpisode,
+  resolveTargetEpisode,
+} from '@/player/episodeFallback';
 import { DanmakuOverlay } from '@/player/DanmakuOverlay';
 import type { GestureIntent } from '@/player/GestureRecognizer';
 import { canShowGestureHelp, markGestureHelpShown } from '@/player/gestureHelpPolicy';
@@ -249,33 +254,48 @@ const episodes = computed<Episode[]>(() => {
   return filtered.sort((a, b) => a.number - b.number);
 });
 
-const currentEpisode = computed<Episode | null>(() => {
-  const list = episodes.value;
-  if (list.length === 0) return null;
+/**
+ * 目标集定位（P1-1）：口径全部下沉到 `resolvePlaybackEpisode`，页面只负责披露。
+ *
+ * 过去"路由 id 在当前线路找不到就播首集"会让进度写回、弹幕匹配、下载入口一起
+ * 记到第 1 集上，用户完全看不出来（真机日志 4 次「回退首集」都是这个形态）。
+ * 现在定位失败即 `targetEpisodeMissing`，由 `resolveAndLoad` 拦在起播之前。
+ */
+const episodeResolution = computed(() =>
+  resolvePlaybackEpisode({
+    lineEpisodes: episodes.value,
+    allEpisodes: library.detail?.episodes ?? [],
+    routeEpisodeId: episodeIdParam.value,
+    deepLinkNumber: epParam.value,
+    historyNumber:
+      episodeIdParam.value === null
+        ? null
+        : (history.items.find(
+            (r) => r.mediaId === mediaId.value && r.episodeId === episodeIdParam.value,
+          )?.episodeNumber ?? null),
+    anchorNumber: blackboxAnchor.value?.episodeNumber ?? null,
+    offlineNumber: offlineEpisodeNumber.value,
+  }),
+);
+
+const currentEpisode = computed<Episode | null>(() => episodeResolution.value.episode);
+
+/** 路由明确指向某一集，但当前线路里没有任何口径能定位到它 */
+const targetEpisodeMissing = computed(() => episodeResolution.value.missing);
+
+/**
+ * 正在播（或原本要播）的集号：当前集 > 路由 id 的历史集号 > 黑匣子集号锚。
+ * 换线路/换源按它对齐——定位失败时不能拿"第 1 集"当代号，否则换出去的正是错集。
+ */
+const targetEpisodeNumber = computed<number | null>(() => {
+  const ep = currentEpisode.value;
+  if (ep) return ep.number;
   const wanted = episodeIdParam.value;
-  // 精确匹配当前线路
-  const byId = wanted === null ? null : list.find((ep) => ep.id === wanted);
-  if (byId) return byId;
-  // 集号回退链：深链 ?ep= > 这一集自己的历史记录集号 > 黑匣子集号锚。
-  // 历史口径保留原有的严格条件——取该媒体的第一条记录会拿到别的集的集号，
-  // 把用户送到完全不相干的一集。
-  const historyNumber = wanted === null
-    ? null
-    : history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === wanted)?.episodeNumber ?? null;
-  for (const number of [epParam.value, historyNumber, blackboxAnchor.value?.episodeNumber ?? null]) {
-    if (number === null || number === undefined) continue;
-    const hit = list.find((ep) => ep.number === number);
-    if (hit) return hit;
+  if (wanted !== null) {
+    const n = history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === wanted)?.episodeNumber;
+    if (n !== undefined && n !== null) return n;
   }
-  if (wanted) {
-    logger.warn('路由集号在当前线路无匹配，回退首集', {
-      mediaId: mediaId.value,
-      episodeId: wanted,
-      lineId: currentLineId.value,
-      episodeCount: list.length,
-    });
-  }
-  return list[0] ?? null;
+  return blackboxAnchor.value?.episodeNumber ?? null;
 });
 
 /** 正在播放的真实身份：本地优先起播以本地任务为准，在线解析以解析出的当前集为准。 */
@@ -1142,6 +1162,19 @@ async function resolveAndLoad(): Promise<boolean> {
   localIdentity.value = null;
   const it = item.value;
   const ep = currentEpisode.value;
+  if (targetEpisodeMissing.value) {
+    // P1-1：目标集在当前线路定位不到——不起播，把选择权交回用户
+    logger.warn('目标集在当前线路无法定位，已拦在起播前', {
+      mediaId: mediaId.value,
+      episodeId: episodeIdParam.value,
+      lineId: currentLineId.value,
+      episodeCount: episodes.value.length,
+    });
+    loadError.value = '要播的这一集在当前线路里已经找不到了';
+    loadErrorShape.value = null;
+    pageLoading.value = false;
+    return false;
+  }
   if (!it || !ep) {
     loadError.value = '找不到要播放的内容';
     pageLoading.value = false;
@@ -1518,11 +1551,14 @@ let pendingLineSwitchEpisode: string | null = null;
  */
 let pendingMediaSwitch: string | null = null;
 
-/** 当前线路下按集号取目标集（保持集号，AC-31）；找不到同集号时回退首集 */
+/**
+ * 切换线路时只认同一集（保持集号，AC-31）。
+ * 目标线路没有这一集返回 null，由调用方决定——不再拿首集冒充切线成功。
+ */
 function episodeOnLine(lineIdValue: string, number: number): Episode | null {
   const all = library.detail?.episodes ?? [];
   const list = all.filter((ep) => ep.lineId === lineIdValue).sort((a, b) => a.number - b.number);
-  return list.find((ep) => ep.number === number) ?? list[0] ?? null;
+  return list.find((ep) => ep.number === number) ?? null;
 }
 
 /** 只更新路由（集号 / 线路 query），加载由调用方统一负责 */
@@ -1536,18 +1572,43 @@ async function replaceRoute(episodeId: string | null, targetLineId: string | nul
 }
 
 /**
+ * P1-1 披露态的出口：目标集找不到时，由用户明确点「从第 1 集播放」。
+ * 改路由后集号口径自然恢复；`episodeIdParam` watcher 用待加载标记吞掉，只加载一次。
+ */
+async function playFromFirstEpisode(): Promise<void> {
+  const first = episodes.value[0];
+  if (!first) return;
+  pendingLineSwitchEpisode = first.id;
+  try {
+    await replaceRoute(first.id, lineIdParam.value);
+    await resolveAndLoad();
+  } finally {
+    pendingLineSwitchEpisode = null;
+  }
+}
+
+/**
  * 切换到目标线路；失败时恢复原线路与原集并提示（AC-55）。
  *
  * `resolveAndLoad()` 会重建引擎，因此"回退"是重新加载原线路（不是复用旧实例），
  * 对用户表现为"未切走"；原线路也失败时给出更明确的提示。
+ *
+ * P1-1：目标线路没有同一集号时直接不切——过去会切过去并播该线路的第 1 集，
+ * 用户以为"换线路成功"，实际看的是完全不同的一集。
  */
 async function switchLine(targetLineId: string): Promise<void> {
   const it = item.value;
   const previousLineId = currentLineId.value;
   if (!it || targetLineId === previousLineId || switchingLine.value) return;
-  const previousEpisodeId = currentEpisode.value?.id ?? null;
-  const currentNumber = currentEpisode.value?.number ?? 1;
-  const targetEpisode = episodeOnLine(targetLineId, currentNumber);
+  const current = currentEpisode.value;
+  if (!current) return;
+  const previousEpisodeId = current.id;
+  const targetEpisode = episodeOnLine(targetLineId, current.number);
+  if (!targetEpisode) {
+    const name = lines.value.find((l) => l.id === targetLineId)?.name ?? '该线路';
+    toast.info(`${name} 没有第 ${current.number} 集，已保持原线路`);
+    return;
+  }
 
   // P1-4: 记住当前播放位置，切线后续播
   const currentPositionSec = playerCtl.controller.value?.getState().currentTime ?? 0;
@@ -1555,8 +1616,8 @@ async function switchLine(targetLineId: string): Promise<void> {
   switchingLine.value = true;
   try {
     lineId.value = targetLineId;
-    pendingLineSwitchEpisode = targetEpisode?.id ?? previousEpisodeId;
-    await replaceRoute(targetEpisode?.id ?? previousEpisodeId, targetLineId);
+    pendingLineSwitchEpisode = targetEpisode.id;
+    await replaceRoute(targetEpisode.id, targetLineId);
     if (!pageAlive) return;
     if (await resolveAndLoad()) {
       if (!pageAlive) return;
@@ -1702,12 +1763,16 @@ async function lookupAlternateSource(): Promise<{
     )
       .filter((candidate) => candidate.source.id !== it.sourceId)
       .slice(0, ALTERNATE_MAX_CANDIDATES);
+    const number = targetEpisodeNumber.value;
     for (const candidate of candidates) {
       try {
         const detail = await libraryService.getDetail(candidate.item.id);
         if (!pageAlive) return null;
+        // P1-1：换源按集号对齐；候选源没有同号集就顺延下一个源，不拿它的首集冒充
         const target =
-          detail.episodes.find((ep) => ep.number === (currentEpisode.value?.number ?? 1)) ?? detail.episodes[0];
+          number === null
+            ? (detail.episodes[0] ?? null)
+            : (detail.episodes.find((ep) => ep.number === number) ?? null);
         if (!target) continue;
         return { mediaId: candidate.item.id, episodeId: target.id, sourceName: candidate.source.name };
       } catch {
@@ -1795,8 +1860,13 @@ async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): 
           episodes: episodes.value,
           buildKey: (line) => lineKey(it.sourceId, it.sourceItemId, line.name),
         });
-        const candidates = ranked.filter((l) => l.id !== currentLineId.value).slice(0, 3);
-        
+        // P1-1：只试"确实有正在播的这一集"的线路——否则换线"成功"等于悄悄换了集
+        const number = currentEpisode.value?.number ?? null;
+        const candidates = ranked
+          .filter((l) => l.id !== currentLineId.value)
+          .filter((l) => number === null || episodeOnLine(l.id, number) !== null)
+          .slice(0, 3);
+
         for (const candidate of candidates) {
           if (!pageAlive) return;
           toast.info(`起播失败，自动切换到线路「${candidate.name}」…`);
@@ -3064,6 +3134,10 @@ onBeforeUnmount(() => {
             <p class="player-loading__text">{{ detailErrorMessage ?? loadError }}</p>
             <!-- P0-1：给出可行动原因（源站死 / 超时 / 磁力 / 规则脚本异常） -->
             <p v-if="loadErrorGuidance" class="player-loading__hint">{{ loadErrorGuidance.hint }}</p>
+            <!-- P1-1：目标集定位失败时说明原因，不假装"重试"能解决 -->
+            <p v-if="targetEpisodeMissing" class="player-loading__hint" data-test="episode-missing-hint">
+              源可能更新过选集，这一集已经不在当前线路里了；可在下方选集或换线路
+            </p>
             <div class="player-loading__actions">
               <!-- REV-24：源已移除时提供删除记录入口 -->
               <button
@@ -3082,6 +3156,16 @@ onBeforeUnmount(() => {
                 @click="openExternalUrl(loadErrorMagnet)"
               >
                 用外部应用打开
+              </button>
+              <!-- P1-1：定位不到目标集时，"从头开始"必须是用户明确选的，不是静默兜底 -->
+              <button
+                v-else-if="targetEpisodeMissing"
+                class="btn btn--primary btn--sm"
+                type="button"
+                data-test="play-first-episode"
+                @click="playFromFirstEpisode"
+              >
+                从第 1 集播放
               </button>
               <button
                 v-else-if="!loadErrorMagnet"

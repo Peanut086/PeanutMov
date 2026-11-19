@@ -21,6 +21,7 @@ import type {
   LiveRecord,
   MediaItem,
   PlayLine,
+  ReminderDeliveryTier,
   ReminderState,
   Source,
   SourceType,
@@ -250,6 +251,12 @@ export interface ReminderRecord {
   state: ReminderState;
   nativeId: number;
   lastError: string | null;
+  /**
+   * P2-2：排期当时的投递档位与原因。两个字段都可选——本字段之前的历史记录没有它们，
+   * 界面按「未记录」处理，不猜成"能准时提醒"。
+   */
+  delivery?: ReminderDeliveryTier;
+  deliveryNote?: string | null;
   createdAt: number;
   updatedAt: number;
 }

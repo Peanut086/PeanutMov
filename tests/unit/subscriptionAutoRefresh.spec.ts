@@ -13,7 +13,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetLifecycleState } from '@/native/appLifecycle';
-import { subscriptionLifecycleService } from '@/services/subscriptionLifecycleService';
+import {
+  subscriptionLifecycleService,
+  type SubscriptionRefreshResult,
+} from '@/services/subscriptionLifecycleService';
 import { initSubscriptionAutoRefresh } from '@/stores/bootstrap';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -52,16 +55,16 @@ async function flush(times = 8): Promise<void> {
 /** spy 掉真实刷新链路，返回调用计数与可控的 resolve 句柄 */
 function stubRefresh(): {
   calls: () => number;
-  resolve: (result: { refreshed: number; failed: number }) => void;
+  resolve: (result: SubscriptionRefreshResult) => void;
   usePending: () => void;
 } {
-  let resolveRun: ((result: { refreshed: number; failed: number }) => void) | null = null;
-  let pending: Promise<{ refreshed: number; failed: number }> | null = null;
+  let resolveRun: ((result: SubscriptionRefreshResult) => void) | null = null;
+  let pending: Promise<SubscriptionRefreshResult> | null = null;
   const spy = vi
     .spyOn(subscriptionLifecycleService, 'maybeAutoRefresh')
     .mockImplementation(() => {
       if (pending) return pending;
-      return Promise.resolve({ refreshed: 0, failed: 0 });
+      return Promise.resolve({ refreshed: 0, failed: 0, deferred: 0 });
     });
   restores.push(() => spy.mockRestore());
   return {
@@ -151,7 +154,7 @@ describe('订阅自动刷新：回前台触发 + 24h TTL 去重（FIX-06 / AC-11
     expect(stub.calls()).toBe(1);
 
     // 在途结束后（TTL 闸门已落），再回前台依然只有一次真实刷新
-    stub.resolve({ refreshed: 2, failed: 0 });
+    stub.resolve({ refreshed: 2, failed: 0, deferred: 0 });
     await flush();
     emitResume();
     await flush();

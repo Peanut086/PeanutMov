@@ -15,6 +15,7 @@ import {
   summarizeSearchFailures,
 } from '@/services/searchAggregate';
 import { SOURCE_INTERNAL_MESSAGE, RULE_SCRIPT_MESSAGE } from '@/shared/sourceFailure';
+import { COOLDOWN_MESSAGE, classifySourceFailure, guidanceOf } from '@/shared/sourceFailure';
 import type { SourceFailureKind } from '@/shared/sourceFailure';
 import type { AppErrorShape } from '@/types';
 
@@ -158,6 +159,7 @@ describe('SEARCH_FAILURE_LABELS（分类标签穷举）', () => {
     'source_internal',
     'safe_mode',
     'quarantined',
+    'cooldown',
     'spider_mismatch',
     'jar_conflict',
     'auth',
@@ -165,10 +167,48 @@ describe('SEARCH_FAILURE_LABELS（分类标签穷举）', () => {
     'unknown',
   ];
 
-  it('12 类失败原因都有非空标签', () => {
+  it('13 类失败原因都有非空标签', () => {
     for (const kind of KINDS) {
       expect(SEARCH_FAILURE_LABELS[kind].trim().length).toBeGreaterThan(0);
     }
     expect(Object.keys(SEARCH_FAILURE_LABELS)).toHaveLength(KINDS.length);
+  });
+});
+
+/**
+ * P0-1：原生拦截文案 ↔ JS 分类的对齐点。
+ *
+ * 冷却与隔离在 UI 上是两件事：前者到点自动放行、健康中心里根本没有这条记录，后者要手动解除。
+ * 归错类的直接后果是让用户去解一份不存在的隔离，所以把原生原文钉进测试。
+ */
+describe('classifySourceFailure：冷却与隔离分开归因（P0-1）', () => {
+  it('原生 `spider cooling down` 原文归为 cooldown', () => {
+    const error = err({
+      code: 'E_SOURCE_UNAVAILABLE',
+      message:
+        'java.lang.IllegalStateException: spider cooling down (suspicious crash, ' +
+        'auto-release in 30min): spider:6407140d2845839980771d49913bdcdc:home',
+    });
+    expect(classifySourceFailure(error)).toBe('cooldown');
+    expect(guidanceOf(error).title).toBe(COOLDOWN_MESSAGE);
+    // 冷却档给的是「等它自动放行 + 手动放行入口」，不是让人去解一份不存在的隔离
+    expect(guidanceOf(error).actions).toContain('retry');
+    expect(guidanceOf(error).actions).toContain('health-check');
+  });
+
+  it('api 级与 jar 级隔离都归为 quarantined，不与冷却混淆', () => {
+    expect(
+      classifySourceFailure(
+        err({ code: 'E_SOURCE_UNAVAILABLE', message: 'IllegalStateException: spider quarantined (crash): spider:a:b' }),
+      ),
+    ).toBe('quarantined');
+    expect(
+      classifySourceFailure(
+        err({
+          code: 'E_SOURCE_UNAVAILABLE',
+          message: 'IllegalStateException: spider quarantined (crash, whole jar): spider:a:*',
+        }),
+      ),
+    ).toBe('quarantined');
   });
 });

@@ -41,6 +41,7 @@ import { useSourceStore } from '@/stores/sourceStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useUiStore } from '@/stores/uiStore';
 import { restoreDemoSource } from '@/stores/bootstrap';
+import { refreshSummaryText } from '@/services/subscriptionLifecycleService';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 
@@ -467,10 +468,9 @@ async function refreshSubscriptions(): Promise<void> {
     return;
   }
   try {
-    const { refreshed, failed } = await sources.refreshAllSubscriptions();
-    if (refreshed === 0 && failed === 0) toast.info('所有订阅都在 24h 内刷新过，暂无需刷新');
-    else if (failed === 0) toast.success(`已刷新 ${refreshed} 个订阅`);
-    else toast.error(`刷新完成：成功 ${refreshed}，失败 ${failed}（失败项已静默，可稍后重试）`);
+    // 文案与订阅管理页共用 `refreshSummaryText`：跳过条数不是失败，也不能不说
+    const summary = refreshSummaryText(await sources.refreshAllSubscriptions());
+    toast[summary.tone](summary.text);
   } catch (e) {
     toast.error(toErrorShape(e).message);
   }

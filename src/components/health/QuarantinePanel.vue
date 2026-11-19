@@ -26,7 +26,6 @@ const available = ref(false);
 const loading = ref(false);
 const busy = ref<string | null>(null);
 const items = ref<string[]>([]);
-const cooldowns = ref<Array<{ signature: string; remainMs: number }>>([]);
 
 interface ParsedSignature {
   raw: string;
@@ -60,7 +59,6 @@ function parseSignature(raw: string, cooling = false, remainMs?: number): Parsed
 
 const entries = ref<ParsedSignature[]>([]);
 
-const hasEntries = computed(() => entries.value.length > 0);
 const quarantineCount = computed(() => entries.value.filter((e) => !e.cooling).length);
 const cooldownCount = computed(() => entries.value.filter((e) => e.cooling).length);
 
@@ -77,7 +75,6 @@ async function refresh(): Promise<void> {
     items.value = Array.isArray(result.items) ? result.items : [];
     // 旧版原生没有 cooldowns 字段（升级中装的半新包）：按只有隔离档渲染，不要整卡报错
     const rawCooldowns = Array.isArray(result.cooldowns) ? result.cooldowns : [];
-    cooldowns.value = rawCooldowns;
     entries.value = sortEntries([
       ...items.value.map((sig) => parseSignature(sig)),
       ...rawCooldowns.map((row) => parseSignature(row.signature, true, row.remainMs)),
@@ -115,7 +112,9 @@ defineExpose({ refresh });
   <section v-if="available && entries.length > 0" class="quarantine" aria-labelledby="quarantine-title">
     <div class="quarantine__head">
       <h2 id="quarantine-title" class="section-title">崩溃隔离名单</h2>
-      <span class="quarantine__meta">{{ entries.length }} 条</span>
+      <span class="quarantine__meta">
+        隔离 {{ quarantineCount }} · 冷却 {{ cooldownCount }}
+      </span>
     </div>
 
     <p class="quarantine__note">

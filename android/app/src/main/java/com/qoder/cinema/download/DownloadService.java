@@ -67,8 +67,26 @@ public class DownloadService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent == null) {
+            // P0-2：START_STICKY 重建（`with null`）。AMS 这次没有下发前台资格
+            // （`mAllowStartForeground false`），此处调 startForeground() 必抛
+            // ForegroundServiceStartNotAllowedException，把整个进程带走
+            // （真机 6 次：OPPO PJH110 / API 35，11-13 22:59 → 11-14 11:19）。
+            // 而且这次重建只拉起 Service，WebView/JS 没跑，原生队列必然是空的——
+            // 没有在飞下载值得保活，直接收回；用户回到 App 时 bootstrap 会重新 start()。
+            Log.w(TAG, "START_STICKY rebroadcast without intent: release without FGS");
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
         Log.d(TAG, "DownloadService started");
-        startForegroundNotification();
+        if (!startForegroundNotification()) {
+            // 前台资格被拒（后台起活 / ROM 限制）：留着这个"已启动但非前台"的服务，
+            // AMS 会在 10 秒窗口后判 ForegroundServiceDidNotStartInTimeException 强杀进程，
+            // 比收回更糟。
+            Log.w(TAG, "Foreground not granted; stopping service instead of risking FGS timeout");
+            stopSelf(startId);
+            return START_NOT_STICKY;
+        }
         if (stopWhenReady) {
             // 收回请求曾落在 startForeground 之前（那会儿 stopService 会直接被 AMS 判超时强杀），
             // 现在前台已坐实，补做当初被延后的那次收回。
@@ -80,7 +98,7 @@ public class DownloadService extends Service {
                 Log.w(TAG, "Deferred reclaim failed", e);
             }
         }
-        // START_STICKY：系统杀死后自动重启（保持下载不中断）
+        // START_STICKY：系统杀死后自动重启（保持下载不中断）；null intent 分支已单独处理
         return START_STICKY;
     }
 
@@ -115,18 +133,31 @@ public class DownloadService extends Service {
         }
     }
 
-    private void startForegroundNotification() {
-        if (isForeground) return;
+    /**
+     * 取得前台资格。
+     *
+     * @return true 表示已坐实前台（或未升级也无需升级）；false 表示系统拒绝，调用方必须收回服务
+     */
+    private boolean startForegroundNotification() {
+        if (isForeground) return true;
 
         Notification notification = buildNotification("下载中...", 0, 0, false);
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // Android 14+ 需要声明 foregroundServiceType
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Android 14+ 需要声明 foregroundServiceType；dataSync 还要求"应用在前台/白名单"，
+                // 后台起活直接被拒（ForegroundServiceStartNotAllowedException）
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            } else {
+                startForeground(NOTIFICATION_ID, notification);
+            }
+        } catch (Exception e) {
+            // 该异常在 AMS 侧抛出，若不接住会以 "Unable to start service ... with null" 崩掉主进程
+            Log.w(TAG, "startForeground rejected", e);
+            return false;
         }
         isForeground = true;
+        return true;
     }
 
     /**
@@ -205,14 +236,22 @@ public class DownloadService extends Service {
 
     /**
      * 启动服务
+     *
+     * P0-2：`startForegroundService()` 本身在 Android 12+ 也可能被拒（应用不在前台、
+     * ROM 管家限制），调用点有三处原生下载路径 + 转封装路径，都不该因为这个异常炸线程。
+     * 起活失败只意味着这一轮没有保活：下载继续跑，回前台后 JS 侧会重新要求保活。
      */
     public static void start(Context context) {
         stopWhenReady = false; // 新的保活诉求作废尚未落地的收回
         Intent intent = new Intent(context, DownloadService.class);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent);
-        } else {
-            context.startService(intent);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent);
+            } else {
+                context.startService(intent);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "startForegroundService rejected", e);
         }
     }
 

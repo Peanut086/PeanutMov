@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   findEpisodeOwnerLineId,
   offlineEpisodeMessage,
+  resolvePlaybackEpisode,
   resolveTargetEpisode,
 } from '@/player/episodeFallback';
 
@@ -151,5 +152,110 @@ describe('findEpisodeOwnerLineId：按集 id 反查所属线路', () => {
 
   it('无 episodeId（未指定目标集）→ null', () => {
     expect(findEpisodeOwnerLineId(episodes, lines, null)).toBeNull();
+  });
+});
+
+/**
+ * 播放页目标集定位（P1-1：消除"静默播成第 1 集"）
+ *
+ * 真机日志里 4 次「路由集号在当前线路无匹配，回退首集」——用户看到的是目标集，
+ * 实际播放、进度写回、弹幕匹配、下载入口全记在第 1 集上。现在这类情况必须
+ * 显式落到 `missing: true`，由页面披露，不再自动起播。
+ */
+describe('resolvePlaybackEpisode：定位失败要披露，不要冒充首集', () => {
+  const line1 = [
+    { id: 'L1:e1', number: 1 },
+    { id: 'L1:e2', number: 2 },
+    { id: 'L1:e3', number: 3 },
+  ];
+  const line2 = [
+    { id: 'L2:e1', number: 1 },
+    { id: 'L2:e2', number: 2 },
+    { id: 'L2:e3', number: 3 },
+  ];
+  const all = [...line1, ...line2];
+
+  it('路由 id 在当前线路 → 精确命中', () => {
+    const r = resolvePlaybackEpisode({ lineEpisodes: line1, allEpisodes: all, routeEpisodeId: 'L1:e2' });
+    expect(r).toMatchObject({ episode: { id: 'L1:e2' }, missing: false, matchedBy: 'line-id' });
+  });
+
+  it('路由 id 属于另一条线路 → 按同号集命中，不落到首集', () => {
+    const r = resolvePlaybackEpisode({
+      lineEpisodes: line1,
+      allEpisodes: all,
+      routeEpisodeId: 'L2:e3',
+      offlineNumber: 3, // 另一条线路的 id 会被 AC-68 误判为"已下线"，这里验证集号口径优先
+    });
+    expect(r).toMatchObject({ episode: { id: 'L1:e3', number: 3 }, missing: false, matchedBy: 'cross-line-number' });
+  });
+
+  it('目标 id 陈旧、任何集号口径都落空 → missing=true，不返回首集', () => {
+    const r = resolvePlaybackEpisode({ lineEpisodes: line1, allEpisodes: all, routeEpisodeId: 'gone:e9' });
+    expect(r.episode).toBeNull();
+    expect(r.missing).toBe(true);
+    expect(r.matchedBy).toBe('none');
+  });
+
+  it('陈旧 id 但 AC-68 判定整集已下线（offlineNumber 非空）→ 保持回退首集 + 已披露', () => {
+    const r = resolvePlaybackEpisode({
+      lineEpisodes: line1,
+      allEpisodes: all,
+      routeEpisodeId: 'gone:e30',
+      offlineNumber: 30,
+    });
+    expect(r).toMatchObject({ episode: { id: 'L1:e1' }, missing: false, matchedBy: 'offline-first' });
+  });
+
+  it('集号锚优先级：id 精确命中 > 深链 ?ep= > 历史集号 > 黑匣子 > 跨线路同号', () => {
+    const byId = resolvePlaybackEpisode({
+      lineEpisodes: line1,
+      allEpisodes: all,
+      routeEpisodeId: 'L1:e3',
+      deepLinkNumber: 1,
+    });
+    // id 精确命中永远优先于集号
+    expect(byId).toMatchObject({ episode: { id: 'L1:e3' }, matchedBy: 'line-id' });
+
+    const byDeepLink = resolvePlaybackEpisode({
+      lineEpisodes: line1,
+      allEpisodes: all,
+      routeEpisodeId: 'gone:e9',
+      historyNumber: 2,
+      anchorNumber: 3,
+      deepLinkNumber: 3,
+    });
+    expect(byDeepLink).toMatchObject({ episode: { id: 'L1:e3' }, matchedBy: 'deep-link' });
+
+    const byAnchor = resolvePlaybackEpisode({
+      lineEpisodes: line1,
+      allEpisodes: all,
+      routeEpisodeId: 'gone:e9',
+      anchorNumber: 2,
+    });
+    expect(byAnchor).toMatchObject({ episode: { id: 'L1:e2' }, matchedBy: 'anchor' });
+  });
+
+  it('无路由 id（口令/黑匣子直达）→ 按集号锚，落空则首集且不算 missing', () => {
+    const byAnchor = resolvePlaybackEpisode({
+      lineEpisodes: line1,
+      allEpisodes: all,
+      routeEpisodeId: null,
+      anchorNumber: 2,
+    });
+    expect(byAnchor).toMatchObject({ episode: { id: 'L1:e2' }, missing: false, matchedBy: 'anchor' });
+
+    const byDeepLink = resolvePlaybackEpisode({
+      lineEpisodes: line1,
+      allEpisodes: all,
+      routeEpisodeId: null,
+      deepLinkNumber: 99,
+    });
+    expect(byDeepLink).toMatchObject({ episode: { id: 'L1:e1' }, missing: false, matchedBy: 'first' });
+  });
+
+  it('当前线路 0 集 → episode=null 且 missing=false（交给"找不到要播放的内容"分支）', () => {
+    const r = resolvePlaybackEpisode({ lineEpisodes: [], allEpisodes: all, routeEpisodeId: 'L1:e1' });
+    expect(r).toMatchObject({ episode: null, missing: false, matchedBy: 'none' });
   });
 });

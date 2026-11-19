@@ -13,12 +13,18 @@
  */
 import { reminderRepo } from '@/db/repositories/reminderRepo';
 import { epgSourceRepo } from '@/db/repositories/epgSourceRepo';
-import { notificationScheduler, type NotificationPermission } from '@/native/notificationScheduler';
+import {
+  notificationScheduler,
+  type NotificationPermission,
+  type ReminderDeliveryState,
+  type ReminderSettingsTarget,
+} from '@/native/notificationScheduler';
 import { onAppStateChange } from '@/native/appLifecycle';
 import { REMINDER_GRACE_MS, REMINDER_LEAD_OPTIONS, REMINDER_MAX } from '@/shared/constants';
 import { AppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
-import type { Reminder, ReminderState } from '@/types';
+import type { ReminderRecord } from '@/db/schema';
+import type { Reminder, ReminderDeliveryTier, ReminderState } from '@/types';
 
 export type ReminderListItem = Reminder & { orphanEpgSource?: boolean };
 
@@ -71,6 +77,161 @@ function isTerminal(state: ReminderState): boolean {
   return TERMINAL_STATES.includes(state);
 }
 
+/**
+ * 投递档位判定（P2-2 / AC-169）。
+ *
+ * 三档只由「通知能不能出」和「时间准不准」两件事决定，判定顺序即优先级：
+ * - 通知根本出不来（权限被拒 / 系统总开关关掉 / 平台不支持）→ `in-app`；
+ * - 能出来但时间或形式不可靠（精确闹钟未授权、渠道被用户降级、诊断读不到）→ `delayed`；
+ * - 两者都正常 → `exact`。
+ *
+ * 电池豁免刻意不参与判定：默认不豁免是正常状态，拿它当判据等于把几乎所有设备
+ * 都说成"可能延迟"，只在原因里提一句。
+ */
+export interface ReminderDeliveryAssessment {
+  tier: ReminderDeliveryTier;
+  /** 退化原因（`exact` 为 null），直接给用户看的一句话 */
+  reason: string | null;
+  /** 对症的系统设置页；null = 没有可跳的入口 */
+  settingsTarget: ReminderSettingsTarget | null;
+}
+
+/** 渠道还能横幅弹出的最低重要性（`IMPORTANCE_DEFAULT`；低于它即静默通知） */
+const CHANNEL_HEADS_UP_IMPORTANCE = 4;
+
+export function assessReminderDelivery(
+  permission: NotificationPermission,
+  state: ReminderDeliveryState | null,
+): ReminderDeliveryAssessment {
+  if (permission === 'unsupported') {
+    return {
+      tier: 'in-app',
+      reason: '当前平台不支持系统通知，仅 App 内提醒',
+      settingsTarget: null,
+    };
+  }
+  if (permission === 'denied') {
+    return {
+      tier: 'in-app',
+      reason: '通知权限未授予，仅 App 内提醒',
+      settingsTarget: 'notifications',
+    };
+  }
+  // 插件层已授权，但原生诊断读不到（旧包 / 通知服务异常）：不谎称精确，也不谎称失败
+  if (state === null) {
+    return {
+      tier: 'delayed',
+      reason: '无法确认系统投递状态，提醒时间可能被省电策略推迟',
+      settingsTarget: 'notifications',
+    };
+  }
+  if (!state.notificationsEnabled) {
+    return {
+      tier: 'in-app',
+      reason: '系统通知开关已关闭，仅 App 内提醒',
+      settingsTarget: 'notifications',
+    };
+  }
+  if (!state.channelExists) {
+    return {
+      tier: 'delayed',
+      reason: '节目提醒渠道不可用，已落回系统默认渠道',
+      settingsTarget: 'notifications',
+    };
+  }
+  if (!state.exactAlarmsAllowed) {
+    return {
+      tier: 'delayed',
+      reason: '未授权精确闹钟，待机或省电模式下可能延后触发',
+      settingsTarget: 'exactAlarm',
+    };
+  }
+  if (state.channelImportance < CHANNEL_HEADS_UP_IMPORTANCE) {
+    return {
+      tier: 'delayed',
+      reason: '节目提醒渠道被降级为静默通知（不再横幅弹出）',
+      settingsTarget: 'notifications',
+    };
+  }
+  return { tier: 'exact', reason: null, settingsTarget: null };
+}
+
+/** 三档的标题（提醒弹层与列表共用一份口径） */
+export const REMINDER_DELIVERY_LABELS: Record<ReminderDeliveryTier, string> = {
+  exact: '可准时提醒',
+  delayed: '可能被系统延迟',
+  'in-app': '仅 App 内提醒',
+};
+
+/** 历史记录了没有档位时显示的文案（不猜成"能准时"） */
+export const REMINDER_DELIVERY_UNKNOWN_LABEL = '投递状态未记录';
+
+/** 各设置页入口的按钮文案 */
+export const REMINDER_SETTINGS_LABELS: Record<ReminderSettingsTarget, string> = {
+  notifications: '打开通知设置',
+  exactAlarm: '授权精确闹钟',
+  battery: '忽略电池优化',
+};
+
+/** 界面可直接渲染的投递说明 */
+export interface ReminderDeliveryView {
+  /** 一句话：档位 + 原因（档位来自哪里也写在里面） */
+  text: string;
+  tier: ReminderDeliveryTier;
+  /** 需要用户去系统里打开的开关；为 null 表示没有可操作的入口 */
+  settingsTarget: ReminderSettingsTarget | null;
+  settingsLabel: string | null;
+}
+
+/**
+ * 把投递档位归一成一行说明（P2-2）。
+ *
+ * 优先用**当前系统状态**（`live`：打开弹层时只读探测，或刚排完期的结论）；
+ * 没有 live 结果时退回排期台账（上次排期结论），并明确标注是"上次"——
+ * 台账里没有当时缺的是哪个开关，所以不凭档位瞎给设置入口。
+ */
+export function describeReminderDelivery(
+  live: ReminderDeliveryAssessment | null,
+  record: Reminder | null,
+): ReminderDeliveryView | null {
+  if (live) {
+    const label = REMINDER_DELIVERY_LABELS[live.tier];
+    return {
+      text: live.reason ? `${label}：${live.reason}` : label,
+      tier: live.tier,
+      settingsTarget: live.settingsTarget,
+      settingsLabel: live.settingsTarget ? REMINDER_SETTINGS_LABELS[live.settingsTarget] : null,
+    };
+  }
+  if (!record) return null;
+  if (!record.delivery) {
+    return { text: REMINDER_DELIVERY_UNKNOWN_LABEL, tier: 'delayed', settingsTarget: null, settingsLabel: null };
+  }
+  const label = REMINDER_DELIVERY_LABELS[record.delivery];
+  return {
+    text: record.deliveryNote ? `${label}：${record.deliveryNote}（上次排期结果）` : `${label}（上次排期结果）`,
+    tier: record.delivery,
+    settingsTarget: null,
+    settingsLabel: null,
+  };
+}
+
+/**
+ * 只读探测当前投递档位：不申请权限、不重排通知。
+ * 打开提醒弹层、从系统设置页回到 App 时用它刷新说明与入口。
+ */
+export async function probeReminderDelivery(): Promise<ReminderDeliveryAssessment> {
+  const permission = await notificationScheduler.peekPermission();
+  return assessReminderDelivery(permission, await notificationScheduler.getDeliveryState());
+}
+
+/** 打开投递相关的系统设置页；打不开时返回原因，由界面显示（ROM 裁掉设置页是真实存在的） */
+export async function openReminderDeliverySettings(
+  target: ReminderSettingsTarget,
+): Promise<{ opened: boolean; reason: string | null }> {
+  return notificationScheduler.openSettings(target);
+}
+
 function normalizeLead(lead: number | undefined): 0 | 5 | 10 | 15 | 30 {
   if (lead === undefined) return 5;
   if (!(REMINDER_LEAD_OPTIONS as readonly number[]).includes(lead)) {
@@ -86,12 +247,20 @@ function scheduleText(reminder: Reminder): { title: string; body: string } {
   };
 }
 
-/** 原生排期（失败不抛：权限/系统限制走降级） */async function scheduleNative(
+/** 原生排期（失败不抛：权限/系统限制走降级） */
+async function scheduleNative(
   reminder: Reminder,
-): Promise<{ permission: NotificationPermission; error: string | null }> {
+): Promise<{
+  permission: NotificationPermission;
+  error: string | null;
+  delivery: ReminderDeliveryAssessment;
+}> {
   const permission = await notificationScheduler.ensurePermission();
+  // 诊断读失败也要继续排期：说清"投递状态未知"比不排期更接近事实
+  const state = await notificationScheduler.getDeliveryState();
   if (permission !== 'granted') {
-    return { permission, error: permission === 'unsupported' ? '仅 App 内提醒' : '通知权限被拒，仅 App 内提醒' };
+    const assessment = assessReminderDelivery(permission, state);
+    return { permission, error: assessment.reason, delivery: assessment };
   }
   try {
     const text = scheduleText(reminder);
@@ -105,10 +274,15 @@ function scheduleText(reminder: Reminder): { title: string; body: string } {
         reminderId: reminder.id,
       },
     });
-    return { permission, error: null };
+    return { permission, error: null, delivery: assessReminderDelivery(permission, state) };
   } catch (error) {
     logger.warn('本地通知排期失败', error);
-    return { permission, error: '本地通知排期失败，仅 App 内提醒' };
+    const reason = error instanceof Error ? error.message : String(error);
+    return {
+      permission,
+      error: `本地通知排期失败，仅 App 内提醒（${reason.slice(0, 80)}）`,
+      delivery: { tier: 'in-app', reason: '本地通知排期失败，仅 App 内提醒', settingsTarget: null },
+    };
   }
 }
 
@@ -132,7 +306,7 @@ export const reminderService = {
   /** 设置/覆盖提醒（同一节目落到同一条记录，原生 id 不变） */
   async upsert(
     input: ReminderUpsertInput,
-  ): Promise<Reminder & { native: { scheduled: boolean; permission: NotificationPermission } }> {
+  ): Promise<Reminder & { native: { scheduled: boolean; permission: NotificationPermission; delivery: ReminderDeliveryAssessment } }> {
     if (!input.channelKey) throw new AppError('E_INVALID_INPUT', '缺少频道标识');
     if (!Number.isFinite(input.startAt) || !Number.isFinite(input.endAt)) {
       throw new AppError('E_INVALID_INPUT', '节目时间无效');
@@ -157,7 +331,7 @@ export const reminderService = {
     let notifyAt = input.startAt - leadMinutes * 60_000;
     if (notifyAt <= now) notifyAt = now + 5_000;
 
-    const record = {
+    const record: ReminderRecord = {
       id,
       liveSourceId: input.liveSourceId,
       epgSourceId: input.epgSourceId ?? null,
@@ -169,21 +343,28 @@ export const reminderService = {
       endAt: input.endAt,
       leadMinutes,
       notifyAt,
-      state: 'scheduled' as ReminderState,
+      state: 'scheduled',
       nativeId: existing?.nativeId ?? nativeIdOf(id),
-      lastError: null as string | null,
+      lastError: null,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
 
     const scheduled = await scheduleNative(record as Reminder);
     record.lastError = scheduled.error;
+    // 档位与原因一起落库：重启后回到这一页，显示的还是排期当时的真实结论
+    record.delivery = scheduled.delivery.tier;
+    record.deliveryNote = scheduled.delivery.reason;
     await reminderRepo.save(record);
 
     const view: Reminder = { ...record };
     return {
       ...view,
-      native: { scheduled: scheduled.error === null, permission: scheduled.permission },
+      native: {
+        scheduled: scheduled.error === null,
+        permission: scheduled.permission,
+        delivery: scheduled.delivery,
+      },
     };
   },
 
@@ -316,7 +497,14 @@ export const reminderService = {
           if (Math.abs(pendingAt - record.notifyAt) <= 60_000) continue;
         }
         const scheduled = await scheduleNative(record as Reminder);
-        const updated = { ...record, lastError: scheduled.error, updatedAt: now };
+        // 重排后按本次真实结论更新档位（如「授权精确闹钟」之后同一条会从 delayed 变 exact）
+        const updated = {
+          ...record,
+          lastError: scheduled.error,
+          delivery: scheduled.delivery.tier,
+          deliveryNote: scheduled.delivery.reason,
+          updatedAt: now,
+        };
         await reminderRepo.save(updated);
         if (scheduled.error === null) rescheduled += 1;
       }
@@ -356,6 +544,13 @@ export const reminderService = {
       if (pendingIds.has(record.nativeId)) continue;
       const result = await scheduleNative(record as Reminder);
       if (result.error === null) scheduled += 1;
+      await reminderRepo.save({
+        ...record,
+        lastError: result.error,
+        delivery: result.delivery.tier,
+        deliveryNote: result.delivery.reason,
+        updatedAt: Date.now(),
+      });
     }
     return { scheduled, canceled, permission };
   },

@@ -490,8 +490,12 @@ export const useSourceStore = defineStore('source', () => {
     }
   }
 
-  /** 立即刷新全部订阅（TTL 判定跳过；返回刷新/失败数） */
-  async function refreshAllSubscriptions(): Promise<{ refreshed: number; failed: number }> {
+  /** 立即刷新全部订阅（TTL/退避判定跳过；返回刷新、失败、以及本轮没发起的条数） */
+  async function refreshAllSubscriptions(): Promise<{
+    refreshed: number;
+    failed: number;
+    deferred: number;
+  }> {
     refreshingSubscriptions.value = true;
     try {
       const result = await subscriptionLifecycleService.maybeAutoRefresh();

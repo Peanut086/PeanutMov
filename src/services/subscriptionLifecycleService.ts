@@ -6,7 +6,8 @@
  *
  * 五件事：
  * 1. `maybeAutoRefresh` —— 逐订阅 TTL 判定，距上次成功刷新超过 24h（TTL）的订阅
- *    后台静默刷新（并发 ≤2，失败只累计不打扰）；
+ *    后台静默刷新（并发 ≤2）；P2-1 起每次尝试都落 `subscription-refresh-outcomes` 台账
+ *    （最近尝试 / 最近成功 / 失败或部分成功原因），连续失败按 `backoffMsFor` 退避；
  * 2. `bindAutoRefresh` / `autoRefreshIfDue` —— FIX-06（Q-05=A）：启动 + App 回前台
  *    触发刷新，触发层再做一次 24h TTL 去重与在途合并（不引入常驻定时器）；
  * 3. `summarize` —— 按 subscriptionId 聚合源数 / 存活 / 死亡 / jar 死 / 最近刷新；
@@ -30,15 +31,210 @@ import {
 } from '@/shared/constants';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
+import { formatRelativeTime } from '@/shared/time';
 import { sourceRegistry } from '@/sources/registry';
 import type { Source, SubscriptionSummary } from '@/types';
 
 const KV_REFRESH_STATE = 'subscription-refresh-state';
+/** P2-1：逐订阅刷新台账（最近尝试 / 最近成功 / 失败或部分成功原因） */
+const KV_REFRESH_OUTCOMES = 'subscription-refresh-outcomes';
 const KV_HEALTH_STREAK = 'source-health-streak';
 
 type RefreshState = Record<string, number>;
 /** 源 → 连续体检 bad 次数 */
 export type HealthStreak = Record<string, number>;
+
+/**
+ * P2-1：单订阅刷新结果（持久化，重启后界面口径不变）。
+ *
+ * 三条口径写在这里，避免再出现"自动刷新失败了但界面上一片祥和"：
+ * - `succeededAt` 只在刷新成功时前进；失败保留上一次成功时间，绝不把有效订阅写成"坏了"；
+ * - `failReason` 是给用户看的一句话（对症到"是地址挂了还是解析变了"），
+ *   `note` 记部分成功（新增未导入 / jar 判死 / 直播缺口）——那不算失败，但也不能说全绿；
+ * - 自动重试按 `failCount` 退避（见 `backoffMsFor`），手动刷新不受退避限制。
+ */
+export interface SubscriptionRefreshOutcome {
+  /** 最近一次**发起**刷新的时刻（成功或失败都算尝试） */
+  attemptedAt: number;
+  /** 最近一次成功刷新的时刻；从未成功过为 null */
+  succeededAt: number | null;
+  /** 最近一次失败原因；成功时清空 */
+  failReason: string | null;
+  /** 部分成功说明；完全成功为 null */
+  note: string | null;
+  /** 连续失败次数（成功即归零），决定自动重试退避 */
+  failCount: number;
+}
+
+type OutcomeState = Record<string, SubscriptionRefreshOutcome>;
+
+/**
+ * 连续失败的自动重试间隔：越试不通离得越远，最长回到 24h 的常规节奏。
+ *
+ * 上限刻意不超过 TTL——订阅可能悄悄被源主修好，隔天再试一次的成本极低。
+ */
+export function backoffMsFor(failCount: number): number {
+  if (failCount <= 0) return 0;
+  const steps = [30 * 60_000, 2 * 60 * 60_000, 8 * 60 * 60_000];
+  return failCount > steps.length ? SUBSCRIPTION_REFRESH_TTL_MS : (steps[failCount - 1] ?? 0);
+}
+
+/**
+ * 这个订阅现在该不该刷。
+ *
+ * TTL 口径以**成功时间**为准（刷成功过才算"24h 内已刷新"）；失败只触发退避，
+ * 退避期内不再自动重投，但手动刷新（`force`）随时可以。
+ */
+function isRefreshDue(
+  url: string,
+  successState: RefreshState,
+  outcomes: OutcomeState,
+  now: number,
+  force: boolean,
+): boolean {
+  if (force) return true;
+  const lastOk = successState[url];
+  if (lastOk !== undefined && now - lastOk <= SUBSCRIPTION_REFRESH_TTL_MS) return false;
+  const outcome = outcomes[url];
+  if (outcome && outcome.failCount > 0) {
+    if (now - outcome.attemptedAt < backoffMsFor(outcome.failCount)) return false;
+  }
+  return true;
+}
+
+/** 台账写入：成功与失败共用，保证两条路径（自动 / 手动）落在同一份记录上 */
+async function writeOutcome(
+  url: string,
+  patch: { ok: boolean; reason?: string | null; note?: string | null },
+): Promise<SubscriptionRefreshOutcome> {
+  const outcomes = await readMap<SubscriptionRefreshOutcome>(KV_REFRESH_OUTCOMES);
+  const prev = outcomes[url];
+  const now = Date.now();
+  const next: SubscriptionRefreshOutcome = patch.ok
+    ? {
+        attemptedAt: now,
+        succeededAt: now,
+        failReason: null,
+        note: patch.note ?? null,
+        failCount: 0,
+      }
+    : {
+        attemptedAt: now,
+        // 失败不覆盖上一次成功时间：有效订阅不会因为一次抖动在界面上变成"坏了"
+        succeededAt: prev?.succeededAt ?? null,
+        failReason: (patch.reason ?? '刷新失败').slice(0, 200),
+        note: prev?.note ?? null,
+        failCount: (prev?.failCount ?? 0) + 1,
+      };
+  await kvRepo.set(KV_REFRESH_OUTCOMES, { ...outcomes, [url]: next });
+  return next;
+}
+
+/** 逐订阅刷新台账（订阅管理页展示用；只含当前已有的订阅） */
+export async function listRefreshOutcomes(): Promise<OutcomeState> {
+  return readMap<SubscriptionRefreshOutcome>(KV_REFRESH_OUTCOMES);
+}
+
+/** 台账一行话的语气：成功 / 有缺口 / 失败 */
+export type RefreshOutcomeTone = 'ok' | 'warn' | 'bad';
+
+/** 退避剩余的人话时长（步长是 30min/2h/8h/24h，分钟与小时够用） */
+function formatWait(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60_000));
+  if (minutes < 60) return `${minutes} 分钟`;
+  return `${Math.round(minutes / 60)} 小时`;
+}
+
+/**
+ * 把一条台账记录说成一句用户能对症的话（P2-1，界面直接渲染）。
+ *
+ * 口径写在服务里，是为了让「刷新后看到的」和「重启后看到的」是同一段推导：
+ * - 失败时保留并显示上一次成功时间——一次抖动不该让有效订阅看起来像坏了；
+ * - 退避剩余要说清，否则用户以为后台还在持续重试；
+ * - 部分成功不是失败，但缺口必须跟在后面，不能显示成全绿。
+ */
+export function describeRefreshOutcome(
+  outcome: SubscriptionRefreshOutcome,
+  now: number = Date.now(),
+): { text: string; tone: RefreshOutcomeTone } {
+  const attempted = formatRelativeTime(outcome.attemptedAt, now);
+  if (outcome.failReason) {
+    const lastOk =
+      outcome.succeededAt === null ? '' : `，上次成功 ${formatRelativeTime(outcome.succeededAt, now)}`;
+    const remain = outcome.attemptedAt + backoffMsFor(outcome.failCount) - now;
+    const backoff =
+      outcome.failCount > 0 && remain > 0
+        ? `（连续 ${outcome.failCount} 次失败，约 ${formatWait(remain)}后自动重试）`
+        : '';
+    return { text: `${attempted}刷新失败：${outcome.failReason}${lastOk}${backoff}`, tone: 'bad' };
+  }
+  if (outcome.note) return { text: `${attempted}刷新成功，${outcome.note}`, tone: 'warn' };
+  return { text: `${attempted}刷新成功`, tone: 'ok' };
+}
+
+/** 「全部刷新」提示的三档语气 */
+export type RefreshSummaryTone = 'info' | 'success' | 'error';
+
+/**
+ * 「刷新全部」的一行文案（订阅管理页与源管理页共用一份口径）。
+ *
+ * 三档必须分开说：都没发起不是失败，把 deferred 省掉会让"TTL/退避跳过"显示成成功或失败。
+ */
+export function refreshSummaryText(result: SubscriptionRefreshResult): {
+  tone: RefreshSummaryTone;
+  text: string;
+} {
+  const { refreshed, failed, deferred } = result;
+  if (refreshed === 0 && failed === 0) {
+    return {
+      tone: 'info',
+      text:
+        deferred > 0
+          ? `已跳过 ${deferred} 个订阅（24h 内刷过或失败退避中）`
+          : '没有可刷新的订阅（只支持 URL 导入的订阅）',
+    };
+  }
+  const skipText = deferred > 0 ? `，${deferred} 个在 24h 或退避中未发起` : '';
+  if (failed === 0) return { tone: 'success', text: `已刷新 ${refreshed} 个订阅${skipText}` };
+  return {
+    tone: 'error',
+    text: `刷新完成：成功 ${refreshed}，失败 ${failed}${skipText}（原因见对应订阅行，可单条立即重试）`,
+  };
+}
+
+/**
+ * 刷一条订阅并记账（P2-1：自动与手动共用同一入口，口径才不会分叉）。
+ *
+ * 不抛异常：失败原因归化成一句话返回，由调用方决定是静默（自动）还是提示（手动）。
+ * 成功时同步推进 `subscription-refresh-state`，所以手动刷过的订阅在自动链路里
+ * 同样算"24h 内已刷新"。
+ */
+export async function refreshTracked(
+  url: string,
+): Promise<{
+  ok: boolean;
+  reason: string | null;
+  outcome: SubscriptionRefreshOutcome;
+  counts: { updated: number; newCount: number; jarDead: number; livesSynced: number; livesFailed: number } | null;
+}> {
+  try {
+    const counts = await importService.refreshSubscription(url);
+    // 部分成功不算失败（订阅本身刷到了），但缺口要留在台账里
+    const parts: string[] = [];
+    if (counts.newCount > 0) parts.push(`新增 ${counts.newCount} 条未导入`);
+    if (counts.jarDead > 0) parts.push(`${counts.jarDead} 个 jar 已失效未覆盖`);
+    if (counts.livesFailed > 0) parts.push(`${counts.livesFailed} 个直播源同步失败`);
+    const outcome = await writeOutcome(url, { ok: true, note: parts.length > 0 ? parts.join('，') : null });
+    const state = await readMap<number>(KV_REFRESH_STATE);
+    await kvRepo.set(KV_REFRESH_STATE, { ...state, [url]: outcome.succeededAt ?? Date.now() });
+    return { ok: true, reason: null, outcome, counts };
+  } catch (e) {
+    const reason = e instanceof Error ? e.message : String(e);
+    const outcome = await writeOutcome(url, { ok: false, reason });
+    logger.warn('订阅刷新失败（已记账）', url, reason);
+    return { ok: false, reason, outcome, counts: null };
+  }
+}
 
 /** 体检判坏口径（与 disableUnhealthy 一致：timeout 可能是瞬时慢，但连续多次即真死） */
 function isBadHealth(source: Source): boolean {
@@ -86,21 +282,18 @@ async function recheckAlive(source: Source): Promise<boolean> {
   }
 }
 
-/** 单条订阅刷新（成功返回时间戳，失败返回 null 并静默） */
+/** 单条订阅刷新（自动链路：失败静默，但一定记账） */
 async function refreshOne(url: string): Promise<number | null> {
-  try {
-    await importService.refreshSubscription(url);
-    return Date.now();
-  } catch (e) {
-    logger.warn('订阅自动刷新失败（静默）', url, e);
-    return null;
-  }
+  const result = await refreshTracked(url);
+  return result.ok ? result.outcome.succeededAt : null;
 }
 
-/** `maybeAutoRefresh` 的结果（刷新成功条数 / 失败条数） */
+/** `maybeAutoRefresh` 的结果 */
 export interface SubscriptionRefreshResult {
   refreshed: number;
   failed: number;
+  /** P2-1：TTL 内或连续失败退避中、这一轮没有发起的订阅数 */
+  deferred: number;
 }
 
 /** 自动刷新触发来源：启动 / 回前台（仅用于日志与排查） */
@@ -150,20 +343,21 @@ async function autoRefreshIfDue(trigger: AutoRefreshTrigger): Promise<AutoRefres
   const now = Date.now();
   if (autoRefreshRunAt !== null && now - autoRefreshRunAt < SUBSCRIPTION_REFRESH_TTL_MS) {
     logger.debug('订阅自动刷新跳过（TTL 未过期）', trigger, now - autoRefreshRunAt);
-    return { triggered: false, skipped: 'ttl', refreshed: 0, failed: 0 };
+    return { triggered: false, skipped: 'ttl', refreshed: 0, failed: 0, deferred: 0 };
   }
   if (!isOnline()) {
     logger.debug('订阅自动刷新跳过（离线）', trigger);
-    return { triggered: false, skipped: 'offline', refreshed: 0, failed: 0 };
+    return { triggered: false, skipped: 'offline', refreshed: 0, failed: 0, deferred: 0 };
   }
 
   // 先落闸门再执行：同步段无 await，两次连续触发不会都进入执行分支。
   // 失败（含抛出）不回退闸门——否则每次回前台都会重试，反而变成请求风暴；
-  // 未刷成功的订阅在 `subscription-refresh-state` 里没有新时间戳，下个 24h 窗口还会被扫到。
+  // 未刷成功的订阅在台账里只推进 `attemptedAt`，按 `backoffMsFor` 退避到点再试，
+  // 手动刷新走 `refreshTracked` 不受这两层限制。
   autoRefreshRunAt = now;
   const run = subscriptionLifecycleService.maybeAutoRefresh().catch((e: unknown) => {
     logger.debug('订阅自动刷新失败（静默）', trigger, e);
-    return { refreshed: 0, failed: 0 };
+    return { refreshed: 0, failed: 0, deferred: 0 };
   });
   autoRefreshInFlight = run;
   try {
@@ -177,42 +371,46 @@ async function autoRefreshIfDue(trigger: AutoRefreshTrigger): Promise<AutoRefres
 export const subscriptionLifecycleService = {
   /**
    * 启动/前台触发：距上次成功刷新超过 TTL 的订阅静默刷新（并发 ≤2）。
-   * 返回 { refreshed, failed }；调用方无需提示（失败静默）。
+   *
+   * `deferred` 是 P2-1 补上的第三档：连续失败的订阅在退避期内不重投，
+   * 这既不是成功也不是这次失败，界面必须能区分开（否则"一个都没刷"会显示成"全部失败"）。
+   * 逐订阅的成功时间/失败原因由 `refreshTracked` 就地记账，这里不再整表回写
+   * `subscription-refresh-state`——整表写会把并发的手动刷新结果覆盖掉。
    */
-  async maybeAutoRefresh(signal?: AbortSignal): Promise<{ refreshed: number; failed: number }> {
+  async maybeAutoRefresh(
+    signal?: AbortSignal,
+    options: { force?: boolean } = {},
+  ): Promise<{ refreshed: number; failed: number; deferred: number }> {
     const records = await listImportRecords();
-    if (records.length === 0) return { refreshed: 0, failed: 0 };
+    if (records.length === 0) return { refreshed: 0, failed: 0, deferred: 0 };
     const state = await readMap<number>(KV_REFRESH_STATE);
+    const outcomes = await readMap<SubscriptionRefreshOutcome>(KV_REFRESH_OUTCOMES);
     const now = Date.now();
 
-    const due = records.filter((record) => {
-      const last = state[record.url];
-      return last === undefined || now - last > SUBSCRIPTION_REFRESH_TTL_MS;
-    });
-    if (due.length === 0) return { refreshed: 0, failed: 0 };
+    const due: string[] = [];
+    let deferred = 0;
+    for (const record of records) {
+      if (isRefreshDue(record.url, state, outcomes, now, options.force === true)) due.push(record.url);
+      else deferred += 1;
+    }
+    if (due.length === 0) return { refreshed: 0, failed: 0, deferred };
 
     let refreshed = 0;
     let failed = 0;
     let cursor = 0;
-    const nextState: RefreshState = { ...state };
     await Promise.all(
       Array.from({ length: Math.min(SUBSCRIPTION_REFRESH_CONCURRENCY, due.length) }, async () => {
         while (cursor < due.length) {
-          const record = due[cursor];
+          const url = due[cursor];
           cursor += 1;
-          if (!record || signal?.aborted) return;
-          const at = await refreshOne(record.url);
-          if (at !== null) {
-            refreshed += 1;
-            nextState[record.url] = at;
-          } else {
-            failed += 1;
-          }
+          if (!url || signal?.aborted) return;
+          const at = await refreshOne(url);
+          if (at !== null) refreshed += 1;
+          else failed += 1;
         }
       }),
     );
-    if (refreshed > 0) await kvRepo.set(KV_REFRESH_STATE, nextState);
-    return { refreshed, failed };
+    return { refreshed, failed, deferred };
   },
 
   /**

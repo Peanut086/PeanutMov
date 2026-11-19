@@ -119,7 +119,9 @@ public final class CrashEventsCollector {
         if (!cacheDir.exists()) cacheDir.mkdirs();
         File out = new File(cacheDir, "peanutmov-crash-"
                 + new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date()) + ".txt");
-        try (BufferedWriter w = new BufferedWriter(new FileWriter(out))) {
+        // 崩溃证据同样会带出请求头/直链，导出前统一脱敏（口径见 LogRedactor）
+        try (BufferedWriter w = new BufferedWriter(
+                new LogRedactor.RedactingWriter(new FileWriter(out)))) {
             w.write("===== PeanutMov crash evidence =====\n");
             w.write("event: " + target.id + "\n");
             w.write("kind: " + target.kind + "\n");

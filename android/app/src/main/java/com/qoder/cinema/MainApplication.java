@@ -17,8 +17,9 @@ import java.util.List;
  *
  * 背景：TVBox jar 爬虫（如 ftyguard 系列）在 init 期会自行申请「所有文件访问」
  * 等特殊权限并拉起对应设置页；本应用不声明这些权限（设置页开关必然置灰），
- * 放行只会打断用户。应用自身从不打开系统设置页（全工程无此调用），因此全局
- * 过滤是安全的。SpiderPlugin.GuardedSpiderContext 只能拦住经由传入 Context 的
+ * 放行只会打断用户。应用自身打开设置页一律带上
+ * {@link #EXTRA_OWN_SETTINGS_JUMP}（见 {@code #blockSettingsJump}），普通跳转因此
+ * 全局过滤是安全的。SpiderPlugin.GuardedSpiderContext 只能拦住经由传入 Context 的
  * 跳转，爬虫若反射获取 Application（ActivityThread.currentApplication()）则绕过
  * 包装——所以必须在 Application 层兜底（真机实证 2026-10-25 20:30 绕过一次）。
  */
@@ -28,6 +29,13 @@ public class MainApplication extends Application {
     private static final String SETTINGS_ACTION_PREFIX = "android.settings.";
     /** P0: 网盘账号登录需要放行「所有文件访问」授权页 */
     private static final String ALLOWED_SETTINGS_ACTION = "android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION";
+    /**
+     * 本 App 自己打开设置页的凭证 extra（提醒渠道 / 精确闹钟 / 电池优化必须由用户自己授权）。
+     *
+     * 只按 action 放行等于把同一扇门交给 jar 爬虫（它们正是靠拉设置页 nag 用户），
+     * 所以放行条件是「带这个私有 extra」：爬虫拿不到约定键名，且每一次放行都单独留痕。
+     */
+    public static final String EXTRA_OWN_SETTINGS_JUMP = "com.qoder.cinema.extra.OWN_SETTINGS_JUMP";
 
     @Override
     public void onCreate() {
@@ -68,6 +76,7 @@ public class MainApplication extends Application {
         // 1. 检查未清除的哨兵（B1：per-invocation token 版）—— 同步，决定安全模式
         java.util.List<JSONObject> sentinels = CrashSentinel.readUnclearedAll();
         boolean crashed = true;
+        int verdictKind = ExitAttribution.UNKNOWN;
         // F2'：崩溃现场哨兵快照（clearAll 会清空磁盘，后台线程要用它做 jar 级隔离）
         final java.util.List<JSONObject> crashSentinels = new java.util.ArrayList<>();
         if (!sentinels.isEmpty()) {
@@ -79,7 +88,8 @@ public class MainApplication extends Application {
             // ROM 后台清理/低内存杀进程也会留下未清除哨兵，照常隔离等于每次被清就随机冤枉一个好源。
             ExitVerdict verdict = classifyLastExit(sentinel.optInt("pid", -1));
             AppLog.w("CrashExit", "sentinel attribution: " + verdict.detail);
-            crashed = verdict.kind != ExitAttribution.NON_CRASH_EXIT;
+            crashed = CrashResponse.isCrash(verdict.kind, false);
+            verdictKind = verdict.kind;
 
             if (crashed) {
                 CrashSentinel.recordCrash(this, sentinel);
@@ -87,12 +97,32 @@ public class MainApplication extends Application {
                 // 根据哨兵内容生成隔离签名
                 String signature = buildQuarantineSignature(sentinel);
                 if (signature != null) {
-                    // 爬虫原生崩溃归因可靠（哨兵紧贴 invoke 写入/清除）：首次即隔离该 jar+api，
-                    // 避免同一坏源反复崩进程；7 天后自动过期，也可在健康管理手动解除。
-                    // 其余签名（exoplayer）沿用 24h 内 2 次阈值——播放崩溃更可能与具体内容相关。
-                    if (signature.startsWith("spider:") || shouldQuarantine(signature)) {
+                    // P0-1：处置只看证据强度，不再由「是不是爬虫」直接决定，也不再只看 api 粒度。
+                    // 真机读数（同一份导出日志）：11-16 13:40 与 11-18 19:16/19:27/22:37 都是
+                    // status=11 而当场无 tombstone，旧逻辑首次即隔离 7 天；11-18 19:27→22:37 又是
+                    // 同一 jar 换 api 再崩，只按 api 计数永远升不了级。详见 CrashResponse。
+                    boolean spider = signature.startsWith("spider:");
+                    String jarMd5 = spider ? sentinel.optString("jarMd5", "") : "";
+                    int sameApi = crashCountInWindow(signature);
+                    // jarCrashCountInWindow 不限 api、含本次，所以减掉本签名那几次才剩下「同一个 jar 换 api 崩的」
+                    int sameJar = jarMd5.isEmpty() ? 0 : jarCrashCountInWindow(jarMd5);
+                    int otherApi = Math.max(0, sameJar - sameApi);
+                    int tier = CrashResponse.responseTier(spider, false, sameApi, otherApi);
+                    if (tier == CrashResponse.TIER_QUARANTINE) {
                         CrashSentinel.quarantine(this, signature);
-                        AppLog.w(TAG, "quarantined: " + signature);
+                    } else if (tier == CrashResponse.TIER_QUARANTINE_JAR) {
+                        CrashSentinel.quarantineJar(this, jarMd5);
+                    } else if (tier == CrashResponse.TIER_COOLDOWN) {
+                        CrashSentinel.startCooldown(this, signature, CrashResponse.SPIDER_COOLDOWN_MS);
+                    }
+                    if (tier != CrashResponse.TIER_NONE) {
+                        AppLog.w(TAG, "crash response=" + CrashResponse.tierName(tier)
+                                + " signature=" + signature + " sameApi24h=" + sameApi
+                                + " sameJarOtherApi24h=" + otherApi
+                                + (tier == CrashResponse.TIER_COOLDOWN
+                                        ? " auto-release in "
+                                                + (CrashResponse.SPIDER_COOLDOWN_MS / 60000L) + "min"
+                                        : ""));
                     }
                 }
 
@@ -130,18 +160,38 @@ public class MainApplication extends Application {
 
         // OPT-17: 以下 IO 重操作移后台线程
         final boolean crashedFinal = crashed;
+        final int verdictKindFinal = verdictKind;
         new Thread(() -> {
             // 0. 摄入 tombstone 摘要（A3）
             CrashNative.TombstoneInfo tombstone = CrashNative.ingest(this);
             if (tombstone != null) {
                 AppLog.w(TAG, "found native tombstone: " + tombstone.filename
                         + " signal=" + tombstone.signal + " fault=" + tombstone.faultAddr
+                        + " pid=" + tombstone.pid + " thread=" + tombstone.threadName
                         + " sig=" + tombstone.signature);
-                // F2'：原生崩溃 tombstone 是最强证据（xcrash 只在真崩时落盘）。把该 pid
-                // 现场的全部在途爬虫 jar 按 jarMd5 整体隔离——只崩一次也拉黑整个 jar，
+                // F2'：原生崩溃 tombstone 是最强证据（xcrash 只在真崩时落盘）。把与该 tombstone
+                // 现场对得上的在途爬虫 jar 按 jarMd5 整体隔离——只崩一次也拉黑整个 jar，
                 // 因为真凶在 jar 原生层，换 api 预热照崩（文件 B 两例同签名实证）。
-                if (crashedFinal && tombstone.crashSignal) {
+                //
+                // P0-1：这里不再要求 crashedFinal。真机实测 ROM 把原生段错误记成
+                // reason=1 EXIT_SELF（ExitAttribution 判为非崩溃退出），旧的
+                // `crashedFinal && tombstone.crashSignal` 闸门因此永远走不到 jar 级隔离；
+                // 反过来 tombstone 才是那一次真正的证据，所以由它覆盖同步阶段的结论。
+                if (tombstone.crashSignal) {
                     applyJarLevelQuarantine(tombstone, crashSentinels);
+                    if (!crashedFinal && !crashSentinels.isEmpty()) {
+                        for (JSONObject s : crashSentinels) {
+                            if (!sentinelMatchesTombstone(s, tombstone)) continue;
+                            AppLog.w(TAG, "exit verdict overridden by tombstone: attributed as "
+                                    + ExitAttribution.kindName(verdictKindFinal)
+                                    + " but xcrash caught " + tombstone.signal
+                                    + " on thread=" + tombstone.threadName
+                                    + " → attributed to " + s.optString("action", "?"));
+                            CrashSentinel.recordCrash(MainApplication.this, s);
+                            checkSafeMode();
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -243,39 +293,55 @@ public class MainApplication extends Application {
     }
 
     /**
-     * F2'：原生崩溃 tombstone 命中后，把该崩溃 pid 现场的全部在途爬虫 jar 整体（jar 级）隔离。
+     * F2'：原生崩溃 tombstone 命中后，把与崩溃现场对得上的在途爬虫 jar 整体（jar 级）隔离。
      *
-     * 匹配口径：优先 pid 精确匹配（同一次进程死亡）；tombstone 未带 pid 或对不上时，
-     * 退回隔离现场所有 spider 在途 jar——宁可多隔一个坏源，也不放它下次冷启再崩。
-     * 与 api 级隔离（{@link #buildQuarantineSignature}）叠加：jar 级签名 {@code spider:<md5>:*}
-     * 由 {@link CrashSentinel#isSpiderQuarantined} 在 load/invoke 前拦截。
+     * P0-1：匹配口径从「pid 对不上就全量兜底」改成 pid → 崩溃线程名两级，两级都对不上时不隔离。
+     * 旧兜底误伤面很大：11-18 那次 tombstone 落在 `spider-python-lo`（drpy 引擎自己的线程），
+     * 现场同时有 6 个 guard jar 的 `spider-worker-N` 哨兵在途，全量兜底会把 6 个源一起禁 7 天，
+     * 而它们与这次崩溃无关。
      */
     private void applyJarLevelQuarantine(CrashNative.TombstoneInfo tombstone,
                                          List<JSONObject> sentinels) {
         if (sentinels == null || sentinels.isEmpty()) return;
-        long pid = tombstone.pid;
         java.util.Set<String> jarMd5s = new java.util.LinkedHashSet<>();
-        java.util.Set<String> anyJarMd5s = new java.util.LinkedHashSet<>();
+        java.util.Set<String> untouched = new java.util.LinkedHashSet<>();
         for (JSONObject s : sentinels) {
             String action = s.optString("action", "");
             if (!action.startsWith("spider.")) continue;
             String md5 = s.optString("jarMd5", "");
             if (md5.isEmpty()) continue;
-            anyJarMd5s.add(md5);
-            if (pid <= 0 || s.optInt("pid", -1) == (int) pid) {
+            if (sentinelMatchesTombstone(s, tombstone)) {
                 jarMd5s.add(md5);
+            } else {
+                untouched.add(md5);
             }
-        }
-        if (jarMd5s.isEmpty() && !anyJarMd5s.isEmpty() && pid > 0) {
-            // tombstone pid 与哨兵 pid 对不上（个别 ROM 的 pid 字段口径差异）：全量兜底
-            AppLog.w(TAG, "tombstone pid=" + pid + " matched no in-flight spider sentinel; "
-                    + "falling back to jar-level quarantine of all " + anyJarMd5s.size() + " in-flight jar(s)");
-            jarMd5s = anyJarMd5s;
         }
         for (String md5 : jarMd5s) {
             CrashSentinel.quarantineJar(this, md5);
             AppLog.w(TAG, "jar-level quarantine from tombstone: spider:" + md5 + ":*");
         }
+        if (!untouched.isEmpty()) {
+            AppLog.i(TAG, "in-flight jar(s) left alone (tombstone pid=" + tombstone.pid
+                    + " thread=" + tombstone.threadName + "): " + untouched);
+        }
+    }
+
+    /**
+     * P0-1：哨兵与 tombstone 是否属于同一崩溃现场——只认 pid。
+     *
+     * <p>导出日志里三条 tombstone 的落点各不相同：11-16 23:54（pid=18923）与 11-17 00:02
+     * （pid=25392）当场被摄入，pid 与崩溃现场的在途哨兵一致 → 判匹配；11-16 13:40 那条
+     * （pid=14902，崩在 V8 的 maglev 线程）滞后 3 天到 11-19 才摄入，那时在途哨兵已是另一个
+     * 进程 → 判不匹配、不隔离，正是需要的行为（旧代码在这里会把现场全部 jar 一起拉黑 7 天）。
+     *
+     * <p>不用线程名做正向判据：同一根因落在线程不确定——maglev 那条与两条 spider-worker 的
+     * fault 地址同为 `0x7461642f`，线程名反而把同源崩溃分成两类。仅在 tombstone 没带 pid 时
+     * 退回线程类（此时 pid 无从校验，比全量兜底窄得多）。
+     */
+    static boolean sentinelMatchesTombstone(JSONObject sentinel, CrashNative.TombstoneInfo tombstone) {
+        if (sentinel == null || tombstone == null) return false;
+        if (tombstone.pid > 0) return sentinel.optInt("pid", -1) == (int) tombstone.pid;
+        return CrashResponse.sameCrashThread(tombstone.threadName, sentinel.optString("threadName", ""));
     }
 
     /**
@@ -304,9 +370,9 @@ public class MainApplication extends Application {
     }
 
     /**
-     * 判断是否应该隔离（24 小时内同签名崩溃 2 次）
+     * 统计 24 小时内同一签名的崩溃次数（含刚记录下的这一次）
      */
-    private boolean shouldQuarantine(String signature) {
+    private int crashCountInWindow(String signature) {
         org.json.JSONArray history = CrashSentinel.getCrashHistory(this);
         long now = System.currentTimeMillis();
         long windowMs = 24 * 60 * 60 * 1000L;
@@ -323,9 +389,34 @@ public class MainApplication extends Application {
                 }
             }
         } catch (Exception e) {
-            Log.w(TAG, "failed to check quarantine threshold", e);
+            Log.w(TAG, "failed to count crashes in window", e);
         }
-        return count >= 2;
+        return count;
+    }
+
+    /**
+     * P0-1：统计 24h 内同一 jarMd5（不限 api）的崩溃次数（含本次）。
+     *
+     * 为什么要单独按 jar 计：真机 11-18 19:27 崩在 `csp_PanWebShare123`、22:37 崩在
+     * `csp_PanWebShare`，同一个 jar 换 api 照崩，只按 api 签名各自算永远是 1 次，升不了级。
+     */
+    private int jarCrashCountInWindow(String jarMd5) {
+        org.json.JSONArray history = CrashSentinel.getCrashHistory(this);
+        long now = System.currentTimeMillis();
+        long windowMs = 24 * 60 * 60 * 1000L;
+        int count = 0;
+        try {
+            for (int i = 0; i < history.length(); i++) {
+                JSONObject entry = history.getJSONObject(i);
+                if (now - entry.getLong("recordedAt") > windowMs) continue;
+                JSONObject s = entry.getJSONObject("sentinel");
+                if (!s.optString("action", "").startsWith("spider.")) continue;
+                if (jarMd5.equals(s.optString("jarMd5", ""))) count++;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "failed to count jar crashes in window", e);
+        }
+        return count;
     }
 
     // ========== REV-24 P2：安全模式 ==========
@@ -355,6 +446,9 @@ public class MainApplication extends Application {
         }
         if (recentCrashes >= SAFE_MODE_THRESHOLD) {
             Log.w(TAG, "entering safe mode: " + recentCrashes + " crashes in 60s");
+            // 处置结论必须能在日志页看到：国产 ROM 屏蔽第三方 logcat，只有 AppLog 落盘的那份
+            // 导得出来，此前安全模式进出全程不可见，用户报「源全没了」时无从归因。
+            AppLog.w(TAG, "entering safe mode: " + recentCrashes + " crashes in 60s");
             android.content.SharedPreferences prefs = getSharedPreferences("crash-sentinel-prefs", MODE_PRIVATE);
             prefs.edit()
                     .putBoolean(KEY_SAFE_MODE, true)
@@ -435,6 +529,11 @@ public class MainApplication extends Application {
     private static boolean blockSettingsJump(Intent intent) {
         String action = intent == null ? null : intent.getAction();
         if (action != null && action.startsWith(SETTINGS_ACTION_PREFIX)) {
+            // 本 App 的授权入口（提醒渠道 / 精确闹钟 / 电池优化）带私有 extra 才放行
+            if (intent.hasExtra(EXTRA_OWN_SETTINGS_JUMP)) {
+                Log.d(TAG, "own settings jump allowed: " + action);
+                return false;
+            }
             // P0: 放行「所有文件访问」授权页，其余 settings 跳转继续拦截
             if (ALLOWED_SETTINGS_ACTION.equals(action)) {
                 Log.d(TAG, "allowed settings jump: " + action);

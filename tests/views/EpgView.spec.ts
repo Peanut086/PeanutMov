@@ -45,9 +45,15 @@ vi.mock('@/services/epgSourceService', () => ({
   epgSourceService: { list: vi.fn() },
 }));
 
-vi.mock('@/services/reminderService', () => ({
-  reminderService: { list: vi.fn(), upsert: vi.fn(), cancel: vi.fn() },
-}));
+vi.mock('@/services/reminderService', async (importOriginal) => {
+  // 只桩掉服务本体；投递档位的纯函数（describeReminderDelivery / probe）用真实实现，
+  // 免得视图测试和线上口径各说各话
+  const actual = await importOriginal<typeof import('@/services/reminderService')>();
+  return {
+    ...actual,
+    reminderService: { list: vi.fn(), upsert: vi.fn(), cancel: vi.fn() },
+  };
+});
 
 vi.mock('@/services/liveService', () => ({
   liveService: {

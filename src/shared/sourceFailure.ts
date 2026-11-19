@@ -22,6 +22,7 @@ export type SourceFailureKind =
   | 'source_internal'
   | 'safe_mode'
   | 'quarantined'
+  | 'cooldown'
   | 'spider_mismatch'
   | 'jar_conflict'
   | 'auth'
@@ -57,6 +58,12 @@ export const MAGNET_MESSAGE = '磁力链接需用外部下载器/播放器打开
 export const SAFE_MODE_MESSAGE = '安全模式保护中：爬虫源已暂停';
 /** 爬虫隔离：同签名 24h 内崩溃 2 次，隔离 7 天 */
 export const QUARANTINE_MESSAGE = '该爬虫因连续崩溃被隔离';
+/**
+ * P0-1：短时冷却——崩过一次但当场没有 tombstone 实锤，只拦半小时，不进隔离名单。
+ * 原生抛的原文是 `spider cooling down (…)`（见 SpiderPlugin.spiderBlockMessage），
+ * 分类认 `cooling down` 关键字，两边措辞要一起改。
+ */
+export const COOLDOWN_MESSAGE = '该爬虫刚崩过一次，短时冷却中';
 /** 订阅 api 类名与 jar 内容不匹配 */
 export const SPIDER_MISMATCH_MESSAGE = '爬虫类缺失，源配置与 jar 不匹配';
 /** 爬虫 jar 之间的依赖冲突（同一 dex 里同类名不同签名） */
@@ -94,12 +101,15 @@ export function isRuleScriptMessage(raw: string | null | undefined): boolean {
  *
  * 真机明细里这类文案同样不可读，且暴露实现：
  * `爬虫调用失败: NullPointerException: Attempt to invoke virtual method ...`、
- * `JsonSyntaxException: Expected BEGIN_OBJECT but was STRING`。
+ * `JsonSyntaxException: Expected BEGIN_OBJECT but was STRING`、
+ * `SQLiteCantOpenDatabaseException: Cannot open database '.../databases/tv' ... doesn't exist`
+ * （jar 按 TVBox 宿主约定去开宿主的 `databases/tv`，本 App 不建这个库；真机里每次 jar 加载后
+ * 成对出现、D 级、jar 自己接住——属源侧环境缺失噪音，不能据此判源死）。
  */
 export function isSourceInternalMessage(raw: string | null | undefined): boolean {
   if (typeof raw !== 'string' || raw.length === 0) return false;
   return (
-    /\b(NullPointerException|ArrayIndexOutOfBoundsException|IndexOutOfBoundsException|ClassCastException|IllegalStateException|IllegalArgumentException|JsonSyntaxException|NumberFormatException|NoSuchMethodError|NoSuchFieldError|ClassNotFoundException|InvocationTargetException)\b/.test(
+    /\b(NullPointerException|ArrayIndexOutOfBoundsException|IndexOutOfBoundsException|ClassCastException|IllegalStateException|IllegalArgumentException|JsonSyntaxException|NumberFormatException|NoSuchMethodError|NoSuchFieldError|ClassNotFoundException|InvocationTargetException|SQLiteCantOpenDatabaseException|SQLiteException)\b/.test(
       raw,
     ) ||
     /Attempt to invoke (virtual|interface) method|Expected BEGIN_(OBJECT|ARRAY)/.test(raw) ||
@@ -161,6 +171,8 @@ export function classifySourceFailure(error: AppErrorShape | null | undefined): 
   // 保护态/配置态优先于内部异常判定（detail 里带 IllegalStateException 等原文）
   if (error.message === SAFE_MODE_MESSAGE || text.includes('safe mode active')) return 'safe_mode';
   if (error.message === QUARANTINE_MESSAGE || /quarantined/i.test(text)) return 'quarantined';
+  // P0-1：冷却不是隔离——到点自动放行，也不进隔离名单。混在一起说会让用户去解一份没有记录的隔离。
+  if (error.message === COOLDOWN_MESSAGE || /cooling down/i.test(text)) return 'cooldown';
   if (error.message === SPIDER_MISMATCH_MESSAGE) return 'spider_mismatch';
   // F9：jar 依赖冲突是进程内确定性的，必须先于「脚本/内部异常」判定，否则会被归成可重试的 source_internal
   if (isJarLinkageMessage(text) || error.message === JAR_CONFLICT_MESSAGE) return 'jar_conflict';
@@ -226,8 +238,13 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
   },
   quarantined: {
     title: QUARANTINE_MESSAGE,
-    hint: '同一爬虫短时间内崩溃 2 次被隔离 7 天（源体检可手动解除）。建议换源播放。',
+    hint: '同一爬虫 24 小时内崩 2 次，或原生崩溃实锤落在整个 jar 上，会被隔离 7 天（健康中心可手动解除）。建议换源播放。',
     actions: ['switch-source', 'health-check'],
+  },
+  cooldown: {
+    title: COOLDOWN_MESSAGE,
+    hint: '这个爬虫在进程崩溃时正在加载，但当场没有原生崩溃实锤，所以只短时冷却半小时，到点自动放行（健康中心的「冷却中」可立即放行）。先换源看，不必去解一份不存在的隔离。',
+    actions: ['switch-source', 'health-check', 'retry'],
   },
   spider_mismatch: {
     title: SPIDER_MISMATCH_MESSAGE,

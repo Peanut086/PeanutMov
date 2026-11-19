@@ -6,13 +6,16 @@
  *   与服务层 `normalizeLead` 的允许集合保持单一事实来源（REV-20）
  * - 0 分钟 = 节目开播时刻提醒（`notifyAt = startAt`）
  * - 已设置时显示当前提前量与"取消提醒"
- * - 权限被拒 / Web 环境：明确提示"仅 App 内提醒"（AC-168 降级口径）
+ * - 投递说明（P2-2）：显示当前/上次排期的真实档位（可准时 / 可能被延迟 / 仅 App 内），
+ *   并按缺的那个开关给出系统设置入口；入口打不开时说明原因，不假装成功
  * - 空态：节目已开始 → 不可设置（按钮 disabled + 说明）
  */
 import { computed } from 'vue';
 
 import { REMINDER_LEAD_OPTIONS } from '@/shared/constants';
+import type { ReminderSettingsTarget } from '@/native/notificationScheduler';
 import type { Reminder, ReminderLead } from '@/types';
+import type { ReminderDeliveryView } from '@/services/reminderService';
 
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
@@ -29,12 +32,16 @@ const props = defineProps<{
   saving: boolean;
   /** 上次设置的服务端提示（权限降级等） */
   notice: string | null;
+  /** 投递档位说明（null = 还不知道，此时不显示这一行） */
+  deliveryView: ReminderDeliveryView | null;
 }>();
 
 const emit = defineEmits<{
   (e: 'update:modelValue', v: boolean): void;
   (e: 'confirm', leadMinutes: ReminderLead): void;
   (e: 'cancel-reminder'): void;
+  /** 打开对应系统设置页（模板只在有缺口时渲染入口，这里仍允许 null 以免类型断言） */
+  (e: 'open-settings', target: ReminderSettingsTarget | null): void;
 }>();
 
 /** 与服务层同源：0/5/10/15/30（不再本地硬编码子集） */
@@ -114,10 +121,30 @@ const startLabel = computed(() => {
           </button>
         </div>
 
-        <p class="reminder__hint">
-          提醒会在设定时间由系统通知；未授予通知权限时改为 App 内提示。
+        <p v-if="!deliveryView" class="reminder__hint">
+          提醒会在设定时间由系统通知；投递受限时，下面会说明原因。
         </p>
       </template>
+
+      <!-- P2-2：投递档位如实披露 + 按缺口给系统设置入口（Web / 老包读不到就不显示） -->
+      <div v-if="deliveryView" class="reminder__delivery">
+        <p
+          class="reminder__delivery-text"
+          :class="`reminder__delivery-text--${deliveryView.tier}`"
+          data-test="reminder-delivery"
+        >
+          {{ deliveryView.text }}
+        </p>
+        <button
+          v-if="deliveryView.settingsLabel"
+          class="btn btn--secondary btn--sm reminder__settings"
+          type="button"
+          data-test="reminder-settings"
+          @click="emit('open-settings', deliveryView.settingsTarget)"
+        >
+          {{ deliveryView.settingsLabel }}
+        </button>
+      </div>
     </div>
   </BottomSheet>
 </template>
@@ -213,5 +240,36 @@ const startLabel = computed(() => {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
   line-height: 1.6;
+}
+
+/* P2-2：投递档位说明（退化和受阻才需要颜色强调） */
+.reminder__delivery {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.reminder__delivery-text {
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.reminder__delivery-text--exact {
+  color: var(--color-success);
+}
+
+.reminder__delivery-text--delayed {
+  color: var(--color-warning);
+}
+
+.reminder__delivery-text--in-app {
+  color: var(--color-danger);
+}
+
+.reminder__settings {
+  align-self: flex-start;
 }
 </style>

@@ -1,5 +1,6 @@
 package com.qoder.cinema;
 
+import android.os.SystemClock;
 import android.util.Log;
 
 import com.getcapacitor.JSObject;
@@ -201,6 +202,11 @@ public class LocalProxyPlugin extends Plugin {
 
     /** 单连接：解析请求行/Range → 带头转发 → 流式回写 */
     private void handle(Socket client) {
+        // 失败时只报「connection failed + 栈」无法归因：拖拽 seek 的 21s 长尾就是这样
+        // 卡在代理链路上却看不出来。这里补一行「主机/是否分片/Range/耗时」的定位信息，
+        // 只记主机，签名查询串不入日志（导出还有 LogRedactor 兜底）。
+        long startedAt = SystemClock.elapsedRealtime();
+        String diag = "target=unknown";
         try (Socket c = client) {
             c.setSoTimeout(READ_TIMEOUT_MS);
             // FIX-D2：设置写超时，防止 out.write 永久阻塞
@@ -248,9 +254,22 @@ public class LocalProxyPlugin extends Plugin {
             }
             // 如果是分片请求，用分片 URL；否则用原 URL
             Target actualTarget = segmentUrl != null ? new Target(segmentUrl, target.headers) : target;
+            diag = "host=" + hostOf(actualTarget.url) + " kind=" + (segmentUrl != null ? "segment" : "playlist")
+                    + " range=" + (range == null ? "-" : range);
             forward(c, actualTarget, range, token);
         } catch (Exception e) {
-            com.qoder.cinema.AppLog.w(TAG, "proxy connection failed", e);
+            com.qoder.cinema.AppLog.w(TAG,
+                    "proxy connection failed " + diag + " in "
+                            + (SystemClock.elapsedRealtime() - startedAt) + "ms", e);
+        }
+    }
+
+    /** 只取主机名：定位用，绝不把带签名的完整地址写进日志 */
+    private static String hostOf(String url) {
+        try {
+            return new URL(url).getHost();
+        } catch (Exception e) {
+            return "unparsed";
         }
     }
 

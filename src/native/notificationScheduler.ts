@@ -1,15 +1,51 @@
 /**
- * 原生通知适配（EXT-06 / FR-71，API-24）
+ * 原生通知适配（EXT-06 / FR-71，API-24；P2-2 补投递诊断）
  *
- * - 不新增原生插件：复用既有 `@capacitor/local-notifications@7`；
+ * - 不新增原生排期插件：复用既有 `@capacitor/local-notifications@7`；
+ * - 排期显式带 `channelId`（P2-2）：不传时插件用自建的 `default` 渠道，
+ *   「节目提醒」渠道（HIGH，可横幅）虽然建好了却一次也没被用上；
+ * - 投递能力（通知权限 / 渠道 / 精确闹钟 / 电池优化）与系统授权页入口走自建
+ *   `Reminder` 插件（`ReminderPlugin.java`）——官方插件读不到这些，也跳不过去；
  * - Web 端 `ensurePermission()` 恒为 `unsupported`，`schedule` 直接拒绝，
  *   由 `reminderService` 降级为页内提示（不静默失败）；
  * - 动态 import 插件，避免 Web 首屏加载原生桥接代码。
  */
+import { registerPlugin } from '@capacitor/core';
+
 import { isNative } from '@/shared/platform';
 import { logger } from '@/shared/logger';
 
 export type NotificationPermission = 'granted' | 'denied' | 'unsupported';
+
+/** 与 `ReminderNotifications.CHANNEL_ID` 一致：改一边必须改另一边 */
+export const REMINDER_CHANNEL_ID = 'programme_reminders';
+
+/** 可跳转的系统授权页 */
+export type ReminderSettingsTarget = 'notifications' | 'exactAlarm' | 'battery';
+
+/**
+ * 原生侧读出的投递能力快照。
+ *
+ * `channelImportance` 用数值而不是枚举名：用户可以在系统设置里把渠道降级，
+ * 三档判定要看真实值（`NotificationManager.IMPORTANCE_*`）。
+ */
+export interface ReminderDeliveryState {
+  notificationsEnabled: boolean;
+  channelExists: boolean;
+  /** 渠道重要性；渠道不存在为 -1 */
+  channelImportance: number;
+  /** Android 12+ 精确闹钟授权；12 以下原生侧恒报 true */
+  exactAlarmsAllowed: boolean;
+  batteryOptimizationIgnored: boolean;
+}
+
+interface ReminderBridgePlugin {
+  getDeliveryState(): Promise<ReminderDeliveryState>;
+  openSettings(options: { target: ReminderSettingsTarget }): Promise<void>;
+}
+
+/** 插件缺失（Web / 老包）时抛错，由调用方降级，不在此处猜测状态 */
+const ReminderBridge = registerPlugin<ReminderBridgePlugin>('Reminder');
 
 export interface ScheduledNotification {
   /** 32 位正整数（Android 通知 id 限制） */
@@ -65,6 +101,26 @@ export const notificationScheduler = {
     }
   },
 
+  /**
+   * 只读权限，绝不弹授权框。
+   * 界面刷新投递档位时用它：展示一次不该把用户推进权限弹窗，
+   * 只有真正排期（`ensurePermission`）才请求授权。
+   */
+  async peekPermission(): Promise<NotificationPermission> {
+    const mod = await loadPlugin();
+    if (!mod) return 'unsupported';
+    try {
+      const current = await mod.LocalNotifications.checkPermissions();
+      if (current.display === 'granted') return 'granted';
+      if (current.display === 'denied') return 'denied';
+      // prompt / limited：还没问过用户，按「未授权」披露，不代替排期去请求
+      return 'denied';
+    } catch (error) {
+      logger.warn('通知权限只读检查失败', error);
+      return 'denied';
+    }
+  },
+
   async schedule(item: ScheduledNotification): Promise<{ scheduled: boolean }> {
     const mod = await loadPlugin();
     if (!mod) throw new Error('当前平台不支持本地通知');
@@ -74,12 +130,51 @@ export const notificationScheduler = {
           id: item.nativeId,
           title: item.title,
           body: item.body,
+          // P2-2：不带 channelId 时插件落自建 default 渠道，节目提醒渠道白建了
+          channelId: REMINDER_CHANNEL_ID,
           schedule: { at: normalizeAt(item.at), allowWhileIdle: true },
           extra: item.extra,
         },
       ],
     });
     return { scheduled: true };
+  },
+
+  /**
+   * 投递能力快照；Web / 插件缺失 / 读取失败返回 null（调用方按「仅 App 内提醒」披露）。
+   * 不抛异常：这一页的目的就是说清"为什么提醒没响"，不能因为诊断本身失败而崩。
+   */
+  async getDeliveryState(): Promise<ReminderDeliveryState | null> {
+    if (!isNative()) return null;
+    try {
+      const state = await ReminderBridge.getDeliveryState();
+      return {
+        notificationsEnabled: state.notificationsEnabled === true,
+        channelExists: state.channelExists === true,
+        channelImportance:
+          typeof state.channelImportance === 'number' ? state.channelImportance : -1,
+        exactAlarmsAllowed: state.exactAlarmsAllowed === true,
+        batteryOptimizationIgnored: state.batteryOptimizationIgnored === true,
+      };
+    } catch (error) {
+      logger.warn('读取提醒投递状态失败', error);
+      return null;
+    }
+  },
+
+  /** 打开系统授权页；失败返回原因，由界面显示（ROM 裁页是真实存在的） */
+  async openSettings(
+    target: ReminderSettingsTarget,
+  ): Promise<{ opened: boolean; reason: string | null }> {
+    if (!isNative()) return { opened: false, reason: '当前平台没有系统通知设置页' };
+    try {
+      await ReminderBridge.openSettings({ target });
+      return { opened: true, reason: null };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      logger.warn('打开提醒相关设置页失败', target, error);
+      return { opened: false, reason };
+    }
   },
 
   async cancel(nativeIds: number[]): Promise<{ canceled: number }> {

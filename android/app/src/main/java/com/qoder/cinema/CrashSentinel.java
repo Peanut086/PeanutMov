@@ -25,6 +25,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * 哨兵目录：filesDir/crash-sentinel/
  * 文件名格式：<startedAt>-<seq>-t<tid>.json
  * 隔离名单：SharedPreferences quarantine (key=signature, value=timestamp)
+ *
+ * P0-1：哨兵只能证明"崩溃时这个操作在跑"，证明不了"是它让进程死的"。归因引擎据此把处置
+ * 分成两档，隔离（quarantine，7 天）只在有 tombstone 实锤或同一签名反复出现时才用，单次可疑
+ * 只进短时冷却（cooldown），避免一次误判把源禁一整周。
  */
 public class CrashSentinel {
     private static final String TAG = "CrashSentinel";
@@ -33,6 +37,8 @@ public class CrashSentinel {
     private static final String PREFS_NAME = "crash-sentinel-prefs";
     private static final String KEY_QUARANTINE = "quarantine";
     private static final String KEY_CRASH_HISTORY = "crash_history";
+    /** P0-1：短时冷却表（值为到期时刻），与 7 天隔离分表存放，设置页的解除隔离不碰它 */
+    private static final String KEY_COOLDOWN = "cooldown";
     private static final long QUARANTINE_DURATION_MS = 7 * 24 * 60 * 60 * 1000L; // 7 天
 
     private static File sentinelDir;
@@ -247,9 +253,23 @@ public class CrashSentinel {
             quarantine.put(signature, System.currentTimeMillis());
             prefs.edit().putString(KEY_QUARANTINE, quarantine.toString()).apply();
             Log.i(TAG, "quarantined: " + signature);
+            // P0-1：隔离档覆盖冷却档，撤掉被覆盖的冷却键，免得同一签名在两张表里各留一条记录
+            if (signature != null && signature.endsWith(":*")) {
+                clearJarCooldowns(context, jarMd5Of(signature));
+            } else {
+                clearCooldown(context, signature);
+            }
         } catch (Exception e) {
             Log.w(TAG, "failed to quarantine", e);
         }
+    }
+
+    /** 从 {@code spider:<md5>:<api>} / {@code spider:<md5>:*} 里取 jarMd5，取不到给空串 */
+    private static String jarMd5Of(String signature) {
+        if (signature == null || !signature.startsWith("spider:")) return "";
+        String rest = signature.substring("spider:".length());
+        int colon = rest.indexOf(':');
+        return colon < 0 ? rest : rest.substring(0, colon);
     }
 
     /**
@@ -279,19 +299,129 @@ public class CrashSentinel {
     }
 
     /**
-     * F2'：爬虫加载/调用前的隔离检查——同时认 api 级签名（{@code spider:<md5>:<api>}）
-     * 与 jar 级签名（{@code spider:<md5>:*}）。
+     * P0-1：爬虫在 load/invoke 前被拦的原因；返回 {@code null} 表示放行。
      *
-     * 为什么要 jar 级：真机 tombstone 实证（文件 B 两例同签名 SIGSEGV），同一 jar 换个 api
-     * 预热就照崩——原生真凶在 jar 里，与调哪个 api 无关。仅靠崩溃现场那个 api 的签名
-     * 隔离，等于每次都隔错东西。tombstone 命中即对整个 jarMd5 下 {@code :*} 通配。
+     * <ul>
+     *   <li>{@code "api-quarantined"} —— 该 jar+api 被隔离 7 天；</li>
+     *   <li>{@code "jar-quarantined"} —— 整个 jarMd5 被隔离（{@code spider:<md5>:*}）；</li>
+     *   <li>{@code "cooldown"} —— 短时冷却，到点自动放行。</li>
+     * </ul>
+     *
+     * <p>为什么要 jar 级：真机两次实证「同一 jar 换个 api 照崩」——tombstone 实锤（F2'），
+     * 以及导出日志 11-18 19:27 崩 {@code csp_PanWebShare123}、22:37 崩 {@code csp_PanWebShare}
+     * （同一 jarMd5 {@code 440f930e…}，两次都无 tombstone）。只隔崩溃现场那个 api，等于每次都
+     * 隔错东西；{@code isQuarantined} 因此在 api 级之外再认 {@code :*} 通配。
+     *
+     * <p>为什么要把冷却与隔离分开报：两者对用户的说法完全不同（"这个源崩过、7 天内不再用" vs
+     * "刚崩过一次，半小时后再试"），混成一句会让健康管理和加载失败提示都不诚实。
      */
-    public static synchronized boolean isSpiderQuarantined(Context context, String jarMd5, String api) {
-        if (jarMd5 == null || jarMd5.isEmpty()) return false;
+    public static synchronized String spiderBlockReason(Context context, String jarMd5, String api) {
+        if (jarMd5 == null || jarMd5.isEmpty()) return null;
         if (api != null && !api.isEmpty() && isQuarantined(context, "spider:" + jarMd5 + ":" + api)) {
-            return true;
+            return "api-quarantined";
         }
-        return isQuarantined(context, "spider:" + jarMd5 + ":*");
+        if (isQuarantined(context, "spider:" + jarMd5 + ":*")) return "jar-quarantined";
+        if (api != null && !api.isEmpty() && isCoolingDown(context, "spider:" + jarMd5 + ":" + api)) {
+            return "cooldown";
+        }
+        return null;
+    }
+
+    // ========== P0-1：短时冷却（与 7 天隔离分表存放，互不影响） ==========
+
+    /**
+     * 开始一次短时冷却：值为到期时刻（毫秒），到期后自动放行；不写隔离名单。
+     */
+    public static synchronized void startCooldown(Context context, String signature, long durationMs) {
+        try {
+            JSONObject cooldown = readCooldown(context);
+            cooldown.put(signature, System.currentTimeMillis() + Math.max(0L, durationMs));
+            writeCooldown(context, cooldown);
+            Log.i(TAG, "cooldown started: " + signature + " until+" + durationMs + "ms");
+        } catch (Exception e) {
+            Log.w(TAG, "failed to start cooldown", e);
+        }
+    }
+
+    /** 是否处于冷却中（到期即视为不冷却，并顺手清掉该键） */
+    public static synchronized boolean isCoolingDown(Context context, String signature) {
+        try {
+            JSONObject cooldown = readCooldown(context);
+            if (!cooldown.has(signature)) return false;
+            long until = cooldown.optLong(signature, 0L);
+            if (System.currentTimeMillis() < until) return true;
+            cooldown.remove(signature);
+            writeCooldown(context, cooldown);
+            return false;
+        } catch (Exception e) {
+            Log.w(TAG, "failed to check cooldown", e);
+            return false;
+        }
+    }
+
+    /** 冷却到期时刻（0 = 不在冷却），供日志与诊断页说明"还有多久自动放行" */
+    public static synchronized long cooldownUntil(Context context, String signature) {
+        try {
+            JSONObject cooldown = readCooldown(context);
+            long until = cooldown.optLong(signature, 0L);
+            return until > System.currentTimeMillis() ? until : 0L;
+        } catch (Exception e) {
+            return 0L;
+        }
+    }
+
+    /**
+     * 当前处于冷却中的签名快照：key=签名，value=剩余毫秒（已过期的键顺手清掉）。
+     *
+     * P0-1：冷却不影响隔离名单，健康中心必须看得见它，否则用户只会遇到"源打不开、
+     * 名单里却什么都没有"——排查入口不能被它要解释的问题挡住。
+     */
+    public static synchronized JSONObject cooldownSnapshot(Context context) {
+        JSONObject result = new JSONObject();
+        try {
+            JSONObject cooldown = readCooldown(context);
+            long now = System.currentTimeMillis();
+            Iterator<String> keys = cooldown.keys();
+            List<String> expired = new ArrayList<>();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                long until = cooldown.optLong(key, 0L);
+                if (until <= now) {
+                    expired.add(key);
+                    continue;
+                }
+                result.put(key, until - now);
+            }
+            if (!expired.isEmpty()) {
+                for (String key : expired) cooldown.remove(key);
+                writeCooldown(context, cooldown);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "failed to read cooldown snapshot", e);
+        }
+        return result;
+    }
+
+    /** 冷却升级为隔离时调用：把冷却键撤掉，避免同一签名两处都有记录 */
+    public static synchronized void clearCooldown(Context context, String signature) {
+        try {
+            JSONObject cooldown = readCooldown(context);
+            if (!cooldown.has(signature)) return;
+            cooldown.remove(signature);
+            writeCooldown(context, cooldown);
+        } catch (Exception e) {
+            Log.w(TAG, "failed to clear cooldown", e);
+        }
+    }
+
+    private static JSONObject readCooldown(Context context) throws Exception {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        return new JSONObject(prefs.getString(KEY_COOLDOWN, "{}"));
+    }
+
+    private static void writeCooldown(Context context, JSONObject cooldown) {
+        SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        prefs.edit().putString(KEY_COOLDOWN, cooldown.toString()).apply();
     }
 
     /**
@@ -303,6 +433,37 @@ public class CrashSentinel {
     }
 
     /**
+     * P0-1：jar 级隔离落实后，撤掉该 jar 下所有 api 的短时冷却键。
+     *
+     * 冷却是「单次可疑」档，隔离是「实锤」档，前者已被后者覆盖；不清的话同一签名在两张表里
+     * 各留一条记录，冷却到点后读起来就像这个 api 又被放行过一轮。
+     */
+    public static synchronized void clearJarCooldowns(Context context, String jarMd5) {
+        if (jarMd5 == null || jarMd5.isEmpty()) return;
+        try {
+            JSONObject cooldown = readCooldown(context);
+            String prefix = "spider:" + jarMd5 + ":";
+            boolean changed = false;
+            Iterator<String> keys = cooldown.keys();
+            List<String> hit = new ArrayList<>();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (key.startsWith(prefix)) hit.add(key);
+            }
+            for (String key : hit) {
+                cooldown.remove(key);
+                changed = true;
+            }
+            if (changed) {
+                writeCooldown(context, cooldown);
+                Log.i(TAG, "cooldown cleared by jar-level quarantine: " + hit);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "failed to clear jar cooldowns", e);
+        }
+    }
+
+    /**
      * 解除某个签名的隔离
      */
     public static synchronized void unquarantine(Context context, String signature) {
@@ -310,12 +471,56 @@ public class CrashSentinel {
             SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             String quarantineJson = prefs.getString(KEY_QUARANTINE, "{}");
             JSONObject quarantine = new JSONObject(quarantineJson);
-            quarantine.remove(signature);
+            // P0-1：一次「解除」把该 jar 的隔离与冷却一起清掉。健康中心的解除按钮分不出
+            // 面前这条属于哪一档，只清一档就会出现「点了还在被拦」，那比不加这个按钮更糟。
+            List<String> related = new ArrayList<>();
+            related.add(signature);
+            if (signature != null && signature.endsWith(":*")) {
+                String prefix = signature.substring(0, signature.length() - 1);
+                related.addAll(cooldownKeysWithPrefix(context, prefix));
+                related.addAll(quarantineKeysWithPrefix(prefs, prefix));
+            }
+            for (String key : related) {
+                quarantine.remove(key);
+                clearCooldown(context, key);
+            }
             prefs.edit().putString(KEY_QUARANTINE, quarantine.toString()).apply();
-            Log.i(TAG, "unquarantined: " + signature);
+            Log.i(TAG, "unquarantined: " + related);
         } catch (Exception e) {
             Log.w(TAG, "failed to unquarantine", e);
         }
+    }
+
+    /** 冷却表里以某前缀开头的键（jar 级解除时用：{@code spider:<md5>:} 覆盖该 jar 全部 api） */
+    private static List<String> cooldownKeysWithPrefix(Context context, String prefix) {
+        List<String> hit = new ArrayList<>();
+        try {
+            JSONObject cooldown = readCooldown(context);
+            Iterator<String> keys = cooldown.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (key.startsWith(prefix)) hit.add(key);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "failed to scan cooldown keys", e);
+        }
+        return hit;
+    }
+
+    /** 隔离表里以某前缀开头的键（jar 级 {@code :*} 解除时，同 jar 的 api 级隔离一并放行） */
+    private static List<String> quarantineKeysWithPrefix(SharedPreferences prefs, String prefix) {
+        List<String> hit = new ArrayList<>();
+        try {
+            JSONObject quarantine = new JSONObject(prefs.getString(KEY_QUARANTINE, "{}"));
+            Iterator<String> keys = quarantine.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (key.startsWith(prefix)) hit.add(key);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "failed to scan quarantine keys", e);
+        }
+        return hit;
     }
 
     /**

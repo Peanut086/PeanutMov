@@ -58,6 +58,19 @@ describe('isRuleScriptMessage / sanitizeSourceMessage（P1-5）', () => {
     expect(sanitizeSourceMessage('爬虫调用失败: ArrayIndexOutOfBoundsException: length=1; index=1')).toBe(
       SOURCE_INTERNAL_MESSAGE,
     );
+    // 真机导出日志 26962 行里 38 次的 jar 宿主库噪音：jar 按 TVBox 约定去开宿主的
+    // databases/tv，本 App 不建这个库。收敛成人话，并且只算瞬时故障，不据此判源死。
+    expect(
+      sanitizeSourceMessage(
+        "爬虫调用失败: SQLiteCantOpenDatabaseException: Cannot open database '/data/user/0/com.qoder.cinema/databases/tv' with flags 0x1: File /data/user/0/com.qoder.cinema/databases/tv doesn't exist",
+      ),
+    ).toBe(SOURCE_INTERNAL_MESSAGE);
+    expect(
+      classifySourceFailure(
+        shape('E_UNKNOWN', "SQLiteCantOpenDatabaseException: Cannot open database '.../databases/tv' doesn't exist"),
+      ),
+    ).toBe('source_internal');
+    expect(isTransientFailure('source_internal')).toBe(true);
     // 人话文案不误伤
     expect(sanitizeSourceMessage('源可加载但没有内容（源站可能已失效）')).toBe(
       '源可加载但没有内容（源站可能已失效）',

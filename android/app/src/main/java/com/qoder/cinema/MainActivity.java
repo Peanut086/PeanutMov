@@ -52,6 +52,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(KeepAwakePlugin.class);
         // 全屏播放时切换 edge-to-edge 沉浸模式（消除刘海留白竖条）
         registerPlugin(PlayerUiPlugin.class);
+        // P2-2：提醒投递诊断 + 系统授权页入口（src/native/notificationScheduler.ts 调用）
+        registerPlugin(ReminderPlugin.class);
         super.onCreate(savedInstanceState);
 
         // 默认 WebView 会按系统「字体大小」缩放文字，而设计 tokens 的 padding / 图标 / 高度是
