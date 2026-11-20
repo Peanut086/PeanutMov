@@ -59,6 +59,34 @@ export interface SpiderProxyResult {
   headers: Record<string, string>;
 }
 
+/**
+ * P0-1：单条退出现场读数。字段与原生 `SpiderExitLedger` / `MainApplication` 的
+ * `CrashExit` 日志行一一对应，治理判定（构件指纹 + API + 阶段 + 退出证据）看的就是这些。
+ */
+export interface SpiderExitEvidence {
+  ts: number;
+  pid: number;
+  /** 崩溃线程 id；跨进程写回的证据没有该字段（-1） */
+  tid?: number;
+  threadName?: string;
+  /** 构件指纹（jarMd5） */
+  jarHash?: string;
+  /** 订阅配置里的爬虫类名 */
+  api?: string;
+  /** 阶段：spider.load / spider.invoke:playContent / spider.proxy:do … */
+  phase?: string;
+  /** java:<异常类名> / aei:REASON_* / native:tombstone */
+  exitReason?: string;
+  /** SIGSEGV / SIGABRT …；Java 退出与无法读取时为 `-` */
+  signal?: string;
+  /** NONE / COOLDOWN / QUARANTINE / QUARANTINE_JAR */
+  responseTier?: string;
+  /** 异常原文摘要（已截断，不含 URL/token） */
+  detail?: string;
+  /** true = 上一次进程留下的证据（本次启动归因后写回） */
+  fromPreviousProcess?: boolean;
+}
+
 export interface SpiderPlugin {
   /** 加载/初始化爬虫实例；重复加载同一 jar 复用缓存。`native` 标记该 jar 是否自带原生库 */
   load(options: SpiderLoadOptions): Promise<{ handle: string; native?: boolean }>;
@@ -95,6 +123,14 @@ export interface SpiderPlugin {
   }>;
   /** REV-24：手动解除某个签名的隔离（冷却档一并清除：一次点击就放行到底） */
   unquarantine(options: { signature: string }): Promise<{ ok: boolean }>;
+  /**
+   * P0-1：退出现场读数（本轮内存台账 + 上次启动写回的 AEI / tombstone 证据）。
+   *
+   * 覆盖面要诚实：原生信号能直接杀死进程，那一半当场来不及记录，只能在下次启动归因后读到；
+   * 实时可拉的是被 catch 住的那一半（构件级 LinkageError、proxy 里被吞掉的异常）——
+   * 这部分过去在日志里完全隐身，坏构件因此永远隔离不掉。
+   */
+  getRecentExits(): Promise<{ items: SpiderExitEvidence[] }>;
   /** 设置详细日志开关 */
   setDebugLog(options: { enabled: boolean }): Promise<{ enabled: boolean }>;
   /** 获取日志状态（开关、文件数、总字节、保留天数） */

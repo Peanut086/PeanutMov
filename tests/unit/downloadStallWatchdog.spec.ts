@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetAll } from './helpers';
 import { downloadRepo } from '@/db/repositories/downloadRepo';
 import { downloadService } from '@/services/downloadService';
+import { beginPhase, isInTrackedPostProcess, __resetDownloadPhases } from '@/services/downloadPhaseRegistry';
 import { libraryService } from '@/services/libraryService';
 import type { DownloadTask, PlaybackSource } from '@/types';
 
@@ -94,9 +95,23 @@ async function settle(runs: number): Promise<void> {
   }
 }
 
+/**
+ * 交回队列后真队列会立刻派发一次，mock 引擎秒回 → 那笔「已完成」的写入是异步的。
+ * 不等它落地就改写陈旧快照，迟到的 completed 会盖掉下一轮的 downloading，
+ * streak 因此被抹平，判失败的兜底永远走不到（满载并行时表现为偶发失败）。
+ */
+async function settleDispatch(id = 'task-stall'): Promise<void> {
+  for (let i = 0; i < 200; i += 1) {
+    const status = (await downloadRepo.get(id))?.status;
+    if (status === 'completed' || status === 'failed') return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 beforeEach(async () => {
   await resetAll();
   downloadService.__resetQueue();
+  __resetDownloadPhases();
   h.runs.length = 0;
   h.saveProgress = null;
   vi.restoreAllMocks();
@@ -197,11 +212,57 @@ describe('watchdog 巡检：孤儿任务交回队列，而不是判成「下载�
       // 每轮都把任务还原成"陈旧孤儿"，模拟 runner 反复消失
       await downloadRepo.save(makeTask({ status: 'downloading', updatedAt: Date.now() - 10 * 60 * 1000 }));
       await downloadService.checkStalledTasks();
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await settleDispatch();
     }
 
     const row = await downloadRepo.get('task-stall');
     expect(row?.status).toBe('failed');
     expect(row?.errorMessage).toContain('停滞');
+  });
+});
+
+/**
+ * P0-4：停滞判定要认得「后处理进行中」。
+ *
+ * 一次大片的转封装实测能跑几百秒，期间既不写字节也不回写 `updatedAt`，而 runner 还占着
+ * 队列槽位——旧口径下这一笔被看门狗读成「停滞」，走 `abortTask` 打断一份马上要交付的产物，
+ * 用户看到的就是「下载停滞（watchdog 检测）」加一次重复下载。
+ * 免检必须有期限：登记时给的预算一过，看门狗照旧收口，卡死的原生调用不能终身躲巡检。
+ */
+describe('后处理阶段不参与停滞判定', () => {
+  /** 停滞阈值是 90s，两分钟前更新的 downloading 任务正好落在判定窗口里 */
+  const SEED_STALE_AT = Date.now() - 2 * 60 * 1000;
+
+  async function seedStale(): Promise<void> {
+    await downloadRepo.save(makeTask({ status: 'downloading', updatedAt: SEED_STALE_AT }));
+    h.runs.length = 0;
+  }
+
+  it('阶段在册时既不中断也不交回，记账原样保留', async () => {
+    await seedStale();
+    beginPhase('task-stall', 'postprocess', '转封装 MP4', 360_000);
+
+    await downloadService.checkStalledTasks();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(h.runs.length).toBe(0);
+    const row = await downloadRepo.get('task-stall');
+    // 交回队列会先 pause 再 resume：`updatedAt` 一旦被改写就说明这一轮动过账
+    expect(row?.status).toBe('downloading');
+    expect(row?.updatedAt).toBe(SEED_STALE_AT);
+    expect(row?.errorMessage ?? '').not.toContain('停滞');
+  });
+
+  it('预算用尽后照旧判停滞（免检不是终身制）', async () => {
+    await seedStale();
+    // 负预算 = 登记时刻就已经超过截止，等价于转封装跑过了它自己的超时
+    beginPhase('task-stall', 'postprocess', '转封装 MP4', -1);
+    expect(isInTrackedPostProcess('task-stall', Date.now())).toBe(false);
+
+    await downloadService.checkStalledTasks();
+    await settle(1);
+
+    // 看门狗重新接管：这一轮按孤儿交回队列，而不是放过它
+    expect(h.runs.length).toBeGreaterThan(0);
   });
 });

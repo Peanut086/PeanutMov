@@ -8,6 +8,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { useToast } from '@/composables/useToast';
 import { onAppStateChange } from '@/native/appLifecycle';
 import { Spider } from '@/native/spiderPlugin';
+import { releaseBlocksAfterRestore } from '@/services/sourceBlockState';
 import { isNative } from '@/shared/platform';
 
 const toast = useToast();
@@ -33,7 +34,10 @@ async function recover(): Promise<void> {
   try {
     await Spider.exitSafeMode();
     active.value = false;
-    toast.success('已恢复，爬虫源重新可用');
+    // P0-1：原生放行之后前端镜像必须同步松手，否则冷却/安全模式档要等到兜底时长
+    // 才解除（表现为"点了恢复，源还是不出"）；jar 级隔离保留，恢复不绕过隔离。
+    releaseBlocksAfterRestore();
+    toast.success('已恢复，爬虫源重新可用（已隔离的构件仍跳过）');
   } catch {
     toast.error('恢复失败，请重启 App 重试');
   } finally {

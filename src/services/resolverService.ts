@@ -9,6 +9,8 @@
  */
 import { httpClient } from '@/sources/base/httpClient';
 import { logger } from '@/shared/logger';
+import { AppError } from '@/shared/errors';
+import { recordUpstreamNotice } from '@/shared/noticeOrigin';
 
 /** 解析接口响应 返回结构（兼容 实现差异大，按宽松 字段取） */
 interface ResolverResponse {
@@ -44,17 +46,27 @@ export async function resolveViaApi(
       : `${resolverUrl}?url=${encodeURIComponent(videoUrl)}`;
 
   try {
-    const response = await httpClient.request<ResolverResponse>(finalUrl, {
+    const res = await httpClient.requestWithMeta<ResolverResponse>(finalUrl, {
       timeoutMs: 8000,
       retries: 0,
       signal,
     });
+    const response = res.data ?? {};
 
     // 按优先级取字段（不同解析接口返回结构不同）
     const resolved = response.url ?? response.playUrl ?? response.videoUrl ?? response.data?.url ?? response.data?.playUrl;
 
     if (!resolved || typeof resolved !== 'string') {
-      logger.debug('解析接口未返回有效 URL', { resolverUrl, response });
+      // `code`/`msg` 此前声明了却从没读过：解析接口那句「本接口免费使用…」就是从这里来的，
+      // 不登记就只能靠猜——是额度、是限流、还是单纯没地址。
+      recordUpstreamNotice(response.msg ?? '', {
+        origin: 'business_response',
+        operation: 'parse',
+        httpStatus: res.status,
+        businessCode: response.code ?? null,
+        errorCode: 'E_NO_PLAY_URL',
+      });
+      logger.debug('解析接口未返回有效 URL', { resolverUrl, httpStatus: res.status });
       return null;
     }
 
@@ -67,6 +79,16 @@ export async function resolveViaApi(
     logger.debug('解析接口命中', { resolverUrl, videoUrl, resolved });
     return resolved;
   } catch (e) {
+    const error = e instanceof AppError ? e : new AppError('E_UNKNOWN', String(e));
+    // 主动中断不是上游的提示，记一条只会污染复现时的判断
+    if (error.code !== 'E_ABORTED') {
+      recordUpstreamNotice(error.detail || error.message, {
+        origin: 'business_response',
+        operation: 'parse',
+        httpStatus: error.httpStatus,
+        errorCode: error.code,
+      });
+    }
     logger.warn('解析接口调用失败', { resolverUrl, error: e });
     return null;
   }

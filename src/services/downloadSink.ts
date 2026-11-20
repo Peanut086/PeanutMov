@@ -66,6 +66,9 @@ export interface DownloadSink {
 export function nativeFilePathOf(task: DownloadTask): string {
   const mediaSegment = sanitizeSegment(task.mediaId);
   const episodeSegment = sanitizeSegment(task.episodeId);
+  // P0-4：下载期一律按 `format` 取名，不看 `task.container`——fMP4 的下载残件会变成
+  // `ep1.mp4.part`，而原生启动清理专门删 `*.mp4.part`（那是转封装残件的约定名），
+  // 于是每次冷启动都把一集没下完的 fMP4 清零。容器名在交付阶段才改指 `.mp4`。
   const ext = extensionOf(task.url, task.format);
   return `${FS_ROOT}/${mediaSegment}/${episodeSegment}.${ext}`;
 }
@@ -459,6 +462,9 @@ export function mimeOfTask(task: DownloadTask): string {
     case 'ts':
       return 'video/mp2t';
     case 'hls':
+      // P0-4：合并后的产物跟着清单声明的容器走。fMP4 是 MP4 家族，标成 `video/mp2t`
+      // 会让 Web 端 `<video>` 与 Blob 回放按 TS 找解码器；仍未判定容器时保持旧口径。
+      if (task.container === 'fmp4' || task.container === 'mp4') return 'video/mp4';
       // 合并后的 HLS 分片为 MPEG-TS，不能再标成 m3u8 清单
       return 'video/mp2t';
     case 'mp4':

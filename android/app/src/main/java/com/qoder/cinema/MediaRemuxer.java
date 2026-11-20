@@ -34,8 +34,10 @@ import java.util.List;
  * - MediaExtractor 对部分 TS（HEVC 变体、AC3/EAC3、坏包）解复用失败 → {@code E_UNSUPPORTED_FORMAT}，调用方保留 `.ts`；
  * - 多音轨只封装第一条音频轨（保持源编码，不做码流切换）；本类不写文本轨（tx3g 不支持，FR-64 走外挂字幕）。
  *
- * 时间轴处理：HLS 分片拼接出来的 TS 常在分片边界出现 PTS 回绕/重置。这里按轨记录偏移量，
- * 一旦归一化后的 PTS 回退就把偏移量补回去（而不是把后续样本也压平），保证时长与音画同步不塌陷。
+ * 时间轴处理（P1-1 重写）：分片拼接的 TS 在边界出现 PTS 重置/回绕，而含 B 帧的流在解码序里
+ * PTS 本来就不单调。两者由 {@link TimelineRewriter} 分开处置——真 discontinuity 补两轨共用的
+ * 整体偏移，B 帧重排则因 MediaMuxer 无法表达合成偏移（ctts）而整条流明确跳过、保留可播 `.ts`。
+ * 旧实现的逐轨棘轮会把 B 帧流压成 1µs 帧距，产出的正是真机「时间轴损坏、点了没反应」的坏件。
  *
  * @author xyp
  */
@@ -58,11 +60,18 @@ public final class MediaRemuxer {
     public static final String REASON_SAMPLE_TOO_LARGE = "sample-too-large";
     public static final String REASON_INSUFFICIENT_SPACE = "insufficient-space";
     public static final String REASON_RENAME_FAILED = "rename-failed";
+    /** P0-3：发布件复检不合格（容器打不开 / 无有效轨道 / 时长对不上 / 首中尾定位失败） */
+    public static final String REASON_VERIFY_FAILED = "verify-failed";
     public static final String REASON_OUTPUT_EMPTY = "output-empty";
     public static final String REASON_TIMEOUT = "timeout";
     public static final String REASON_CANCELED = "canceled";
-    /** P0-1：时间轴自检不通过（产物完整但不可播），调用方按"保留 .ts"处理 */
-    public static final String REASON_VIDEO_TIMELINE = "video-timeline-degenerate";
+    /**
+     * P1-1：含 B 帧的视频流——MediaMuxer 只能吃单调递增的呈现时间，无法表达解码序与
+     * 合成偏移（ctts），照写会压平时间轴、跳过才是诚实口径。以 skipped 形态返回，
+     * 调用方按"保留可播 .ts"处理（与 no-video-track 同一形状）。
+     */
+    public static final String REASON_BFRAMES_UNSUPPORTED = "bframes-not-expressible";
+    /** P0-1：音频轨时间轴自检不通过（跨度/粒度异常），调用方按"保留 .ts"处理 */
     public static final String REASON_AUDIO_TIMELINE = "audio-timeline-mismatch";
     public static final String REASON_AUDIO_GRANULARITY = "audio-sample-granularity";
 
@@ -81,13 +90,6 @@ public final class MediaRemuxer {
     private static final int CANCELLATION_CHECK_INTERVAL = 64;
     /** 预留空间下限：小于此值即使输入很小也判定写不下 */
     private static final long MIN_FREE_SPACE_MARGIN = 8L * 1024 * 1024;
-    /**
-     * P0-1：时间轴自检阈值——"样本间距被棘轮压平"的比例上限。
-     *
-     * 每出现一次"PTS 回退需要补偏移"就是一次压平。正常的 HLS 拼接只在分片边界
-     * 出现个位数次；真机坏件是 34,616/75,879（46%），阈值 5% 有两数量级余量。
-     */
-    private static final double VERIFY_MAX_RATCHET_RATIO = 0.05;
     /** 自检最小样本量：太短的片段统计没有意义 */
     private static final long VERIFY_MIN_SAMPLES = 200;
     /** 音轨时长下限（相对视频）：坏件音频只铺到 52:41 而视频 1:28:13，比值 0.60 */
@@ -147,6 +149,14 @@ public final class MediaRemuxer {
         public long elapsedMs;
         /** 成功为 mp4；失败/跳过为 ts（产物仍是原 TS） */
         public String container = "ts";
+        /**
+         * P0-3：交付前复检结论。`pass`=发布件重新打开并通过容器/轨道/时长/首中尾定位；
+         * 其余为具体失败项（`fail:*`）；`not-probed`=复检能力不可用（旧机型异常路径），
+         * 此时按保守口径处理：不删输入。
+         */
+        public String probeVerdict = "not-probed";
+        /** P0-3：输入文件是否还在。复检未通过或未做时为 true——交付可回滚的前提 */
+        public boolean inputRetained = true;
         public final List<Track> tracks = new ArrayList<>();
     }
 
@@ -155,7 +165,8 @@ public final class MediaRemuxer {
      *
      * @param input        已存在的 TS 文件（调用方负责校验存在与可读）
      * @param output       目标 MP4 路径；内部写 `{output}.part` 后原子 rename
-     * @param deleteInput  成功后是否删除输入文件
+     * @param deleteInput  复检通过并交付后是否删除输入文件（P0-3：调用方传 false，
+     *                     由 JS 侧在下载记录落库成功后再删，保证交付可回滚）
      * @param timeoutMs    超时（≤0 时用默认 120s）
      * @param listener     进度回调，可为 null
      * @param cancelSignal 取消信号，可为 null
@@ -257,20 +268,28 @@ public final class MediaRemuxer {
                 throw new RemuxFailure(CODE_UNSUPPORTED, REASON_NO_SAMPLES);
             }
 
-            // P0-1：结构完整 ≠ 能播。时间轴不合格就当作不支持处理——`.part` 由 finally 删除，
+            // P1-1：结构完整 ≠ 能播。B 帧流在拷贝循环里就已按 skipped 收口；
+            // 这里剩下的否决项都在音频轴（跨度/粒度）——`.part` 由 finally 删除，
             // 输入 .ts 保留，播放回落到原生引擎直接解封装 TS。
             String timelineIssue = inspectTimeline(stats);
             if (timelineIssue != null) {
                 AppLog.w(TAG, "remux output rejected by timeline check: " + timelineIssue
-                        + " videoRatchets=" + stats.videoRatchets + "/" + stats.videoSamples
-                        + " audioRatchets=" + stats.audioRatchets + "/" + stats.audioSamples);
+                        + " audioUs=" + stats.audioSpanUs + "/" + stats.audioSamples
+                        + " videoUs=" + stats.videoSpanUs + "/" + stats.videoSamples
+                        + " boundaryShifts=" + stats.timeline.boundaryShifts);
                 throw new RemuxFailure(CODE_UNSUPPORTED, timelineIssue);
             }
 
             if (VERBOSE) {
-                AppLog.i(TAG, "remux timeline ok video=" + stats.videoSamples
-                        + " audio=" + stats.audioSamples + " ratchets=" + stats.videoRatchets + "/"
-                        + stats.audioRatchets + " spanUs=" + stats.durationUs);
+                TimelineRewriter t = stats.timeline;
+                AppLog.i(TAG, "remux timeline ok timeBaseUs=1000000"
+                        + " video=" + stats.videoSamples + " audio=" + stats.audioSamples
+                        + " syncSamples=" + stats.syncSamples
+                        + " ptsVideoUs=[" + t.videoFirstPtsUs + ".." + t.videoLastPtsUs + "]"
+                        + " ptsAudioUs=[" + t.audioFirstPtsUs + ".." + t.audioLastPtsUs + "]"
+                        + " avOriginGapUs=" + t.avOriginGapUs()
+                        + " boundaryShifts=" + t.boundaryShifts + "/" + t.boundaryShiftUs + "us"
+                        + " spanUs=" + stats.durationUs);
             }
 
             // stop() 会把 MP4 的 moov 写完；失败（含 0 样本）由外层 catch 收口
@@ -290,6 +309,21 @@ public final class MediaRemuxer {
                 throw new RemuxFailure(CODE_STORAGE, REASON_RENAME_FAILED);
             }
 
+            /*
+             * P0-3：发布之后、删输入之前，把交付件重新打开验一遍。
+             * 复检不合格就撤下发布件、留住输入 `.ts`——"转封装失败"与"转封装把一个能播的
+             * 文件换成一个不能播的"是两回事，后者过去无法回滚（输入已删，只能整集重下）。
+             */
+            String probeIssue = probePublished(output, stats.durationUs);
+            result.probeVerdict = probeIssue == null ? "pass" : probeIssue;
+            if (probeIssue != null) {
+                AppLog.w(TAG, "remux published but rejected by probe: " + probeIssue
+                        + " file=" + output.getName());
+                deleteQuietly(output);
+                result.inputRetained = true;
+                throw new RemuxFailure(CODE_UNSUPPORTED, REASON_VERIFY_FAILED + ":" + probeIssue);
+            }
+
             result.ok = true;
             result.outputPath = output.getAbsolutePath();
             result.outputBytes = output.length();
@@ -298,13 +332,24 @@ public final class MediaRemuxer {
             result.container = "mp4";
 
             if (deleteInput) {
-                // AC-142：成功后删除原 .ts；删除失败不影响转封装结果（回调里已提示）
+                // AC-142：复检通过后才删除原 .ts；删除失败不影响转封装结果（回调里已提示）
                 if (!input.delete() && input.exists()) {
                     AppLog.w(TAG, "remux done but input delete failed: " + input.getName());
+                    result.inputRetained = true;
+                } else {
+                    result.inputRetained = false;
                 }
             }
             return result;
         } catch (RemuxFailure f) {
+            if (f.skip) {
+                // P1-1：能力形态（B 帧流）与失败形态分开——skipped=true、不带错误码，
+                // 与 no-video-track 同形，JS 侧 decideRemuxDelivery 直接记成 skipped
+                result.skipped = true;
+                result.reason = f.reason;
+                result.elapsedMs = SystemClock.elapsedRealtime() - startedAt;
+                return result;
+            }
             return failure(result, f.code, f.reason, startedAt);
         } catch (IllegalArgumentException e) {
             // MediaMuxer/MediaExtractor 对编码或样本不兼容统一抛 IllegalArgumentException
@@ -337,6 +382,93 @@ public final class MediaRemuxer {
         }
     }
 
+    // ========== 交付件复检（P0-3） ==========
+
+    /** 复检时长容差：MP4 轨时长应落在拷贝跨度与"跨度 + 一帧"之间，留 10%/20% 双边余量 */
+    private static final double VERIFY_MIN_DURATION_RATIO = 0.90;
+    private static final double VERIFY_MAX_DURATION_RATIO = 1.20;
+
+    /** 复检里尾点与结尾的距离：最后一秒内必须能定位到一个真实样本 */
+    private static final long VERIFY_TAIL_BACKOFF_US = 1_000_000L;
+
+    /**
+     * 把已经发布（或已经存在于盘上）的 MP4 重新打开验一遍：容器可解析、有有效视频轨、
+     * 时长与拷贝跨度对得上、首/中/尾三处都能定位到真实样本。
+     *
+     * 返回 null = 通过；否则返回失败项（调用方写进 `probeVerdict`）。
+     * 任何异常都归成失败项而不外抛——复检的语义是"不确定就别删原件"。
+     */
+    public static String probePublished(File file, long expectedDurationUs) {
+        if (file == null || !file.isFile() || file.length() <= 0) return "missing-output";
+        MediaExtractor extractor = null;
+        try {
+            extractor = new MediaExtractor();
+            extractor.setDataSource(file.getAbsolutePath());
+            int trackCount = extractor.getTrackCount();
+            if (trackCount <= 0) return "no-tracks";
+            int videoTrack = -1;
+            MediaFormat videoFormat = null;
+            for (int i = 0; i < trackCount; i += 1) {
+                MediaFormat format = extractor.getTrackFormat(i);
+                String mime = format.getString(MediaFormat.KEY_MIME);
+                if (mime != null && mime.startsWith("video/")) {
+                    videoTrack = i;
+                    videoFormat = format;
+                    break;
+                }
+            }
+            if (videoTrack < 0) return "no-video-track";
+            if (intOrZero(videoFormat, MediaFormat.KEY_WIDTH) <= 0
+                    || intOrZero(videoFormat, MediaFormat.KEY_HEIGHT) <= 0) {
+                return "invalid-dimensions";
+            }
+            long durationUs = longOrZero(videoFormat, MediaFormat.KEY_DURATION);
+            if (durationUs <= 0) return "no-duration";
+            if (expectedDurationUs > 0) {
+                double ratio = (double) durationUs / (double) expectedDurationUs;
+                if (ratio < VERIFY_MIN_DURATION_RATIO || ratio > VERIFY_MAX_DURATION_RATIO) {
+                    return "duration-drift-" + Math.round(ratio * 100);
+                }
+            }
+            extractor.selectTrack(videoTrack);
+            ByteBuffer buffer = ByteBuffer.allocateDirect(1024 * 1024);
+            long[] points = new long[] {
+                    0L,
+                    durationUs / 2L,
+                    Math.max(0L, durationUs - VERIFY_TAIL_BACKOFF_US),
+            };
+            for (int i = 0; i < points.length; i += 1) {
+                long point = points[i];
+                extractor.seekTo(point, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
+                buffer.clear();
+                int size = extractor.readSampleData(buffer, 0);
+                long sampleTime = extractor.getSampleTime();
+                if (size <= 0 || sampleTime < 0) {
+                    // P1-1 验收字段：seekResult（命中的样本时间与请求点之差）与读取规模
+                    AppLog.w(TAG, "probe seek miss pointUs=" + point + " sampleUs=" + sampleTime
+                            + " positionDeltaUs=" + (sampleTime < 0 ? -1 : sampleTime - point)
+                            + " size=" + size + " file=" + file.getName());
+                    return (i == 0 ? "head-" : i == 1 ? "middle-" : "tail-") + "seek-miss";
+                }
+            }
+            return null;
+        } catch (Exception e) {
+            return "probe-error-" + e.getClass().getSimpleName();
+        } finally {
+            if (extractor != null) {
+                try {
+                    extractor.release();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    /** 复检入口（开机对账 / 手动自检）：没有参考跨度时只验结构 */
+    public static String probePublished(File file) {
+        return probePublished(file, 0L);
+    }
+
     // ========== 样本拷贝 ==========
 
     private static final class CopyStats {
@@ -344,9 +476,10 @@ public final class MediaRemuxer {
         long videoSamples;
         long audioSamples;
         long preSyncDropped;
-        /** P0-1：时间轴棘轮触发次数（每次触发都意味着一段样本被压成 1µs 间距） */
-        long videoRatchets;
-        long audioRatchets;
+        /** P1-1：时间轴重写器（µs 口径的首末 PTS、discontinuity 偏移都在它身上） */
+        final TimelineRewriter timeline = new TimelineRewriter();
+        /** 写入的关键帧样本数（stss 规模，与 ffprobe 的 sync 计数对照） */
+        long syncSamples;
         /** P0-1：音频轨"实际写出的时间跨度"对应的每样本间隔（µs），用于粒度判定 */
         long audioSpanUs;
         long audioFrameUs;
@@ -368,11 +501,8 @@ public final class MediaRemuxer {
         ByteBuffer buffer = ByteBuffer.allocateDirect(INITIAL_SAMPLE_BUFFER);
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
 
-        long firstPtsUs = Long.MIN_VALUE;
-        long videoOffsetUs = 0L;
-        long audioOffsetUs = 0L;
-        long lastVideoUs = -1L;
-        long lastAudioUs = -1L;
+        final TimelineRewriter timeline = stats.timeline;
+        final long[] candidateUs = new long[1];
         long lastProgressAt = 0L;
         long progressTotalUs = selection.durationUs;
         boolean videoSyncSeen = false;
@@ -435,24 +565,14 @@ public final class MediaRemuxer {
 
             long sampleTimeUs = extractor.getSampleTime();
             if (sampleTimeUs < 0) sampleTimeUs = 0;
-            if (firstPtsUs == Long.MIN_VALUE) firstPtsUs = sampleTimeUs;
-
-            long offset = isVideo ? videoOffsetUs : audioOffsetUs;
-            long lastWritten = isVideo ? lastVideoUs : lastAudioUs;
-            long candidate = sampleTimeUs - firstPtsUs + offset;
-            if (candidate <= lastWritten) {
-                // PTS 回绕 / 分片边界重置：补偏移量而不是压平时间轴，否则整段时长会塌陷
-                offset += (lastWritten - candidate) + 1;
-                candidate = lastWritten + 1;
-                if (isVideo) stats.videoRatchets++; else stats.audioRatchets++;
+            int verdict = timeline.rewrite(isVideo, sampleTimeUs, candidateUs);
+            if (verdict == TimelineRewriter.BFRAME_REORDER) {
+                // 解码序里出现 ≤1s 的视频回退 = B 帧重排。平台封装无法表达这种流的时序，
+                // 在首个 GOP 附近就收口（成本几十字节），不写一份"完整但播不动"的 MP4。
+                throw new RemuxFailure(CODE_UNSUPPORTED, REASON_BFRAMES_UNSUPPORTED
+                        + ":depthUs=" + timeline.maxVideoReorderUs + "@videoSample" + stats.videoSamples, true);
             }
-            if (isVideo) {
-                videoOffsetUs = offset;
-                lastVideoUs = candidate;
-            } else {
-                audioOffsetUs = offset;
-                lastAudioUs = candidate;
-            }
+            long candidate = candidateUs[0];
 
             // Extractor 的 flag 与 MediaCodec.BufferInfo 的 flag 只是"看起来能直接抄"：
             // PARTIAL_FRAME(4) 会被 muxer 读成 END_OF_STREAM、ENCRYPTED(2) 读成 CODEC_CONFIG，
@@ -463,9 +583,10 @@ public final class MediaRemuxer {
             info.set(0, size, candidate, muxerFlags);
             muxer.writeSampleData(outTrack, buffer, info);
             stats.writtenSamples++;
+            if (muxerFlags != 0 && isVideo) stats.syncSamples++;
             if (isVideo) stats.videoSamples++; else stats.audioSamples++;
 
-            long processedUs = Math.max(lastVideoUs, lastAudioUs);
+            long processedUs = timeline.processedUs();
             long now = SystemClock.elapsedRealtime();
             if (listener != null && now - lastProgressAt >= PROGRESS_INTERVAL_MS) {
                 lastProgressAt = now;
@@ -479,12 +600,12 @@ public final class MediaRemuxer {
             if (!extractor.advance()) break;
         }
 
-        stats.durationUs = Math.max(lastVideoUs, lastAudioUs);
+        stats.durationUs = timeline.processedUs();
         if (stats.durationUs <= 0 && selection.durationUs > 0) {
             stats.durationUs = selection.durationUs;
         }
-        stats.videoSpanUs = Math.max(0L, lastVideoUs);
-        stats.audioSpanUs = Math.max(0L, lastAudioUs);
+        stats.videoSpanUs = Math.max(0L, timeline.lastVideoUs());
+        stats.audioSpanUs = Math.max(0L, timeline.lastAudioUs());
         stats.audioFrameUs = aacFrameDurationUs(selection.audioFormat);
         return stats;
     }
@@ -505,10 +626,11 @@ public final class MediaRemuxer {
     }
 
     /**
-     * P0-1：时间轴自检（在写出产物之后、删除输入之前）。
+     * P1-1：时间轴自检（在写出产物之后、交付之前）。
      *
-     * 判据全部来自拷贝过程中已经数出来的量，不额外读文件：
-     * - 棘轮占比：视频样本被压成 1µs 间距的比例（真机坏件 46%，阈值 5%）；
+     * 旧实现这里的"棘轮占比"判据已经删除：那一档误伤的全部来源（B 帧重排被压成 1µs 间距）
+     * 现在在拷贝循环里就被分类，直接按 `bframes-not-expressible` 跳过，不再产出待否决的坏件。
+     * 留下来的判据全部只看音频轴，且把 discontinuity 的整体偏移扣掉后再比：
      * - 音轨跨度：音频时间跨度显著短于视频（真机坏件 0.60，阈值 0.90）；
      * - 音频粒度：每样本平均跨度远超一帧 AAC（真机坏件 6.9×，阈值 1.5×）。
      *
@@ -517,20 +639,16 @@ public final class MediaRemuxer {
      * 交回 .ts 让原生引擎自己解封装，也绝不交付一份"点了没反应"的文件。
      */
     private static String inspectTimeline(CopyStats stats) {
-        if (stats.videoSamples >= VERIFY_MIN_SAMPLES) {
-            double ratio = (double) stats.videoRatchets / (double) stats.videoSamples;
-            if (ratio > VERIFY_MAX_RATCHET_RATIO) {
-                return REASON_VIDEO_TIMELINE + ":ratchet=" + Math.round(ratio * 100) + "%";
-            }
-        }
+        // discontinuity 偏移是为"接住回绕"整体加上去的，不参与粒度判定
+        long audioContentUs = Math.max(0L, stats.audioSpanUs - stats.timeline.boundaryShiftUs);
         if (stats.audioSamples >= VERIFY_MIN_SAMPLES && stats.videoSpanUs > 0
                 && stats.audioSpanUs < stats.videoSpanUs * VERIFY_MIN_AUDIO_DURATION_RATIO) {
             return REASON_AUDIO_TIMELINE + ":audioUs=" + stats.audioSpanUs
                     + "/videoUs=" + stats.videoSpanUs;
         }
         long expectedAudioUs = stats.audioFrameUs > 0 ? stats.audioFrameUs * stats.audioSamples : 0L;
-        if (expectedAudioUs > 0 && stats.audioSpanUs > expectedAudioUs * VERIFY_MAX_AUDIO_SPAN_FACTOR) {
-            return REASON_AUDIO_GRANULARITY + ":span=" + stats.audioSpanUs
+        if (expectedAudioUs > 0 && audioContentUs > expectedAudioUs * VERIFY_MAX_AUDIO_SPAN_FACTOR) {
+            return REASON_AUDIO_GRANULARITY + ":span=" + audioContentUs
                     + "/expected=" + expectedAudioUs;
         }
         return null;
@@ -684,15 +802,22 @@ public final class MediaRemuxer {
         return CODE_UNSUPPORTED;
     }
 
-    /** 内部中断信号（取消/超时/格式不支持），不对外暴露 */
+    /** 内部中断信号（取消/超时/格式不支持/能力跳过），不对外暴露 */
     private static final class RemuxFailure extends Exception {
         final String code;
         final String reason;
+        /** true = 能力形态的跳过（skipped=true、无错误码），false = 失败形态 */
+        final boolean skip;
 
         RemuxFailure(String code, String reason) {
+            this(code, reason, false);
+        }
+
+        RemuxFailure(String code, String reason, boolean skip) {
             super(code + ": " + reason);
             this.code = code;
             this.reason = reason;
+            this.skip = skip;
         }
     }
 }

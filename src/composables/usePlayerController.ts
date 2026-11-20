@@ -65,6 +65,8 @@ export interface UsePlayerControllerOptions {
   defaultRate: PlaybackRate;
   /** 自动连播 */
   autoPlayNext: boolean;
+  /** P0-2：连播闸门——返回 false 时不排倒计时（换线兜底链在飞时由 View 拦下） */
+  canAutoNext?: () => boolean;
   /** B2：切后台继续播放（仅原生引擎生效，由 View 从设置注入） */
   backgroundPlayback: boolean;
   /** 初始画面比例 */
@@ -708,6 +710,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   function scheduleAutoNext(): void {
     cancelAutoNext();
     if (!options.autoPlayNext) return;
+    if (options.canAutoNext && !options.canAutoNext()) return;
     if (!nextEpisodeId.value) return;
     countdown.value = AUTO_NEXT_COUNTDOWN_SEC;
     countdownTimer = setInterval(() => {
@@ -715,6 +718,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       countdown.value -= 1;
       if (countdown.value <= 0) {
         cancelAutoNext();
+        // P0-2：倒计时期间状态可能已经变了（换线兜底链起来了）——归零时再判一次闸门
+        if (options.canAutoNext && !options.canAutoNext()) return;
         autoNextTarget.value = nextEpisodeId.value;
       }
     }, 1000);

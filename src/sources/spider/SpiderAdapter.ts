@@ -24,6 +24,7 @@ import {
 } from '@/shared/constants';
 import { logger } from '@/shared/logger';
 import {
+  classifySourceFailure,
   isMagnetUrl,
   COOLDOWN_MESSAGE,
   MAGNET_MESSAGE,
@@ -32,12 +33,14 @@ import {
   SPIDER_MISMATCH_MESSAGE,
   sanitizeSourceMessage,
 } from '@/shared/sourceFailure';
+import { recordUpstreamNotice, redactNoticeText } from '@/shared/noticeOrigin';
 import {
   LOAD_FAILURE_LABELS,
   classifyDeterministicLoadFailure,
   findSuppressedLoadFailure,
   noteLoadFailure,
 } from '@/services/spiderLoadLedger';
+import { clearSourceBlock, isSourceBlocked, noteSourceBlocked } from '@/services/sourceBlockState';
 import { isNative } from '@/shared/platform';
 import { withGithubMirrorFallback } from '@/shared/githubMirror';
 import { httpClient } from '@/sources/base/httpClient';
@@ -392,9 +395,27 @@ function nativeErrorOf(e: unknown, fallback: AppError): AppError {
   if (message.includes('超时')) {
     return new AppError('E_TIMEOUT', message);
   }
-  if (/HTTP 40[13]/.test(message)) {
-    return new AppError('E_SOURCE_UNAVAILABLE', '源地址拒绝访问（HTTP 401/403），源可能已失效', {
+  // 401/403/429 分档：三种处置完全不同（改凭据 / 等一等），合成一句「源可能已失效」
+  // 会把它们都送去自动换线重试——对 429 是续上限，对 401 是白烧一轮。
+  // 状态同时写进 httpStatus，让分类不只能靠文案猜。
+  if (/HTTP 401/.test(message)) {
+    return new AppError('E_HTTP_401', '源地址要求鉴权（HTTP 401），凭据可能已失效', {
       detail: message,
+      httpStatus: 401,
+      cause: e,
+    });
+  }
+  if (/HTTP 403/.test(message)) {
+    return new AppError('E_HTTP_403', '源地址拒绝访问（HTTP 403），可能被限制', {
+      detail: message,
+      httpStatus: 403,
+      cause: e,
+    });
+  }
+  if (/HTTP 429/.test(message)) {
+    return new AppError('E_HTTP_429', '源侧限流（HTTP 429），稍后再试', {
+      detail: message,
+      httpStatus: 429,
       cause: e,
     });
   }
@@ -625,6 +646,12 @@ export class SpiderAdapter extends BaseAdapter {
     if (source.health === 'unreachable' || source.health === 'bad_config' || source.health === 'auth_failed') {
       return;
     }
+    // P0-1：原生已隔离/冷却的源，本轮不再发加载请求。此前预热只认确定性加载失败台账
+    // （isLoadSuppressed），对保护态一无所知——每次批量预热都重新去敲一扇已经明确拒绝的门。
+    if (isSourceBlocked(source.id)) {
+      logger.debug('跳过保护态中的爬虫源预热', source.name);
+      return;
+    }
     // P1-2：同一版 jar/规则已经确定崩过一次的，不再每轮冷启动重下一遍
     // （真实搜索仍照常发起，判错种类不会让用户拿不到结果）
     if (await this.isLoadSuppressed(source, ext)) return;
@@ -680,6 +707,23 @@ export class SpiderAdapter extends BaseAdapter {
     } catch (e) {
       logger.debug('确定性失败记账失败（忽略）', e);
     }
+  }
+
+  /**
+   * P0-1：把原生的保护态（隔离 / 冷却 / 安全模式）镜像到前端。
+   * 只镜像原生真实抛回来的拒绝，不猜 api↔jar 对应关系（同类名可能分布在多个 jar，
+   * 按类名反推会误杀健康站）。预热、失败换线、自动换源据此在同一轮避开该源。
+   */
+  private mirrorProtection(source: Source, error: AppError | null): void {
+    if (!error) return;
+    const kind = classifySourceFailure(error.toShape());
+    if (kind !== 'quarantined' && kind !== 'cooldown' && kind !== 'safe_mode') return;
+    noteSourceBlocked(source.id, kind, error.message);
+  }
+
+  /** P0-1：任何一次成功调用都说明原生已放行，解除镜像 */
+  private clearProtection(source: Source): void {
+    clearSourceBlock(source.id);
   }
 
   /**
@@ -758,6 +802,7 @@ export class SpiderAdapter extends BaseAdapter {
         // undefined（Web/旧插件不带该字段）时保留既有判断，不当成"非原生"
         if (result.native === true) nativeBearingSourceIds.add(source.id);
         else if (result.native === false) nativeBearingSourceIds.delete(source.id);
+        this.clearProtection(source);
         return result.handle;
       } catch (e) {
         if (e instanceof AppError && e.code === 'E_ABORTED') throw e;
@@ -766,7 +811,12 @@ export class SpiderAdapter extends BaseAdapter {
       }
     }
     await this.noteLoadFailureIfNeeded(source, ext, lastError);
-    throw nativeErrorOf(lastError, new AppError('E_SOURCE_UNAVAILABLE', '爬虫加载失败，请检查网络或更换源'));
+    const failed = nativeErrorOf(
+      lastError,
+      new AppError('E_SOURCE_UNAVAILABLE', '爬虫加载失败，请检查网络或更换源'),
+    );
+    this.mirrorProtection(source, failed);
+    throw failed;
   }
 
   /**
@@ -799,6 +849,7 @@ export class SpiderAdapter extends BaseAdapter {
           );
           this.jarVariants.set(source.id, variant);
           this.handles.set(source.id, result.handle);
+          this.clearProtection(source);
           return result.handle;
         } catch (e) {
           if (e instanceof AppError && e.code === 'E_ABORTED') throw e;
@@ -808,7 +859,12 @@ export class SpiderAdapter extends BaseAdapter {
       }
     }
     await this.noteLoadFailureIfNeeded(source, ext, lastError);
-    throw nativeErrorOf(lastError, new AppError('E_SOURCE_UNAVAILABLE', 'drpy 规则加载失败，请检查网络或更换源'));
+    const failed = nativeErrorOf(
+      lastError,
+      new AppError('E_SOURCE_UNAVAILABLE', 'drpy 规则加载失败，请检查网络或更换源'),
+    );
+    this.mirrorProtection(source, failed);
+    throw failed;
   }
 
   private async invoke(
@@ -843,11 +899,14 @@ export class SpiderAdapter extends BaseAdapter {
             signal,
             effectiveTimeout,
           );
+      this.clearProtection(source);
       return parseSpiderJson(result.json, method, source.name);
     } catch (e) {
       if (e instanceof AppError) throw e;
       logger.warn('爬虫调用失败', source.name, method, e);
-      throw nativeErrorOf(e, new AppError('E_SOURCE_UNAVAILABLE', '爬虫执行失败'));
+      const failed = nativeErrorOf(e, new AppError('E_SOURCE_UNAVAILABLE', '爬虫执行失败'));
+      this.mirrorProtection(source, failed);
+      throw failed;
     }
   }
 
@@ -1261,7 +1320,22 @@ export class SpiderAdapter extends BaseAdapter {
       // P1: 识别网盘登录错误
       const msg = played.msg ?? '';
       const errorCode = detectNetdiskError(msg);
-      throw new AppError(errorCode ?? 'E_NO_PLAY_URL', msg || '爬虫未返回播放地址');
+      // 爬虫 msg 是上游原文，此前原样进 AppError.message 就被顶到界面上：里面常带 cookie、
+      // 签名直链，也带着真正的原因（「本接口免费使用…」就是额度，不是源失效）。
+      // 登记只解决「这条提示从哪儿来」；分档仍走 classifySourceFailure 一套口径。
+      const notice = recordUpstreamNotice(msg, {
+        origin: 'spider_msg',
+        operation: 'playerContent',
+        sourceId: source.id,
+        // `played.code` 声明了却从没被读过——业务码是区分额度与鉴权的关键一档
+        businessCode: played.code ?? null,
+        errorCode: errorCode ?? 'E_NO_PLAY_URL',
+      });
+      const display = redactNoticeText(sanitizeSourceMessage(msg));
+      throw new AppError(errorCode ?? 'E_NO_PLAY_URL', display || '爬虫未返回播放地址', {
+        detail: notice.detail,
+        meta: { requestId: notice.requestId, noticeOrigin: notice.noticeOrigin, failureKind: notice.kind },
+      });
     }
 
     const absolute = toAbsoluteUrl(source.baseUrl, raw) ?? raw;

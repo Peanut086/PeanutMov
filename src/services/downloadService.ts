@@ -51,6 +51,7 @@ import {
 } from '@/services/downloadBatch';
 import { downloadPreflight, type PreflightOptions, type PreflightResult } from '@/services/downloadPreflight';
 import { markOfflineFileInUse } from '@/services/offlineRemuxMigration';
+import { getPhase, isInTrackedPostProcess } from '@/services/downloadPhaseRegistry';
 import { isLocalArtifactUrl, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import type {
   CreateDownloadInput,
@@ -627,6 +628,19 @@ async function localSubtitlesOf(task: DownloadTask): Promise<SubtitleTrack[]> {
 /** 任务最终产物路径（优先实际 filePath，转封装后 basename 才是 .mp4） */
 function finalFilePathOf(task: DownloadTask): string {
   return task.filePath ?? nativeFilePathOf(task);
+}
+
+/**
+ * P0-4：交给播放器的格式跟的是产物实况，不是清单类型。
+ *
+ * HLS 下载已把分片合并成单一文件，仍报 `hls` 会被播放器当成清单去做 m3u8 预检而失败。
+ * 转封装交付成功的记录已被回写成 `mp4`（走不到这里）；没交付的按清单声明的容器给结论——
+ * fMP4 的字节本就是 MP4 家族，标成 `ts` 会让播放器去找 MPEG-TS 解封装器。
+ */
+function mergedFormatOf(task: DownloadTask): MediaFormat {
+  if (task.format !== 'hls') return task.format;
+  if (task.container === 'fmp4' || task.container === 'mp4') return 'mp4';
+  return 'ts';
 }
 
 /**
@@ -1429,10 +1443,8 @@ export const downloadService = {
       return {
         url: local.url,
         localPath,
-        // HLS 下载已把分片合并为单一 MPEG-TS 文件，按渐进式 ts 播放即可；
-        // 若仍报 'hls' 会被播放器当成清单去做 m3u8 预检而失败。
-        // 转封装成功后由后端把 task.format 回写为 'mp4'，此处自然呈现 mp4。
-        format: task.format === 'hls' ? 'ts' : task.format,
+        // 产物实况决定播放器选型，口径见 `mergedFormatOf`
+        format: mergedFormatOf(task),
         headers: {},
         subtitles,
         lineId: `local:${task.id}`,
@@ -1486,7 +1498,8 @@ export const downloadService = {
       return {
         url: local.url,
         localPath,
-        format: task.format === 'hls' ? 'ts' : task.format,
+        // 产物实况决定播放器选型，口径见 `mergedFormatOf`
+        format: mergedFormatOf(task),
         headers: {},
         subtitles,
         lineId: `local:${task.id}`,
@@ -2124,6 +2137,23 @@ async function runWatchdogCheck(): Promise<void> {
     const requeuedIds = new Set<string>();
     for (const task of tasks) {
       if (now - task.updatedAt < WATCHDOG_STALE_MS) continue;
+      /*
+       * P0-4：后处理（转封装 / fMP4 交付复检）这段时间「没有字节进度」是预期的——runner
+       * 仍占着队列槽位，按旧口径会走下面那句 `abortTask`，把一份马上要交付的产物打断重跑，
+       * 用户看到的就是「下载停滞（watchdog 检测）」加一次重复下载。
+       * 阶段登记自带硬截止：超过预算（原生超时 + 宽限）照样回到停滞判定，
+       * 卡死的原生转封装不能借这道网关终身免检。
+       */
+      if (isInTrackedPostProcess(task.id, now)) {
+        const phase = getPhase(task.id);
+        logger.info('watchdog: 任务处于后处理阶段，本轮不按传输停滞处理', {
+          taskId: task.id,
+          postProcessPhase: phase?.label ?? 'postprocess',
+          heartbeatSec: phase ? Math.round((now - phase.since) / 1000) : 0,
+          staleSec: Math.round((now - task.updatedAt) / 1000),
+        });
+        continue;
+      }
       if (queue.isActive(task.id)) {
         // runner 还在但没进度 → 强制 abort 触发重试
         queue.abortTask(task.id, `停滞 ${Math.round((now - task.updatedAt) / 1000)}s`);

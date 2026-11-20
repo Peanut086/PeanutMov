@@ -14,12 +14,23 @@ import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
 import { deleteFile } from '@/native/fs';
 import { LocalProxy } from '@/native/localProxy';
-import { MediaTool, isMediaToolAvailable } from '@/native/mediaToolPlugin';
+import { MediaTool, getStorageInfo, isMediaToolAvailable } from '@/native/mediaToolPlugin';
+import { settingsService } from '@/services/settingsService';
+import { beginPhase, endPhase } from '@/services/downloadPhaseRegistry';
+import {
+  decideRemuxDelivery,
+  deliverRemux,
+  deliverRenamedArtifact,
+  recordRemuxFailure,
+  type RemuxDecision,
+  type RemuxDelivery,
+  type RemuxResultLike,
+} from '@/services/remuxDelivery';
 import { findProtectedKeyEvidence } from '@/player/sourceGuard';
 import { createSink, type DownloadSink } from '@/services/downloadSink';
 import { appEvents } from '@/services/events';
 import { classifyConnectivityError } from '@/services/connectivityError';
-import type { DownloadTask } from '@/types';
+import type { DownloadContainer, DownloadTask } from '@/types';
 
 /**
  * 后处理阶段回调（EXT-04/FR-60）：转封装发生在分片写完之后，但任务状态要到
@@ -113,9 +124,25 @@ export interface HlsPlaylist {
   mediaSequence?: number;
   segments: HlsSegment[];
   initSegment?: HlsInitSegment;
+  /**
+   * P0-4：清单里出现过的**不同** `#EXT-X-MAP` URI 数量（按声明顺序去重）。
+   *
+   * 合并产物只有一个文件头，规范却允许中途换 init 段；`> 1` 意味着后半段的分片
+   * 并不属于我们写进文件头的那一份初始化段。这个数不参与字节拼接，只用于把容器
+   * 从 `fmp4` 降级（见 `detectHlsContainer`），别让一份头尾不匹配的产物被当成有效 fMP4 交付。
+   */
+  initMapCount?: number;
   endList?: boolean;
   /** FIX-PLAY-D1: #EXT-X-DISCONTINUITY 边界数（归因元数据，不参与下载行为） */
   discontinuityCount?: number;
+  /**
+   * P0-4：清单自身声明的产物容器（见 `detectHlsContainer`）。
+   *
+   * 此前只有预检用「有没有 init 段 + 首片扩展名」猜一次容器，合并、文件名、MIME、
+   * 桥接、播放器四处各写死 `'ts'`，同一条 fMP4 线路在五层里是五种说法。
+   * master playlist 没有分片，容器要等选中变体后才能判定，故留空。
+   */
+  container?: DownloadContainer;
 }
 
 /**
@@ -148,6 +175,14 @@ const MANIFEST_KEY_TIMEOUT_MS = 15_000;
 const STALL_TIMEOUT_MS = 60_000;
 /** 连续多少片解密失败就判这条线解不开（再多试只是空跑 987 片） */
 const DECRYPT_FAILURE_LIMIT = 3;
+/** P0-4：原生转封装超时。大片实测会跑满，同时也是给看门狗的阶段预算基准 */
+const REMUX_TIMEOUT_MS = 300_000;
+/** P0-4：阶段预算的宽限（桥接往返 + 复检本身）；超过它看门狗照旧判停滞，卡死的转封装不能终身免检 */
+const REMUX_PHASE_GRACE_MS = 60_000;
+/** P0-4：fMP4 交付只做一次全文件复检，不给转封装时长 */
+const FMP4_DELIVERY_PHASE_BUDGET_MS = 120_000;
+/** P0-4：转封装产物按输入体积留 15% 余量（与存量迁移 `MIN_FREE_RATIO` 同一口径） */
+const REMUX_FREE_SPACE_RATIO = 1.15;
 
 /**
  * 源侧返回的不是清单，而是网页 / 接口错误体（防盗链、限流、直链过期）。
@@ -254,6 +289,7 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
   let targetDuration: number | undefined;
   let mediaSequence = 0;
   let initSegment: HlsInitSegment | undefined;
+  const initMapUris: string[] = [];
   let endList = false;
   // FIX-PLAY-D2：BYTERANGE 是「作用于下一条 URL」的局部状态。旧实现把它挂在
   // parseMediaPlaylist 函数对象上——两次解析之间会残留串话，且偏移缺省时一律当 0，
@@ -289,7 +325,14 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
     } else if (line.startsWith('#EXT-X-MAP:')) {
       const attrs = parseAttributes(line.substring('#EXT-X-MAP:'.length));
       if (attrs['URI']) {
-        initSegment = { url: resolveUrl(attrs['URI'], baseUrl) };
+        const uri = resolveUrl(attrs['URI'], baseUrl);
+        if (!initMapUris.includes(uri)) initMapUris.push(uri);
+        /*
+         * 文件头只认第一个声明：合并是从它开始的，后面再换 init 也救不了已经落盘的字节。
+         * 旧实现在这里直接覆盖（后来者赢），于是头跟前面所有分片都对不上——数量记下来，
+         * 容器判定才有降级的依据。
+         */
+        initSegment ??= { url: uri };
       }
     } else if (line.startsWith('#EXTINF:')) {
       const match = line.match(/#EXTINF:([\d.]+)/);
@@ -333,9 +376,31 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
     mediaSequence,
     segments,
     initSegment,
+    initMapCount: initMapUris.length,
     endList,
     discontinuityCount,
+    container: detectHlsContainer({ initSegment, segments, initMapCount: initMapUris.length }),
   };
+}
+
+/**
+ * P0-4：按清单自身的声明判定产物容器。
+ *
+ * 判据顺序就是证据强度：`#EXT-X-MAP` 是规范里 fMP4 的定义性标签（纯 TS 清单不会出现它），
+ * 其次是首片扩展名，最后落到 `other`。宁可标成「不认得」让上层按原件兜底播放，
+ * 也不能把一份 MP4 家族的文件叫成 TS——那会让转封装、文件名、MIME 与播放器四处一起错。
+ *
+ * 中途换过 init 段（`initMapCount > 1`）时不承诺 `fmp4`：那份产物只有一个文件头，
+ * 后半段的分片对应的却是另一份初始化段，改名当成品交付等于交付一份头尾不匹配的 MP4。
+ */
+export function detectHlsContainer(
+  playlist: Pick<HlsPlaylist, 'initSegment' | 'segments' | 'initMapCount'>,
+): DownloadContainer {
+  if (playlist.initSegment) return (playlist.initMapCount ?? 0) > 1 ? 'other' : 'fmp4';
+  const first = playlist.segments[0]?.url ?? '';
+  if (/\.ts(\?|$)/i.test(first)) return 'ts';
+  if (/\.(m4s|mp4|m4a|m4v)(\?|$)/i.test(first)) return 'fmp4';
+  return 'other';
 }
 
 /**
@@ -1031,7 +1096,14 @@ export class HlsDownloader {
             if (e instanceof AppError && !e.retryable) throw e;
             if (attempt < MAX_SEGMENT_RETRIES) {
               const backoff = RETRY_BACKOFF_MS[attempt] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]!;
-              logger.warn('分片下载失败，重试中', { attempt: attempt + 1, backoff, url: seg.segment.url, error: e });
+              logger.warn('分片下载失败，重试中', {
+                attempt: attempt + 1,
+                backoff,
+                // P0-4：带清单序号——「缺哪一片」要能直接对回清单，只有 URL 时归因要人肉数
+                segmentIndex: seg.index,
+                url: seg.segment.url,
+                error: e,
+              });
               await new Promise((resolve) => setTimeout(resolve, backoff));
             }
           }
@@ -1199,6 +1271,12 @@ export class HlsDownloader {
         hlsTotalSegments: totalSegments,
         hlsDiscontinuities: playlist.discontinuityCount ?? 0,
         /*
+         * P0-4：容器判定跟着产物一起落库。此前 `container` 只有转封装交付那几笔才会写，
+         * 一条没转封装的 TS/fMP4 记录永远停在「尚未判定」，MIME、文件自检、播放器选型
+         * 只能各自按扩展名再猜一次。
+         */
+        container: playlist.container ?? 'other',
+        /*
          * DL-R0：本轮一片都没新写（采纳了已晋升的成品）时，滚动指纹还停在种子值上，
          * 那份数字不代表任何内容。写进库会让两条同样「只收尾」的任务互相认成双胞胎，
          * 而 DL-P0-2 的跨集查重正是拿它当证据的——等于凭空造出「同一份素材」的误判。
@@ -1213,78 +1291,187 @@ export class HlsDownloader {
         segments: completedCount,
         // FIX-PLAY-D1：边界数进日志，坏件归因时能直接看出这条流拼过几段
         discontinuities: playlist.discontinuityCount ?? 0,
+        /*
+         * P0-4：交付口径的三条清单证据。初始化段只记声明形态不记地址（URL 里带签名）；
+         * `segmentIndex` 是连续写入水位，收尾时必须等于总分片数-1，短一截就是缺片。
+         */
+        initMap: playlist.initSegment ? 'declared' : 'none',
+        initMapDistinct: playlist.initMapCount ?? 0,
+        containerDetected: playlist.container ?? 'other',
+        segmentIndex: nextWriteIndex - 1,
       });
 
-      // D-06: HLS 下载完成后转封装 TS → MP4（无损，不重编码），让 WebView 原生播放器可播。
-      // 转封装失败不阻断下载——保留 .ts 文件，播放时由 PlayerController 走原生引擎；
-      // 时间轴自检也归这一类（原生侧就是按「丢弃 mp4、留住 ts」设计的，详见下面判废处的说明）。
-      // DL-P0-2：转封装成功会删掉 .ts（`deleteInput: true`）并把 filePath 换成 .mp4，
-      // 拒交付时要删的是当下这份在库里的产物，不是下载器手里那个旧名字。
+      /*
+       * D-06: HLS 下载完成后交付（无损，不重编码），让 WebView 原生播放器可播。
+       * 转封装失败不阻断下载——保留 .ts 文件，播放时由 PlayerController 走原生引擎；
+       * 时间轴自检也归这一类（原生侧就是按「丢弃 mp4、留住 ts」设计的，详见下面判废处的说明）。
+       *
+       * P0-3：原生侧一律 `deleteInput: false`——原件的删除权收回到 JS，且排在「复检通过 +
+       * 记录改指 .mp4」之后（详见 `deliverRemux`）。此前 `deleteInput: true` 是原生在返回之前
+       * 就删掉 `.ts`，于是「转封装当场报错」「进程停在发布与落库之间」都会留下
+       * 一份没验证过的 .mp4 或一份没被引用的 .mp4，而记录还指着已经不存在的 .ts——
+       * 用户侧就是「转封装过的视频报时间轴异常 / 整集重下」。
+       *
+       * P0-4：交付按清单声明的容器分流，并受 `download.remuxToMp4` 开关约束——
+       * - fMP4 的字节本来就是 MP4 家族，请原生转封装只会拿到一句 `skipped: fmp4-passthrough`
+       *   （什么都不做），所以这里只做「复检 → 改名 → 落库」，一次转码都不跑；
+       * - TS 与「认不出来」（沿用旧口径，交给原生探测）走转封装；
+       * - 开关关掉时新下载与存量任务都不转换，原件直接就是成品；
+       * - 整段登记成 postprocess 阶段，看门狗不再把「正在后处理」读成「传输停滞」；
+       *   用户取消要接到原生 `cancelRemux`，晚到的结果不许提交。
+       */
       let deliveredPath = result.filePath;
+      let delivery: RemuxDelivery | null = null;
+      const detectedContainer: DownloadContainer = playlist.container ?? 'other';
+      if ((playlist.initMapCount ?? 0) > 1) {
+        // P0-4：中途换过初始化段——这份合并产物只有一个文件头，不能按有效 fMP4 交付
+        logger.warn('P0-4：清单声明了多个初始化段，容器降级为 other 并按原件兜底交付', {
+          taskId: task.id,
+          initMapDistinct: playlist.initMapCount ?? 0,
+          containerDetected: detectedContainer,
+        });
+      }
       if (isNative() && isMediaToolAvailable() && result.filePath && task.format === 'hls') {
+        const notify = (state: 'start' | 'done' | 'skipped' | 'failed', reason?: string): void => {
+          this.deps.onPostProcess?.(task, 'remux', state, reason ? { reason } : undefined);
+        };
         const inputPath = result.filePath;
-        const outputPath = inputPath.replace(/\.ts$/, '.mp4');
-        if (outputPath !== inputPath) {
-          const notify = (state: 'start' | 'done' | 'skipped' | 'failed', reason?: string): void => {
-            this.deps.onPostProcess?.(task, 'remux', state, reason ? { reason } : undefined);
-          };
-          /*
-           * OPT-05：跳过/失败也要落库。此前只有成功才写 `remux`，任务停在 `remux: null`，
-           * UI 分不清「没开转封装 / 转封装失败 / 还在转」，用户只能看到文件一直是 .ts。
-           * 落库失败只记日志——转封装的任何问题都不该把已下好的视频判成下载失败。
-           */
-          const record = async (status: 'skipped' | 'failed', reason?: string): Promise<void> => {
-            try {
-              await this.deps.saveProgress(task.id, {
-                remux: reason ? { status, reason } : { status },
-                updatedAt: now(),
-              });
-            } catch (persistErr) {
-              logger.warn('转封装状态落库失败', { taskId: task.id, error: toAppError(persistErr).message });
-            }
-          };
+        // 交付名只认「合并产物叫 .ts」这一约定（见 `extensionOf`）：别的扩展名不去猜目标名
+        const outputPath = inputPath.replace(/\.ts$/i, '.mp4');
+        const remuxSetting = (await settingsService.get().catch(() => null))?.download.remuxToMp4;
+        if (remuxSetting === false) {
+          logger.info('P0-4：remuxToMp4 已关闭，跳过容器转换（原件即成品）', {
+            taskId: task.id,
+            containerDetected: detectedContainer,
+            postProcessPhase: 'none',
+          });
+        } else if (outputPath === inputPath) {
+          logger.info('P0-4：产物不是 TS 命名，不做容器交付', { taskId: task.id, inputPath });
+        } else if (detectedContainer === 'fmp4') {
           notify('start');
+          beginPhase(task.id, 'postprocess', 'fMP4 交付复检', FMP4_DELIVERY_PHASE_BUDGET_MS);
           try {
-            logger.debug('开始转封装 TS → MP4', { taskId: task.id, inputPath, outputPath });
-            const remuxResult = await MediaTool.remuxMp4({
+            delivery = await deliverRenamedArtifact({
+              taskId: task.id,
               inputPath,
               outputPath,
-              taskId: task.id,
-              container: 'ts',
-              deleteInput: true,
-              timeoutMs: 300_000,
+              inputBytes: result.size,
+              previousRemux: task.remux,
+              container: 'fmp4',
+              deps: { update: async (patch) => this.deps.saveProgress(task.id, patch) },
             });
-            if (remuxResult.ok && !remuxResult.skipped) {
-              // P0-2: 转封装后体积会变（MP4 容器开销小于 TS 包头），
-              // 一并回写字节数，否则「本地存储」与任务详情会一直显示旧的 TS 体积。
-              const outputBytes = remuxResult.outputBytes ?? result.size;
-              await this.deps.saveProgress(task.id, {
-                filePath: outputPath,
-                format: 'mp4',
-                container: 'mp4',
-                downloadedBytes: outputBytes,
-                totalBytes: outputBytes,
-                remux: { status: 'done', durationMs: remuxResult.durationMs },
-                updatedAt: now(),
+          } finally {
+            endPhase(task.id);
+          }
+          deliveredPath = delivery.deliveredPath;
+          if (delivery.outcome === 'done') notify('done');
+          else notify('failed', delivery.reason ?? delivery.outcome);
+        } else {
+          // P0-4：剩余空间放不下第二份产物时不去撞原生那句 insufficient-space——提前判定
+          // 省掉一次「跑完大半才发现写不下」的白烧，原件不受影响。取不到空间信息时放行。
+          const space = await getStorageInfo('downloads');
+          if (space && space.freeBytes < result.size * REMUX_FREE_SPACE_RATIO) {
+            logger.warn('P0-4：剩余空间不足以容纳转封装产物，跳过转换', {
+              taskId: task.id,
+              freeBytes: space.freeBytes,
+              inputBytes: result.size,
+            });
+            notify('skipped', 'insufficient-space');
+            delivery = await deliverRemux({
+              taskId: task.id,
+              inputPath,
+              outputPath,
+              inputBytes: result.size,
+              decision: decideRemuxDelivery({ result: { skipped: true, reason: 'insufficient-space' } }),
+              previousRemux: task.remux,
+              deps: {
+                update: async (patch) => this.deps.saveProgress(task.id, patch),
+                removeInput: () => deleteFile(inputPath),
+              },
+            });
+            deliveredPath = delivery.deliveredPath;
+          } else {
+            notify('start');
+            beginPhase(task.id, 'postprocess', '转封装 MP4', REMUX_TIMEOUT_MS + REMUX_PHASE_GRACE_MS);
+            let remuxResult: RemuxResultLike | null = null;
+            let remuxError: unknown = null;
+            const onCancel = (): void => {
+              // P0-4：取消要真的打断原生那一笔，否则单线程 executor 还在写第二份产物、
+              // 队列槽位被占住，用户看到的「取消」迟迟不生效。
+              void MediaTool.cancelRemux({ taskId: task.id, inputPath })
+                .then((ack) => logger.info('P0-4：取消已送达原生转封装', { taskId: task.id, cancelAck: ack?.canceled === true }))
+                .catch((cancelErr) =>
+                  logger.warn('P0-4：cancelRemux 未送达', {
+                    taskId: task.id,
+                    error: cancelErr instanceof Error ? cancelErr.message || String(cancelErr) : String(cancelErr),
+                  }),
+                );
+            };
+            signal.addEventListener('abort', onCancel, { once: true });
+            try {
+              logger.debug('开始转封装 TS → MP4', {
+                taskId: task.id,
+                inputPath,
+                outputPath,
+                containerDetected: detectedContainer,
               });
-              logger.info('转封装完成', { taskId: task.id, outputBytes });
-              deliveredPath = outputPath;
-              notify('done');
-            } else if (remuxResult.skipped) {
-              logger.debug('转封装跳过', { taskId: task.id, reason: remuxResult.reason });
-              await record('skipped', remuxResult.reason);
-              notify('skipped', remuxResult.reason);
-            } else {
-              logger.warn('转封装失败，保留 .ts', { taskId: task.id, code: remuxResult.code, reason: remuxResult.reason });
-              await record('failed', remuxResult.reason ?? remuxResult.code);
-              notify('failed', remuxResult.reason ?? remuxResult.code);
+              remuxResult = await MediaTool.remuxMp4({
+                inputPath,
+                outputPath,
+                taskId: task.id,
+                /*
+                 * P0-4：这一支只在清单说 TS 或「认不出来」时进入（fMP4 已在上一支交付）。
+                 * 原生只按 `fmp4` 这一个值做 passthrough 分流，其余一律实测探测，
+                 * 所以这里照实报判定的结果，不再替 `other` 认一份 TS。
+                 */
+                container: detectedContainer,
+                deleteInput: false,
+                timeoutMs: REMUX_TIMEOUT_MS,
+              });
+            } catch (remuxErr) {
+              /* reason 是给支持者看的技术线索：未包装的异常会只剩「操作失败，请重试」 */
+              remuxError = remuxErr;
+              logger.warn('转封装抛出异常，按盘上实况对账', {
+                taskId: task.id,
+                error: remuxErr instanceof Error ? remuxErr.message || String(remuxErr) : String(remuxErr),
+              });
+            } finally {
+              signal.removeEventListener('abort', onCancel);
+              endPhase(task.id);
             }
-          } catch (remuxErr) {
-            /* reason 是给支持者看的技术线索：`toAppError` 会把无码异常统一洗成「操作失败，请重试」 */
-            const message = remuxErr instanceof Error ? remuxErr.message || String(remuxErr) : String(remuxErr);
-            logger.warn('转封装异常，保留 .ts', { taskId: task.id, error: message });
-            await record('failed', message);
-            notify('failed', message);
+            if (signal.aborted) {
+              // P0-4：晚到结果不得提交。这一轮用户已经取消，产物归属交给下一轮 DL-R0 与开机对账；
+              // 盘上若留下没被引用的 .mp4，对账会按复检结论认领或删除。
+              const canceled: RemuxDecision = {
+                status: 'failed',
+                outcome: 'canceled',
+                reason: 'canceled-during-remux',
+                deliverable: false,
+              };
+              await recordRemuxFailure(canceled, { update: async (patch) => this.deps.saveProgress(task.id, patch) }, remuxResult?.durationMs);
+              notify('failed', 'canceled');
+              throw new AppError('E_ABORTED');
+            }
+            const decision = remuxError !== null
+              ? decideRemuxDelivery({ error: remuxError })
+              : decideRemuxDelivery({ result: remuxResult });
+            delivery = await deliverRemux({
+              taskId: task.id,
+              inputPath,
+              outputPath,
+              inputBytes: result.size,
+              decision,
+              result: remuxResult,
+              previousRemux: task.remux,
+              deps: {
+                update: async (patch) => this.deps.saveProgress(task.id, patch),
+                removeInput: () => deleteFile(inputPath),
+              },
+            });
+            deliveredPath = delivery.deliveredPath;
+            if (delivery.outcome === 'done') notify('done');
+            else if (delivery.status === 'skipped') notify('skipped', delivery.reason);
+            else notify('failed', delivery.reason ?? delivery.outcome);
           }
         }
       }
@@ -1321,6 +1508,14 @@ export class HlsDownloader {
         let artifactGone: boolean;
         if (deliveredPath && isNative()) {
           artifactGone = await deleteFile(deliveredPath).then(() => true).catch(() => false);
+          /*
+           * P0-3：`db-commit-failed` 时记录仍指 `.ts`，但盘上多了一份没被任何记录引用的 `.mp4`。
+           * 任务既然判废，那份孤儿也必须一起清掉——否则它会在下次开机对账里被"认领"回来，
+           * 把这一集已经烧掉的流量再算成一份有效成品。
+           */
+          if (delivery?.outcome === 'db-commit-failed') {
+            await deleteFile(deliveredPath.replace(/\.ts$/, '.mp4')).catch(() => undefined);
+          }
         } else {
           // Web 的 Blob 产物：`blobKey` 一清就再也指不回那份数据，等同已删除
           artifactGone = !deliveredPath;

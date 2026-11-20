@@ -184,12 +184,17 @@ public class SpiderPlugin extends Plugin {
                         watchdog.removeCallbacks(timeoutTask);
                     }
                 } catch (Throwable e) {
+                    // P0-1：过去这类异常只变成一句"爬虫失败: xxx"给用户，构件级故障
+                    // （LinkageError 等）留在原地——进程活着、哨兵被清、下次启动查不到现场，
+                    // 于是坏 jar 永远隔离不掉。这里按当前线程的在途现场归因。
+                    SpiderExitLedger.noteJavaExitIfInFlight(e, false, getContext());
                     if (settled.compareAndSet(false, true)) {
                         watchdog.removeCallbacks(timeoutTask);
                         Log.w(TAG, op + " failed", e);
                         call.reject(label + "失败: " + describeFailure(e));
                     }
                 } finally {
+                    SpiderExitLedger.exit();
                     // PERF-0：queue=排队等待 exec=实际执行；E1 后 active 应能到 8、queue≈0
                     long perfNow = android.os.SystemClock.elapsedRealtime();
                     Log.i(TAG, op + " queue=" + (startedAt - submittedAt) + "ms exec=" + (perfNow - startedAt)
@@ -887,6 +892,9 @@ public class SpiderPlugin extends Plugin {
             } catch (Exception e) {
                 Log.w(TAG, "failed to write proxy sentinel", e);
             }
+            // P0-1：proxy 是"弹窗提示→加载 go 服务→退出"链上唯一不留现场的一段，登记在途构件现场
+            // 现场里不带 url：do 参数里的链接常带 token，日志会被导出
+            SpiderExitLedger.enter("spider.proxy:" + doParam, target.jarMd5, target.api, null);
             Object result;
             try {
                 result = method.invoke(target.spider, params);
@@ -905,6 +913,9 @@ public class SpiderPlugin extends Plugin {
             }
         } catch (Throwable ignored) {
             // 该爬虫 proxy 执行失败 → 试下一个
+            // P0-1：吞归吞，现场要留下。构件级故障（LinkageError 等）在这里原地消失过，
+            // 于是"每次 proxy 都抛同一个异常"的坏 jar 在归因链上完全隐身。
+            SpiderExitLedger.noteJavaExitIfInFlight(ignored, true, getContext());
         }
         return null;
     }
@@ -942,6 +953,8 @@ public class SpiderPlugin extends Plugin {
             } catch (Exception e) {
                 Log.w(TAG, "failed to write invoke sentinel", e);
             }
+            // P0-1：invoke 的异常统一从 runSpider 边界归因，这里只提供构件现场
+            SpiderExitLedger.enter("spider.invoke:" + method, target.jarMd5, target.api, null);
             try {
                 String json = invokeSpider(target, method, javaArgs);
                 CrashSentinel.end(token);
@@ -949,9 +962,12 @@ public class SpiderPlugin extends Plugin {
                 ret.put("json", json);
                 ret.put("logs", new JSArray(Arrays.asList(targetLogs())));
                 call.resolve(ret);
-            } catch (Exception e) {
+            } catch (Throwable t) {
+                // P0-1：与 load 同口径——catch 得住的失败不留崩溃标记
                 CrashSentinel.end(token);
-                throw e;
+                if (t instanceof Exception) throw (Exception) t;
+                if (t instanceof Error) throw (Error) t;
+                throw new IllegalStateException(t);
             } finally {
                 target.invokeLock.unlock();
             }
@@ -1043,6 +1059,21 @@ public class SpiderPlugin extends Plugin {
             cooldowns.put(item);
         }
         ret.put("cooldowns", cooldowns);
+        call.resolve(ret);
+    }
+
+    /**
+     * P0-1：把退出现场读数交给 JS——本轮内存台账 + 上次启动写回的 AEI / tombstone 证据。
+     *
+     * <p>诚实交代覆盖面：原生信号（SIGSEGV/SIGABRT）能直接杀死进程，那一半当场来不及记录，
+     * JS 在"退出之前"拉不到；能实时拉走的是被 catch 住的那一半（构件级 LinkageError、
+     * proxy 里被吞掉的异常——过去这部分在日志里完全隐身）。上一条进程的死因由启动归因写回台账，
+     * 所以恢复入口读到的仍是"这次为什么被拦"。
+     */
+    @PluginMethod
+    public void getRecentExits(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("items", SpiderExitLedger.snapshot(getContext()));
         call.resolve(ret);
     }
 
@@ -1412,6 +1443,8 @@ public class SpiderPlugin extends Plugin {
             } catch (Exception e) {
                 Log.w(TAG, "failed to write sentinel", e);
             }
+            // P0-1：加载阶段的构件现场（本方法跑在 spider-worker 上，异常由 runSpider 边界统一归因）
+            SpiderExitLedger.enter("spider.load", jarMd5, api, null);
 
             try {
             // 加载前做 ABI 预检：带 native 库的 jar（ftyguard 系列）如果只有 ARM 版本，
@@ -1489,16 +1522,21 @@ public class SpiderPlugin extends Plugin {
                 + (nativeBearing ? " (native)" : ""));
         CrashSentinel.end(token);
         return new LoadedSpider(spider, api, dexDir, jarMd5, nativeBearing);
-        } catch (Exception e) {
+        } catch (Throwable t) {
+            // P0-1：能被 catch 住就不算崩溃。过去只有 Exception 分支清哨兵，Error
+            // （IncompatibleClassChangeError 这类构件级故障）会把哨兵留在原地，
+            // 下次启动被当成"上次进程死在这里"——归因链两头都失真。
             CrashSentinel.end(token);
             // C: Android 14+ DCL 限制——把晦涩的 SecurityException 转成用户可读文案，
             // 避免前端显示"该线路已失效"误导用户换源（实际是 App 未适配平台限制）。
-            if (e instanceof SecurityException && e.getMessage() != null
-                    && e.getMessage().contains("Writable dex")) {
+            if (t instanceof SecurityException && t.getMessage() != null
+                    && t.getMessage().contains("Writable dex")) {
                 throw new IllegalStateException(
-                        "系统安全限制（Android 14+ 动态加载要求只读），请更新 App 版本", e);
+                        "系统安全限制（Android 14+ 动态加载要求只读），请更新 App 版本", t);
             }
-            throw e;
+            if (t instanceof Exception) throw (Exception) t;
+            if (t instanceof Error) throw (Error) t;
+            throw new IllegalStateException(t);
         }
         } finally {
             if (gateAcquired) nativeAbiGate.release();

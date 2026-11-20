@@ -491,6 +491,9 @@ export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
   spider_mismatch: '爬虫类缺失',
   jar_conflict: 'jar 依赖冲突',
   auth: '需要登录',
+  rate_limited: '被限流',
+  quota_exhausted: '接口额度用尽',
+  no_play_url: '线路无播放地址',
   keyword_ignored: '源忽略关键词',
   unknown: '原因未知',
 };

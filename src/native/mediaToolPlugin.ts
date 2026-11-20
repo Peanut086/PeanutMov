@@ -23,7 +23,11 @@ export interface MediaToolPlugin {
     inputPath: string;
     outputPath: string;
     taskId?: string;
-    container?: 'ts' | 'fmp4';
+    /**
+     * 清单/判定给出的输入容器。原生只对 `fmp4` 做分流（回 `skipped: fmp4-passthrough`，
+     * 不动文件），其余值一律按盘上实况探测，所以照实报判定结果，不把 `other` 说成 `ts`。
+     */
+    container?: 'ts' | 'fmp4' | 'mp4' | 'other';
     deleteInput?: boolean;
     timeoutMs?: number;
   }): Promise<{
@@ -40,10 +44,16 @@ export interface MediaToolPlugin {
     outputBytes?: number;
     code?: string;
     reason?: string;
+    /** P0-3：交付件复检结论。`pass` 才能删输入；其余值形如 `duration-drift-72`、`tail-seek-miss` */
+    probeVerdict?: string;
+    /** P0-3：输入（TS）此刻是否还在盘上。只有 `probeVerdict === 'pass'` 时才可能被删 */
+    inputRetained?: boolean;
     tracks?: Array<{ type: string; mime: string; width?: number; height?: number; channels?: number; sampleRate?: number }>;
   }>;
   /** 取消进行中的转封装并清理 `.mp4.part` */
   cancelRemux(options: { taskId?: string; inputPath?: string }): Promise<{ canceled: boolean }>;
+  /** P0-3：独立复检盘上产物（开机对账 / 采纳孤儿 MP4 前），`path` 同上口径 */
+  verifyMedia(options: { path: string }): Promise<MediaVerifyResult>;
   /**
    * A-03：从本地文件抽进度条预览帧。
    * `path` 是相对 `Directory.Data` 的路径（与 `remuxMp4` 同一口径，不接受绝对路径）。
@@ -160,6 +170,49 @@ export async function extractSeekFrames(
   }
 }
 
+/* ---------- P0-3：交付件复检 ---------- */
+
+export interface MediaVerifyResult {
+  ok: boolean;
+  /** `pass` / `missing` / `no-tracks` / `no-video-track` / `no-duration` / `duration-drift-NN` / `head-seek-miss` / `middle-seek-miss` / `tail-seek-miss` / `probe-error-Xxx` */
+  probeVerdict: string;
+  outputBytes: number;
+}
+
+/**
+ * 对盘上产物做一次独立复检：容器、有效轨道、时长、首/中/尾定位。
+ *
+ * 与 `scanTsFile` 同一口径——只有"能力缺席"（Web / 旧 APK 未注册 `verifyMedia`）才返回 `null`，
+ * 文件缺失或结构不合格是有效结论（`ok: false`），调用方必须据此放弃采纳该文件。
+ */
+export async function verifyRemuxedMedia(path: string): Promise<MediaVerifyResult | null> {
+  if (!isMediaToolAvailable()) return null;
+  try {
+    const result = await MediaTool.verifyMedia({ path });
+    if (typeof result?.probeVerdict !== 'string') return null;
+    return {
+      ok: result.ok === true && result.probeVerdict === 'pass',
+      probeVerdict: result.probeVerdict,
+      outputBytes: Number.isFinite(result.outputBytes) ? result.outputBytes : 0,
+    };
+  } catch (e) {
+    const message = (e as Error)?.message ?? String(e);
+    if (/not implemented|unimplemented|method/i.test(message)) {
+      logger.debug('MediaTool.verifyMedia 不可用（旧 APK）', { error: message });
+      return null;
+    }
+    throw e;
+  }
+}
+
+/**
+ * 转封装结果里读复检结论；旧 APK 没这个字段时返回 `null`，
+ * 调用方按"未经校验的产物"处理——宁可留着 TS，也不删掉唯一可播的原件。
+ */
+export function probeVerdictOf(result: { probeVerdict?: string } | null | undefined): string | null {
+  return typeof result?.probeVerdict === 'string' && result.probeVerdict ? result.probeVerdict : null;
+}
+
 /* ---------- FIX-PLAY-C3：离线 TS 文件自检 ---------- */
 
 export interface TsScanResult {
@@ -217,4 +270,27 @@ export function describeTsScan(r: TsScanResult): string {
     return `文件被截断：最后一个完整包之后只剩 ${r.tailBytes} 字节（${size}）`;
   }
   return `文件头部混入 ${r.alignedStart} 字节非 TS 数据，其余按 TS 对齐正常（${size}）`;
+}
+
+/**
+ * P0-4：复检结论 → 一句人话（与 `describeTsScan` 并列的另一件工具）。
+ *
+ * fMP4 线路的下载产物按约定仍叫 `.ts`（见 `extensionOf`），拿包级 TS 扫描去查它只会得到
+ * 一句错的结论——「这个文件不是标准 TS 分片数据」。这类文件要说的是容器与定位，走 `verifyMedia`。
+ */
+export function describeMediaVerify(r: MediaVerifyResult): string {
+  const size = `${(r.outputBytes / 1048576).toFixed(1)} MB`;
+  if (r.ok) return `容器、轨道与首中尾定位都正常（${size}）`;
+  const v = r.probeVerdict;
+  if (v === 'missing') return `文件读不到了（记账 ${size}）——产物已不在盘上`;
+  if (v === 'no-tracks' || v === 'no-video-track') return `解不出可用的视频轨道（${size}）——这份产物播不了`;
+  if (v === 'no-duration') return `读不到时长（${size}）——时间轴信息缺失`;
+  if (v.startsWith('duration-drift-')) return `时长与记账偏差 ${v.slice('duration-drift-'.length)}，可能缺了尾部内容（${size}）`;
+  if (v.endsWith('-seek-miss')) {
+    const phase = v.slice(0, v.indexOf('-'));
+    const where = phase === 'head' ? '开头' : phase === 'middle' ? '中间' : phase === 'tail' ? '结尾' : phase;
+    return `定位不到${where}的采样点（${size}）——时间轴大概率损坏`;
+  }
+  if (v.startsWith('probe-error-')) return `解封装探测报错 ${v.slice('probe-error-'.length)}（${size}）`;
+  return `复检未通过：${v}（${size}）`;
 }

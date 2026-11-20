@@ -26,6 +26,9 @@ export type SourceFailureKind =
   | 'spider_mismatch'
   | 'jar_conflict'
   | 'auth'
+  | 'rate_limited'
+  | 'quota_exhausted'
+  | 'no_play_url'
   | 'keyword_ignored'
   | 'unknown';
 
@@ -139,6 +142,42 @@ export function isJarLinkageMessage(raw: string | null | undefined): boolean {
 }
 
 /**
+ * 判定上游是否在说「你请求太快了」。
+ *
+ * P1-2 要求把限流从「源站已失效」里分出来：429 的正确反应是等一等或换线路，
+ * 而不是判源死、更不是立刻重试——立刻重试只会把限流坐实。
+ * 词表收 `Retry-After`（上游给了等待时长，是最硬的信号）与各家中英写法。
+ */
+export function isRateLimitedMessage(raw: string | null | undefined): boolean {
+  if (typeof raw !== 'string' || raw.length === 0) return false;
+  return (
+    /retry[-_ ]?after|too many requests|rate ?limit(ed)?|请求过于频繁|访问频率|操作频繁|频率过高|触发.{0,4}限流|被限流/i.test(
+      raw,
+    ) || /\bHTTP\s*429\b|\bstatus[\"']?\s*[:=]\s*429\b/i.test(raw)
+  );
+}
+
+/**
+ * 判定上游是否在说「接口额度用完了」。
+ *
+ * 真机现象：解析接口弹出「本接口免费使用…」一类提示，App 却把它当源失效处理。
+ * 这类文案既不是鉴权（改凭据没用），也不是瞬时故障（重试没用），只能换解析接口/线路。
+ *
+ * 词表刻意收窄：用 `免费使用` 而不是 `免费`——导出日志里 72 处「免费」全是订阅名
+ * （`…免费资源`），宽一格就会把正常源判成额度耗尽。`上限/次数` 同样只认与额度连用的写法。
+ */
+export function isQuotaExhaustedMessage(raw: string | null | undefined): boolean {
+  if (typeof raw !== 'string' || raw.length === 0) return false;
+  return (
+    /额度|配额|quota|余额不足|免费使用|请充值|付费.{0,4}(开通|使用|解锁)|升级.{0,4}(会员|套餐|版本)|试用(已|结束|到期)|次数已?(用完|耗尽|超限|达.{0,4}上限)|超出.{0,4}(次数|限额|上限)|接口.{0,6}(收费|付费|额度)|exceed.{0,8}(quota|limit)|no (available )?(quota|credits?)/i.test(
+      raw,
+    ) ||
+    // 业务码形态：只在响应体里说额度问题、没有 HTTP 状态可依据的常见值
+    /["']?code["']?\s*[:=]\s*["']?(?:40001|40002|40003|42900|42901)["']?/i.test(raw)
+  );
+}
+
+/**
  * 用户可见文案收敛：
  * - 脚本内部异常 → 「规则脚本异常（源站问题）」
  * - jar 依赖冲突 → 「爬虫 jar 依赖冲突，无法加载」
@@ -179,6 +218,10 @@ export function classifySourceFailure(error: AppErrorShape | null | undefined): 
   if (isRuleScriptMessage(text) || error.message === RULE_SCRIPT_MESSAGE) return 'rule_script';
   if (isSourceInternalMessage(text) || error.message === SOURCE_INTERNAL_MESSAGE) return 'source_internal';
 
+  // P1-2：HTTP 状态比错误码和文案都硬，先按状态分档（401/403 改凭据、429 等一等）
+  if (error.httpStatus === 429) return 'rate_limited';
+  if (error.httpStatus === 401 || error.httpStatus === 403) return 'auth';
+
   switch (error.code) {
     case 'E_UNSUPPORTED_FORMAT':
       return 'protocol_unsupported';
@@ -186,23 +229,47 @@ export function classifySourceFailure(error: AppErrorShape | null | undefined): 
       return 'timeout';
     case 'E_KEYWORD_IGNORED':
       return 'keyword_ignored';
-    case 'E_PARSE':
-      // 解析失败但不像脚本异常：多为源站改版 / 返回结构变化
-      return 'source_dead';
+    // P1-2：401/403 与 429 是三种不同处置（改凭据 / 等一等 / 换接口），不能都算源失效
+    case 'E_HTTP_429':
+      return 'rate_limited';
     case 'E_AUTH':
     case 'E_HTTP_401':
     case 'E_HTTP_403':
       return 'auth';
+    default:
+      break;
+  }
+  // 到这里只剩「内容/网络类」和未登记码。上游的额度与限流常常只在 msg 里说、
+  // 不给独立错误码，所以在读代码之前先读文案；文案也没有才落到下面的档位。
+  const business = businessNoticeKind(text);
+  if (business) return business;
+  switch (error.code) {
+    case 'E_NO_PLAY_URL':
+      return 'no_play_url';
+    case 'E_PARSE':
+      // 解析失败但不像脚本异常：多为源站改版 / 返回结构变化
+      return 'source_dead';
     case 'E_NETWORK':
     case 'E_HTTP_404':
     case 'E_HTTP_5XX':
     case 'E_SOURCE_UNAVAILABLE':
     case 'E_NOT_FOUND':
-    case 'E_NO_PLAY_URL':
       return 'source_dead';
     default:
       return 'unknown';
   }
+}
+
+/**
+ * P1-2：没有独立错误码时，从上游文案里读「限流」或「额度用尽」。
+ *
+ * 两种都不是重试或改凭据能解决的，所以不进 `isTransientFailure`；
+ * 判定顺序先限流后额度：`请求过于频繁` 与 `额度` 同时出现时，等一等比换接口更省事。
+ */
+function businessNoticeKind(text: string): SourceFailureKind | null {
+  if (isRateLimitedMessage(text)) return 'rate_limited';
+  if (isQuotaExhaustedMessage(text)) return 'quota_exhausted';
+  return null;
 }
 
 const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> = {
@@ -261,6 +328,21 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
     hint: '账号、Token 或访问权限失效。请到源管理更新凭据后重试。',
     actions: ['edit-source', 'switch-source'],
   },
+  rate_limited: {
+    title: '请求过于频繁，被限流了',
+    hint: '上游明确说这一阵子请求太多（HTTP 429 / Retry-After）。立刻重试只会续上限，等一会儿再试或先换源；已取消这次请求，不占用爬虫线程。',
+    actions: ['retry', 'switch-source'],
+  },
+  quota_exhausted: {
+    title: '接口额度已用完',
+    hint: '解析接口/网盘接口返回了额度类提示（如「本接口免费使用…」）。这不是源失效，也不是登录问题：换一条解析接口或换一个源才有效，改凭据没用。',
+    actions: ['switch-line', 'switch-source', 'edit-source'],
+  },
+  no_play_url: {
+    title: '该线路没有返回播放地址',
+    hint: '源里能看到这一集，但线路没吐出可播地址（常见于线路失效或需要另一条解析）。换条线路通常立刻能播。',
+    actions: ['switch-line', 'retry', 'switch-source'],
+  },
   keyword_ignored: {
     title: KEYWORD_IGNORED_MESSAGE,
     hint: '该源返回的内容与关键词无关（常见于关闭搜索的采集站，会把最新目录当结果）。已过滤，不影响其它源的结果。',
@@ -281,10 +363,15 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
  * 不适用：鉴权、磁力、DRM、安全模式、隔离、类名不匹配、jar 依赖冲突——这些重试无意义。
  */
 export function isTransientFailure(kind: SourceFailureKind): boolean {
-  return kind === 'source_internal'
+  return (
+    kind === 'source_internal'
     || kind === 'rule_script'
     || kind === 'timeout'
-    || kind === 'source_dead';
+    || kind === 'source_dead'
+    // P1-2：`no_play_url` 是从 `source_dead` 里分出来的（E_NO_PLAY_URL 一直按瞬态重试一次），
+    // 只是档位变了，重试语义不变——收紧它会让解析页偶发空结果变成永久失败。
+    || kind === 'no_play_url'
+  );
 }
 
 /** 分类 → 文案与动作 */

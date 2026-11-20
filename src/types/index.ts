@@ -441,11 +441,45 @@ export type DownloadContainer = 'ts' | 'mp4' | 'fmp4' | 'other';
 /** 字幕随片下载策略（FR-64） */
 export type DownloadSubtitlePolicy = 'preferred' | 'all' | 'none';
 
+/**
+ * P0-3 交付阶段：文件与库之间的可恢复记账。
+ * - `published` `.mp4` 已 rename 到位，但记录仍指 `.ts`；
+ * - `committed` 记录已原子改指 `.mp4`；
+ * - `input-cleaned` `.ts` 已清理（终态，对账时直接跳过）；
+ * - 缺省 = 这条记录早于 P0-3，凭盘上实况推断。
+ */
+export type DownloadDeliveryPhase = 'published' | 'committed' | 'input-cleaned';
+
+/**
+ * P0-3 处置分档：同一句「转封装失败」背后是六种不同处置，必须分开。
+ * `verify-failed` = 原生已丢弃坏 `.mp4`、原件保留；`db-commit-failed` = 两份产物都在、记录仍指 TS。
+ */
+export type DownloadRemuxOutcome =
+  | 'done'
+  | 'skipped'
+  | 'failed'
+  | 'canceled'
+  | 'timeout'
+  | 'verify-failed'
+  | 'unverified'
+  | 'db-commit-failed';
+
 /** 转封装结果（FR-60，后端原生执行，前端只读） */
 export interface DownloadRemuxInfo {
   status: 'none' | 'done' | 'skipped' | 'failed';
   reason?: string;
   durationMs?: number;
+  /** P0-3：处置分档（`reason` 保留原生原文供人读） */
+  outcome?: DownloadRemuxOutcome;
+  /** P0-3：交付阶段；只有 `pass` 复检过的产物才允许删掉 `.ts` */
+  probeVerdict?: string;
+  /** P0-3：交付阶段记账，供开机对账判断该从哪一步接着做 */
+  delivery?: DownloadDeliveryPhase;
+  /**
+   * P0-3：`.mp4` 产物路径。`delivery` 停在 `published` 时记录仍指 `.ts`，
+   * 对账靠这个字段（或同目录同名约定）找到那份没被引用的成品。
+   */
+  mp4Path?: string;
 }
 
 /** 预检摘要（FR-65） */

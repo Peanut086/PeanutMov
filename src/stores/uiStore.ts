@@ -12,6 +12,7 @@ import { computed, ref, shallowRef } from 'vue';
 
 import type { ConfirmState, LoadState, ToastMessage } from '@/types';
 import { newId } from '@/shared/id';
+import { redactNoticeText } from '@/shared/noticeOrigin';
 
 export type TabKey = 'home' | 'library' | 'live' | 'downloads' | 'me';
 
@@ -48,7 +49,12 @@ export const useUiStore = defineStore('ui', () => {
   ): string {
     const id = newId();
     const duration = durationMs ?? TOAST_DURATION[type];
-    toasts.value = [...toasts.value, { id, type, text, durationMs: duration, action }];
+    // Toast 是唯一的展示出口，脱敏在这一处兜：上游 msg 习惯把 cookie、签名直链拼进提示里，
+    // 逐个调用点改必漏。App 自己写的中文文案不含「键=值」区，经过这里不变。
+    toasts.value = [
+      ...toasts.value,
+      { id, type, text: redactNoticeText(text), durationMs: duration, action },
+    ];
     // 超上限移除最旧
     while (toasts.value.length > TOAST_MAX) {
       const oldest = toasts.value[0];

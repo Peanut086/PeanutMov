@@ -6,6 +6,8 @@ import {
   guidanceOf,
   isJarLinkageMessage,
   isMagnetUrl,
+  isQuotaExhaustedMessage,
+  isRateLimitedMessage,
   isRuleScriptMessage,
   isTransientFailure,
   JAR_CONFLICT_MESSAGE,
@@ -167,5 +169,47 @@ describe('isMagnetUrl / magnetUrlOf（P1-4）', () => {
     expect(magnetUrlOf(err)).toBe('magnet:?xt=urn:btih:abc');
     expect(magnetUrlOf(shape('E_UNSUPPORTED_FORMAT', '暂不支持该格式'))).toBeNull();
     expect(magnetUrlOf(null)).toBeNull();
+  });
+});
+
+describe('限流 / 额度 / 无播放地址分档（P1-2）', () => {
+  it('429 与 Retry-After 独立成档，且不进自动重试', () => {
+    expect(classifySourceFailure(shape('E_HTTP_429', '请求过于频繁，请稍后再试'))).toBe('rate_limited');
+    expect(classifySourceFailure(shape('E_UNKNOWN', '服务器繁忙 Retry-After: 30'))).toBe('rate_limited');
+    // HTTP 状态比错误码硬：同一个 E_SOURCE_UNAVAILABLE，429 不再算源失效
+    const withStatus = { ...shape('E_SOURCE_UNAVAILABLE', '上游拒绝'), httpStatus: 429 };
+    expect(classifySourceFailure(withStatus)).toBe('rate_limited');
+    expect(isTransientFailure('rate_limited')).toBe(false);
+  });
+
+  it('401/403 仍归鉴权档（要改凭据，不是换源）', () => {
+    expect(classifySourceFailure(shape('E_HTTP_403', '无权限访问(403)'))).toBe('auth');
+    const withStatus = { ...shape('E_SOURCE_UNAVAILABLE', '源地址拒绝访问'), httpStatus: 403 };
+    expect(classifySourceFailure(withStatus)).toBe('auth');
+  });
+
+  it('额度类文案没有独立错误码也分得出来', () => {
+    expect(classifySourceFailure(shape('E_NO_PLAY_URL', '本接口免费使用次数已达上限'))).toBe('quota_exhausted');
+    expect(classifySourceFailure(shape('E_PARSE', '{"code":42900,"msg":"超出当日限额"}'))).toBe('quota_exhausted');
+    expect(isTransientFailure('quota_exhausted')).toBe(false);
+  });
+
+  it('订阅名里的「免费」不误判成额度耗尽', () => {
+    expect(isQuotaExhaustedMessage('XX免费资源 最新采集')).toBe(false);
+    expect(classifySourceFailure(shape('E_SOURCE_UNAVAILABLE', '源「XX免费资源」无响应'))).toBe('source_dead');
+  });
+
+  it('限流判定只认频率语义，不误伤「解析超时」与磁力', () => {
+    expect(isRateLimitedMessage('请求超时，请稍后重试')).toBe(false);
+    expect(classifySourceFailure(shape('E_TIMEOUT', '请求超时，请稍后重试'))).toBe('timeout');
+  });
+
+  it('无播放地址独立成档，但保留原有的一次重试语义', () => {
+    expect(classifySourceFailure(shape('E_NO_PLAY_URL', '该集暂无可播放地址'))).toBe('no_play_url');
+    expect(isTransientFailure('no_play_url')).toBe(true);
+  });
+
+  it('网盘登录文案仍走登录档，不被额度/限流抢走', () => {
+    expect(classifySourceFailure(shape('E_NETDISK_LOGIN_REQUIRED', '夸克网盘未登录，请先登录'))).toBe('unknown');
   });
 });

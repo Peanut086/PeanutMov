@@ -33,6 +33,7 @@ import { mediaIdOf } from '@/shared/id';
 import { SEARCH_BUDGET_MIN_MS, resolveGlobalDeadlineMs, resolveSearchTimeoutMs } from '@/shared/searchBudget';
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { classifySourceFailure, isTransientFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
+import { isSourceBlocked } from '@/services/sourceBlockState';
 import { isKeywordIgnored } from '@/services/searchAggregate';
 import { PREWARM_SERIAL_STEP_DELAY_MS, isPrewarmThrottled } from '@/services/prewarmState';
 import { isLocalArtifactUrl, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
@@ -449,6 +450,9 @@ async function warmupSources(opts?: { delayMs?: number }): Promise<number> {
     const all = await sourceRepo.list();
     const targets = all
       .filter((source) => source.enabled && source.type === 'spider' && searchCandidate(source))
+      // P0-1：原生已隔离/冷却的源不进预热队列。每轮冷启动重新去敲一扇已经明确拒绝的门，
+      // 既挤掉健康源预热的预算，也让同一个坏构件反复触发进程退出。
+      .filter((source) => !isSourceBlocked(source.id))
       .sort((a, b) => {
         const tierA = HEALTH_TIER_ORDER[healthTierOf(a.health, healthService.latencyOf(a.id))];
         const tierB = HEALTH_TIER_ORDER[healthTierOf(b.health, healthService.latencyOf(b.id))];

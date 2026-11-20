@@ -143,6 +143,44 @@ public final class ExitAttribution {
     }
 
     /**
+     * P0-1：把 AEI 的 status 读成信号名。
+     *
+     * <p>{@code REASON_SIGNALED} / {@code REASON_CRASH_NATIVE} 的 status 就是裸信号号（真机见过
+     * status=11 → SIGSEGV、status=9 → SIGKILL），{@code REASON_CRASH} 那边是 JVM 退出码，读不出
+     * 信号时给 {@code -}，让归因行不把"退出码 1"说成某个信号。
+     */
+    public static String signalName(int status) {
+        switch (status) {
+            case 4:
+                return "SIGILL";
+            case 5:
+                return "SIGTRAP";
+            case 6:
+                return "SIGABRT";
+            case 7:
+                return "SIGBUS";
+            case 8:
+                return "SIGFPE";
+            case 9:
+                return "SIGKILL";
+            case 11:
+                return "SIGSEGV";
+            case 15:
+                return "SIGTERM";
+            case 16:
+                return "SIGSTKFLT";
+            case 24:
+                return "SIGXCPU";
+            case 25:
+                return "SIGXFSZ";
+            case 31:
+                return "SIGSYS";
+            default:
+                return "-";
+        }
+    }
+
+    /**
      * 进程被杀当时的重要性档位（{@code ActivityManager.RunningAppProcessInfo.importance}）。
      * 400=CACHED 意味着「已经不在前台了才被清」，是区分「用着用着崩了」和「切后台被清」的关键字段。
      */

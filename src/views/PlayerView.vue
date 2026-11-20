@@ -27,7 +27,7 @@ import type { PlayerLoadOptions } from '@/player/types';
 import { emptyEmbeddedTracks, type EmbeddedTrackState } from '@/player/PlayerController';
 import { shouldIgnoreShortcut } from '@/player/shortcutGuard';
 import { formatClock } from '@/shared/time';
-import { toErrorShape, isCanceled, AppError } from '@/shared/errors';
+import { toErrorShape, isCanceled } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { guidanceOf, magnetUrlOf } from '@/shared/sourceFailure';
 import { IMG_W_BLUR, sizedImage } from '@/shared/imageSize';
@@ -96,12 +96,23 @@ import { finishSharedCover, rewindSharedCover } from '@/composables/useSharedEle
 import { useUiStore } from '@/stores/uiStore';
 import { QUALITY_AUTO, VOLUME_STEP } from '@/player/constants';
 import { BRIGHTNESS_MAX } from '@/player/brightness';
-import { PLAYER_FAILOVER_WINDOW_MS } from '@/shared/constants';
+import {
+  activeFailoverRound,
+  armFailoverNavigation,
+  beginLoadAttempt,
+  cancelFailoverRound,
+  failoverAttemptKey,
+  hasPendingFailoverNavigation,
+  type FailoverAnchor,
+  type FailoverRound,
+} from '@/player/failoverSession';
+import { parseSeasonNumber } from '@/sources/mapping/TitleNormalizer';
 import { localProxyUrl } from '@/native/localProxy';
 import { pipService } from '@/native/pipService';
-import { describeTsScan, isMediaToolAvailable, scanTsFile } from '@/native/mediaToolPlugin';
+import { describeMediaVerify, describeTsScan, isMediaToolAvailable, scanTsFile, verifyRemuxedMedia } from '@/native/mediaToolPlugin';
 import { onAppStateChange } from '@/native/appLifecycle';
 import { libraryService } from '@/services/libraryService';
+import { isSourceBlocked } from '@/services/sourceBlockState';
 import { notePlayback, peekBlackbox, type BlackboxSnapshot } from '@/services/blackboxService';
 import { buildShareText } from '@/services/shareCodeService';
 import { sourceService } from '@/services/sourceService';
@@ -224,6 +235,23 @@ useScopedPalette(rootRef, computed(() => item.value?.posterUrl ?? null));
 const lines = computed(() => library.detail?.lines ?? []);
 const lineId = ref<string | null>(null);
 
+/* ---------- P0-2：换线 / 换源会话（跨路由存活的预算） ---------- */
+
+/**
+ * 为什么要搬到模块级会话：`App.vue` 用 `current.fullPath` 给路由组件打 key，播放页又会
+ * 在每次 `router.replace` 时被重建。过去预算记在实例 ref 上（`failoverStartedAt` /
+ * `failoverLineTried` / `failoverSourceTried`），重建即归零——真机表现就是集号在 ep1/ep2
+ * 之间来回跳、线路一直自动切到全部失效：每一轮都以为自己是第一次，35 秒窗口和
+ * 「最多再试几条线路」的上限从未真正生效。
+ *
+ * 现在实例只持有会话句柄（`failoverHandle()` 每次与模块里的当前会话对齐）：deadline、
+ * 已试线路集、线路/换源额度与目标季/集锚定都在 `failoverSession` 里。目标相同即沿用同一轮，
+ * 换线引起的路由重建因此拿不到新预算；换集 / 换片 / 用户明确重试才开新一轮。
+ */
+const failoverRound = shallowRef<FailoverRound | null>(null);
+/** 兜底链并发锁（同一实例内不重入；真正的额度约束在会话里） */
+const failoverRunning = ref(false);
+
 /**
  * 线路优先级：用户显式切换 > 路由里这一集真正所属的线路 > 路由 query 带的线路 > 首条。
  *
@@ -296,6 +324,25 @@ const targetEpisodeNumber = computed<number | null>(() => {
     if (n !== undefined && n !== null) return n;
   }
   return blackboxAnchor.value?.episodeNumber ?? null;
+});
+
+/**
+ * 用户意图集号（P0-2 的会话锚定值）：只看路由与记录，不受本轮钉位影响。
+ *
+ * `targetEpisodeNumber` 会跟着 `pinnedNumber` 走，用它当锚会把"钉住"变成自我循环——
+ * 用户真换了集也识别不出来。这里刻意从路由 id / `?ep` 反查，换季换片都能被看见。
+ */
+const routeEpisodeNumber = computed<number | null>(() => {
+  const wanted = episodeIdParam.value;
+  if (wanted !== null) {
+    const byId = library.detail?.episodes.find((ep) => ep.id === wanted)?.number;
+    if (byId !== undefined && byId !== null) return byId;
+    const byHistory = history.items.find(
+      (r) => r.mediaId === mediaId.value && r.episodeId === wanted,
+    )?.episodeNumber;
+    if (byHistory !== undefined && byHistory !== null) return byHistory;
+  }
+  return epParam.value ?? blackboxAnchor.value?.episodeNumber ?? null;
 });
 
 /** 正在播放的真实身份：本地优先起播以本地任务为准，在线解析以解析出的当前集为准。 */
@@ -480,6 +527,12 @@ const playerCtl = usePlayerController({
   backgroundPlayback: playerSettings.value.backgroundPlayback === true,
   resizeMode: currentResizeMode.value,
   longPressRate: longPressRate.value,
+  // P0-2：兜底链在飞时不排自动连播——本轮到底播没播成还没定，
+  // 迟到的 `ended` 若直接连播会把用户带到下一集去。
+  canAutoNext: () => {
+    const round = failoverHandle();
+    return !round || round.hasAdvanced();
+  },
   describe: () => {
     // 页面卸载后不再写回进度，避免死实例拿错上下文污染历史记录
     if (!pageAlive) return null;
@@ -939,10 +992,25 @@ const canScanLocalFile = computed(() => {
 });
 
 async function runLocalFileScan(): Promise<void> {
-  const path = currentPlayback.value?.localPath;
+  const playback = currentPlayback.value;
+  const path = playback?.localPath;
   if (!path || localScan.value?.running) return;
   localScan.value = { running: true, text: '', path };
   try {
+    /*
+     * P0-4：自检工具跟着判定出来的容器走。`.ts` 这个名字在传输期与容器无关
+     * （fMP4 线路的合并产物也叫 `.ts`），拿包级 TS 扫描去查一份 fMP4 只会得到
+     * 「这个文件不是标准 TS 分片数据」这句错的结论。
+     */
+    if (playback && playback.format !== 'ts') {
+      const verdict = await verifyRemuxedMedia(path);
+      localScan.value = {
+        running: false,
+        text: verdict ? describeMediaVerify(verdict) : '当前版本不支持文件自检',
+        path,
+      };
+      return;
+    }
     const result = await scanTsFile(path);
     localScan.value = {
       running: false,
@@ -1064,6 +1132,12 @@ async function preparePlayback(playback: PlaybackSource): Promise<PlaybackSource
 let loadEpoch = 0;
 
 /**
+ * P0-2：一次性标记——下一次 `resolveAndLoad` 由用户明确动作触发（面板上的「重试」），
+ * 应作废上一轮并重新开始预算。换线引起的路由重建不会置位，因此拿不到新预算。
+ */
+let nextLoadIsUserIntent = false;
+
+/**
  * 页面存活守卫：卸载后所有异步续体必须自行退出，避免后台链路劫持路由/覆盖全局状态。
  * 与 loadEpoch 配合——卸载时 ++loadEpoch 作废在飞任务的代次校验。
  */
@@ -1158,6 +1232,8 @@ async function tryPlayLocalFirst(episodeId: string): Promise<boolean> {
  */
 async function resolveAndLoad(): Promise<boolean> {
   const epoch = ++loadEpoch;
+  const userIntent = nextLoadIsUserIntent;
+  nextLoadIsUserIntent = false;
   // 一旦走在线解析，画面就不再是本地下载任务那一集——身份必须交还给 currentEpisode
   localIdentity.value = null;
   const it = item.value;
@@ -1185,8 +1261,12 @@ async function resolveAndLoad(): Promise<boolean> {
   loadErrorShape.value = null;
   noVideoDismissed.value = false;
   startLoadingProgress();
-  // v1.7/CHG-21：记录起播时刻——失败自动兜底只在窗口期内触发
-  failoverStartedAt.value = Date.now();
+  // P0-2：起播时刻即本轮预算的起算点；预算住在跨路由存活的会话里，重建不再归零
+  noteFailoverLoad(
+    failoverAttemptKey(it?.sourceId ?? '', currentLineId.value, ep.id),
+    'resolveAndLoad',
+    userIntent,
+  );
   const resolveStartTime = Date.now();
   try {
     const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
@@ -1269,9 +1349,8 @@ async function resolveAndLoad(): Promise<boolean> {
     // `load()` 内部把失败写入 player.error 而不抛出，这里显式判定
     const ok = loadError.value === null && player.error === null;
     if (ok) {
-      // 起播成功：重置自动兜底状态（CHG-21），下次失败重新各试一次
-      failoverLineTried.value = false;
-      failoverSourceTried.value = false;
+      // P0-2：这里**不**算本轮成功——`load()` 返回 true 只表示引擎接单，画面可能一秒都没走。
+      // 兜底额度的释放改由 `player.currentTime` 实际推进触发（见黑匣子那个 watcher）。
       // 批次1：记录线路成功
       const line = currentLine.value;
       if (line && it) {
@@ -1416,7 +1495,10 @@ function captureBlackbox(): void {
 watch(
   () => player.currentTime,
   () => {
-    if (player.playing) captureBlackbox();
+    if (!player.playing) return;
+    captureBlackbox();
+    // P0-2：本轮成功的唯一口径 = 画面真的在走（`load()` 返回 true 不算）
+    notePlaybackAdvanced();
   },
 );
 // 换集/换线路的瞬间旧位置不再可信：置空，等新一集的第一个 timeupdate 再填
@@ -1457,6 +1539,10 @@ onBeforeUnmount(() => {
   pageAlive = false;
   ++loadEpoch;
   pageAbort.abort();
+  // P0-2：换源搜索的超时器与在飞请求随实例收口；本轮预算只有在"不是自己引起的导航"
+  // 时才收回——换线引起的重建必须把 deadline 与已试线路带过去，否则又回到无限重试。
+  cancelAlternateSourceSearch();
+  if (!hasPendingFailoverNavigation()) cancelFailoverRound('cancelled');
   // P1-4：音量记忆写回。音量在原生下由系统自己记住，这里存的值只在退回倍率路径时使用。
   settings.updateNonBlocking({
     player: {
@@ -1588,26 +1674,29 @@ async function playFromFirstEpisode(): Promise<void> {
 }
 
 /**
- * 切换到目标线路；失败时恢复原线路与原集并提示（AC-55）。
+ * 切换到目标线路；**手动**切换失败时恢复原线路与原集并提示（AC-55）。
  *
  * `resolveAndLoad()` 会重建引擎，因此"回退"是重新加载原线路（不是复用旧实例），
  * 对用户表现为"未切走"；原线路也失败时给出更明确的提示。
  *
  * P1-1：目标线路没有同一集号时直接不切——过去会切过去并播该线路的第 1 集，
  * 用户以为"换线路成功"，实际看的是完全不同的一集。
+ *
+ * P0-2：`auto: true`（自动兜底链发起）时**不回滚**——回滚等于重播上一条失败线路，
+ * 正是"来回跳"的来源；自动链只在候选之间向前推进，收口交给会话与错误面板。
  */
-async function switchLine(targetLineId: string): Promise<void> {
+async function switchLine(targetLineId: string, opts: { auto?: boolean } = {}): Promise<boolean> {
   const it = item.value;
   const previousLineId = currentLineId.value;
-  if (!it || targetLineId === previousLineId || switchingLine.value) return;
+  if (!it || targetLineId === previousLineId || switchingLine.value) return false;
   const current = currentEpisode.value;
-  if (!current) return;
+  if (!current) return false;
   const previousEpisodeId = current.id;
   const targetEpisode = episodeOnLine(targetLineId, current.number);
   if (!targetEpisode) {
     const name = lines.value.find((l) => l.id === targetLineId)?.name ?? '该线路';
     toast.info(`${name} 没有第 ${current.number} 集，已保持原线路`);
-    return;
+    return false;
   }
 
   // P1-4: 记住当前播放位置，切线后续播
@@ -1617,24 +1706,28 @@ async function switchLine(targetLineId: string): Promise<void> {
   try {
     lineId.value = targetLineId;
     pendingLineSwitchEpisode = targetEpisode.id;
+    // P0-2：这一次路由变化属于本轮，重建后的实例沿用同一份预算
+    // P0-5：`auto` 时它是兜底链的候选，不代表用户确认过这条线路
+    armFailoverNavigation(opts.auto === true);
     await replaceRoute(targetEpisode.id, targetLineId);
-    if (!pageAlive) return;
+    if (!pageAlive) return false;
     if (await resolveAndLoad()) {
-      if (!pageAlive) return;
+      if (!pageAlive) return false;
       // P1-4: 切线成功后跳转到原位置（跳过前 5 秒的"从头开始"场景）
       if (currentPositionSec > 5) {
         playerCtl.controller.value?.seek(currentPositionSec);
       }
-      return;
+      return true;
     }
 
-    // ---- 回退原线路 ----
-    if (!pageAlive) return;
+    // ---- 回退原线路（仅手动切换；自动兜底不回滚，见函数头 P0-2 说明）----
+    if (opts.auto) return false;
+    if (!pageAlive) return false;
     lineId.value = previousLineId;
     pendingLineSwitchEpisode = previousEpisodeId;
-    await replaceRoute(previousEpisodeId, previousLineId);
     const restored = await resolveAndLoad();
     toast.info(restored ? '切换失败，已保持原线路' : '切换失败，原线路也无法播放');
+    return false;
   } finally {
     pendingLineSwitchEpisode = null;
     switchingLine.value = false;
@@ -1651,12 +1744,7 @@ async function onSwitchLine(): Promise<void> {
   await switchLine(next.id);
 }
 
-/* ---------- v1.7/CHG-21：起播失败自动换线 → 换源（FR-53） ---------- */
-
-const failoverStartedAt = ref(0);
-const failoverLineTried = ref(false);
-const failoverSourceTried = ref(false);
-const failoverRunning = ref(false);
+/* ---------- v1.7/CHG-21 + P0-2：起播失败自动换线 → 换源（FR-53） ---------- */
 
 /** 源侧故障码（与 17.6 口径一致 + 解码/无地址），命中才考虑自动兜底 */
 const FAILOVER_ERROR_CODES = new Set([
@@ -1726,8 +1814,43 @@ async function openExternalUrl(url: string): Promise<void> {
   toast.error(result.error?.message ?? '打开失败，请安装下载器后重试');
 }
 
-function withinFailoverWindow(): boolean {
-  return failoverStartedAt.value > 0 && Date.now() - failoverStartedAt.value <= PLAYER_FAILOVER_WINDOW_MS;
+/**
+ * P0-2：本轮会话是否还允许继续兜底。
+ *
+ * deadline、线路/换源额度、已试线路集都在 `failoverSession` 里，跨路由重建存活；
+ * 这里只把"实例手里的句柄"和"模块里的当前会话"对齐一次。已收口或已到点（含定时器
+ * 还没来得及跑的同一 tick）一律返回 null：调用方只保证错误面板在位，不再新开预算。
+ */
+function failoverHandle(): FailoverRound | null {
+  const held = failoverRound.value ?? activeFailoverRound();
+  const usable = held && held.acceptsAttempts() ? held : null;
+  if (failoverRound.value !== usable) failoverRound.value = usable;
+  return usable;
+}
+
+/**
+ * 起播前登记一次尝试：起播时刻即本轮预算的起算点。
+ *
+ * 锚定值取「路由意图」集号（`routeEpisodeNumber`），不是被本轮影响过的解析结果——
+ * 目标相同就沿用上一轮预算，所以换线引起的路由重建拿不到新预算；只有换集 / 换片 /
+ * 用户明确重试（`userIntent`）才开新一轮。
+ */
+function noteFailoverLoad(key: string | null, trigger: string, userIntent = false): void {
+  const anchor: FailoverAnchor = {
+    seasonNumber: parseSeasonNumber(item.value?.title ?? ''),
+    episodeNumber: routeEpisodeNumber.value,
+  };
+  failoverRound.value = beginLoadAttempt({ anchor, trigger, key, userIntent });
+}
+
+/**
+ * 本轮是否已经推进过播放器（成功的唯一口径）。
+ *
+ * 以 `player.currentTime` 实际前进为准，不看 `load()` 的返回值——`load()` 在起播前就返回，
+ * 过去"换线成功又立刻失败"的循环就是这么判成功的。
+ */
+function notePlaybackAdvanced(): void {
+  failoverRound.value?.markAdvanced();
 }
 
 /**
@@ -1735,25 +1858,49 @@ function withinFailoverWindow(): boolean {
  *
  * 与详情页的完整跨源搜索不同，播放中换源只尝试「健康度最好的 5 个其它源」，
  * 整体超时 12s。找到第一个可播候选即返回，不再继续搜索。
+ *
+ * P0-2 收口：
+ * - 自动兜底链传入本轮会话时，超时改成 `min(12s, 本轮剩余)`——候选搜索与后续解析
+ *   共用同一个墙钟截止点，不再出现"搜索把预算续了一截"；
+ * - 搜索请求走独立 AbortController，卸载 / 到点都真的取消（旧口径只 race 掉结果，
+ *   请求仍在后台飞）；
+ * - P0-1：隔离中的源不进候选（含「恢复」与自动换源两条路）。
  */
 const ALTERNATE_SEARCH_TIMEOUT_MS = 12000;
 const ALTERNATE_MAX_CANDIDATES = 5;
 
-async function lookupAlternateSource(): Promise<{
+/** 在飞换源搜索的取消器与超时器（P0-2 ④：不留孤儿定时器/请求） */
+let alternateSearchAbort: AbortController | null = null;
+let alternateSearchTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cancelAlternateSourceSearch(): void {
+  if (alternateSearchTimer !== null) {
+    clearTimeout(alternateSearchTimer);
+    alternateSearchTimer = null;
+  }
+  alternateSearchAbort?.abort();
+  alternateSearchAbort = null;
+}
+
+async function lookupAlternateSource(round?: FailoverRound | null): Promise<{
   mediaId: string;
   episodeId: string;
   sourceName: string;
 } | null> {
   const it = item.value;
-  if (!it || !isOnlineNow()) return null;
+  if (!it || !isOnlineNow() || pageAbort.signal.aborted) return null;
+  const budgetMs = round
+    ? Math.min(ALTERNATE_SEARCH_TIMEOUT_MS, round.remainingMs())
+    : ALTERNATE_SEARCH_TIMEOUT_MS;
+  if (budgetMs <= 0) return null;
+  const abort = new AbortController();
+  alternateSearchAbort = abort;
+  alternateSearchTimer = setTimeout(() => abort.abort(), budgetMs);
+  const onPageAbort = () => abort.abort();
+  pageAbort.signal.addEventListener('abort', onPageAbort, { once: true });
   try {
-    // P1-3：给搜索加超时，避免慢源拖住整体换源速度
-    const searchPromise = libraryService.search({ keyword: it.title, signal: pageAbort.signal });
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new AppError('E_TIMEOUT', '换源搜索超时')), ALTERNATE_SEARCH_TIMEOUT_MS),
-    );
     const [result, allSources] = await Promise.all([
-      Promise.race([searchPromise, timeoutPromise]),
+      libraryService.search({ keyword: it.title, signal: abort.signal }),
       sourceService.list(),
     ]);
     if (!pageAlive) return null;
@@ -1762,9 +1909,12 @@ async function lookupAlternateSource(): Promise<{
       healthService.latencyOf(id),
     )
       .filter((candidate) => candidate.source.id !== it.sourceId)
+      .filter((candidate) => !isSourceBlocked(candidate.source.id))
       .slice(0, ALTERNATE_MAX_CANDIDATES);
-    const number = targetEpisodeNumber.value;
+    // P0-2：集号以会话钉住的目标为准，路由抖动后的当前集不能代替用户意图
+    const number = round?.anchor.episodeNumber ?? targetEpisodeNumber.value;
     for (const candidate of candidates) {
+      if (!pageAlive || abort.signal.aborted) return null;
       try {
         const detail = await libraryService.getDetail(candidate.item.id);
         if (!pageAlive) return null;
@@ -1780,7 +1930,14 @@ async function lookupAlternateSource(): Promise<{
       }
     }
   } catch {
-    /* 搜索失败/超时：按无候选处理 */
+    /* 搜索失败/超时/已取消：按无候选处理 */
+  } finally {
+    pageAbort.signal.removeEventListener('abort', onPageAbort);
+    if (alternateSearchTimer !== null) {
+      clearTimeout(alternateSearchTimer);
+      alternateSearchTimer = null;
+    }
+    if (alternateSearchAbort === abort) alternateSearchAbort = null;
   }
   return null;
 }
@@ -1800,6 +1957,9 @@ async function applyAlternateSource(target: {
   // 抑制 episodeId / mediaId watcher 重复加载（与 switchLine 共用机制）
   pendingLineSwitchEpisode = target.episodeId;
   pendingMediaSwitch = target.mediaId;
+  // P0-2：这次导航属于本轮延续——重建后的实例必须沿用预算，而不是重开一轮
+  // P0-5：换源同样是自动兜底链的候选，不该写进冷启动恢复目标
+  armFailoverNavigation(true);
   try {
     // P0-2：显式清空 lineId query，避免旧线路 id 残留导致新源 0 集
     await router.replace({
@@ -1821,67 +1981,75 @@ function isOnlineNow(): boolean {
   return navigator.onLine !== false;
 }
 
-/** 起播窗口内失败：自动换线（最多3条按评分排序）→ 自动换源（一次）→ 才落到错误面板。
- * 引擎错误与解析错误共用同一条链（解析失败过去只落错误面板，不自动兜底）。
- * 离线时直接落错误面板——换线/换源都要网络，徒增等待。 */
+/**
+ * 起播窗口内失败：自动换线（按评分排序，额度 `PLAYER_FAILOVER_MAX_LINES`）→ 自动换源
+ * （额度 `PLAYER_FAILOVER_MAX_SOURCES`）→ 才落到错误面板。
+ *
+ * P0-2 收口点：
+ * - 预算（deadline / 已试线路 / 线路与换源额度 / 钉住的集号）全在跨路由存活的会话里，
+ *   路由重建不再归零，"来回跳 ep1/ep2"与"切到全部线路失效"都失去土壤；
+ * - 同一次尝试（`attemptId`）的解析错误与引擎错误只推进一次状态机；
+ * - 线路候选跳过已试过的、以及没有正在播的这一集的线路（AC-31 同集号口径）；
+ * - 自动换线失败**不回滚**重播上一条失败线路；
+ * - 本轮已收口（到点 / 额度用尽 / 被取代）时只保证错误面板在位，**不新开预算**。
+ *
+ * 离线时直接落错误面板——换线/换源都要网络，徒增等待。
+ */
 async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): Promise<void> {
   if (failoverRunning.value) return;
-  if (!FAILOVER_ERROR_CODES.has(error.code) || !withinFailoverWindow()) return;
+  if (!FAILOVER_ERROR_CODES.has(error.code)) return;
+  const opened = failoverHandle();
+  if (!opened) {
+    publishFailoverError(error, origin);
+    return;
+  }
+  // 解析错误与引擎错误按 attemptId 去重：同一次尝试只推进一条兜底链
+  if (!opened.noteFailure(opened.attemptId)) return;
   // 离线短路：换线/换源均需网络，直接落错误面板
   if (!isOnlineNow()) {
-    if (!pageAlive) return;
-    if (origin === 'player') player.patch({ error });
-    else {
-      loadErrorShape.value = error;
-      loadError.value = error.message;
-    }
+    publishFailoverError(error, origin);
     return;
   }
   failoverRunning.value = true;
   try {
-    // ① 换线路（批次1：按评分排序，最多试3条）
-    if (!failoverLineTried.value && lines.value.length > 1) {
-      failoverLineTried.value = true;
-      const it = item.value;
-      if (!it) {
-        // 无 item 时回退到原逻辑（取第一条其它线路）
-        const other = lines.value.find((l) => l.id !== currentLineId.value);
-        if (other) {
-          toast.info('起播失败，自动切换到其它线路…');
-          await switchLine(other.id);
-          if (!pageAlive) return;
-          if (player.error === null && loadError.value === null) return;
-        }
-      } else {
-        // 批次1：按评分排序取候选线路
-        const ranked = rankLines({
+    // P1-1 + P0-2：只试"确实有正在播的这一集"的线路——否则换线"成功"等于悄悄换了集。
+    // 集号以会话钉住的目标为准（当前集定位失败时仍不能拿首集当代号）。
+    const it = item.value;
+    const number = opened.anchor.episodeNumber ?? currentEpisode.value?.number ?? null;
+    const ranked = it
+      ? rankLines({
           lines: lines.value,
           historyEpisodeId: null, // failover 不恢复历史
           episodes: episodes.value,
           buildKey: (line) => lineKey(it.sourceId, it.sourceItemId, line.name),
-        });
-        // P1-1：只试"确实有正在播的这一集"的线路——否则换线"成功"等于悄悄换了集
-        const number = currentEpisode.value?.number ?? null;
-        const candidates = ranked
-          .filter((l) => l.id !== currentLineId.value)
-          .filter((l) => number === null || episodeOnLine(l.id, number) !== null)
-          .slice(0, 3);
+        })
+      : lines.value;
+    const candidates = ranked
+      .filter((l) => l.id !== currentLineId.value)
+      .filter((l) => number === null || episodeOnLine(l.id, number) !== null);
 
-        for (const candidate of candidates) {
-          if (!pageAlive) return;
-          toast.info(`起播失败，自动切换到线路「${candidate.name}」…`);
-          await switchLine(candidate.id);
-          if (!pageAlive) return;
-          if (player.error === null && loadError.value === null) return; // 换线成功
-        }
-      }
+    // ① 换线：额度与去重都由会话判定，超限/到点自动停
+    for (const candidate of candidates) {
+      const round = failoverHandle();
+      if (!round || !round.allowLine(candidate.id)) break;
+      if (!pageAlive) return;
+      const targetEpisode = episodeOnLine(candidate.id, number ?? 0);
+      round.chargeLineAttempt(
+        failoverAttemptKey(it?.sourceId ?? '', candidate.id, targetEpisode?.id ?? ''),
+      );
+      toast.info(`起播失败，自动切换到线路「${candidate.name}」…`);
+      await switchLine(candidate.id, { auto: true });
+      if (!pageAlive) return;
+      if (player.error === null && loadError.value === null) return; // 换线成功
     }
+
     // ② 换源（同名同年在其它源重找片源；进度按集号延续）
-    if (!failoverSourceTried.value) {
-      failoverSourceTried.value = true;
+    const round = failoverHandle();
+    if (round && round.allowSource()) {
+      round.chargeSourceAttempt();
       player.patch({ error: null });
       toast.info('当前源无法播放，正在尝试其它来源…');
-      const target = await lookupAlternateSource();
+      const target = await lookupAlternateSource(round);
       if (!pageAlive) return;
       if (target) {
         toast.info(`已切换到「${target.sourceName}」继续播放`);
@@ -1891,16 +2059,21 @@ async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): 
       }
     }
     // 兜底失败：恢复错误面板（清掉的错误重新呈现）
-    if (!pageAlive) return;
-    if (player.error === null && loadError.value === null) {
-      if (origin === 'player') player.patch({ error });
-      else {
-        loadErrorShape.value = error;
-        loadError.value = error.message;
-      }
-    }
+    publishFailoverError(error, origin);
   } finally {
     failoverRunning.value = false;
+  }
+}
+
+/** 兜底链走完仍失败（或根本不该兜底）时，保证错误面板落在位且不重复覆盖画面 */
+function publishFailoverError(error: AppErrorShape, origin: 'player' | 'resolve'): void {
+  if (!pageAlive) return;
+  if (player.error === null && loadError.value === null) {
+    if (origin === 'player') player.patch({ error });
+    else {
+      loadErrorShape.value = error;
+      loadError.value = error.message;
+    }
   }
 }
 
@@ -1938,14 +2111,14 @@ async function onSwitchLineById(id: string): Promise<void> {
 
 /**
  * v1.8/CHG-26：手动换源——复用自动链的 findAlternateSource（同名同年跨源）。
- * 自动兜底只各试一次；用户手动触发时复位标志，成功后 resolveAndLoad 会再次复位。
+ * 预算由会话判定：上一轮已收口时，随后的 `resolveAndLoad` 自然开新一轮，
+ * 这里不再手动复位任何计数（旧实现把 `failoverLineTried/SourceTried` 记在实例上，
+ * 一次路由重建就归零，正是"切到全部线路失效"的成因）。
  */
 async function onSwitchSource(): Promise<void> {
   if (failoverRunning.value) return;
   const lastError = player.error;
   failoverRunning.value = true;
-  failoverLineTried.value = false;
-  failoverSourceTried.value = false;
   player.patch({ error: null });
   try {
     toast.info('正在尝试其它来源…');
@@ -2193,6 +2366,8 @@ function chooseEpisode(ep: Episode): void {
 function retryPanel(): void {
   // P0-3：重试时先失效缓存，避免复用导致失败的旧 URL
   library.invalidatePlayCache(mediaId.value);
+  // P0-2：用户明确重试 = 新意图（上一轮作废，预算重新开始）
+  nextLoadIsUserIntent = true;
   void resolveAndLoad();
 }
 
@@ -2623,8 +2798,9 @@ watch(mediaId, async (next, prev) => {
   lineId.value = null;
   announcedOffline.value = null;
   localMissingTaskId.value = null;
-  failoverLineTried.value = false;
-  failoverSourceTried.value = false;
+  // P0-2：换片属于新的用户意图——在飞的换源搜索作废，预算由随后的
+  // `beginLoadAttempt` 判定为不同目标而自然取代上一轮
+  cancelAlternateSourceSearch();
   // 外部导航改路由（如用户从相关列表点另一部片）：重新加载详情与播放
   await library.loadDetail(next);
   if (!pageAlive) return;

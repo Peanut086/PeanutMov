@@ -90,6 +90,7 @@ public class MainApplication extends Application {
             AppLog.w("CrashExit", "sentinel attribution: " + verdict.detail);
             crashed = CrashResponse.isCrash(verdict.kind, false);
             verdictKind = verdict.kind;
+            String appliedTier = "NONE";
 
             if (crashed) {
                 CrashSentinel.recordCrash(this, sentinel);
@@ -115,6 +116,7 @@ public class MainApplication extends Application {
                     } else if (tier == CrashResponse.TIER_COOLDOWN) {
                         CrashSentinel.startCooldown(this, signature, CrashResponse.SPIDER_COOLDOWN_MS);
                     }
+                    appliedTier = CrashResponse.tierName(tier);
                     if (tier != CrashResponse.TIER_NONE) {
                         AppLog.w(TAG, "crash response=" + CrashResponse.tierName(tier)
                                 + " signature=" + signature + " sameApi24h=" + sameApi
@@ -142,6 +144,38 @@ public class MainApplication extends Application {
 
             // F2'：留一份崩溃现场哨兵快照给后台线程（native tombstone 命中后做 jar 级隔离）
             crashSentinels.addAll(sentinels);
+
+            // P0-1：治理判定需要的一行读数——构件指纹 + API + 阶段 + 退出证据 + 本轮处置。
+            // 这些字段过去散在 response / sentinel attribution / tombstone / AEI 四行里，导出日志
+            // 只能靠时间戳手工对；tier=NONE 同样留痕（"这一轮为什么没处置"也是结论）。
+            // tombstone 命中时后台会再补一行给出最终档位（QUARANTINE_JAR）。
+            String exitReason = verdict.reason >= 0
+                    ? "aei:" + ExitAttribution.reasonName(verdict.reason)
+                    : "aei:unavailable";
+            AppLog.w(TAG, "exit evidence: pid=" + sentinel.optInt("pid", -1)
+                    + " tid=" + sentinel.optLong("threadId", -1L)
+                    + " thread=" + sentinel.optString("threadName", "?")
+                    + " jarHash=" + sentinel.optString("jarMd5", "")
+                    + " api=" + sentinel.optString("api", "")
+                    + " phase=" + sentinel.optString("action", "?")
+                    + (sentinel.has("method") ? ":" + sentinel.optString("method") : "")
+                    + " exitReason=" + exitReason
+                    + " status=" + verdict.status
+                    + " signal=" + ExitAttribution.signalName(verdict.status)
+                    + " at=" + verdict.ts
+                    + " responseTier=" + appliedTier);
+            SpiderExitLedger.recordProcessExit(
+                    sentinel.optString("action", "?")
+                            + (sentinel.has("method") ? ":" + sentinel.optString("method") : ""),
+                    sentinel.optString("jarMd5", ""),
+                    sentinel.optString("api", ""),
+                    exitReason,
+                    ExitAttribution.signalName(verdict.status),
+                    appliedTier,
+                    sentinel.optInt("pid", -1),
+                    verdict.ts,
+                    verdict.detail,
+                    this);
 
             // 清除所有哨兵（两种归因都已记录完毕）
             CrashSentinel.clearAll();
@@ -237,10 +271,19 @@ public class MainApplication extends Application {
     private static final class ExitVerdict {
         final int kind;
         final String detail;
+        /** 系统给的原始退出原因（{@code ApplicationExitInfo#getReason()}），-1 = 没读到 */
+        final int reason;
+        /** 原始 status：SIGNALED/CRASH_NATIVE 时是信号号 */
+        final int status;
+        /** 退出发生时刻（epoch ms），0 = 没读到 */
+        final long ts;
 
-        ExitVerdict(int kind, String detail) {
+        ExitVerdict(int kind, String detail, int reason, int status, long ts) {
             this.kind = kind;
             this.detail = detail;
+            this.reason = reason;
+            this.status = status;
+            this.ts = ts;
         }
     }
 
@@ -254,6 +297,9 @@ public class MainApplication extends Application {
     private ExitVerdict classifyLastExit(int sentinelPid) {
         int kind = ExitAttribution.UNKNOWN;
         String detail = "no ApplicationExitInfo (API " + Build.VERSION.SDK_INT + ")";
+        int reason = -1;
+        int status = -1;
+        long ts = 0L;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
                 android.app.ActivityManager am = getApplicationContext()
@@ -272,6 +318,9 @@ public class MainApplication extends Application {
                 if (target != null) {
                     kind = ExitAttribution.classify(
                             target.getReason(), target.getStatus(), target.getDescription());
+                    reason = target.getReason();
+                    status = target.getStatus();
+                    ts = target.getTimestamp();
                     detail = (byPid ? "pid matched" : "newest main-process exit")
                             + "; " + ExitAttribution.summary(target);
                 } else {
@@ -281,7 +330,8 @@ public class MainApplication extends Application {
                 detail = "read ApplicationExitInfo failed: " + e;
             }
         }
-        return new ExitVerdict(kind, ExitAttribution.kindName(kind) + " (" + detail + ")");
+        return new ExitVerdict(kind, ExitAttribution.kindName(kind) + " (" + detail + ")",
+                reason, status, ts);
     }
 
     /** 过滤掉 WebView 沙箱等子进程；exit-info 按时间倒序，第一条即最新 */
@@ -305,6 +355,7 @@ public class MainApplication extends Application {
         if (sentinels == null || sentinels.isEmpty()) return;
         java.util.Set<String> jarMd5s = new java.util.LinkedHashSet<>();
         java.util.Set<String> untouched = new java.util.LinkedHashSet<>();
+        java.util.List<JSONObject> matched = new java.util.ArrayList<>();
         for (JSONObject s : sentinels) {
             String action = s.optString("action", "");
             if (!action.startsWith("spider.")) continue;
@@ -312,6 +363,7 @@ public class MainApplication extends Application {
             if (md5.isEmpty()) continue;
             if (sentinelMatchesTombstone(s, tombstone)) {
                 jarMd5s.add(md5);
+                matched.add(s);
             } else {
                 untouched.add(md5);
             }
@@ -319,6 +371,25 @@ public class MainApplication extends Application {
         for (String md5 : jarMd5s) {
             CrashSentinel.quarantineJar(this, md5);
             AppLog.w(TAG, "jar-level quarantine from tombstone: spider:" + md5 + ":*");
+        }
+        // P0-1：tombstone 命中给出最终档位的单行读数（同步阶段那行只看得到 AEI，够不到信号与构件）
+        for (JSONObject s : matched) {
+            String phase = s.optString("action", "?")
+                    + (s.has("method") ? ":" + s.optString("method") : "");
+            AppLog.w(TAG, "exit evidence: pid=" + tombstone.pid
+                    + " thread=" + tombstone.threadName
+                    + " jarHash=" + s.optString("jarMd5", "")
+                    + " api=" + s.optString("api", "")
+                    + " phase=" + phase
+                    + " exitReason=native:tombstone"
+                    + " signal=" + tombstone.signal
+                    + " fault=" + tombstone.faultAddr
+                    + " at=" + tombstone.crashTime
+                    + " responseTier=QUARANTINE_JAR");
+            SpiderExitLedger.recordProcessExit(
+                    phase, s.optString("jarMd5", ""), s.optString("api", ""),
+                    "native:tombstone", tombstone.signal, "QUARANTINE_JAR",
+                    (int) tombstone.pid, tombstone.crashTime, tombstone.summary, this);
         }
         if (!untouched.isEmpty()) {
             AppLog.i(TAG, "in-flight jar(s) left alone (tombstone pid=" + tombstone.pid

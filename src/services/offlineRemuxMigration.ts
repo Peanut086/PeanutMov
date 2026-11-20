@@ -11,20 +11,31 @@
  * - 启动后延迟一段时间再开跑，且每次转封装前重新确认下载队列空闲；
  * - 串行一个（插件本身就是单线程 executor），不做并行；
  * - 剩余空间不足以容纳一份同量级输出时整轮放弃，避免写到一半 E_STORAGE_QUOTA；
- * - 正在播放的那一条跳过（转封装会删除输入文件），留到下次启动。
+ * - 正在播放的那一条跳过（转封装产物会取代原件成为播放对象），留到下次启动。
+ *
+ * 交付顺序（P0-3）：`.part` → 复检（容器 / 有效轨道 / 时长 / 首中尾定位）→ 改指 `.mp4` 落库 →
+ * 才删 `.ts`。任何一步中断都还留着一份可引用的产物，剩下的由本轮开头的对账结算。
  *
  * 幂等：迁移成功的任务 `filePath` 变成 `.mp4`，下一轮扫描不再命中；
- * 失败的保持 `.ts` 原样，下次启动重试。
+ * 未交付的保持 `.ts` 原样，下次启动重试。
  */
 import { downloadRepo } from '@/db/repositories/downloadRepo';
 import { settingsService } from '@/services/settingsService';
 import { appEvents, type OfflineOptimizeSnapshot } from '@/services/events';
 import { getStorageInfo, isMediaToolAvailable, MediaTool } from '@/native/mediaToolPlugin';
-import { stat } from '@/native/fs';
+import {
+  decideRemuxDelivery,
+  deliverRemux,
+  deliverRenamedArtifact,
+  reconcileRemuxDeliveries,
+  type RemuxDelivery,
+  type RemuxResultLike,
+} from '@/services/remuxDelivery';
+import { deleteFile, stat } from '@/native/fs';
 import { toErrorShape } from '@/shared/errors';
 import { isNative } from '@/shared/platform';
 import { logger } from '@/shared/logger';
-import type { DownloadTask } from '@/types';
+import type { DownloadRemuxOutcome, DownloadTask } from '@/types';
 
 /** 启动后的静默期：让首页数据加载、起播预热先跑完 */
 const FIRST_RUN_DELAY_MS = 15_000;
@@ -85,11 +96,12 @@ async function isQueueBusy(): Promise<boolean> {
   return running.length > 0;
 }
 
-async function waitForQueueIdle(): Promise<boolean> {
+/** 等到队列空闲；返回等待时长（毫秒），超时放弃本轮时返回 `null` */
+async function waitForQueueIdle(): Promise<number | null> {
   const startedAt = Date.now();
   for (;;) {
-    if (!(await isQueueBusy())) return true;
-    if (Date.now() - startedAt > IDLE_WAIT_LIMIT_MS) return false;
+    if (!(await isQueueBusy())) return Date.now() - startedAt;
+    if (Date.now() - startedAt > IDLE_WAIT_LIMIT_MS) return null;
     await delay(IDLE_POLL_MS);
   }
 }
@@ -102,9 +114,9 @@ async function listCandidates(): Promise<DownloadTask[]> {
   );
 }
 
-type FileOutcome = 'done' | 'missing' | 'busy' | 'no-space' | 'failed';
+type FileOutcome = 'done' | 'missing' | 'busy' | 'no-space' | DownloadRemuxOutcome;
 
-/** 单文件迁移：转封装成功才回写 DB，任何失败都保持 `.ts` 可用 */
+/** 单文件迁移：复检 + 落库都通过才把记录改指 `.mp4`，输入 `.ts` 排在落库之后删 */
 async function migrateOne(taskId: string): Promise<FileOutcome> {
   const task = await downloadRepo.get(taskId);
   if (!task || task.status !== 'completed') return 'missing';
@@ -117,55 +129,111 @@ async function migrateOne(taskId: string): Promise<FileOutcome> {
   const inputStat = await stat(inputPath).catch(() => null);
   if (!inputStat?.exists || inputStat.size <= 0) return 'missing';
 
+  const update = async (patch: Partial<DownloadTask>): Promise<void> => {
+    // 每一笔都按「当下库里的记录」叠加：`deliverRemux` 会连续写多次，
+    // 用过期的 `task` 快照做底会把已经改指的 .mp4 又退回 .ts。
+    const latest = await downloadRepo.get(task.id);
+    if (!latest) throw new Error('记录已不存在');
+    await downloadRepo.save({ ...latest, ...patch, updatedAt: Date.now() });
+    appEvents.emit('downloads:changed', { id: latest.id });
+  };
+
+  /*
+   * P0-4：存量文件按记录上的容器分流，和新下载同一口径。
+   * fMP4 的字节本来就是 MP4 家族，请原生转封装只会拿到一句 `skipped: fmp4-passthrough`
+   * （什么都不做，于是这一集永远修不好）；它走「复检 → 改名 → 落库」，
+   * 连空间余量都不用留。容器尚未判定（旧记录 / 预检缺席）沿用旧口径按 TS 处理。
+   */
+  if (task.container === 'fmp4') {
+    activeInputPath = inputPath;
+    let renamed: RemuxDelivery;
+    try {
+      renamed = await deliverRenamedArtifact({
+        taskId: task.id,
+        inputPath,
+        outputPath,
+        inputBytes: inputStat.size,
+        previousRemux: task.remux,
+        container: 'fmp4',
+        deps: { update },
+      });
+    } finally {
+      activeInputPath = null;
+    }
+    if (renamed.outcome === 'done') {
+      logger.info('存量 fMP4 已按复检结论改指 MP4 交付名', {
+        taskId,
+        inputBytes: inputStat.size,
+        probeVerdict: 'pass',
+      });
+      return 'done';
+    }
+    return renamed.outcome ?? 'failed';
+  }
+
   // 取不到空间信息时放行：真正的写失败会以 E_STORAGE_QUOTA 落地，输入文件不受影响
   const storage = await getStorageInfo('downloads');
   if (storage && storage.freeBytes < inputStat.size * MIN_FREE_RATIO) return 'no-space';
 
-  let result: Awaited<ReturnType<typeof MediaTool.remuxMp4>>;
+  let result: RemuxResultLike | null = null;
+  let thrown: unknown = null;
   activeInputPath = inputPath;
   try {
     result = await MediaTool.remuxMp4({
       inputPath,
       outputPath,
       taskId: task.id,
+      // P0-4：这一路只在容器是 TS / 未判定时进入，fMP4 已在上面交付
       container: 'ts',
-      deleteInput: true,
+      // P0-3：原件的删除权在 JS 侧，且排在「复检通过 + 记录改指 .mp4」之后
+      deleteInput: false,
       timeoutMs: REMUX_TIMEOUT_MS,
     });
+  } catch (e) {
+    thrown = e;
   } finally {
     activeInputPath = null;
   }
-  if (!result.ok || result.skipped) {
-    logger.warn('离线文件转封装失败，保持 .ts', {
+
+  const decision = thrown !== null ? decideRemuxDelivery({ error: thrown }) : decideRemuxDelivery({ result });
+  if (!decision.deliverable) {
+    logger.warn('离线文件转封装未交付，保持 .ts', {
       taskId: task.id,
-      code: result.code,
-      reason: result.reason,
+      outcome: decision.outcome,
+      code: result?.code,
+      reason: decision.reason,
+      probeVerdict: decision.probeVerdict,
     });
-    return 'failed';
   }
 
-  const outputStat = await stat(outputPath).catch(() => null);
-  const outputBytes = result.outputBytes ?? outputStat?.size ?? inputStat.size;
-  const fresh = await downloadRepo.get(task.id);
-  if (!fresh) return 'missing';
-  await downloadRepo.save({
-    ...fresh,
-    filePath: outputPath,
-    format: 'mp4',
-    container: 'mp4',
-    downloadedBytes: outputBytes,
-    totalBytes: outputBytes,
-    remux: { status: 'done', durationMs: result.durationMs },
-    updatedAt: Date.now(),
-  });
-  appEvents.emit('downloads:changed', { id: fresh.id });
-  logger.info('离线文件已优化为 MP4', {
-    taskId: fresh.id,
+  const delivery = await deliverRemux({
+    taskId: task.id,
+    inputPath,
+    outputPath,
     inputBytes: inputStat.size,
-    outputBytes,
-    durationMs: result.durationMs,
+    decision,
+    result,
+    previousRemux: task.remux,
+    deps: {
+      update,
+      removeInput: async () => {
+        await deleteFile(inputPath);
+      },
+    },
   });
-  return 'done';
+
+  if (delivery.outcome === 'done') {
+    logger.info('离线文件已优化为 MP4', {
+      taskId,
+      inputBytes: inputStat.size,
+      outputBytes: result?.outputBytes ?? inputStat.size,
+      durationMs: result?.durationMs,
+      inputRetained: delivery.inputRetained,
+      probeVerdict: 'pass',
+    });
+    return 'done';
+  }
+  return delivery.outcome ?? 'failed';
 }
 
 /** 订阅原生转封装进度，用于 UI 百分比；插件不支持时静默降级为不确定进度 */
@@ -196,15 +264,44 @@ export async function runOfflineRemuxMigration(): Promise<void> {
   runStarted = true;
   try {
     if (!isNative() || !isMediaToolAvailable()) return;
+
+    await delay(FIRST_RUN_DELAY_MS);
+    const bootWaitMs = await waitForQueueIdle();
+    if (bootWaitMs === null) return;
+
+    /*
+     * P0-3：开机对账先跑，再开始本轮迁移。
+     * 上一轮如果崩在「`.mp4` 已发布、记录还没改指」或「记录已改指、`.ts` 没删掉」之间，
+     * 这里凭盘上实况 + 复检结论结算掉；否则迁移会把同一集再转封装一遍，
+     * 而那条「有记账无文件 / 有文件无记账」的账也永远修不好。
+     *
+     * 排在设置开关之前：关掉的只是「新文件要不要转封装」，已经中断的交付照样要收口。
+     */
+    await reconcileRemuxDeliveries({
+      list: async () =>
+        (await downloadRepo.listByStatus(['completed'])).filter(
+          (task) => typeof task.filePath === 'string' && /\.(ts|mp4)$/i.test(task.filePath),
+        ),
+      update: async (taskId, patch) => {
+        const latest = await downloadRepo.get(taskId);
+        if (!latest) return;
+        await downloadRepo.save({ ...latest, ...patch, updatedAt: Date.now() });
+        appEvents.emit('downloads:changed', { id: taskId });
+      },
+      remove: (path) => deleteFile(path),
+      sizeOf: async (path) => {
+        const info = await stat(path).catch(() => null);
+        return info?.exists ? info.size : null;
+      },
+    });
+
     const settings = await settingsService.get();
     if (settings.download.remuxToMp4 === false) return;
 
-    await delay(FIRST_RUN_DELAY_MS);
-    if (!(await waitForQueueIdle())) return;
     const candidates = await listCandidates();
     if (candidates.length === 0) return;
 
-    logger.info(`开始优化离线文件：${candidates.length} 个待转封装`);
+    logger.info(`开始优化离线文件：${candidates.length} 个待转封装`, { queueWaitMs: bootWaitMs });
     const unbind = await bindProgress();
     let done = 0;
     let noSpace = false;
@@ -213,7 +310,9 @@ export async function runOfflineRemuxMigration(): Promise<void> {
     try {
       for (const candidate of candidates) {
         // 迁移期间用户可能新建下载：每次开始前重新让路
-        if (!(await waitForQueueIdle())) break;
+        const queueWaitMs = await waitForQueueIdle();
+        if (queueWaitMs === null) break;
+        if (queueWaitMs > 0) logger.info('离线文件优化让路后重新开跑', { taskId: candidate.id, queueWaitMs });
         emitState({ done, percent: 0, title: candidate.title });
         const outcome = await migrateOne(candidate.id);
         done += 1;

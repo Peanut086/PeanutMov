@@ -216,7 +216,8 @@ public class MediaToolPlugin extends Plugin {
      * TS → MP4 转封装。
      *
      * 入参：`inputPath` / `outputPath`（必填，相对 Directory.Data）、`taskId`、`container`、
-     * `deleteInput`（默认 true）、`timeoutMs`（默认 120000，上限 600000）。
+     * `deleteInput`（P0-3：默认 **false**，输入一律保留；只有调用方确认下载记录已按新产物
+     * 落库后才显式传 true）、`timeoutMs`（默认 120000，上限 600000）。
      */
     @PluginMethod
     public void remuxMp4(PluginCall call) {
@@ -224,7 +225,7 @@ public class MediaToolPlugin extends Plugin {
         String inputPath = trimToNull(call.getString("inputPath"));
         String outputPath = trimToNull(call.getString("outputPath"));
         String container = trimToNull(call.getString("container"));
-        Boolean deleteInputArg = call.getBoolean("deleteInput", Boolean.TRUE);
+        Boolean deleteInputArg = call.getBoolean("deleteInput", Boolean.FALSE);
         Long timeoutArg = optLongOrNull(call.getData(), "timeoutMs");
 
         if (inputPath == null || outputPath == null) {
@@ -283,7 +284,7 @@ public class MediaToolPlugin extends Plugin {
         }
 
         String key = canonicalOf(input);
-        boolean deleteInput = deleteInputArg == null || deleteInputArg;
+        boolean deleteInput = Boolean.TRUE.equals(deleteInputArg);
         Job job = new Job(key, taskId, input, output, inputPath, outputPath, deleteInput, timeoutMs);
         if (jobs.putIfAbsent(key, job) != null) {
             reject(call, MediaRemuxer.CODE_INVALID_INPUT, "remux already running for this input");
@@ -306,6 +307,41 @@ public class MediaToolPlugin extends Plugin {
             endPostprocess();
             reject(call, MediaRemuxer.CODE_INVALID_INPUT, "remux executor rejected");
         }
+    }
+
+    /**
+     * P0-3：独立复检一个盘上产物（开机对账、采纳没有记账的孤儿 MP4 之前调用）。
+     * `path` 与 `remuxMp4` 同一口径（相对 `Directory.Data`，不接受绝对路径）。
+     * 只读探测，不写文件；用的尺子和转封装交付校验是同一把（`MediaRemuxer.probePublished`），
+     * 否则"当场通过、重启后判废"会自己打自己。
+     */
+    @PluginMethod
+    public void verifyMedia(PluginCall call) {
+        String path = trimToNull(call.getString("path"));
+        if (path == null) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "path required");
+            return;
+        }
+        File file;
+        try {
+            file = resolveInData(getContext().getFilesDir(), path);
+        } catch (IllegalArgumentException e) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, e.getMessage());
+            return;
+        }
+        JSObject response = new JSObject();
+        if (!file.isFile() || file.length() <= 0) {
+            response.put("ok", false);
+            response.put("probeVerdict", "missing");
+            response.put("outputBytes", 0L);
+            call.resolve(response);
+            return;
+        }
+        String issue = MediaRemuxer.probePublished(file);
+        response.put("ok", issue == null);
+        response.put("probeVerdict", issue == null ? "pass" : issue);
+        response.put("outputBytes", file.length());
+        call.resolve(response);
     }
 
     /**
@@ -467,6 +503,9 @@ public class MediaToolPlugin extends Plugin {
         response.put("durationUs", result.durationUs);
         response.put("durationMs", result.elapsedMs);
         response.put("container", result.container != null ? result.container : "ts");
+        // P0-3：交付复检结论 + 输入是否还在，前端据此决定"能不能删 TS / 要不要回滚记账"
+        response.put("probeVerdict", result.probeVerdict);
+        response.put("inputRetained", result.inputRetained);
         response.put("inputPath", job.inputPath);
         if (job.taskId != null) response.put("taskId", job.taskId);
         if (result.code != null) response.put("code", result.code);

@@ -278,12 +278,10 @@ function labelOfVariant(variant: HlsVariant, index: number): string {
 }
 
 function containerOf(playlist: HlsPlaylist): DownloadContainer {
-  if (playlist.initSegment) return 'fmp4';
-  const first = playlist.segments[0]?.url ?? '';
-  if (/\.ts(\?|$)/i.test(first)) return 'ts';
-  if (/\.(m4s|mp4|m4a)(\?|$)/i.test(first)) return 'fmp4';
-  if (first.length > 0) return 'other';
-  return 'other';
+  // P0-4：判定口径收归解析层（`detectHlsContainer`），预检不再第二遍猜容器。
+  // 未判定（master 清单、解析降级）时留 `other`，与旧行为一致：预检的容器只用于展示
+  // 与空间预留，不参与交付决策。
+  return playlist.container ?? 'other';
 }
 
 function durationOf(playlist: HlsPlaylist): number | null {

@@ -17,7 +17,8 @@
 import { computed, onMounted, ref } from 'vue';
 
 import { useToast } from '@/composables/useToast';
-import { Spider } from '@/native/spiderPlugin';
+import { Spider, type SpiderExitEvidence } from '@/native/spiderPlugin';
+import { evidenceForJar } from '@/services/sourceBlockState';
 import { isNative } from '@/shared/platform';
 
 const toast = useToast();
@@ -33,12 +34,16 @@ interface ParsedSignature {
   api: string;
   /** jar 指纹前 8 位，便于同 jar 多条归组识别 */
   jarHint: string;
+  /** 完整构件指纹，用于回查退出现场 */
+  jarHash: string;
   /** 整 jar 级隔离（api 为 `*`） */
   wholeJar: boolean;
   /** 属于冷却档（短时、自动放行）而不是隔离档 */
   cooling: boolean;
   /** 冷却档剩余分钟（向上取整，至少 1 分钟），隔离档为 null */
   remainMin: number | null;
+  /** P0-1：处置依据（哪次退出、什么证据、什么阶段）；查不到为 null */
+  evidence: string | null;
 }
 
 /** 把 `spider:<jarMd5>:<api>` 解析成可读条目；无法解析的签名按原文兜底展示 */
@@ -50,10 +55,12 @@ function parseSignature(raw: string, cooling = false, remainMs?: number): Parsed
     raw,
     api: api || raw,
     jarHint: jar ? jar.slice(0, 8) : '',
+    jarHash: jar,
     wholeJar: api === '*',
     cooling,
     remainMin:
       cooling && typeof remainMs === 'number' ? Math.max(1, Math.ceil(remainMs / 60000)) : null,
+    evidence: null,
   };
 }
 
@@ -61,6 +68,36 @@ const entries = ref<ParsedSignature[]>([]);
 
 const quarantineCount = computed(() => entries.value.filter((e) => !e.cooling).length);
 const cooldownCount = computed(() => entries.value.filter((e) => e.cooling).length);
+
+/** P0-1：把现场读数说成人话——拦一条源要能说清依据哪次退出、什么证据 */
+function describeEvidence(evidence: SpiderExitEvidence): string {
+  const cause =
+    evidence.signal && evidence.signal !== '-'
+      ? evidence.signal
+      : evidence.exitReason || '未知退出';
+  const phase = evidence.phase ? ` @ ${evidence.phase}` : '';
+  const when = evidence.ts
+    ? new Date(evidence.ts).toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '';
+  return `依据：${cause}${phase}${evidence.fromPreviousProcess ? '（上次进程）' : ''}${when ? ` · ${when}` : ''}`;
+}
+
+/** 逐条回查退出现场；查不到就留空（诊断信息缺失不能挡住房间入口） */
+async function hydrateEvidence(): Promise<void> {
+  const list = entries.value;
+  for (const entry of list) {
+    if (!entry.jarHash) continue;
+    const evidence = await evidenceForJar(entry.jarHash, entry.wholeJar ? undefined : entry.api);
+    if (!evidence) continue;
+    entry.evidence = describeEvidence(evidence);
+  }
+  entries.value = [...list];
+}
 
 /** 隔离在前、冷却在后：前者是 7 天的硬停，后者到点自己好 */
 function sortEntries(list: ParsedSignature[]): ParsedSignature[] {
@@ -80,6 +117,8 @@ async function refresh(): Promise<void> {
       ...rawCooldowns.map((row) => parseSignature(row.signature, true, row.remainMs)),
     ]);
     available.value = true;
+    // 现场读数不在主查询里：拿不到也不能让名单显示不出来
+    void hydrateEvidence();
   } catch {
     /* 查询失败：保持当前列表不变，不打断页面 */
   } finally {
@@ -132,6 +171,7 @@ defineExpose({ refresh });
             <template v-else>隔离 7 天</template>
             <template v-if="entry.jarHint"> · jar {{ entry.jarHint }}</template>
           </span>
+          <span v-if="entry.evidence" class="quarantine__evidence">{{ entry.evidence }}</span>
         </div>
         <button
           class="btn btn--secondary btn--sm"
@@ -211,5 +251,11 @@ defineExpose({ refresh });
 .quarantine__jar {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+.quarantine__evidence {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  word-break: break-all;
 }
 </style>

@@ -6,7 +6,10 @@ import android.net.http.SslError;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.webkit.JsPromptResult;
+import android.webkit.JsResult;
 import android.webkit.SslErrorHandler;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -244,12 +247,64 @@ public class SnifferPlugin extends Plugin {
             }
         });
 
+        // 页面 JS 弹窗：登记后吞掉（P1-2）。这块 WebView 从不挂进视图树，但它的 context 是
+        // Activity，页面里的 `alert('本接口免费使用…')` 默认实现照样会在当前窗口上弹真对话框——
+        // 文字来自解析页，既不在我们的代码里、也不在任何日志里，看上去就是「凭空冒出来的一句」，
+        // 而且点掉之前页面 JS 一直阻塞着。记下来源再取消，用户不再看到无法处置的弹窗。
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onJsAlert(WebView view, String pageUrl, String message, JsResult result) {
+                notePageDialog(jobId, "alert", pageUrl, message, result);
+                return true;
+            }
+
+            @Override
+            public boolean onJsConfirm(WebView view, String pageUrl, String message, JsResult result) {
+                notePageDialog(jobId, "confirm", pageUrl, message, result);
+                return true;
+            }
+
+            @Override
+            public boolean onJsPrompt(WebView view, String pageUrl, String message,
+                                      String defaultValue, JsPromptResult result) {
+                // 用 cancel 而不是 confirm(value)：不把页面要的值喂回去，嗅探只读不提交
+                notePageDialog(jobId, "prompt", pageUrl, message, result);
+                return true;
+            }
+        });
+
         if (headers != null && !headers.isEmpty()) {
             webView.loadUrl(url, headers);
         } else {
             webView.loadUrl(url);
         }
         main.postDelayed(timeoutTask, timeoutMs);
+    }
+
+    /**
+     * 登记并吞掉解析页的 JS 弹窗（P1-2「提示来源」里 WebView 页面这一档）。
+     *
+     * 字段与 JS 侧 {@code recordUpstreamNotice} 对齐（requestId / noticeOrigin / operation / text），
+     * 导出日志里两处能一起 grep；{@code jobId} 用来把它和同一次嗅探调用串起来。
+     * 页面 URL 与文案先过 {@link LogRedactor}：解析页常把带签名的直链写进 alert 正文里。
+     * {@code result.cancel()} 让页面 JS 立刻解除阻塞——弹窗不会再出现，也不回传任何值。
+     */
+    private void notePageDialog(String jobId, String kind, String pageUrl,
+                                String message, JsResult result) {
+        try {
+            result.cancel();
+        } catch (Exception ignored) {
+            // result 已被处理过（页面重入）会抛；登记不能因此失败
+        }
+        String text = message == null ? "" : message.trim().replace('\n', ' ');
+        if (text.length() > 300) text = text.substring(0, 300);
+        String requestId = "n-" + Long.toString(System.currentTimeMillis(), 36) + "-"
+                + Integer.toHexString((jobId + "|" + kind + "|" + text).hashCode() & 0x7fffffff);
+        AppLog.i(TAG, "上游提示登记 requestId=" + requestId
+                + " noticeOrigin=webview_page originLabel=WebView页面 kind=" + kind
+                + " operation=sniff jobId=" + jobId
+                + " pageUrl=" + LogRedactor.redact(pageUrl == null ? "" : pageUrl)
+                + " text=" + LogRedactor.redact(text));
     }
 
     /** 命中（mediaUrl 非 null）或超时（null）：统一 resolve，销毁 WebView */
