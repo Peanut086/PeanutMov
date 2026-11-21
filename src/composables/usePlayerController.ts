@@ -219,6 +219,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     });
 
     c.on('ratechange', ({ rate }) => {
+      // 长按倍速期间引擎报上来的是临时倍速，不是用户选的：这时候回写基准会让一次误触
+      // 被当成"用户要 2x"——下一次抬手恢复的基准跟着错，黑匣子也会把 2x 当记忆存进去，
+      // 于是下一次进这一集变成没人碰的自动 2x。基准只认非长按期间的变更。
+      if (restoreRate !== null) return;
       player.patch({ rate });
     });
 
@@ -613,6 +617,19 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   }
 
   /**
+   * 长按倍速的收尾（临时倍速唯一的恢复出口）。
+   *
+   * 除了 `long-press-end`，退后台也必须走一次：Activity 被切到后台时 `pointerup` 永远不会
+   * 送达，临时倍速就一直挂着。更糟的是 HUD 只有一个槽、一个计时器——任何一次短提示
+   * （点一下、拖进度、音量）到期都会把 "2x 快进中" 顶掉，用户只剩"没人碰却在快进"这一种观感。
+   */
+  function restoreBoostRate(): void {
+    if (restoreRate === null) return;
+    controller.value?.setRate(restoreRate);
+    restoreRate = null;
+  }
+
+  /**
    * 手指按下：校准音量基准。
    *
    * 实体音量键改的是系统档位，本页无从感知；识别器要到第一次能判定方向的
@@ -688,10 +705,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
         }
         break;
       case 'long-press-end':
-        if (restoreRate !== null) {
-          c.setRate(restoreRate);
-          restoreRate = null;
-        }
+        restoreBoostRate();
         clearHud();
         break;
       default:
@@ -749,6 +763,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     const c = controller.value;
     if (!c) return;
     if (document.visibilityState === 'hidden') {
+      // 长按倍速先收尾：切后台那一刻 `pointerup` 不会再送达，不收尾就是"没人碰却一直 2x"。
+      // 提示也必须一起清——HUD 只有一个槽，留着那条 "2x 快进中" 会变成下次误判的线索。
+      restoreBoostRate();
+      clearHud();
       // B2：只有原生引擎能真的在后台播——WebView 的 video 会被系统挂起，
       // 开了开关也播不动，所以这里必须同时判引擎
       const keepPlaying =
