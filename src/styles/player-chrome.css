@@ -1682,16 +1682,22 @@ input[type="range"].pl-rng::-moz-range-thumb {
   flex: 0 0 auto;
 }
 
-/* ---------- 屏幕锁：铺满画面矩形并吃掉所有手势，只留一枚解锁键 ---------- */
+/* ---------- 屏幕锁：拦截片铺满画面矩形吃掉所有手势，解锁 UI 轻点才出现 ---------- */
 .pl-lock {
   position: absolute;
   inset: 0;
   z-index: var(--z-lock);
+  touch-action: none;
+}
+
+.pl-lock__chrome {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: flex-end;
   justify-content: flex-start;
   padding: var(--gutter-x);
-  /* 常驻层，压暗必须最轻——锁屏时画面才是主角 */
+  /* 压暗跟着解锁 UI 一起出现，且必须最轻——锁屏时画面才是主角 */
   background: rgba(0, 0, 0, 0.28);
   touch-action: none;
 }

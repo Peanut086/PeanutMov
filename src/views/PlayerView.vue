@@ -3204,7 +3204,7 @@ function toggleScreenLock(): void {
     const active = document.activeElement;
     if (active instanceof HTMLElement && active.closest(".pl-fold"))
       active.blur();
-    ui.toast("已锁定屏幕，点画面左下角解锁", "info", 2000);
+    ui.toast("已锁定屏幕，轻点画面显示解锁键", "info", 2600);
   } else {
     setControlsVisible(true);
   }
@@ -3217,6 +3217,14 @@ watch(immersive, (on) => {
     setControlsVisible(true);
   }
 });
+
+/**
+ * 控制条的唯一可见口径：`data-chrome` 与 `PlayerControls :visible` 都只认它。
+ * 只看 `controlsVisible` 会漏——播完/被远端暂停时自动隐藏不生效，锁屏下控制条又冒出来。
+ */
+const chromeVisible = computed(
+  () => controlsVisible.value && !screenLocked.value,
+);
 
 /* ---------- 键盘与滚轮（设计规范 ⑨：14 档按键 + Shift 组合 + 数字键） ---------- */
 const pictureRef = ref<HTMLElement | null>(null);
@@ -3577,7 +3585,7 @@ onBeforeUnmount(() => {
     <!-- 播放器外壳：竖屏＝画面带 + 下方信息区，横屏/全屏＝画面铺满、信息区收起 -->
     <div
       class="player-page pl-shell"
-      :data-chrome="controlsVisible ? 'visible' : 'hidden'"
+      :data-chrome="chromeVisible ? 'visible' : 'hidden'"
       :data-fit="currentResizeMode"
       :data-state="chromeState"
       :data-help="gestureHelpVisible ? '1' : '0'"
@@ -3690,7 +3698,7 @@ onBeforeUnmount(() => {
 
             <PlayerControls
               v-if="!loadError"
-              :visible="controlsVisible && !screenLocked"
+              :visible="chromeVisible"
               :title="titleText"
               :ep-index="epIndex"
               :ep-total="epTotal"
@@ -3901,10 +3909,11 @@ onBeforeUnmount(() => {
               @cancel="onBackgroundExit"
             />
 
-            <!-- B4：屏幕锁（⑦）：拦截与解锁键都在 pl-lock 层，靠 --z-lock 压住上面各层，
+            <!-- B4：屏幕锁（⑦）：拦截片常驻在 pl-lock 层，靠 --z-lock 压住上面各层，
                  不再依赖 DOM 顺序；抽屉/折叠区已在 toggleScreenLock() 里真关掉。
+                 压暗与解锁键不常驻——轻点画面才唤回，3s 后自动收起。
                  竖屏也生效（稿 `K`）：锁屏层只铺画面矩形，信息区靠 inert 让位，
-                 出口是层内那枚常驻解锁键——退出全屏会自动解锁，但竖屏本来就没有全屏可退。 -->
+                 出口是唤回的解锁键（键盘还有 `K` / `Escape`）——退出全屏会自动解锁，但竖屏本来就没有全屏可退。 -->
             <PlayerScreenLock
               v-if="!pipActive && !loadError && !player.error"
               :locked="screenLocked"
