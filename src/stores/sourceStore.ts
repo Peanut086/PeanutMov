@@ -22,7 +22,11 @@ import {
   type HealthTrendSnapshot,
 } from '@/services/healthCenterService';
 import { liveService } from '@/services/liveService';
-import { PREWARM_SERIAL_STEP_DELAY_MS, isPrewarmThrottled } from '@/services/prewarmState';
+import {
+  PREWARM_SERIAL_STEP_DELAY_MS,
+  isPlaybackDemandInFlight,
+  isPrewarmThrottled,
+} from '@/services/prewarmState';
 import { appEvents } from '@/services/events';
 import { sourceRegistry } from '@/sources/registry';
 import { logger } from '@/shared/logger';
@@ -235,6 +239,10 @@ export const useSourceStore = defineStore('source', () => {
     let cursor = 0;
     const worker = async (): Promise<void> => {
       while (cursor < toWarmup.length) {
+        // P1-3：点播在途时这一路必须停手。它预热的是分类页/首页的源，而用户点的播放
+        // 走同一批爬虫实例与同一道串行闸门——插队加载的代价直接落在"点了没反应"上。
+        // 本轮没跑到的源留给下一次 load/reload（预热本身是幂等补充）。
+        if (isPlaybackDemandInFlight()) return;
         const source = toWarmup[cursor];
         cursor += 1;
         if (!source) continue;

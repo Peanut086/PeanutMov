@@ -9,11 +9,13 @@ import {
   isQuotaExhaustedMessage,
   isRateLimitedMessage,
   isRuleScriptMessage,
+  isSourceBusyMessage,
   isTransientFailure,
   JAR_CONFLICT_MESSAGE,
   magnetUrlOf,
   RULE_SCRIPT_MESSAGE,
   sanitizeSourceMessage,
+  SOURCE_BUSY_MESSAGE,
   SOURCE_INTERNAL_MESSAGE,
 } from '@/shared/sourceFailure';
 
@@ -141,6 +143,54 @@ describe('jar 依赖冲突（F9）', () => {
   });
 });
 
+describe('源正忙独立成档（P1-3）', () => {
+  /** 原生 F1 串行闸门那句拒绝（SpiderPlugin.java）：真机每次撞闸门都是这段原文 */
+  const NATIVE_LOCK = '源正忙（上一次调用仍在原生线程执行），请稍后重试';
+
+  it('结构化错误码优先归类', () => {
+    expect(classifySourceFailure(shape('E_SOURCE_BUSY', SOURCE_BUSY_MESSAGE))).toBe('source_busy');
+    expect(classifySourceFailure(shape('E_SOURCE_BUSY', '自定义文案', '绝命毒师'))).toBe('source_busy');
+  });
+
+  it('只有原生原文时同样归到 source_busy，而不是被 source_internal 接走', () => {
+    // 这段判定必须排在 jar_conflict / rule_script / source_internal 之前，
+    // 否则 IllegalStateException 形态的原文会落进「可重试」档，忙的时候再投一次
+    expect(classifySourceFailure(shape('E_SOURCE_UNAVAILABLE', NATIVE_LOCK))).toBe('source_busy');
+    expect(classifySourceFailure(shape('E_UNKNOWN', '', NATIVE_LOCK))).toBe('source_busy');
+    expect(classifySourceFailure(shape('E_UNKNOWN', '爬虫调用失败', NATIVE_LOCK))).toBe('source_busy');
+  });
+
+  it('不再被当成死源：下游据此不即时重投、不换同源线路、不记线路连败', () => {
+    expect(classifySourceFailure(shape('E_SOURCE_UNAVAILABLE', NATIVE_LOCK))).not.toBe('source_dead');
+    expect(isTransientFailure('source_busy')).toBe(false);
+    expect(isTransientFailure('timeout')).toBe(true);
+  });
+
+  it('适配器自己的排队文案（带真实剩余秒数）也归同一档', () => {
+    expect(classifySourceFailure(shape('E_SOURCE_BUSY', '该源正忙（上一次调用约 14 秒后结束），请稍后重试'))).toBe(
+      'source_busy',
+    );
+  });
+
+  it('口径收紧：jar 侧「请继续使用」的宽泛措辞不认，限流文案也不被抢走', () => {
+    // 「当前源是繁忙状态，请继续使用，或手动解除」是 jar 内部提示，语义模糊（可能是它自己的
+    // 计数没落），不据此改判；这类文案维持原有档位。
+    expect(isSourceBusyMessage('当前源是繁忙状态，请继续使用，或手动解除')).toBe(false);
+    expect(isSourceBusyMessage('请求超时，请稍后重试')).toBe(false);
+    expect(isSourceBusyMessage('服务器繁忙 Retry-After: 30')).toBe(false);
+    expect(classifySourceFailure(shape('E_UNKNOWN', '服务器繁忙 Retry-After: 30'))).toBe('rate_limited');
+  });
+
+  it('指导文案说清"同一个爬虫实例"，动作给出换源与稍后重试', () => {
+    const guidance = guidanceOf(shape('E_SOURCE_BUSY', SOURCE_BUSY_MESSAGE));
+    expect(guidance.kind).toBe('source_busy');
+    expect(guidance.title).toBe(SOURCE_BUSY_MESSAGE);
+    expect(guidance.hint).toContain('同一个爬虫进程');
+    expect(guidance.hint).toContain('线路共用同一个爬虫实例');
+    expect(guidance.actions).toEqual(['switch-source', 'retry']);
+  });
+});
+
 describe('guidanceOf', () => {
   it('每类都给文案与动作，磁力给「外部打开」', () => {
     const magnet = guidanceOf(shape('E_UNSUPPORTED_FORMAT', '暂不支持该格式', 'magnet:?xt=urn:btih:abc'));
@@ -209,7 +259,20 @@ describe('限流 / 额度 / 无播放地址分档（P1-2）', () => {
     expect(isTransientFailure('no_play_url')).toBe(true);
   });
 
-  it('网盘登录文案仍走登录档，不被额度/限流抢走', () => {
-    expect(classifySourceFailure(shape('E_NETDISK_LOGIN_REQUIRED', '夸克网盘未登录，请先登录'))).toBe('unknown');
+  it('网盘登录档独立成档（真机原文实测：夸克未登录）', () => {
+    // 真机日志里这条原文出现过 3 次，此前落 unknown ⇒ 播放页只给一句通用提示
+    const real = shape('E_NETDISK_LOGIN_REQUIRED', '还未登录夸克账号,请前往【配置中心】登录');
+    expect(classifySourceFailure(real)).toBe('netdisk_login');
+    const guidance = guidanceOf(real);
+    expect(guidance.title).toContain('网盘未登录');
+    // 上游说的「配置中心」是 TVBox 生态的说法，本 App 的入口必须给对
+    expect(guidance.hint).toContain('设置 → 网盘登录');
+    // 登录之前重试和换源都没用，不进自动重试
+    expect(isTransientFailure('netdisk_login')).toBe(false);
+  });
+
+  it('网盘登录文案没有独立错误码时不误伤分享类文案', () => {
+    // 死链/封禁文案不含「登录」，仍按原档位走（detectNetdiskError 不会给出登录码）
+    expect(classifySourceFailure(shape('E_NO_PLAY_URL', '分享者账号已被封禁'))).toBe('no_play_url');
   });
 });

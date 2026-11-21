@@ -168,6 +168,52 @@ export async function listLoadFailures(): Promise<SpiderLoadFailure[]> {
 }
 
 /**
+ * P1-3：本次进程内"已经真跑过、且确定性失败"的构件指纹。
+ *
+ * 与上面的持久账本分工：持久账本只用来跳过**后台预热**（判错种类不该让用户拿不到结果）；
+ * 这一份只管当前进程——同一份 jar / 同一条规则在同一个运行里加载第二次，缺类还是缺类、
+ * 语法错还是语法错，重跑一遍要付下载 + dex + 防护初始化的全价，还白占爬虫池。
+ * 所以命中时不是拒绝这个源，而是**立刻用第一次的真实原因失败**，不再重新尝试该构件。
+ * 进程重启后清空：换运行时就是新证据，本来就该真跑一次。
+ */
+const attemptedInSession = new Map<string, SpiderLoadFailure>();
+
+/** 记入本进程已知坏构件（由 `noteLoadFailureIfNeeded` 在判出确定性种类后调用） */
+export function markArtifactAttempted(
+  source: Pick<Source, 'id' | 'key' | 'baseUrl'>,
+  kind: DeterministicLoadKind,
+  target: string,
+  message: string,
+): void {
+  if (!target) return;
+  attemptedInSession.set(
+    fingerprintOf({ sourceKey: sourceLedgerKey(source), target, runtime: APP_VERSION }),
+    { sourceKey: sourceLedgerKey(source), kind, target, runtime: APP_VERSION, message, seenAt: Date.now() },
+  );
+}
+
+/** 本进程是否已经在这份构件上确定性失败过；命中返回第一次的真实原因 */
+export function findAttemptedArtifact(
+  source: Pick<Source, 'id' | 'key' | 'baseUrl'>,
+  target: string,
+): SpiderLoadFailure | null {
+  if (!target) return null;
+  const fp = fingerprintOf({ sourceKey: sourceLedgerKey(source), target, runtime: APP_VERSION });
+  return attemptedInSession.get(fp) ?? null;
+}
+
+/** 复检/清账时同步清掉本进程判定（健康中心「复检」入口） */
+export function clearAttemptedArtifacts(sourceKey: string): number {
+  let removed = 0;
+  for (const fp of [...attemptedInSession.keys()]) {
+    if (!fp.startsWith(`${sourceKey}|`)) continue;
+    attemptedInSession.delete(fp);
+    removed += 1;
+  }
+  return removed;
+}
+
+/**
  * 复检：清掉某个源的记录，让下一次预热重新真跑一遍。
  *
  * 只删账本，不动隔离名单——两者是独立的判据，一键全清会把崩溃保护一起关掉。
@@ -176,12 +222,15 @@ export async function clearLoadFailure(sourceKey: string): Promise<number> {
   const rows = await readAll();
   const next = rows.filter((row) => row.sourceKey !== sourceKey);
   await kvRepo.set(KV_KEY_SPIDER_LOAD_FAILURES, next);
+  // P1-3：复检要让这一版"重新真跑一次"，本进程判定必须一起清——否则持久账本清完了，
+  // 内存里那份还会把这一次尝试直接判回旧结论。
+  clearAttemptedArtifacts(sourceKey);
   return rows.length - next.length;
 }
 
 /** 账本种类的人话说明（健康中心与预热日志共用） */
 export const LOAD_FAILURE_LABELS: Record<DeterministicLoadKind, string> = {
-  class_incompatible: '爬虫类与当前运行人不兼容（缺类/缺方法/字节码冲突）',
+  class_incompatible: '爬虫类与当前运行时不兼容（缺类/缺方法/字节码冲突）',
   jar_integrity: 'jar 校验不通过或体积超限',
   script_syntax: '规则脚本语法错误',
 };

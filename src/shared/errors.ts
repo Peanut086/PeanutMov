@@ -28,6 +28,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   E_NOT_IMPLEMENTED: '该源不支持此操作',
   E_SOURCE_DISABLED: '该源已禁用，请先在源管理中启用',
   E_SOURCE_UNAVAILABLE: '该源暂不可用，可切换其他源',
+  // P1-3：源正忙不是源死了——上一次原生调用还在跑，等它落定就有可能成功
+  E_SOURCE_BUSY: '该源正忙，上一次请求还没跑完',
   E_NO_PLAY_URL: '该集暂无可播放地址',
   E_NETDISK_LOGIN_REQUIRED: '网盘未登录，请先登录',
   E_UNSUPPORTED_FORMAT: '暂不支持该格式',
@@ -57,6 +59,9 @@ export const RETRYABLE_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'E_HTTP_5XX',
   'E_PARSE',
   'E_SOURCE_UNAVAILABLE',
+  // P1-3：忙是「等一会儿再试」，不是「立刻再投一次」——这里只决定界面上要不要给重试按钮，
+  // 自动重试的闸门在 `isTransientFailure`（`source_busy` 刻意不在其中）。
+  'E_SOURCE_BUSY',
   'E_DECODE',
 ]);
 

@@ -172,7 +172,7 @@ describe('SeekBar · 退回时间气泡', () => {
     await drag(wrapper, 180);
 
     expect(wrapper.find('.seekbar__film').exists()).toBe(false);
-    expect(wrapper.get('.seekbar__bubble-text').text()).toBe('1:40');
+    expect(wrapper.get('.seekbar__bubble-text').text()).toBe('01:40');
   });
 
   it('一格都还没抽好时同样不铺空胶片', async () => {
@@ -180,7 +180,7 @@ describe('SeekBar · 退回时间气泡', () => {
     await drag(wrapper, 180);
 
     expect(wrapper.find('.seekbar__film').exists()).toBe(false);
-    expect(wrapper.get('.seekbar__bubble-text').text()).toBe('1:40');
+    expect(wrapper.get('.seekbar__bubble-text').text()).toBe('01:40');
   });
 
   it('胶片就绪后气泡抬到胶片上方，两者不叠在一起', async () => {
@@ -200,5 +200,20 @@ describe('SeekBar · 退回时间气泡', () => {
     expect(cells).toHaveLength(CELLS);
     expect(cells[10]!.find('img').exists()).toBe(false);
     expect(cells[0]!.find('img').attributes('src')).toBe('f0');
+  });
+});
+
+describe('SeekBar · 时间行口径（设计稿）', () => {
+  it('分位补零：当前 00:00，右侧剩余 03:20', () => {
+    const wrapper = mountBar();
+
+    expect(wrapper.get('.seekbar__time--cur').text()).toBe('00:00');
+    expect(wrapper.get('.seekbar__time--dur').text()).toBe('03:20');
+  });
+
+  it('读屏文案用「，共」连接当前与总时长', () => {
+    const wrapper = mountBar();
+
+    expect(wrapper.get('.seekbar__hit').attributes('aria-valuetext')).toBe('00:00，共 03:20');
   });
 });

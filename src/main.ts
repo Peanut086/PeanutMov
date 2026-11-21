@@ -1,18 +1,31 @@
-import { installConsoleCapture } from '@/shared/logBus';
-import { restoreLogLevel } from '@/native/logs';
+import { installConsoleCapture } from "@/shared/logBus";
+import { restoreLogLevel } from "@/native/logs";
 
 // P1：安装 console 捕获（必须在所有业务代码之前，确保 logger.* 和裸 console.* 都被记录）
 installConsoleCapture();
 
-import { createApp } from 'vue';
-import { createPinia } from 'pinia';
+import { createApp } from "vue";
+import { createPinia } from "pinia";
 
-import App from '@/App.vue';
-import router, { setComplianceGate } from '@/router';
-import { bindAppToasts, complianceGate, ensureDemoData, initCacheSweep, initDoubanRuntime, initDownloads, initLineHealth, initSessionRestore, initSettings, initSpiderWarmup, initSubscriptionAutoRefresh } from '@/stores/bootstrap';
+import App from "@/App.vue";
+import router, { setComplianceGate } from "@/router";
+import {
+  bindAppToasts,
+  complianceGate,
+  ensureDemoData,
+  initCacheSweep,
+  initDoubanRuntime,
+  initDownloads,
+  initLineHealth,
+  initSessionRestore,
+  initSettings,
+  initSpiderWarmup,
+  initSubscriptionAutoRefresh,
+} from "@/stores/bootstrap";
 
-import '@/styles/global.css';
-import '@/styles/player.css';
+import "@/styles/global.css";
+import "@/styles/player.css";
+import "@/styles/player-chrome.css";
 
 /**
  * 应用入口（SCF）。
@@ -77,7 +90,7 @@ async function bootstrap(): Promise<void> {
 
   app.use(router);
   await router.isReady();
-  app.mount('#app');
+  app.mount("#app");
 }
 
 void bootstrap();

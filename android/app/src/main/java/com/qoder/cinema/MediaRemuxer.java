@@ -391,69 +391,127 @@ public final class MediaRemuxer {
     /** 复检里尾点与结尾的距离：最后一秒内必须能定位到一个真实样本 */
     private static final long VERIFY_TAIL_BACKOFF_US = 1_000_000L;
 
+    /** 复检抽样点：请求位置、命中的样本时间/大小，供自检面板给出证据而不只是一句结论 */
+    public static final class ProbeSeek {
+        public final String phase;
+        public final long requestedUs;
+        public final long sampleUs;
+        public final int sizeBytes;
+        public final boolean hit;
+
+        ProbeSeek(String phase, long requestedUs, long sampleUs, int sizeBytes, boolean hit) {
+            this.phase = phase;
+            this.requestedUs = requestedUs;
+            this.sampleUs = sampleUs;
+            this.sizeBytes = sizeBytes;
+            this.hit = hit;
+        }
+    }
+
+    /** {@link #probeReport} 的结果：`verdict` 为 null 表示通过，字符串口径与 {@link #probePublished} 完全一致 */
+    public static final class ProbeReport {
+        public String verdict;
+        public long fileSizeBytes;
+        public int trackCount;
+        public int audioTrackCount;
+        public int videoTrackIndex = -1;
+        public String videoMime;
+        public int width;
+        public int height;
+        public long durationUs;
+        public long expectedDurationUs;
+        public final List<ProbeSeek> seeks = new ArrayList<>(3);
+    }
+
     /**
      * 把已经发布（或已经存在于盘上）的 MP4 重新打开验一遍：容器可解析、有有效视频轨、
      * 时长与拷贝跨度对得上、首/中/尾三处都能定位到真实样本。
      *
-     * 返回 null = 通过；否则返回失败项（调用方写进 `probeVerdict`）。
      * 任何异常都归成失败项而不外抛——复检的语义是"不确定就别删原件"。
+     * 首/中/尾三点是低成本抽样上限：每点只 seek + 读一个样本，不逐帧扫。
      */
-    public static String probePublished(File file, long expectedDurationUs) {
-        if (file == null || !file.isFile() || file.length() <= 0) return "missing-output";
+    public static ProbeReport probeReport(File file, long expectedDurationUs) {
+        ProbeReport report = new ProbeReport();
+        report.expectedDurationUs = expectedDurationUs;
+        if (file == null || !file.isFile() || file.length() <= 0) {
+            report.verdict = "missing-output";
+            return report;
+        }
+        report.fileSizeBytes = file.length();
         MediaExtractor extractor = null;
         try {
             extractor = new MediaExtractor();
             extractor.setDataSource(file.getAbsolutePath());
-            int trackCount = extractor.getTrackCount();
-            if (trackCount <= 0) return "no-tracks";
-            int videoTrack = -1;
+            report.trackCount = extractor.getTrackCount();
+            if (report.trackCount <= 0) {
+                report.verdict = "no-tracks";
+                return report;
+            }
             MediaFormat videoFormat = null;
-            for (int i = 0; i < trackCount; i += 1) {
+            for (int i = 0; i < report.trackCount; i += 1) {
                 MediaFormat format = extractor.getTrackFormat(i);
                 String mime = format.getString(MediaFormat.KEY_MIME);
-                if (mime != null && mime.startsWith("video/")) {
-                    videoTrack = i;
+                if (mime == null) continue;
+                if (mime.startsWith("video/") && report.videoTrackIndex < 0) {
+                    report.videoTrackIndex = i;
+                    report.videoMime = mime;
                     videoFormat = format;
-                    break;
+                } else if (mime.startsWith("audio/")) {
+                    report.audioTrackCount += 1;
                 }
             }
-            if (videoTrack < 0) return "no-video-track";
-            if (intOrZero(videoFormat, MediaFormat.KEY_WIDTH) <= 0
-                    || intOrZero(videoFormat, MediaFormat.KEY_HEIGHT) <= 0) {
-                return "invalid-dimensions";
+            if (report.videoTrackIndex < 0) {
+                report.verdict = "no-video-track";
+                return report;
             }
-            long durationUs = longOrZero(videoFormat, MediaFormat.KEY_DURATION);
-            if (durationUs <= 0) return "no-duration";
+            report.width = intOrZero(videoFormat, MediaFormat.KEY_WIDTH);
+            report.height = intOrZero(videoFormat, MediaFormat.KEY_HEIGHT);
+            if (report.width <= 0 || report.height <= 0) {
+                report.verdict = "invalid-dimensions";
+                return report;
+            }
+            report.durationUs = longOrZero(videoFormat, MediaFormat.KEY_DURATION);
+            long durationUs = report.durationUs;
+            if (durationUs <= 0) {
+                report.verdict = "no-duration";
+                return report;
+            }
             if (expectedDurationUs > 0) {
                 double ratio = (double) durationUs / (double) expectedDurationUs;
                 if (ratio < VERIFY_MIN_DURATION_RATIO || ratio > VERIFY_MAX_DURATION_RATIO) {
-                    return "duration-drift-" + Math.round(ratio * 100);
+                    report.verdict = "duration-drift-" + Math.round(ratio * 100);
+                    return report;
                 }
             }
-            extractor.selectTrack(videoTrack);
+            extractor.selectTrack(report.videoTrackIndex);
             ByteBuffer buffer = ByteBuffer.allocateDirect(1024 * 1024);
             long[] points = new long[] {
                     0L,
                     durationUs / 2L,
                     Math.max(0L, durationUs - VERIFY_TAIL_BACKOFF_US),
             };
+            String[] phases = new String[] { "head", "middle", "tail" };
             for (int i = 0; i < points.length; i += 1) {
                 long point = points[i];
                 extractor.seekTo(point, MediaExtractor.SEEK_TO_PREVIOUS_SYNC);
                 buffer.clear();
                 int size = extractor.readSampleData(buffer, 0);
                 long sampleTime = extractor.getSampleTime();
-                if (size <= 0 || sampleTime < 0) {
+                boolean hit = size > 0 && sampleTime >= 0;
+                report.seeks.add(new ProbeSeek(phases[i], point, sampleTime, size, hit));
+                if (!hit) {
                     // P1-1 验收字段：seekResult（命中的样本时间与请求点之差）与读取规模
                     AppLog.w(TAG, "probe seek miss pointUs=" + point + " sampleUs=" + sampleTime
                             + " positionDeltaUs=" + (sampleTime < 0 ? -1 : sampleTime - point)
                             + " size=" + size + " file=" + file.getName());
-                    return (i == 0 ? "head-" : i == 1 ? "middle-" : "tail-") + "seek-miss";
+                    report.verdict = phases[i] + "-seek-miss";
+                    return report;
                 }
             }
-            return null;
+            return report;
         } catch (Exception e) {
-            return "probe-error-" + e.getClass().getSimpleName();
+            report.verdict = "probe-error-" + e.getClass().getSimpleName();
+            return report;
         } finally {
             if (extractor != null) {
                 try {
@@ -462,6 +520,14 @@ public final class MediaRemuxer {
                 }
             }
         }
+    }
+
+    /**
+     * 只要结论的调用方（转封装发布路径）：null = 通过，否则为失败项。
+     * 明细版见 {@link #probeReport}。
+     */
+    public static String probePublished(File file, long expectedDurationUs) {
+        return probeReport(file, expectedDurationUs).verdict;
     }
 
     /** 复检入口（开机对账 / 手动自检）：没有参考跨度时只验结构 */

@@ -35,7 +35,13 @@ import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { classifySourceFailure, isTransientFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { isSourceBlocked } from '@/services/sourceBlockState';
 import { isKeywordIgnored } from '@/services/searchAggregate';
-import { PREWARM_SERIAL_STEP_DELAY_MS, isPrewarmThrottled } from '@/services/prewarmState';
+import {
+  PREWARM_SERIAL_STEP_DELAY_MS,
+  beginPlaybackDemand,
+  endPlaybackDemand,
+  isPrewarmThrottled,
+  isPlaybackDemandInFlight,
+} from '@/services/prewarmState';
 import { isLocalArtifactUrl, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
@@ -55,6 +61,7 @@ import type {
   PlaybackSource,
   SearchResult,
   Source,
+  SourceAdapter,
 } from '@/types';
 
 export interface BrowseQuery {
@@ -357,8 +364,18 @@ function calibrateAlive(sourceId: string): void {
     });
 }
 
-/** P1-6：进真实链路前顺手预热（爬虫源加载 jar；其它适配器为空实现） */
-function prewarm(adapter: object, source: Source): void {
+/**
+ * P1-6：进真实链路前顺手预热（爬虫源加载 jar；其它适配器为空实现）。
+ *
+ * P1-3：`opts.yieldToPlayback` 给"后台顺手补一手"那三处入口（搜索扇出、浏览、详情刷新）——
+ * 用户在等播放时，它们加载的 jar 抢的正是同一批爬虫实例，只会把点播推成「该源正忙」。
+ * 播放路径自己那次不传该标记：用户等的那次加载就是必须做的。
+ */
+function prewarm(adapter: object, source: Source, opts?: { yieldToPlayback?: boolean }): void {
+  if (opts?.yieldToPlayback && isPlaybackDemandInFlight()) {
+    logger.debug('点播在途，后台预热让路', { sourceName: source.name });
+    return;
+  }
   const warmup = (adapter as { warmup?: (s: Source) => Promise<void> }).warmup;
   if (typeof warmup !== 'function') return;
   void Promise.resolve(warmup.call(adapter, source)).catch(() => undefined);
@@ -380,6 +397,52 @@ let warmupSweepRunning = false;
 let searchInFlight = 0;
 
 /**
+ * P1-3：瞬态失败重投前，最多陪等多久让在飞调用落定。
+ *
+ * 与 `SpiderAdapter.BUSY_WAIT_MAX_MS` 同一条真机观测：挡回它的那次调用常态只剩 1~2 秒
+ * （批量下载期间刷新详情页，同一秒里既有「源正忙」拒绝也有同源 `exec=1037ms` 成功）。
+ * 超过这个数就是 30 秒量级的僵尸，陪着等只会把"点播放没反应"变成用户的直观体验。
+ */
+const TRANSIENT_RETRY_WAIT_MS = 2000;
+
+/**
+ * P1-3：给详情请求加上真的会到期的预算，并在到期时把请求取消、把计时器清掉。
+ *
+ * 换源/刷新详情此前完全裸奔：爬虫 `getDetail` 走 `invoke` 的缺省 30s 截止，一次慢详情
+ * 能把用户按在转圈里半分钟，而它和点播抢的是同一批爬虫实例。这里用与搜索同一套预算档位
+ * （OPT-04 的 fast/patient 同样生效），到期给对症文案，不留"看起来还在等"的悬空状态。
+ */
+async function withDetailBudget(
+  adapter: SourceAdapter,
+  source: Source,
+  params: GetDetailParams,
+): Promise<MediaDetail> {
+  const preset = await searchBudgetPreset();
+  const budgetMs = resolveSearchTimeoutMs(adapter.searchTimeoutMs ?? TIMEOUT_SEARCH_MS, preset);
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, budgetMs);
+  const onAbort = (): void => controller.abort();
+  params.signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    return await adapter.getDetail({ ...params, signal: controller.signal });
+  } catch (e) {
+    if (timedOut) {
+      throw new AppError('E_TIMEOUT', `详情加载超过 ${Math.round(budgetMs / 1000)} 秒（源站响应过慢）`, {
+        detail: source.name,
+      });
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+    params.signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+/**
  * F7：worker 池跑一批预热。
  * `stepDelayMs > 0` 时每个源之间额外等待（串行档专用）；搜索在途时立刻停止领取新源。
  * G5：`deadlineAt` 到点后同样停止领取新源，未处理的个数通过 `deferred` 报回调用方。
@@ -398,7 +461,8 @@ async function runWarmupBatch(
       (async () => {
         while (cursor < sources.length) {
           // 让路：真实搜索在途时立刻停止领取新源
-          if (searchInFlight > 0) return;
+          // P1-3：用户点播在途时同样收手——预热加载的正是点播要等的那批爬虫实例
+          if (searchInFlight > 0 || isPlaybackDemandInFlight()) return;
           // G5：串行档预算耗尽，剩下的源不碰
           if (Date.now() > deadlineAt) return;
           const source = sources[cursor++];
@@ -474,7 +538,7 @@ async function warmupSources(opts?: { delayMs?: number }): Promise<number> {
     );
     if (nativeHeavy.length > 0) {
       // 搜索在途时前一轮已提前 return，这里给同一条件留一次喘息
-      if (searchInFlight === 0) {
+      if (searchInFlight === 0 && !isPlaybackDemandInFlight()) {
         const heavy = await runWarmupBatch(
           nativeHeavy,
           1,
@@ -556,7 +620,7 @@ async function searchOneSource(
   // P1-6：搜索扇出前预热，让 jar 加载尽早开始。
   // 注意 warmup 与 search 并不并发——search 内部必须 await 同一条去重后的 load promise，
   // 所以它的价值只是把加载的起跑线往前挪，真正把加载时间从搜索预算里剥出来的是下面的 F10。
-  prewarm(adapter, source);
+  prewarm(adapter, source, { yieldToPlayback: true });
   const controller = new AbortController();
   // SO-05：source.ext.timeout（秒）作为单源覆盖，优先于 adapter 默认值
   const extTimeoutMs = readExtTimeoutMs(source);
@@ -778,7 +842,8 @@ export const libraryService: LibraryService = {
     let result: PageResult<MediaItem>;
     try {
       // P1-6：爬虫源先预热（jar 加载与浏览并发，冷启动不再吃满浏览超时）
-      prewarm(adapter, source);
+      // P1-3：浏览属于"后台顺手补一手"，点播在途时不给它插队
+      prewarm(adapter, source, { yieldToPlayback: true });
       // 本地筛选维度走聚合分页（凑满一页 + 游标续拉）；纯服务端筛选（ext）分页天然对齐
       result = hasLocalFilters(query.filters)
         ? await aggregateBrowse(adapter, params, query)
@@ -1221,6 +1286,7 @@ export const libraryService: LibraryService = {
       return cached;
     }
 
+    beginPlaybackDemand();
     try {
       prewarm(adapter, source);
       const playback = await adapter.resolvePlayUrl({
@@ -1237,12 +1303,35 @@ export const libraryService: LibraryService = {
     } catch (e) {
       const error = readableSourceError(e);
       const kind = classifySourceFailure(error.toShape());
+      const canceled = error.code === 'E_ABORTED' || error.code === 'E_CANCELED';
+      // P1-3：重试预算来自实测在飞时长，不是又一个写死的秒数
+      const busy = adapter.busyStateOf?.(source.id) ?? { inFlightMs: 0, queueDepth: 0 };
+      const transient = isTransientFailure(kind) && !canceled;
+      // 「源正忙」刻意不自动重投第二次（`isTransientFailure` 已把它排除）：第二次排的还是
+      // 同一个原生实例。等空位 + 有界重投在 `SpiderAdapter.invokeJar` 里已经做过一次。
+      const waitMs = transient ? Math.min(busy.inFlightMs, TRANSIENT_RETRY_WAIT_MS) : 0;
+      logger.warn('源侧失败分档', {
+        failureKind: kind,
+        operation: 'resolvePlay',
+        inFlightMs: busy.inFlightMs,
+        queueDepth: busy.queueDepth,
+        retryCount: transient ? 1 : 0,
+        waitBeforeRetryMs: waitMs,
+        canceled,
+        sourceId: source.id,
+        mediaId: item.id,
+        episodeId: params.episodeId,
+        detail: error.message,
+      });
       // 瞬态失败（jar 惰性初始化 NPE、源站瞬时 5xx/超时、解析页偶发空）自动重试一次。
       // 重试前清缓存，避免命中同一份坏结果；UI 通过 play:stage 事件感知"正在重试"。
-      if (isTransientFailure(kind)) {
-        logger.warn('resolvePlay 瞬态失败，自动重试一次', { kind, mediaId: item.id, episodeId: params.episodeId, detail: error.message });
+      if (transient) {
         resolvedPlayCache.delete(cacheKey);
         appEvents.emit('play:stage', { stage: 'retrying', detail: kind });
+        if (waitMs > 0) {
+          // 池里还压着上一次调用：先给它这么长的落定时间，再投第二次
+          await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+        }
         try {
           const playback = await adapter.resolvePlayUrl({
             source,
@@ -1257,6 +1346,9 @@ export const libraryService: LibraryService = {
           return playback;
         } catch (retryErr) {
           const retryError = readableSourceError(retryErr);
+          // P1-3：重投后被闸门挡回（源正忙）不能算源已失效——判死会把还能播的源写进失败名单，
+          // 用户接下来看到的是"所有源都不可用"。原样抛出，交给分档文案。
+          if (classifySourceFailure(retryError.toShape()) === 'source_busy') throw retryError;
           if (retryError.code === 'E_NETWORK' || retryError.code === 'E_TIMEOUT' || retryError.code === 'E_HTTP_5XX') {
             await markSourceFailed(source.id, retryError);
             throw new AppError('E_SOURCE_UNAVAILABLE', undefined, { detail: retryError.message });
@@ -1269,6 +1361,8 @@ export const libraryService: LibraryService = {
         throw new AppError('E_SOURCE_UNAVAILABLE', undefined, { detail: error.message });
       }
       throw error;
+    } finally {
+      endPlaybackDemand();
     }
   },
 
@@ -1520,8 +1614,11 @@ async function refreshDetail(item: MediaItem): Promise<MediaDetail> {
   if (!source) throw new AppError('E_SOURCE_UNAVAILABLE', '该源已被移除');
   const adapter = await adapterFor(source);
   const params: GetDetailParams = { source, sourceItemId: item.sourceItemId };
-  prewarm(adapter, source);
-  const detail = await adapter.getDetail(params);
+  // P1-3：详情预热同样给点播让路（详情页刷新常在播放中途被触发）
+  prewarm(adapter, source, { yieldToPlayback: true });
+  // P1-3：慢详情必须收口——它和播放抢同一个爬虫实例，却没有自己的预算，
+  // 真机上"点了下一集一直转圈"就是这一路卡在 jar 加载里等原生回执。
+  const detail = await withDetailBudget(adapter, source, params);
   calibrateAlive(item.sourceId);
 
   // P0-2: 源返回降级数据（空标题/0 集）时，保留缓存中的有效字段

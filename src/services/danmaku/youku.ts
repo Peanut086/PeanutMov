@@ -16,7 +16,7 @@
 import { md5 } from './md5';
 import { requestResponse, requestWithHeaders } from './nativeHttp';
 import { episodeNumberOf, fetchInBatches, parseDurationSec } from './segments';
-import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
+import { pickCandidate, titleMatchScore } from './titlePick';
 import type { DanmakuComment } from '@/types';
 import type { DanmakuProvider, DanmakuQuery } from './provider';
 
@@ -101,22 +101,16 @@ function yearOf(feature: string | undefined): number | null {
   return match ? Number(match[0]) : null;
 }
 
+/** 片名精度优先于年份（年份只在同分候选内优选）；没有 showId 的卡片不可用，先排除 */
 function pickShow(cards: YoukuSearchCard[], query: DanmakuQuery): YoukuSearchCard | null {
-  const target = stripTitleNoise(query.title);
-  const exact = normalizeTitleForMatch(query.title);
-  if (target.length === 0) return null;
-  const candidates = cards.filter((card) => {
-    const title = card.titleDTO?.displayName ?? '';
-    return stripTitleNoise(title) === target || normalizeTitleForMatch(title) === exact;
-  });
-  if (candidates.length === 0) return null;
-  if (query.year !== null) {
-    const sameYear = candidates.find((card) => yearOf(card.feature) === query.year);
-    if (sameYear?.showId) return sameYear;
-    // 年份能校验却全都对不上，宁可无弹幕也不串到别的季
-    if (candidates.some((card) => yearOf(card.feature) !== null)) return null;
-  }
-  return candidates.find((card) => card.showId) ?? null;
+  const candidates = cards
+    .filter((card) => card.showId !== undefined && card.showId.length > 0)
+    .map((card) => ({
+      card,
+      score: titleMatchScore(card.titleDTO?.displayName ?? '', query.title),
+      year: yearOf(card.feature),
+    }));
+  return pickCandidate(candidates, query.year)?.card ?? null;
 }
 
 async function searchShow(query: DanmakuQuery): Promise<YoukuSearchCard | null> {

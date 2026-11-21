@@ -1,39 +1,36 @@
 <script setup lang="ts">
 /**
- * 播放控制条（设计规范 8.11）
+ * 播放 chrome（设计稿 ③ 顶栏 / ④ 底栏 / ⑦⑧ 就地弹层）
  *
- * 顶部：返回 + 标题（片名 · 第 N 集）+ 右侧投屏/字幕。
- * 底部：进度条 + 时间 + 播放/暂停（56）/上下集 + 倍速/字幕/清晰度/全屏/下载。
- * 显隐由父级 `visible` 控制，300ms opacity 过渡（不位移，避免画面抖动）。
- * 隐藏态：底部保留 2px 微进度条（类似 YouTube/B站），让用户感知播放进度。
+ * - 顶栏：返回 + 身份簇（片名 / 一行状态摘要）+ chip 轨（画质·线路·字幕·弹幕·缓冲）
+ *   + 锁定屏幕（一级入口，常驻可见）+ 更多
+ * - 底栏：进度簇（跳过条 → 时间行 → 轨道）+ 传输簇（上/播放/下）+ 视图簇（倍速·音量亮度·选集·全屏）
+ * - 尺寸分档由 .pl-frame 的容器查询驱动，组件不再接 compact / immersive
+ * - 倍速与音量亮度是就地弹层（非模态，留在 chrome 内）；选集/线路/字幕/更多交父级面板
+ * - 显隐由 .pl-shell[data-chrome] 统一控制（opacity，不位移）
  */
-import { computed } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-import type { PlaybackRate } from '@/types';
+import type { PlaybackRate } from "@/types";
+import { RATE_OPTIONS } from "@/player/constants";
+import { formatPlayerClock } from "@/shared/time";
 
-import SeekBar from '@/components/player/SeekBar.vue';
-import IconBack from '@/components/icons/IconBack.vue';
-import IconPlay from '@/components/icons/IconPlay.vue';
-import IconPause from '@/components/icons/IconPause.vue';
-import IconSpeed from '@/components/icons/IconSpeed.vue';
-import IconSubtitle from '@/components/icons/IconSubtitle.vue';
-import IconFullscreen from '@/components/icons/IconFullscreen.vue';
-import IconDownload from '@/components/icons/IconDownload.vue';
-import IconCast from '@/components/icons/IconCast.vue';
-import IconChevron from '@/components/icons/IconChevron.vue';
-import IconAspectRatio from '@/components/icons/IconAspectRatio.vue';
-import IconPip from '@/components/icons/IconPip.vue';
-import { useHaptic } from '@/composables/useHaptic';
+import SeekBar from "@/components/player/SeekBar.vue";
+import IconBack from "@/components/icons/IconBack.vue";
+import { useHaptic } from "@/composables/useHaptic";
 
 const props = withDefaults(
   defineProps<{
     visible: boolean;
     title: string;
-    episodeLabel: string;
+    /** 当前集序号（1 起）；单集影片传 0 */
+    epIndex?: number;
+    epTotal?: number;
     playing: boolean;
     waiting: boolean;
     currentTime: number;
     duration: number;
+    /** 已缓冲到的秒数 */
     buffered: number;
     rate: PlaybackRate;
     canPrev: boolean;
@@ -41,616 +38,614 @@ const props = withDefaults(
     /** 单集影片隐藏上下集按钮（AC-42） */
     showEpisodeNav: boolean;
     fullscreen: boolean;
-    /** 是否已有字幕（高亮图标） */
     subtitleActive: boolean;
-    /** 清晰度档位文本 */
+    /** 字幕档位文本（如「简中」），空则按开关显示 开/关 */
+    subtitleLabel?: string;
     qualityLabel: string;
-    /** 是否显示下载按钮 */
-    canDownload: boolean;
-    /** 正在下载 */
-    downloading?: boolean;
-    /** 当前平台不支持投屏（AC-84）：渲染为禁用态 */
-    castDisabled?: boolean;
-    immersive?: boolean;
-    /**
-     * 紧凑模式（竖屏 16:9 画面内）：进度条与时间同排、倍速/清晰度/全屏并入主控制行，
-     * 底部总高从 ~180px 收到 ~100px（设计规范 6.6 竖屏口径）。
-     * 横屏/全屏空间充足，保持原布局。
-     */
-    compact?: boolean;
-    /** P1-2：弹幕是否开启 */
+    /** 当前线路名（chip 与摘要各用一次） */
+    lineName?: string;
     danmakuEnabled?: boolean;
-    /** P1-4：键盘/进度条步进秒数 */
+    /** 键盘/进度条步进秒数 */
     seekStep?: number;
-    /** OPT-06：当前环境是否支持画中画 */
-    pipSupported?: boolean;
-    /** OPT-06：是否已处于画中画状态 */
-    pipActive?: boolean;
+    /** 音量 / 亮度（0~100 真值，落点由父级按 levelSource 决定） */
+    volume?: number;
+    brightness?: number;
+    /** 屏幕已锁定：顶栏锁按钮换闭合图标 */
+    locked?: boolean;
+    /** 命中片头/片尾区间时浮出跳过条 */
+    skipZone?: "intro" | "credits" | null;
+    /** 跳过目标（片头结束时刻 / 片尾长度，秒） */
+    skipTargetSec?: number;
     /** A-03：进度条胶片预览的缩略图（下标即格号，null = 未就绪） */
     film?: (string | null)[] | null;
-    /** B-06：片头/片尾区间标记（秒），null 时进度条不画分段 */
-    marks?: { introEndSec: number | null; creditsStartSec: number | null } | null;
+    /** B-06：片头/片尾区间标记（秒） */
+    marks?: {
+      introEndSec: number | null;
+      creditsStartSec: number | null;
+    } | null;
   }>(),
-  { downloading: false, castDisabled: false, immersive: false, compact: false, danmakuEnabled: false, seekStep: 10, pipSupported: false, pipActive: false, film: null, marks: null },
+  {
+    epIndex: 0,
+    epTotal: 0,
+    subtitleLabel: "",
+    lineName: "",
+    danmakuEnabled: false,
+    seekStep: 10,
+    volume: 100,
+    brightness: 100,
+    locked: false,
+    skipZone: null,
+    skipTargetSec: 0,
+    film: null,
+    marks: null,
+  },
 );
 
 const emit = defineEmits<{
-  (e: 'back'): void;
-  (e: 'toggle-play'): void;
-  (e: 'prev'): void;
-  (e: 'next'): void;
-  (e: 'seek', sec: number): void;
-  (e: 'seeking', sec: number): void;
-  (e: 'open-speed'): void;
-  (e: 'open-subtitle'): void;
-  (e: 'open-quality'): void;
-  (e: 'open-display-mode'): void;
-  (e: 'toggle-fullscreen'): void;
-  (e: 'download'): void;
-  (e: 'cast'): void;
-  (e: 'toggle-danmaku'): void;
-  (e: 'open-danmaku-settings'): void;
-  (e: 'open-danmaku-style'): void;
-  (e: 'toggle-pip'): void;
+  (e: "back"): void;
+  (e: "toggle-play"): void;
+  (e: "prev"): void;
+  (e: "next"): void;
+  (e: "seek", sec: number): void;
+  (e: "seeking", sec: number): void;
+  (e: "set-rate", rate: number): void;
+  (e: "set-volume", value: number): void;
+  (e: "set-brightness", value: number): void;
+  (e: "open-quality"): void;
+  (e: "open-line"): void;
+  (e: "open-subtitle"): void;
+  (e: "open-episodes"): void;
+  (e: "open-more"): void;
+  (e: "toggle-danmaku"): void;
+  (e: "toggle-fullscreen"): void;
+  (e: "toggle-lock"): void;
+  (e: "skip"): void;
+  (e: "skip-dismiss"): void;
+  /** 弹层打开期间暂停控制条自动隐藏；关闭后重新计时 */
+  (e: "pause-auto-hide"): void;
+  (e: "nudge"): void;
 }>();
-
-const rateLabel = computed(() => `${props.rate}x`);
-const playLabel = computed(() => (props.playing ? '暂停' : '播放'));
 
 const { haptic } = useHaptic();
 
-function onTogglePlay(): void {
-  haptic('light');
-  emit('toggle-play');
-}
+const rootRef = ref<HTMLElement | null>(null);
+/** 就地弹层：同一时刻只开一个 */
+const openPop = ref<"rate" | "av" | null>(null);
 
-/** 微进度条百分比（控制条隐藏时显示） */
+const rateLabel = computed(() => `${props.rate}x`);
+const playLabel = computed(() =>
+  props.waiting ? "缓冲中" : props.playing ? "暂停" : "播放",
+);
+const volLabel = computed(() =>
+  props.volume <= 0 ? "静音" : String(Math.round(props.volume)),
+);
+const subtitleText = computed(
+  () => props.subtitleLabel || (props.subtitleActive ? "开" : "关"),
+);
+const epText = computed(() =>
+  props.epTotal > 1 ? `${props.epIndex}/${props.epTotal}` : "",
+);
+/** chip 位窄，线路名去掉「源·」前缀（摘要里仍给全名） */
+const lineShort = computed(() => props.lineName.replace(/^源·/, ""));
+const bufferPercent = computed(() =>
+  props.duration > 0
+    ? Math.round(
+        Math.min(100, Math.max(0, (props.buffered / props.duration) * 100)),
+      )
+    : 0,
+);
+const remainingSec = computed(() =>
+  Math.max(0, props.duration - props.currentTime),
+);
+const skipLabel = computed(() =>
+  props.skipZone === "credits" ? "跳过片尾" : "跳过片头",
+);
 const miniProgress = computed(() =>
-  props.duration > 0 ? Math.min(100, Math.max(0, (props.currentTime / props.duration) * 100)) : 0,
+  props.duration > 0
+    ? Math.min(100, Math.max(0, (props.currentTime / props.duration) * 100))
+    : 0,
 );
 const miniBuffered = computed(() =>
-  props.duration > 0 ? Math.min(100, Math.max(0, (props.buffered / props.duration) * 100)) : 0,
+  props.duration > 0
+    ? Math.min(100, Math.max(0, (props.buffered / props.duration) * 100))
+    : 0,
 );
+/** 滑杆已填充比例（webkit 轨道渐变靠它，与 thumb 位置同源） */
+const rateFill = computed(
+  () => `${(((props.rate - 0.5) / 1.5) * 100).toFixed(1)}%`,
+);
+const volFill = computed(() => `${Math.round(props.volume)}%`);
+const briFill = computed(() => `${Math.round(props.brightness)}%`);
+
+function togglePop(name: "rate" | "av"): void {
+  haptic("light");
+  openPop.value = openPop.value === name ? null : name;
+}
+
+function onTogglePlay(): void {
+  haptic("light");
+  emit("toggle-play");
+}
+
+function onRatePreset(value: number): void {
+  haptic("light");
+  emit("set-rate", value);
+}
+
+function onFineRate(ev: Event): void {
+  emit("set-rate", Number((ev.target as HTMLInputElement).value));
+}
+
+function onVolume(ev: Event): void {
+  emit("set-volume", Number((ev.target as HTMLInputElement).value));
+}
+
+function onBrightness(ev: Event): void {
+  emit("set-brightness", Number((ev.target as HTMLInputElement).value));
+}
+
+/* 弹层打开时停掉自动隐藏，关闭后重新计时；控制条被隐藏时一并收起弹层 */
+watch(openPop, (value) => {
+  if (value) emit("pause-auto-hide");
+  else emit("nudge");
+});
+watch(
+  () => props.visible,
+  (value) => {
+    if (!value) openPop.value = null;
+  },
+);
+
+/** 点到弹层与它的触发按钮之外就收起（chrome 内其余按钮照常工作） */
+function onDocPointerDown(ev: PointerEvent): void {
+  if (!openPop.value) return;
+  const target = ev.target as HTMLElement | null;
+  if (target?.closest(".pl-cell--open")) return;
+  openPop.value = null;
+}
+
+function onDocKeydown(ev: KeyboardEvent): void {
+  if (ev.key !== "Escape" || !openPop.value) return;
+  openPop.value = null;
+  ev.stopPropagation();
+}
+
+onMounted(() => {
+  document.addEventListener("pointerdown", onDocPointerDown, true);
+  document.addEventListener("keydown", onDocKeydown, true);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("pointerdown", onDocPointerDown, true);
+  document.removeEventListener("keydown", onDocKeydown, true);
+});
 </script>
 
 <template>
-  <div
-    class="player-controls"
-    :class="{
-      'player-controls--hidden': !visible,
-      'player-controls--immersive': immersive,
-      'player-controls--compact': compact,
-    }"
-  >
-    <div class="player-scrim player-scrim--top" aria-hidden="true" />
-    <div class="player-scrim player-scrim--bottom" aria-hidden="true" />
-
-    <!-- 顶部 -->
-    <header class="controls-top">
-      <button class="controls-btn" type="button" aria-label="返回" @click="emit('back')">
-        <IconBack :size="24" />
+  <div ref="rootRef" class="pl-chrome">
+    <!-- ③ 顶部 chrome：身份簇（左） + 内容层簇（右） + 锁屏/更多 -->
+    <header class="pl-top">
+      <button
+        class="pl-ico"
+        type="button"
+        aria-label="返回"
+        @click="emit('back')"
+      >
+        <IconBack :size="22" />
       </button>
 
-      <div class="controls-top__title">
-        <span class="controls-top__name truncate-1">{{ title }}</span>
-        <span v-if="episodeLabel" class="controls-top__episode">{{ episodeLabel }}</span>
+      <div class="pl-top__id">
+        <h1 class="pl-top__title truncate-1">{{ title }}</h1>
+        <!-- 一行状态摘要替代分散的三段信息；窄容器只留集号与剩余时间 -->
+        <p class="pl-top__meta">
+          <template v-if="epText">
+            <span class="pl-top__ep"
+              ><span class="wide">第 </span>{{ epText
+              }}<span class="wide"> 集</span></span
+            >
+            <span class="sep">·</span>
+          </template>
+          <span>剩余 {{ formatPlayerClock(remainingSec) }}</span>
+          <span class="tail">
+            <span class="pl-top__buf"
+              ><span class="sep">·</span>缓冲 {{ bufferPercent }}%</span
+            >
+            <template v-if="lineName">
+              <span class="sep">·</span>
+              <span>{{ lineName }}</span>
+            </template>
+          </span>
+        </p>
       </div>
 
-      <div class="controls-top__actions">
-        <!-- P1-2：弹幕开关按钮 -->
+      <div class="pl-top__chips">
         <button
-          class="controls-btn"
-          :class="{ 'controls-btn--active': danmakuEnabled }"
+          class="pl-chip"
           type="button"
-          :aria-label="danmakuEnabled ? '关闭弹幕' : '开启弹幕'"
-          @click="emit('toggle-danmaku')"
+          aria-haspopup="dialog"
+          @click="emit('open-quality')"
         >
-          <span class="danmaku-icon" aria-hidden="true">弹</span>
+          <span class="pl-chip__k">画质</span
+          ><span class="pl-chip__v">{{ qualityLabel }}</span>
         </button>
         <button
-          v-if="danmakuEnabled"
-          class="controls-btn"
+          class="pl-chip opt"
           type="button"
-          aria-label="弹幕样式调节"
-          @click="emit('open-danmaku-style')"
+          aria-haspopup="dialog"
+          @click="emit('open-line')"
         >
-          <span class="danmaku-style-icon" aria-hidden="true">彩</span>
+          <span class="pl-chip__k">线路</span
+          ><span class="pl-chip__v">{{ lineShort }}</span>
         </button>
         <button
-          class="controls-btn"
+          class="pl-chip pl-chip--sub"
           type="button"
-          :aria-label="castDisabled ? '投屏（当前平台不支持投屏）' : '投屏'"
-          :aria-disabled="castDisabled ? 'true' : undefined"
-          :disabled="castDisabled"
-          :title="castDisabled ? '当前平台不支持投屏' : undefined"
-          @click="emit('cast')"
-        >
-          <IconCast :size="20" />
-        </button>
-        <button
-          class="controls-btn"
-          :class="{ 'controls-btn--active': subtitleActive }"
-          type="button"
-          aria-label="字幕"
+          :aria-pressed="subtitleActive"
           @click="emit('open-subtitle')"
         >
-          <IconSubtitle :size="20" />
+          <span class="pl-chip__k">字幕</span
+          ><span class="pl-chip__v">{{ subtitleText }}</span>
         </button>
+        <button
+          class="pl-chip opt"
+          type="button"
+          :aria-pressed="danmakuEnabled"
+          @click="emit('toggle-danmaku')"
+        >
+          <span class="pl-chip__k">弹幕</span
+          ><span class="pl-chip__v">{{ danmakuEnabled ? "开" : "关" }}</span>
+        </button>
+        <!-- 实时码率当前引擎读不到，这一格诚实显示缓冲水位 -->
+        <span class="pl-chip pl-chip--static pl-chip--net opt" title="缓冲水位">
+          <span class="pl-chip__v">缓冲 {{ bufferPercent }}%</span>
+        </span>
       </div>
+
+      <!-- 锁定屏幕：一级入口常驻顶栏（藏在「更多」里等于找不到） -->
+      <button
+        class="pl-ico"
+        type="button"
+        :aria-pressed="locked"
+        :aria-label="locked ? '解除屏幕锁定' : '锁定屏幕'"
+        :title="locked ? '解除屏幕锁定（K）' : '锁定屏幕（K）'"
+        @click="emit('toggle-lock')"
+      >
+        <svg
+          v-if="!locked"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          aria-hidden="true"
+        >
+          <rect x="5" y="11" width="14" height="9" rx="2.4" />
+          <path d="M8.5 11V8a3.5 3.5 0 0 1 7 0" />
+        </svg>
+        <svg
+          v-else
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          aria-hidden="true"
+        >
+          <rect x="5" y="11" width="14" height="9" rx="2.4" />
+          <path d="M8.5 11V8a3.5 3.5 0 0 1 7 0v3" />
+        </svg>
+      </button>
+
+      <button
+        class="pl-ico pl-ico--more"
+        type="button"
+        aria-label="更多"
+        aria-haspopup="dialog"
+        @click="emit('open-more')"
+      >
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="5" cy="12" r="2" />
+          <circle cx="12" cy="12" r="2" />
+          <circle cx="19" cy="12" r="2" />
+        </svg>
+      </button>
     </header>
 
-    <!-- 底部 -->
-    <footer class="controls-bottom">
-      <SeekBar
-        :current-time="currentTime"
-        :duration="duration"
-        :buffered="buffered"
-        :disabled="waiting && duration === 0"
-        :inline="compact || immersive"
-        :seek-step="seekStep"
-        :film="film"
-        :marks="marks"
-        @seek="emit('seek', $event)"
-        @seeking="emit('seeking', $event)"
-      />
-
-      <div class="controls-row">
-        <div class="controls-row__side">
+    <!-- ④ 底部 chrome：进度簇 + 传输簇 + 视图簇 -->
+    <footer class="pl-bottom">
+      <!-- 进度簇：跳过条（条件出现） → 时间行 → 轨道 -->
+      <div class="pl-timeline">
+        <div v-if="skipZone" class="pl-skip">
+          <button class="pl-skip__btn" type="button" @click="emit('skip')">
+            <span>{{ skipLabel }}</span>
+            <span class="num">{{ formatPlayerClock(skipTargetSec) }}</span>
+          </button>
           <button
-            v-if="showEpisodeNav"
-            class="controls-btn controls-btn--nav"
+            class="pl-skip__dismiss"
             type="button"
-            aria-label="上一集"
-            :disabled="!canPrev"
-            @click="emit('prev')"
+            aria-label="本集不再提示"
+            @click="emit('skip-dismiss')"
           >
-            <span class="nav-icon nav-icon--prev" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 5.6v12.8L9.4 12Z" /><rect x="5" y="5.6" width="2.2" height="12.8" rx="1" /></svg>
-            </span>
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M6 6l12 12M18 6 6 18" />
+            </svg>
           </button>
         </div>
 
+        <SeekBar
+          :current-time="currentTime"
+          :duration="duration"
+          :buffered="buffered"
+          :disabled="waiting && duration === 0"
+          :seek-step="seekStep"
+          :film="film"
+          :marks="marks"
+          @seek="emit('seek', $event)"
+          @seeking="emit('seeking', $event)"
+        />
+      </div>
+
+      <div class="pl-row">
         <button
-          class="controls-play"
+          v-if="showEpisodeNav"
+          class="pl-btn"
           type="button"
+          aria-label="上一集"
+          :disabled="!canPrev"
+          @click="emit('prev')"
+        >
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M19 5.6v12.8L9.4 12Z" />
+            <rect x="5" y="5.6" width="2.2" height="12.8" rx="1" />
+          </svg>
+        </button>
+
+        <button
+          class="pl-btn pl-btn--play"
+          type="button"
+          :data-busy="waiting ? '1' : '0'"
           :aria-label="playLabel"
           :aria-busy="waiting ? 'true' : undefined"
           @click="onTogglePlay"
         >
-          <span v-if="waiting" class="controls-play__spinner" aria-hidden="true" />
-          <IconPause v-else-if="playing" :size="28" />
-          <IconPlay v-else :size="28" />
+          <svg
+            v-if="!playing"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <path
+              d="M7 4.6c0-1.4 1.6-2.3 2.8-1.5l9.4 7.4c1 .8 1 2.2 0 3L9.8 20.9C8.6 21.7 7 20.8 7 19.4Z"
+            />
+          </svg>
+          <svg
+            v-else
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            aria-hidden="true"
+          >
+            <rect x="6" y="4.5" width="4" height="15" rx="1.3" />
+            <rect x="14" y="4.5" width="4" height="15" rx="1.3" />
+          </svg>
         </button>
 
-        <div class="controls-row__side controls-row__side--end">
-          <button
-            v-if="showEpisodeNav"
-            class="controls-btn controls-btn--nav"
-            type="button"
-            aria-label="下一集"
-            :disabled="!canNext"
-            @click="emit('next')"
+        <button
+          v-if="showEpisodeNav"
+          class="pl-btn"
+          type="button"
+          aria-label="下一集"
+          :disabled="!canNext"
+          @click="emit('next')"
+        >
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M5 5.6v12.8L14.6 12Z" />
+            <rect x="16.8" y="5.6" width="2.2" height="12.8" rx="1" />
+          </svg>
+        </button>
+
+        <div class="pl-row__end">
+          <!-- 倍速弹层：预设档 + 精细滑杆（靠右缘，弹层右对齐避免溢出画面） -->
+          <div
+            class="pl-cell pl-cell--end"
+            :class="{ 'pl-cell--open': openPop === 'rate' }"
           >
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 5.6v12.8L14.6 12Z" /><rect x="16.8" y="5.6" width="2.2" height="12.8" rx="1" /></svg>
-            </span>
+            <button
+              class="pl-btn"
+              type="button"
+              aria-haspopup="dialog"
+              :aria-expanded="openPop === 'rate'"
+              @click="togglePop('rate')"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                aria-hidden="true"
+              >
+                <path d="M4.6 17a8.4 8.4 0 1 1 14.8 0" />
+                <path d="M12 17v-.2M15.6 11.4 13 13.6" />
+              </svg>
+              <span class="pl-btn__val">{{ rateLabel }}</span>
+            </button>
+            <div
+              class="pl-pop"
+              :open="openPop === 'rate' || null"
+              role="dialog"
+              aria-label="倍速"
+            >
+              <p class="pl-pop__head">
+                <span>倍速</span><b>{{ rateLabel }}</b>
+              </p>
+              <div class="pl-pop__grid pl-pop__grid--wrap">
+                <button
+                  v-for="option in RATE_OPTIONS"
+                  :key="option"
+                  class="pl-mini-btn"
+                  type="button"
+                  :aria-pressed="option === rate"
+                  @click="onRatePreset(option)"
+                >
+                  {{ option }}x
+                </button>
+              </div>
+              <div class="pl-rng__row">
+                <input
+                  class="pl-rng"
+                  type="range"
+                  min="0.5"
+                  max="2"
+                  step="0.05"
+                  :value="rate"
+                  aria-label="精细倍速"
+                  :style="{ '--fill': rateFill }"
+                  @input="onFineRate"
+                />
+              </div>
+            </div>
+          </div>
+
+          <!-- 音量 + 亮度合并弹层（手势仍然可用，这里是可发现入口） -->
+          <div
+            class="pl-cell pl-cell--vol"
+            :class="{ 'pl-cell--open': openPop === 'av' }"
+          >
+            <button
+              class="pl-btn"
+              type="button"
+              aria-haspopup="dialog"
+              :aria-expanded="openPop === 'av'"
+              aria-label="音量与亮度"
+              @click="togglePop('av')"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4Z" />
+                <path d="M15.4 9a4.2 4.2 0 0 1 0 6" />
+                <path d="M18 6.6a7.6 7.6 0 0 1 0 10.8" />
+              </svg>
+              <span class="pl-btn__val">{{ volLabel }}</span>
+            </button>
+            <div
+              class="pl-pop"
+              :open="openPop === 'av' || null"
+              role="dialog"
+              aria-label="音量与亮度"
+            >
+              <div>
+                <p class="pl-pop__head">
+                  <span>音量</span><b>{{ Math.round(volume) }}%</b>
+                </p>
+                <div class="pl-rng__row">
+                  <input
+                    class="pl-rng"
+                    type="range"
+                    min="0"
+                    max="100"
+                    :value="volume"
+                    aria-label="音量"
+                    :style="{ '--fill': volFill }"
+                    @input="onVolume"
+                  />
+                </div>
+              </div>
+              <div>
+                <p class="pl-pop__head">
+                  <span>亮度</span><b>{{ Math.round(brightness) }}%</b>
+                </p>
+                <div class="pl-rng__row">
+                  <input
+                    class="pl-rng"
+                    type="range"
+                    min="0"
+                    max="100"
+                    :value="brightness"
+                    aria-label="亮度"
+                    :style="{ '--fill': briFill }"
+                    @input="onBrightness"
+                  />
+                </div>
+              </div>
+              <p class="pl-pop__head pl-pop__head--note">
+                <span>在画面上竖向拖动同样可调：左半屏亮度、右半屏音量</span>
+              </p>
+            </div>
+          </div>
+
+          <button
+            class="pl-btn pl-btn--eps"
+            type="button"
+            aria-label="选集与线路"
+            @click="emit('open-episodes')"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M4 7h11M4 12h11M4 17h7" />
+              <path d="M18.5 9.5 21 12l-2.5 2.5" />
+            </svg>
+            <span class="pl-btn__val">{{ epText || "选集" }}</span>
           </button>
 
-          <!-- 紧凑模式：倍速 / 清晰度 / 字幕 / 全屏并进本行，省掉独立 secondary 行 -->
-          <template v-if="compact">
-            <button class="controls-mini" type="button" :aria-label="`倍速 ${rateLabel}`" @click="emit('open-speed')">
-              {{ rateLabel }}
-            </button>
-            <button class="controls-mini" type="button" aria-label="清晰度" @click="emit('open-quality')">
-              {{ qualityLabel }}
-            </button>
-            <button class="controls-mini controls-mini--icon" type="button" aria-label="画面比例" @click="emit('open-display-mode')">
-              <IconAspectRatio :size="18" />
-            </button>
-            <button
-              class="controls-mini controls-mini--icon"
-              :class="{ 'controls-mini--active': subtitleActive }"
-              type="button"
-              aria-label="字幕"
-              @click="emit('open-subtitle')"
+          <button
+            class="pl-btn"
+            type="button"
+            :aria-label="fullscreen ? '退出全屏' : '进入全屏'"
+            @click="emit('toggle-fullscreen')"
+          >
+            <svg
+              v-if="!fullscreen"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.9"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
             >
-              <IconSubtitle :size="18" />
-            </button>
-            <button
-              v-if="pipSupported"
-              class="controls-mini controls-mini--icon"
-              :class="{ 'controls-mini--active': pipActive }"
-              type="button"
-              :aria-label="pipActive ? '退出画中画' : '画中画'"
-              @click="emit('toggle-pip')"
+              <path d="M4 9V4h5M20 15v5h-5M15 4h5v5M9 20H4v-5" />
+            </svg>
+            <svg
+              v-else
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.9"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
             >
-              <IconPip :size="18" :active="pipActive" />
-            </button>
-            <button
-              class="controls-mini controls-mini--icon"
-              type="button"
-              :aria-label="fullscreen ? '退出全屏' : '全屏'"
-              @click="emit('toggle-fullscreen')"
-            >
-              <IconFullscreen :size="18" :exit="fullscreen" />
-            </button>
-          </template>
+              <path d="M9 4v5H4M15 20v-5h5M20 9h-5V4M4 15h5v5" />
+            </svg>
+          </button>
         </div>
-      </div>
-
-      <div v-if="!compact" class="controls-secondary">
-        <button class="controls-secondary__btn" type="button" aria-label="倍速" @click="emit('open-speed')">
-          <IconSpeed :size="18" />
-          <span class="controls-secondary__text">{{ rateLabel }}</span>
-        </button>
-
-        <button class="controls-secondary__btn" type="button" aria-label="清晰度" @click="emit('open-quality')">
-          <span class="controls-secondary__text">{{ qualityLabel }}</span>
-          <IconChevron :size="14" direction="down" />
-        </button>
-
-        <button class="controls-secondary__btn" type="button" aria-label="画面比例" @click="emit('open-display-mode')">
-          <IconAspectRatio :size="18" />
-        </button>
-
-        <button
-          v-if="canDownload"
-          class="controls-secondary__btn"
-          type="button"
-          aria-label="下载本集"
-          :disabled="downloading"
-          @click="emit('download')"
-        >
-          <IconDownload :size="18" :done="downloading" />
-        </button>
-
-        <button
-          v-if="pipSupported"
-          class="controls-secondary__btn"
-          type="button"
-          :aria-label="pipActive ? '退出画中画' : '画中画'"
-          @click="emit('toggle-pip')"
-        >
-          <IconPip :size="18" :active="pipActive" />
-        </button>
-
-        <button
-          class="controls-secondary__btn"
-          type="button"
-          :aria-label="fullscreen ? '退出全屏' : '全屏'"
-          @click="emit('toggle-fullscreen')"
-        >
-          <IconFullscreen :size="18" :exit="fullscreen" />
-        </button>
       </div>
     </footer>
 
-    <!-- 控制条隐藏时的微进度条（底部 2px，类似 YouTube/B站） -->
-    <div v-if="!visible && duration > 0" class="mini-progress" aria-hidden="true">
-      <div class="mini-progress__buffered" :style="{ width: `${miniBuffered}%` }" />
-      <div class="mini-progress__played" :style="{ width: `${miniProgress}%` }" />
+    <!-- 控制条隐藏时的微进度（画面底缘 3px，让「画面还在走」可被感知） -->
+    <div v-if="duration > 0" class="pl-mini" aria-hidden="true">
+      <i class="pl-mini__buf" :style="{ width: `${miniBuffered}%` }" />
+      <i class="pl-mini__played" :style="{ width: `${miniProgress}%` }" />
     </div>
   </div>
 </template>
-
-<style scoped>
-.player-controls {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  opacity: 1;
-  transition: opacity var(--duration-slow) var(--ease-standard);
-  /* 空白区域放行给下层手势层（单击显隐、横滑快进、竖滑音量/亮度、长按 2x） */
-  pointer-events: none;
-}
-
-/* 仅顶部/底部控制栏本身可点；隐藏态显式关掉，避免 pointer-events:auto 子元素穿透 */
-.controls-top,
-.controls-bottom {
-  pointer-events: auto;
-}
-
-.player-controls--hidden,
-.player-controls--hidden .controls-top,
-.player-controls--hidden .controls-bottom {
-  pointer-events: none;
-}
-
-.player-controls--hidden {
-  opacity: 0;
-}
-
-/*
- * 紧凑模式（竖屏 16:9）：顶部 88→52、底部 120→96。
- * 目的：把画面可见高度从 50px 提到 ~110px，进度条回到画面最底部而不是"半腰"。
- */
-.player-controls--compact .controls-top {
-  min-height: 52px;
-  padding-top: var(--space-1);
-  padding-bottom: var(--space-1);
-}
-
-.player-controls--compact .controls-bottom {
-  gap: 0;
-  padding: var(--space-1) max(var(--space-3), var(--safe-right))
-    calc(var(--space-1) + var(--safe-bottom)) max(var(--space-3), var(--safe-left));
-}
-
-.player-controls--compact .controls-play {
-  width: 48px;
-  height: 48px;
-}
-
-.player-controls--compact .controls-btn--nav {
-  width: 40px;
-  height: 40px;
-}
-
-.controls-top {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: calc(48px + var(--safe-top));
-  padding: var(--safe-top) max(var(--space-3), var(--safe-right)) 0 max(var(--space-3), var(--safe-left));
-}
-
-.controls-top__title {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.controls-top__name {
-  font: var(--text-body-strong);
-  color: #ffffff;
-}
-
-.controls-top__episode {
-  font: var(--text-caption);
-  color: rgba(255, 255, 255, 0.68);
-}
-
-.controls-top__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.controls-btn {
-  width: 44px;
-  height: 44px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-full);
-  color: #ffffff;
-}
-
-.controls-btn--active {
-  color: var(--color-brand-strong);
-}
-
-.controls-btn:disabled {
-  color: var(--color-text-disabled);
-  pointer-events: none;
-}
-
-.controls-btn:active:not(:disabled) {
-  background-color: rgba(255, 255, 255, 0.12);
-}
-
-/* P1-2：弹幕图标样式 */
-.danmaku-icon {
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.danmaku-style-icon {
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1;
-  background: linear-gradient(135deg, #ff6b6b, #4fc3f7, #69db7c);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-.controls-bottom {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2) max(var(--space-3), var(--safe-right))
-    calc(var(--space-2) + var(--safe-bottom)) max(var(--space-3), var(--safe-left));
-}
-
-.controls-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.controls-row__side {
-  flex: 1 1 0;
-  display: flex;
-  align-items: center;
-}
-
-.controls-row__side--end {
-  justify-content: flex-end;
-}
-
-.controls-btn--nav {
-  width: 44px;
-  height: 44px;
-}
-
-.nav-icon,
-.nav-icon--prev {
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-}
-
-.nav-icon svg {
-  width: 24px;
-  height: 24px;
-}
-
-.controls-play {
-  position: relative;
-  width: 56px;
-  height: 56px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-full);
-  background-color: rgba(255, 255, 255, 0.12);
-  color: #ffffff;
-  transition: background-color var(--duration-fast) var(--ease-standard);
-}
-
-.controls-play:active {
-  background-color: rgba(255, 255, 255, 0.2);
-}
-
-.controls-play__spinner {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.28);
-  border-top-color: #ffffff;
-  animation: controls-spin 800ms linear infinite;
-}
-
-@keyframes controls-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.controls-secondary {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding-bottom: 2px;
-}
-
-/* 紧凑模式：一行内的小号文字按钮（倍速/清晰度）+ 图标按钮（字幕/全屏） */
-.controls-mini {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 2px;
-  min-width: 36px;
-  height: 36px;
-  padding: 0 var(--space-1);
-  font: var(--text-caption);
-  color: rgba(255, 255, 255, 0.9);
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-}
-
-/* 视觉高度 36，命中区扩到 44（规范 §12.1，与 .controls-secondary__btn 同一手法） */
-.controls-mini::after {
-  content: '';
-  position: absolute;
-  inset: -4px -2px;
-}
-
-.controls-mini--icon {
-  width: 36px;
-  padding: 0;
-}
-
-.controls-mini--active {
-  color: var(--color-brand);
-}
-
-.controls-mini:active {
-  background-color: rgba(255, 255, 255, 0.12);
-}
-
-.controls-secondary__btn {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-height: 36px;
-  padding: 0 var(--space-2);
-  border-radius: var(--radius-full);
-  color: rgba(255, 255, 255, 0.92);
-}
-
-/* 视觉高度 36，命中区扩到 44（规范 §12.1） */
-.controls-secondary__btn::after {
-  content: '';
-  position: absolute;
-  inset: -4px -2px;
-}
-
-.controls-secondary__btn:active {
-  background-color: rgba(255, 255, 255, 0.12);
-}
-
-.controls-secondary__btn:disabled {
-  color: var(--color-text-disabled);
-}
-
-.controls-secondary__text {
-  font: var(--text-label-strong);
-  font-family: var(--font-family-number);
-}
-
-/* 全屏进度条贴底：按钮行上移、轨道沉到 footer 最底（order），
-   配合 inline 时间行，轨道不再高悬于控制区顶部（YouTube/B站口径） */
-.player-controls--immersive .controls-row {
-  order: 1;
-}
-
-.player-controls--immersive .controls-secondary {
-  order: 2;
-  justify-content: flex-end;
-}
-
-.player-controls--immersive :deep(.seekbar) {
-  order: 3;
-}
-
-/* 控制条隐藏时的微进度条 */
-.mini-progress {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background-color: rgba(255, 255, 255, 0.16);
-  pointer-events: none;
-  z-index: 4;
-}
-
-.mini-progress__buffered {
-  position: absolute;
-  inset: 0 auto 0 0;
-  height: 100%;
-  background-color: rgba(255, 255, 255, 0.32);
-  transition: width 300ms linear;
-}
-
-.mini-progress__played {
-  position: absolute;
-  inset: 0 auto 0 0;
-  height: 100%;
-  background-color: var(--color-brand);
-  transition: width 300ms linear;
-}
-</style>

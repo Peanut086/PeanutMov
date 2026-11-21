@@ -104,6 +104,52 @@ public final class LogRedactor {
             "(?i)\\b(bearer|basic)\\s+[A-Za-z0-9._+/=\\-]{8,}");
 
     /**
+     * URL 查询串里的单/双字母签名键：{@code ?s=}（夸克直链签名）、{@code ?do=}（网盘代理转发口令）。
+     * 键名太短，进不了 {@link #CREDENTIAL_KEYS}（那条规则要求完整词边界，1-2 个字母的键
+     * 在采集站地址里另有含义），也进不了 {@link #OPAQUE_VALUE}（键名下限 3 位），
+     * 于是真机 39 处 {@code ?s=} 一条都没打码地写进了分享日志。
+     */
+    private static final Pattern SHORT_SIGNED_QUERY = Pattern.compile(
+            "(?i)([?&](?:s|do)=)([^&#\\s\"'\\\\]{1,256})");
+
+    /** 签名形状允许出现的字符（含百分号编码，夸克签名尾部就是 {@code %2F} {@code %3D}） */
+    private static final String SIGNATURE_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789%._+/=-";
+
+    /**
+     * 「像签名」才打码：≥8 位、字符集受限、且字母与数字同时出现。
+     *
+     * <p>这条门控不是保险起见的冗余，是同一份真机日志教出来的：63200 行里 39 处 {@code ?s=}，
+     * 35 处是采集站的搜索词、4 处才是直链签名。无差别盖掉就把「哪个词发到了哪个源」
+     * 这条唯一的请求侧线索一起废了。
+     */
+    private static boolean isSignatureShape(String value) {
+        if (value.length() < 8) return false;
+        boolean digit = false;
+        boolean letter = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = Character.toLowerCase(value.charAt(i));
+            if (c >= '0' && c <= '9') digit = true;
+            else if (c >= 'a' && c <= 'z') letter = true;
+            else if (SIGNATURE_CHARS.indexOf(c) < 0) return false;
+        }
+        return digit && letter;
+    }
+
+    private static String redactShortSigned(String text) {
+        Matcher m = SHORT_SIGNED_QUERY.matcher(text);
+        if (!m.find()) return text;
+        StringBuilder sb = new StringBuilder(text.length());
+        int last = 0;
+        do {
+            if (!isSignatureShape(m.group(2))) continue;
+            sb.append(text, last, m.start()).append(m.group(1)).append(MASK);
+            last = m.end();
+        } while (m.find());
+        sb.append(text, last, text.length());
+        return sb.toString();
+    }
+
+    /**
      * 没命中键名、但值明显是会话材料的情况（{@code server_session_4e4bb913=976a898f…}、
      * 32 位 hex 签名等）。刻意只认「纯 hex」与「纯字母数字长串」，不用 {@code =:} 通配：
      * 否则 {@code path=/storage/…} 这类还有诊断价值的定位串会被一起盖掉。
@@ -149,7 +195,7 @@ public final class LogRedactor {
             result = BEARER.matcher(result).replaceAll("$1 " + MASK);
             result = CREDENTIAL_KV.matcher(result).replaceAll("$1$2" + MASK);
         }
-        return redactOpaque(result);
+        return redactOpaque(redactShortSigned(result));
     }
 
     /**

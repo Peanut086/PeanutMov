@@ -617,6 +617,50 @@ describe('SpiderAdapter', () => {
     expect(result.error?.message).toContain('HTML 页面而非 JS 源码');
   });
 
+  it('P1-3：同一坏 jar 本进程内不重跑第二次，文案与第一次一致；换版本才重新真跑', async () => {
+    vi.resetModules();
+    vi.doMock('@/shared/platform', () => ({ isNative: () => true }));
+    mockHttpHead();
+    const load = vi.fn().mockRejectedValue(
+      new Error('爬虫加载失败: java.lang.IncompatibleClassChangeError: csp_PanWebShare'),
+    );
+    vi.doMock('@/native/spiderPlugin', () => ({
+      Spider: { load, invoke: vi.fn(), proxy: vi.fn(), unload: vi.fn(), isSupported: vi.fn() },
+      isSpiderAvailable: vi.fn().mockResolvedValue(true),
+      spiderInvoke: vi.fn(),
+    }));
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource();
+
+    const first = await adapter.testConnection(source);
+    expect(first.ok).toBe(false);
+    const afterFirst = load.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    // 第二次不再敲原生：缺类还是缺类，重跑要付下载 + dex + 防护初始化的全价，还白占爬虫池
+    const second = await adapter.testConnection(source);
+    expect(second.ok).toBe(false);
+    expect(load.mock.calls.length).toBe(afterFirst);
+    // 同一条对症文案（第一次收敛过，第二次不能把英文堆栈甩给用户）
+    expect(second.error?.message).toBe(first.error?.message);
+    expect(second.error?.message).not.toContain('IncompatibleClassChangeError');
+
+    // 源站换了文件（jarUrl 含 ;md5; 后缀即版本）→ 是新证据，必须重新真跑一次
+    const updated = makeSource({
+      ext: {
+        kind: 'jar',
+        api: 'csp_XBPQ',
+        jarUrl: 'https://jihulab.com/xiaohutx/meisha/-/raw/main/2.jar;md5;ffffffffffffffffffffffffffffffff',
+        initExt: '{}',
+        searchable: true,
+      },
+    });
+    const third = await adapter.testConnection(updated);
+    expect(third.ok).toBe(false);
+    expect(load.mock.calls.length).toBeGreaterThan(afterFirst);
+  });
+
   it('P2-8：drpy 搜索把页码透传给规则（缺省会拼出 page=undefined）', async () => {
     vi.resetModules();
     vi.doMock('@/shared/platform', () => ({ isNative: () => true }));

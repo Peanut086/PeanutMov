@@ -183,4 +183,38 @@ public class LogRedactorTest {
         writer.close();
         assertEquals("set-cookie=***", sink.toString());
     }
+
+    /**
+     * P1-5：URL 里的短签名键（{@code ?s=} 夸克直链签名、{@code ?do=} 网盘代理口令）。
+     *
+     * <p>两半都要钉住，缺一半都是事故：真机 63200 行里 39 处 {@code ?s=}，4 处是直链签名
+     * （漏码＝把可用的下载地址连同签名分享出去），35 处是采集站搜索词
+     * （无差别打码＝「哪个词发到了哪个源」这条请求侧线索整片作废）。
+     */
+    @Test
+    public void shortSignedQueryParamIsMaskedOnlyWhenItLooksLikeASignature() {
+        String url = "播放地址--> https://drive.quark.example.com/d/x.m3u8?s=ZEOp28Xq1i79ab34%2F&t=1763000000";
+        String out = LogRedactor.redact(url);
+        assertTrue("签名键名要留着才知道被盖的是哪一段", out.contains("?s=***"));
+        assertFalse("签名值一个字符都不能剩", out.contains("ZEOp28Xq1i79") || out.contains("%2F"));
+        assertTrue("过期时间是定位直链失效的凭据，留着", out.contains("t=1763000000"));
+
+        String search = "2026-11-20 09:00:00.000 D [spider-worker] CatVodSpider:"
+                + " 请求 api.php/provide/vod/?ac=detail&s=剑来 命中 2 条";
+        assertEquals("搜索词不是凭据，原样保留", search, LogRedactor.redact(search));
+
+        assertEquals("短值不构成签名形态", "https://a.example.com/x?s=abc12",
+                LogRedactor.redact("https://a.example.com/x?s=abc12"));
+
+        String proxy = "转发 https://pan.example.com/proxy?do=YWJjZGVmZ2hpamsxMjM0&fid=x";
+        String maskedProxy = LogRedactor.redact(proxy);
+        assertFalse(maskedProxy.contains("YWJjZGVmZ2hpamsxMjM0"));
+        assertTrue(maskedProxy.contains("?do=***"));
+    }
+
+    @Test
+    public void shortSignedMaskingIsIdempotent() {
+        String once = LogRedactor.redact("https://a.example.com/x.m3u8?s=zEOp28Xq1i79K");
+        assertEquals(once, LogRedactor.redact(once));
+    }
 }

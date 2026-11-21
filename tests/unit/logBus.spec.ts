@@ -93,4 +93,28 @@ describe('logBus', () => {
     expect(last.message).toContain('Error');
     expect(last.message).toContain('test error');
   });
+
+  it('桥回执镜像（单个裸普通对象）降为 W 并归到 bridge tag', () => {
+    console.error({ message: '爬虫调用失败: IllegalStateException: 源正忙（上一次调用仍在原生线程执行），请稍后重试' });
+    const last = getBuffer()[getBuffer().length - 1];
+    expect(last.level).toBe('W');
+    expect(last.tag).toBe('bridge');
+    expect(last.message).toContain('源正忙');
+  });
+
+  it('真异常不受降级影响：Error、类实例、多参数仍按 E', () => {
+    console.error(new Error('真异常'));
+    expect(getBuffer().at(-1)!.level).toBe('E');
+
+    class Boom {
+      message = '类实例不是字面对象';
+    }
+    console.error(new Boom());
+    expect(getBuffer().at(-1)!.level).toBe('E');
+    expect(getBuffer().at(-1)!.tag).not.toBe('bridge');
+
+    console.error('[player]', { detail: '带 tag 前缀的调用来自我们自己的 logger' });
+    expect(getBuffer().at(-1)!.level).toBe('E');
+    expect(getBuffer().at(-1)!.tag).toBe('player');
+  });
 });

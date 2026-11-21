@@ -12,7 +12,7 @@ import { decompress } from 'brotli';
 import { md5 } from './md5';
 import { requestBytes, requestWithHeaders } from './nativeHttp';
 import { episodeNumberOf, fetchInBatches, parseDurationSec } from './segments';
-import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
+import { pickCandidate, titleMatchScore, type Scored } from './titlePick';
 import type { DanmakuComment } from '@/types';
 import type { DanmakuProvider, DanmakuQuery } from './provider';
 
@@ -93,26 +93,16 @@ function toHit(album: IqiyiAlbum | undefined): AlbumHit | null {
 }
 
 function pickAlbum(albums: IqiyiAlbum[], query: DanmakuQuery): AlbumHit | null {
-  const target = stripTitleNoise(query.title);
-  const exact = normalizeTitleForMatch(query.title);
-  if (target.length === 0) return null;
-  const candidates = albums.filter((album) => {
-    const title = (album.title ?? '').replace(/<[^>]*>/g, '').trim();
-    return (
-      (stripTitleNoise(title) === target || normalizeTitleForMatch(title) === exact) && isEpisodeNumbered(album)
-    );
-  });
-  if (candidates.length === 0) return null;
-  if (query.year !== null) {
-    const sameYear = candidates.find((album) => yearOf(album) === query.year);
-    if (sameYear !== undefined) {
-      const hit = toHit(sameYear);
-      if (hit !== null) return hit;
-    }
-    // 年份能校验却全都对不上，宁可无弹幕也不串到别的季
-    if (candidates.some((album) => yearOf(album) !== null)) return null;
+  const candidates: Array<AlbumHit & Scored> = [];
+  for (const album of albums) {
+    if (!isEpisodeNumbered(album)) continue;
+    const hit = toHit(album);
+    if (hit === null) continue;
+    candidates.push({ ...hit, score: titleMatchScore(hit.title, query.title), year: yearOf(album) });
   }
-  return toHit(candidates[0]);
+  // 片名精确度优先于年份：爱奇艺的搜后卡片同名不同年很多，让年份越级就会串到另一季
+  const chosen = pickCandidate(candidates, query.year);
+  return chosen === null ? null : { albumId: chosen.albumId, title: chosen.title };
 }
 
 /** 搜索接口被风控时 code 为 -1；空结果不是错误，返回 null 由调用方回退下一源 */

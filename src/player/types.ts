@@ -134,3 +134,8 @@ export interface SubtitleCue {
   endSec: number;
   text: string;
 }
+
+/* ---------- 播放面板抽屉 ---------- */
+
+/** 抽屉页签：与原型 ⑤' 的四个 pane 一一对应 */
+export type DrawerTab = "ep" | "line" | "av" | "more";

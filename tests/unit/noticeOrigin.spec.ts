@@ -80,7 +80,15 @@ describe('recordUpstreamNotice（提示来源登记）', () => {
     expect(notice.text).toBe('接口额度已用完');
     expect(notice.businessCode).toBe('42900');
     const logged = info.mock.calls.find((call) => call[1] === '上游提示登记');
-    expect(logged?.[2]).toMatchObject({ noticeOrigin: 'spider_msg', kind: 'quota_exhausted', sourceId: 'src-1' });
+    // P1-5：日志参数现在以 JSON 文本交出去（对象过 logcat 桥只剩 `[object Object]`），
+    // 所以这里解析回结构再比——字段一个都不能少。
+    expect(JSON.parse(String(logged?.[2]))).toMatchObject({
+      noticeOrigin: 'spider_msg',
+      kind: 'quota_exhausted',
+      sourceId: 'src-1',
+      businessCode: '42900',
+      displayText: '接口额度已用完',
+    });
     info.mockRestore();
   });
 
@@ -106,5 +114,28 @@ describe('recordUpstreamNotice（提示来源登记）', () => {
     expect(notice.httpStatus).toBeNull();
     expect(notice.businessCode).toBeNull();
     expect(NOTICE_ORIGIN_LABELS[notice.noticeOrigin]).toBe('视频画面');
+  });
+
+  /**
+   * P1-5：上游 msg 里带签名直链的情况（真机日志 39 处 `?s=`）。
+   * detail 进日志、text 进界面，两处都必须是打过码的同一句话。
+   */
+  it('签名直链登记时值区打码、主机与过期时间保留', () => {
+    const notice = recordUpstreamNotice(
+      '加载失败 https://drive.quark.example.com/d/x.m3u8?s=ZEOp28Xq1i79ab34%2F&t=1763000000',
+      { origin: 'spider_msg', operation: 'playerContent' },
+    );
+    expect(notice.detail).toContain('?s=***');
+    expect(notice.detail).not.toContain('ZEOp28Xq1i79');
+    expect(notice.detail).not.toContain('%2F');
+    expect(notice.detail).toContain('drive.quark.example.com');
+    expect(notice.detail).toContain('t=1763000000');
+  });
+
+  it('采集站搜索词形式的 ?s= 不被当作凭据打掉', () => {
+    const notice = recordUpstreamNotice('api.php/provide/vod/?ac=detail&s=剑来 无结果', {
+      origin: 'spider_msg',
+    });
+    expect(notice.detail).toContain('s=剑来');
   });
 });

@@ -32,6 +32,7 @@ const ALL_ERROR_CODES = [
   'E_NOT_IMPLEMENTED',
   'E_SOURCE_DISABLED',
   'E_SOURCE_UNAVAILABLE',
+  'E_SOURCE_BUSY',
   'E_NO_PLAY_URL',
   'E_NETDISK_LOGIN_REQUIRED',
   'E_UNSUPPORTED_FORMAT',
@@ -52,8 +53,9 @@ const ALL_ERROR_CODES = [
 
 describe('AC-60 错误码 → 用户文案映射', () => {
   it('遍历 ErrorCode 全枚举：每项都有映射且非空', () => {
-    // 33 = 原 31 条 + DL-P0-1 `E_NAME_TOO_LONG` + DL-P0-2 `E_FAKE_SOURCE_CONTENT`
-    expect(ALL_ERROR_CODES).toHaveLength(33);
+    // 34 = 原 31 条 + DL-P0-1 `E_NAME_TOO_LONG` + DL-P0-2 `E_FAKE_SOURCE_CONTENT`
+    //        + P1-3 `E_SOURCE_BUSY`（源正忙从 `E_SOURCE_UNAVAILABLE` 里分出来）
+    expect(ALL_ERROR_CODES).toHaveLength(34);
     for (const code of ALL_ERROR_CODES) {
       const text = ERROR_MESSAGES[code];
       expect(text, `${code} 缺少映射`).toBeTypeOf('string');

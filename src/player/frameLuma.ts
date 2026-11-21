@@ -16,6 +16,10 @@
  * - 返回 `null` = 这一轮拿不到（首帧未到、桥还在路上），下一轮再说；
  * - 抛 `FrameLumaUnavailableError` = 这条路永远拿不到（画布被跨域视频污染、原生
  *   不是 SurfaceView、老安装包没有该方法），调用方据此关掉功能而不是空转。
+ *
+ * P1-4 加了第三种口径：**这一代 surface 暂时截不到**（纯音频收起画面、离开播放页、
+ * 切集途中）。它既不是"下一轮再说"也不是"永远不通"——原生回执带 `surfaceInvalid`，
+ * 调用方停轮询，等原生 `surface` 事件说恢复了再采。`no-video` 同理按可恢复处理。
  */
 import { LUMA_COLS, LUMA_ROWS, type LumaField } from '@/player/danmakuContrast';
 import { ExoPlayer } from '@/native/exoPlayerPlugin';
@@ -170,8 +174,18 @@ export function videoFrameLumaSource(getStage: () => HTMLElement | null): FrameL
  * 原生只认 surface（= 内容区），并把它在播放器容器里的归一化矩形一起回传；JS 侧据此
  * 把格子铺到整块弹幕画布上（画布比容器略大时，多出来的一圈按黑边处理）。
  * `pending` 闸门保证不等桥的轮次不会排队堆积。
+ *
+ * P1-4：每轮回执都把**取样目标状态**（代次 + 这一代能不能截）交给 `onSurface`。
+ * 原生在 surface 无效时直接回执、不再排 PixelCopy，调用方据此停轮询而不是空转。
  */
-export function nativeFrameLumaSource(): FrameLumaSource {
+export interface SurfaceSampleState {
+  /** 取样目标代次：对不上就说明这张图属于上一代 surface */
+  generation: number;
+  /** 这一代 surface 能不能截（false = 停轮询，等原生 surface 事件说恢复） */
+  valid: boolean;
+}
+
+export function nativeFrameLumaSource(onSurface?: (state: SurfaceSampleState) => void): FrameLumaSource {
   let pending = false;
   const field: LumaField = { cells: new Uint8Array(LUMA_COLS * LUMA_ROWS), at: 0 };
   return async () => {
@@ -187,6 +201,12 @@ export function nativeFrameLumaSource(): FrameLumaSource {
       pending = false;
     }
     if (result.unsupported === true) throw new FrameLumaUnavailableError('unsupported', '原生 surface 不可截取');
+    // 老安装包没有这两个字段：generation 记 0、valid 视为真，行为与改动前一致
+    onSurface?.({
+      generation: typeof result.generation === 'number' ? result.generation : 0,
+      valid: result.surfaceInvalid !== true,
+    });
+    if (result.surfaceInvalid === true) return null;
     if (result.available !== true || !Array.isArray(result.cells)) return null;
     fitCells(result.cells, result.box ?? FULL_BOX, field.cells);
     field.at = performance.now();

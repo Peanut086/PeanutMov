@@ -8,7 +8,7 @@
  */
 import { requestWithHeaders } from './nativeHttp';
 import { episodeNumberOf, fetchInBatches, indexByNumber, parseDurationSec } from './segments';
-import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
+import { pickCandidate, titleMatchScore } from './titlePick';
 import type { DanmakuComment } from '@/types';
 import type { DanmakuProvider, DanmakuQuery } from './provider';
 
@@ -73,24 +73,18 @@ function yearOf(desc: string[] | undefined): number | null {
   return null;
 }
 
-/** 搜索结果里取归一化同名的首条正片；季号/年份能对上就优先 */
+/**
+ * 搜索结果选正片：片名精确度优先于年份（年份只在同分候选内优选）。
+ * 芒果的同名条目常是「正片（无标注）+ 第N季/精华版」，让年份越级就会串片。
+ */
 function pickVideoId(items: MgtvSearchItem[], query: DanmakuQuery): string | null {
-  const target = stripTitleNoise(query.title);
-  const exact = normalizeTitleForMatch(query.title);
-  if (target.length === 0) return null;
-  const candidates = items.filter((item) => {
-    const title = (item.title ?? '').replace(/<[^>]*>/g, '').trim();
-    return stripTitleNoise(title) === target || normalizeTitleForMatch(title) === exact;
-  });
-  if (candidates.length === 0) return null;
-  if (query.year !== null) {
-    const sameYear = candidates.find((item) => yearOf(item.desc) === query.year);
-    if (sameYear?.vid !== undefined) return String(sameYear.vid);
-    // 年份能校验却全都对不上，宁可无弹幕也不串到别的季
-    if (candidates.some((item) => yearOf(item.desc) !== null)) return null;
-  }
-  const first = candidates[0];
-  return first?.vid === undefined ? null : String(first.vid);
+  const candidates = items
+    .filter((item) => item.vid !== undefined)
+    .map((item) => {
+      const title = (item.title ?? '').replace(/<[^>]*>/g, '').trim();
+      return { vid: String(item.vid), score: titleMatchScore(title, query.title), year: yearOf(item.desc) };
+    });
+  return pickCandidate(candidates, query.year)?.vid ?? null;
 }
 
 /** `/b/615428/22328413.html` → 专辑号 cid（弹幕接口必填） */

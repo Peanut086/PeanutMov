@@ -153,6 +153,7 @@ describe('summarizeSearchFailures（OPT-04 失败源汇总）', () => {
 describe('SEARCH_FAILURE_LABELS（分类标签穷举）', () => {
   const KINDS: SourceFailureKind[] = [
     'source_dead',
+    'source_busy',
     'timeout',
     'protocol_unsupported',
     'rule_script',
@@ -163,6 +164,7 @@ describe('SEARCH_FAILURE_LABELS（分类标签穷举）', () => {
     'spider_mismatch',
     'jar_conflict',
     'auth',
+    'netdisk_login',
     'rate_limited',
     'quota_exhausted',
     'no_play_url',
@@ -170,7 +172,9 @@ describe('SEARCH_FAILURE_LABELS（分类标签穷举）', () => {
     'unknown',
   ];
 
-  it('16 类失败原因都有非空标签', () => {
+  // P1-3 加 source_busy 后这里是 18 项；`SEARCH_FAILURE_LABELS` 是 Record<SourceFailureKind, string>，
+  // 少一类会先编译失败，本条只钉「每类都有非空标签」和「没有多余键」。
+  it('18 类失败原因都有非空标签', () => {
     for (const kind of KINDS) {
       expect(SEARCH_FAILURE_LABELS[kind].trim().length).toBeGreaterThan(0);
     }

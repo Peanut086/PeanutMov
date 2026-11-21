@@ -61,4 +61,24 @@ describe('URL 工具（AC-05 / AC-40）', () => {
       'https://a.com/x?token=***&api_key=***&id=1',
     );
   });
+
+  /**
+   * P1-5：单/双字母签名键（`?s=` 夸克直链签名、`?do=` 网盘代理口令）。
+   * 真机 39 处 `?s=` 里 35 处是采集站搜索词、4 处才是签名——只按形状决定打不打，
+   * 无差别盖掉会把「哪个词发到哪个源」这条线索废掉。口径与原生 `LogRedactor` 一致。
+   */
+  it('短签名键只在长成签名样子时打码', () => {
+    expect(redactUrl('https://a.com/d.m3u8?s=ZEOp28Xq1i79ab34%2F&t=1763000000')).toBe(
+      'https://a.com/d.m3u8?s=***&t=1763000000',
+    );
+    expect(redactUrl('https://a.com/api.php/provide/vod/?ac=detail&s=剑来')).toBe(
+      'https://a.com/api.php/provide/vod/?ac=detail&s=剑来',
+    );
+    expect(redactUrl('https://a.com/x?s=abc12')).toBe('https://a.com/x?s=abc12');
+    expect(redactUrl('https://a.com/proxy?do=YWJjZGVmZ2hpamsxMjM0')).toBe(
+      'https://a.com/proxy?do=***',
+    );
+    // 幂等：已打码的再跑一遍不能变形
+    expect(redactUrl('https://a.com/d.m3u8?s=***&t=1')).toBe('https://a.com/d.m3u8?s=***&t=1');
+  });
 });

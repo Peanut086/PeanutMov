@@ -481,6 +481,7 @@ export function titleDedupKey(title: string, year: number | null): string {
 
 export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
   source_dead: '源站已失效',
+  source_busy: '源正忙',
   timeout: '解析超时',
   protocol_unsupported: '格式不支持',
   rule_script: '规则脚本异常',
@@ -491,6 +492,7 @@ export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
   spider_mismatch: '爬虫类缺失',
   jar_conflict: 'jar 依赖冲突',
   auth: '需要登录',
+  netdisk_login: '网盘未登录',
   rate_limited: '被限流',
   quota_exhausted: '接口额度用尽',
   no_play_url: '线路无播放地址',

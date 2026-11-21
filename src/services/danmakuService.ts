@@ -17,19 +17,32 @@ import { iqiyiProvider } from '@/services/danmaku/iqiyi';
 import { youkuProvider } from '@/services/danmaku/youku';
 import { leshiProvider } from '@/services/danmaku/leshi';
 import { danmuApiProvider, dandanplayProvider, localXmlProvider, type DanmakuQuery, type DanmakuQueryScene } from '@/services/danmaku/provider';
-import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
+import { normalizeTitleForMatch, seasonOfTitle, stripTitleNoise } from '@/sources/douban/playMatch';
 import { decodeSubtitle } from '@/player/SrtConverter';
 import { logger } from '@/shared/logger';
-import { DANMAKU_MAX_PER_EPISODE } from '@/shared/constants';
+import { DANMAKU_MAX_PER_EPISODE, DANMAKU_MIN_COMMENTS } from '@/shared/constants';
 import type { DanmakuComment, DanmakuMatch } from '@/types';
 
-/** 匹配阈值：归一化片名相等才采用（宁缺毋滥，串片比没弹幕更糟） */
+/**
+ * 匹配阈值：归一化片名相等才采用（宁缺毋滥，串片比没弹幕更糟）。
+ *
+ * 除片名主体外还要校验季号——`stripTitleNoise` 会把「第N季/第N部」整段剥掉，
+ * 光靠它分不开「士兵突击」与「士兵突击 第2季」（后者是 2013 年的同名纪实节目，
+ * 与 2006 年的电视剧毫无关系）。查询片名不带季号、命中片名却带了第 2 季及以上，判为不匹配；
+ * 「第1季」是平台给单季剧的常见写法，与不带季号同义，不拦。
+ */
 function isTitleMatched(queryTitle: string, matchedTitle: string | null): boolean {
   if (matchedTitle === null) return true; // Provider 未回传匹配题名时不做二次校验
   const a = stripTitleNoise(queryTitle);
   const b = stripTitleNoise(matchedTitle);
-  if (a.length === 0 || b.length === 0) return normalizeTitleForMatch(queryTitle) === normalizeTitleForMatch(matchedTitle);
-  return a === b;
+  const sameTitle =
+    a.length === 0 || b.length === 0
+      ? normalizeTitleForMatch(queryTitle) === normalizeTitleForMatch(matchedTitle)
+      : a === b;
+  if (!sameTitle) return false;
+  if (seasonOfTitle(queryTitle) !== null) return true; // 查询自带季号，一致性已由查询侧表达
+  const matchedSeason = seasonOfTitle(matchedTitle);
+  return matchedSeason === null || matchedSeason <= 1;
 }
 
 /**
@@ -88,17 +101,34 @@ export const danmakuService = {
       if (!provider.available()) continue;
       try {
         const result = await provider.match(query);
-        if (result !== null && isTitleMatched(title, result.matchedTitle)) {
-          const match: DanmakuMatch = {
-            provider: provider.id,
-            matchedTitle: result.matchedTitle,
-            // 偏移随源保存，渲染时再叠加（缓存里存原始时间，换源/重进不必回写缓存）
-            offsetSec: result.offsetSec ?? 0,
-            comments: thinComments(result.comments),
-          };
-          await cacheRepo.putDanmaku(cacheKey, match);
-          return match;
+        if (result === null) continue;
+        if (!isTitleMatched(title, result.matchedTitle)) {
+          // 源自己按片名搜到了东西，但题名过不了校验：这类命中正是串片的形态，必须留下痕迹
+          logger.info(`弹幕源 ${provider.id} 题名不符（命中「${result.matchedTitle}」），回退下一级`);
+          continue;
         }
+        if (result.comments.length < DANMAKU_MIN_COMMENTS) {
+          // 整集只有零星几条通常是废弃条目/花絮残留，当作未命中继续回退
+          logger.debug(`弹幕源 ${provider.id} 仅 ${result.comments.length} 条，低于命中门槛，回退下一级`);
+          continue;
+        }
+        const match: DanmakuMatch = {
+          provider: provider.id,
+          matchedTitle: result.matchedTitle,
+          // 偏移随源保存，渲染时再叠加（缓存里存原始时间，换源/重进不必回写缓存）
+          offsetSec: result.offsetSec ?? 0,
+          comments: thinComments(result.comments),
+        };
+        await cacheRepo.putDanmaku(cacheKey, match);
+        // 命中留痕：事后只能从画面内容反推「弹幕对不上」，有源 + 题名 + 偏移 + 条数才查得动
+        logger.info('弹幕命中', {
+          provider: provider.id,
+          matchedTitle: match.matchedTitle,
+          episode,
+          count: match.comments.length,
+          offsetSec: match.offsetSec,
+        });
+        return match;
       } catch (e) {
         logger.debug(`弹幕源 ${provider.id} 匹配失败，回退下一级`, e);
       }

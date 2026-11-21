@@ -10,8 +10,16 @@
  * 进度：ProgressReporter 每 5s / 暂停 / 切页 / 结束写回 historyStore
  * 自动连播：ended + autoPlayNext → 3s 倒计时 → nextEpisode
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import type {
   AppErrorShape,
@@ -22,80 +30,87 @@ import type {
   PlayerSettings,
   ResizeMode,
   SubtitleSettings,
-} from '@/types';
-import type { PlayerLoadOptions } from '@/player/types';
-import { emptyEmbeddedTracks, type EmbeddedTrackState } from '@/player/PlayerController';
-import { shouldIgnoreShortcut } from '@/player/shortcutGuard';
-import { formatClock } from '@/shared/time';
-import { toErrorShape, isCanceled } from '@/shared/errors';
-import { logger } from '@/shared/logger';
-import { guidanceOf, magnetUrlOf } from '@/shared/sourceFailure';
-import { IMG_W_BLUR, sizedImage } from '@/shared/imageSize';
+} from "@/types";
+import type { DrawerTab, PlayerLoadOptions } from "@/player/types";
+import {
+  emptyEmbeddedTracks,
+  type EmbeddedTrackState,
+} from "@/player/PlayerController";
+import { shouldIgnoreShortcut } from "@/player/shortcutGuard";
+import { formatPlayerClock } from "@/shared/time";
+import { toErrorShape, isCanceled } from "@/shared/errors";
+import { logger } from "@/shared/logger";
+import { guidanceOf, magnetUrlOf } from "@/shared/sourceFailure";
+import { IMG_W_BLUR, sizedImage } from "@/shared/imageSize";
 
-import PlayerSurface from '@/components/player/PlayerSurface.vue';
-import PlayerControls from '@/components/player/PlayerControls.vue';
-import GestureLayer from '@/components/player/GestureLayer.vue';
-import GestureGuide from '@/components/player/GestureGuide.vue';
-import GestureHelpOverlay from '@/components/player/GestureHelpOverlay.vue';
-import PlayerHud from '@/components/player/PlayerHud.vue';
-import SpeedSheet from '@/components/player/SpeedSheet.vue';
-import SubtitleSheet from '@/components/player/SubtitleSheet.vue';
-import SubtitleTrackMenu from '@/components/player/SubtitleTrackMenu.vue';
-import AudioTrackMenu from '@/components/player/AudioTrackMenu.vue';
-import QualitySheet from '@/components/player/QualitySheet.vue';
-import DisplayModeSheet from '@/components/player/DisplayModeSheet.vue';
-import SkipIntroPrompt from '@/components/player/SkipIntroPrompt.vue';
-import SkipMarkSheet from '@/components/player/SkipMarkSheet.vue';
-import SleepTimerSheet from '@/components/player/SleepTimerSheet.vue';
-import PlayerErrorPanel from '@/components/player/PlayerErrorPanel.vue';
-import PlayerScreenLock from '@/components/player/PlayerScreenLock.vue';
-import NextEpisodePrompt from '@/components/player/NextEpisodePrompt.vue';
-import BottomSheet from '@/components/common/BottomSheet.vue';
-import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
-import PosterImage from '@/components/common/PosterImage.vue';
-import EpisodeList from '@/components/media/EpisodeList.vue';
-import LineSelector from '@/components/media/LineSelector.vue';
-import IconDownload from '@/components/icons/IconDownload.vue';
-import IconHeart from '@/components/icons/IconHeart.vue';
-import IconCast from '@/components/icons/IconCast.vue';
-import { useDownloadStore } from '@/stores/downloadStore';
-import { useFavoriteStore } from '@/stores/favoriteStore';
-import { useHistoryStore } from '@/stores/historyStore';
-import { useLibraryStore } from '@/stores/libraryStore';
-import { useSettingsStore } from '@/stores/settingsStore';
-import { useSourceStore } from '@/stores/sourceStore';
-import { castService } from '@/services/castService';
-import { lineHealthService, lineKey } from '@/services/lineHealthService';
-import { rankLines } from '@/services/lineRanking';
-import { skipMarkService } from '@/services/skipMarkService';
-import { useBackButton } from '@/composables/useBackButton';
-import { useDebounce } from '@/composables/useDebounce';
-import { usePlayerController } from '@/composables/usePlayerController';
-import { useSeekThumbnails } from '@/composables/useSeekThumbnails';
-import { useSkipIntro } from '@/composables/useSkipIntro';
-import { useDanmakuPick } from '@/composables/useDanmakuPick';
-import { useDanmakuContrast } from '@/composables/useDanmakuContrast';
-import { prefersReducedMotion } from '@/composables/useSpring';
-import type { AmbilightBlockReason } from '@/composables/useAmbilight';
+import PlayerSurface from "@/components/player/PlayerSurface.vue";
+import PlayerControls from "@/components/player/PlayerControls.vue";
+import PlayerDrawer from "@/components/player/PlayerDrawer.vue";
+import GestureLayer from "@/components/player/GestureLayer.vue";
+import GestureGuide from "@/components/player/GestureGuide.vue";
+import GestureHelpOverlay from "@/components/player/GestureHelpOverlay.vue";
+import PlayerHud from "@/components/player/PlayerHud.vue";
+import SpeedSheet from "@/components/player/SpeedSheet.vue";
+import SubtitleSheet from "@/components/player/SubtitleSheet.vue";
+import SubtitleTrackMenu from "@/components/player/SubtitleTrackMenu.vue";
+import AudioTrackMenu from "@/components/player/AudioTrackMenu.vue";
+import QualitySheet from "@/components/player/QualitySheet.vue";
+import DisplayModeSheet from "@/components/player/DisplayModeSheet.vue";
+import SkipMarkSheet from "@/components/player/SkipMarkSheet.vue";
+import SleepTimerSheet from "@/components/player/SleepTimerSheet.vue";
+import PlayerErrorPanel from "@/components/player/PlayerErrorPanel.vue";
+import PlayerScreenLock from "@/components/player/PlayerScreenLock.vue";
+import NextEpisodePrompt from "@/components/player/NextEpisodePrompt.vue";
+import BottomSheet from "@/components/common/BottomSheet.vue";
+import ToggleSwitch from "@/components/common/ToggleSwitch.vue";
+import PosterImage from "@/components/common/PosterImage.vue";
+import EpisodeList from "@/components/media/EpisodeList.vue";
+import LineSelector from "@/components/media/LineSelector.vue";
+import { useDownloadStore } from "@/stores/downloadStore";
+import { useFavoriteStore } from "@/stores/favoriteStore";
+import { useHistoryStore } from "@/stores/historyStore";
+import { useLibraryStore } from "@/stores/libraryStore";
+import { useSettingsStore } from "@/stores/settingsStore";
+import { useSourceStore } from "@/stores/sourceStore";
+import { castService } from "@/services/castService";
+import { lineHealthService, lineKey } from "@/services/lineHealthService";
+import { rankLines } from "@/services/lineRanking";
+import { skipMarkService } from "@/services/skipMarkService";
+import { useBackButton } from "@/composables/useBackButton";
+import { useDebounce } from "@/composables/useDebounce";
+import { usePlayerController } from "@/composables/usePlayerController";
+import { useSeekThumbnails } from "@/composables/useSeekThumbnails";
+import { useSkipIntro } from "@/composables/useSkipIntro";
+import { useDanmakuPick } from "@/composables/useDanmakuPick";
+import { useDanmakuContrast } from "@/composables/useDanmakuContrast";
+import { prefersReducedMotion } from "@/composables/useSpring";
+import type { AmbilightBlockReason } from "@/composables/useAmbilight";
 import {
   findEpisodeOwnerLineId,
   offlineEpisodeMessage,
   resolvePlaybackEpisode,
   resolveTargetEpisode,
-} from '@/player/episodeFallback';
-import { DanmakuOverlay } from '@/player/DanmakuOverlay';
-import type { GestureIntent } from '@/player/GestureRecognizer';
-import { canShowGestureHelp, markGestureHelpShown } from '@/player/gestureHelpPolicy';
-import { danmakuService } from '@/services/danmakuService';
-import DanmakuSettingsSheet from '@/components/player/DanmakuSettingsSheet.vue';
-import DanmakuStylePanel from '@/components/player/DanmakuStylePanel.vue';
-import DanmakuActions from '@/components/player/DanmakuActions.vue';
-import { useToast } from '@/composables/useToast';
-import { useScopedPalette } from '@/composables/useScopedPalette';
-import { finishSharedCover, rewindSharedCover } from '@/composables/useSharedElement';
-import { useUiStore } from '@/stores/uiStore';
-import { QUALITY_AUTO, VOLUME_STEP } from '@/player/constants';
-import { BRIGHTNESS_MAX } from '@/player/brightness';
+} from "@/player/episodeFallback";
+import { DanmakuOverlay } from "@/player/DanmakuOverlay";
+import type { GestureIntent } from "@/player/GestureRecognizer";
+import {
+  canShowGestureHelp,
+  markGestureHelpShown,
+} from "@/player/gestureHelpPolicy";
+import { danmakuService } from "@/services/danmakuService";
+import DanmakuSettingsSheet from "@/components/player/DanmakuSettingsSheet.vue";
+import DanmakuStylePanel from "@/components/player/DanmakuStylePanel.vue";
+import DanmakuActions from "@/components/player/DanmakuActions.vue";
+import { useToast } from "@/composables/useToast";
+import { useScopedPalette } from "@/composables/useScopedPalette";
+import {
+  finishSharedCover,
+  rewindSharedCover,
+} from "@/composables/useSharedElement";
+import { useUiStore } from "@/stores/uiStore";
+import { QUALITY_AUTO } from "@/player/constants";
+import { BRIGHTNESS_MAX } from "@/player/brightness";
+import { WHEEL_VOLUME_STEP, resolveKeyAction } from "@/player/keyboardActions";
 import {
   activeFailoverRound,
   armFailoverNavigation,
@@ -105,28 +120,41 @@ import {
   hasPendingFailoverNavigation,
   type FailoverAnchor,
   type FailoverRound,
-} from '@/player/failoverSession';
-import { parseSeasonNumber } from '@/sources/mapping/TitleNormalizer';
-import { localProxyUrl } from '@/native/localProxy';
-import { pipService } from '@/native/pipService';
-import { describeMediaVerify, describeTsScan, isMediaToolAvailable, scanTsFile, verifyRemuxedMedia } from '@/native/mediaToolPlugin';
-import { onAppStateChange } from '@/native/appLifecycle';
-import { libraryService } from '@/services/libraryService';
-import { isSourceBlocked } from '@/services/sourceBlockState';
-import { notePlayback, peekBlackbox, type BlackboxSnapshot } from '@/services/blackboxService';
-import { buildShareText } from '@/services/shareCodeService';
-import { sourceService } from '@/services/sourceService';
-import { downloadService, selectCompletedTask } from '@/services/downloadService';
-import { pickPlayCandidates } from '@/sources/douban/playMatch';
-import { healthService } from '@/services/healthService';
-import { appEvents } from '@/services/events';
-import PlayLoadingBar from '@/components/player/PlayLoadingBar.vue';
-import BingeCelebration from '@/components/player/BingeCelebration.vue';
-import { useAchievementStore } from '@/stores/achievementStore';
-import { useHaptic } from '@/composables/useHaptic';
-import { playDing } from '@/services/sfxService';
+} from "@/player/failoverSession";
+import { parseSeasonNumber } from "@/sources/mapping/TitleNormalizer";
+import { localProxyUrl } from "@/native/localProxy";
+import { pipService } from "@/native/pipService";
+import {
+  describeMediaVerify,
+  describeTsScan,
+  isMediaToolAvailable,
+  scanTsFile,
+  verifyRemuxedMedia,
+} from "@/native/mediaToolPlugin";
+import { onAppStateChange } from "@/native/appLifecycle";
+import { libraryService } from "@/services/libraryService";
+import { isSourceBlocked } from "@/services/sourceBlockState";
+import {
+  notePlayback,
+  peekBlackbox,
+  type BlackboxSnapshot,
+} from "@/services/blackboxService";
+import { buildShareText } from "@/services/shareCodeService";
+import { sourceService } from "@/services/sourceService";
+import {
+  downloadService,
+  selectCompletedTask,
+} from "@/services/downloadService";
+import { pickPlayCandidates } from "@/sources/douban/playMatch";
+import { healthService } from "@/services/healthService";
+import { appEvents } from "@/services/events";
+import PlayLoadingBar from "@/components/player/PlayLoadingBar.vue";
+import BingeCelebration from "@/components/player/BingeCelebration.vue";
+import { useAchievementStore } from "@/stores/achievementStore";
+import { useHaptic } from "@/composables/useHaptic";
+import { playDing } from "@/services/sfxService";
 // P3-3：换线路重复下载校验（与详情页同一个闸门）
-import { useDownloadGuards } from '@/composables/useDownloadGuards';
+import { useDownloadGuards } from "@/composables/useDownloadGuards";
 
 const route = useRoute();
 const router = useRouter();
@@ -143,25 +171,29 @@ const guards = useDownloadGuards();
 const achievements = useAchievementStore();
 const { haptic } = useHaptic();
 
-const mediaId = computed(() => (typeof route.params.mediaId === 'string' ? route.params.mediaId : ''));
-const episodeIdParam = computed(() =>
-  typeof route.params.episodeId === 'string' ? route.params.episodeId : null,
+const mediaId = computed(() =>
+  typeof route.params.mediaId === "string" ? route.params.mediaId : "",
 );
-const lineIdParam = computed(() => (typeof route.query.lineId === 'string' ? route.query.lineId : null));
-const restart = computed(() => route.query.restart === '1');
+const episodeIdParam = computed(() =>
+  typeof route.params.episodeId === "string" ? route.params.episodeId : null,
+);
+const lineIdParam = computed(() =>
+  typeof route.query.lineId === "string" ? route.query.lineId : null,
+);
+const restart = computed(() => route.query.restart === "1");
 /**
  * 口令深链参数：`?ep=<集号>` 直达某集、`?t=<秒>` 指定起播点。
  * 二者只在**进入播放页的首帧**生效（消费后从 URL 移除，见 consumeDeepLinkParams），
  * 后续换源/切集不应被口令残留值反复劫持。
  */
 const epParam = computed(() => {
-  const raw = typeof route.query.ep === 'string' ? route.query.ep : null;
+  const raw = typeof route.query.ep === "string" ? route.query.ep : null;
   const n = raw !== null ? Number.parseInt(raw, 10) : Number.NaN;
   return Number.isFinite(n) && n >= 1 ? n : null;
 });
 const tParamSec = computed(() => {
-  const raw = typeof route.query.t === 'string' ? route.query.t : null;
-  const n = raw !== null ? Number.parseFloat(raw ?? '') : Number.NaN;
+  const raw = typeof route.query.t === "string" ? route.query.t : null;
+  const n = raw !== null ? Number.parseFloat(raw ?? "") : Number.NaN;
   return Number.isFinite(n) && n >= 0 ? n : null;
 });
 
@@ -172,7 +204,10 @@ const tParamSec = computed(() => {
  * 标题、选集高亮、片头标记与进度写回都必须以这里为准，否则会把第 2 集记成第 1 集。
  * null = 当前播放内容来自在线解析。
  */
-const localIdentity = ref<{ episodeId: string; episodeNumber: number | null } | null>(null);
+const localIdentity = ref<{
+  episodeId: string;
+  episodeNumber: number | null;
+} | null>(null);
 
 /**
  * BB-01 黑匣子恢复点：进入播放页时读一次，为首帧提供「集号锚 + 线路 + 倍速」。
@@ -197,27 +232,30 @@ const pageLoading = ref(true);
  * - 缓存已清理：media 缺失但源存在 → 提示需要联网或内容已下线
  * - 内容下线：源存在但 adapter 报 E_NOT_FOUND → 提示内容已从源中移除
  */
-const detailErrorKind = computed<'source-removed' | 'cache-cleared' | 'content-gone' | null>(() => {
-  if (library.detailState !== 'error' || !library.error) return null;
+const detailErrorKind = computed<
+  "source-removed" | "cache-cleared" | "content-gone" | null
+>(() => {
+  if (library.detailState !== "error" || !library.error) return null;
   const code = library.error.code;
-  if (code !== 'E_NOT_FOUND' && code !== 'E_SOURCE_UNAVAILABLE') return null;
+  if (code !== "E_NOT_FOUND" && code !== "E_SOURCE_UNAVAILABLE") return null;
 
   // 从历史记录中查找该 mediaId 对应的 sourceId
   const historyRecord = history.items.find((r) => r.mediaId === mediaId.value);
-  if (!historyRecord) return 'content-gone'; // 无历史记录 → 内容下线
+  if (!historyRecord) return "content-gone"; // 无历史记录 → 内容下线
 
   const source = sources.sources.find((s) => s.id === historyRecord.sourceId);
-  if (!source) return 'source-removed'; // 源不存在 → 源已移除
+  if (!source) return "source-removed"; // 源不存在 → 源已移除
 
-  return 'cache-cleared'; // 源存在但 media 缺失 → 缓存已清理
+  return "cache-cleared"; // 源存在但 media 缺失 → 缓存已清理
 });
 
 /** REV-24：详情失败时的上下文文案（覆盖全局 E_NOT_FOUND 的 "资源不存在(404)"） */
 const detailErrorMessage = computed(() => {
   const kind = detailErrorKind.value;
-  if (kind === 'source-removed') return '该源已被移除，无法继续播放';
-  if (kind === 'cache-cleared') return '本地缓存已清理，恢复失败（需要联网或内容已下线）';
-  if (kind === 'content-gone') return '该内容已从源中下线';
+  if (kind === "source-removed") return "该源已被移除，无法继续播放";
+  if (kind === "cache-cleared")
+    return "本地缓存已清理，恢复失败（需要联网或内容已下线）";
+  if (kind === "content-gone") return "该内容已从源中下线";
   return loadError.value;
 });
 
@@ -225,13 +263,16 @@ const detailErrorMessage = computed(() => {
 const fallbackTitle = computed(() => {
   if (item.value?.title) return item.value.title;
   const record = history.items.find((r) => r.mediaId === mediaId.value);
-  return record?.title ?? '播放';
+  return record?.title ?? "播放";
 });
 
 const item = computed(() => library.detail?.item ?? null);
 /** 染色作用域根节点：与详情页共用同一份取色缓存 */
 const rootRef = ref<HTMLElement | null>(null);
-useScopedPalette(rootRef, computed(() => item.value?.posterUrl ?? null));
+useScopedPalette(
+  rootRef,
+  computed(() => item.value?.posterUrl ?? null),
+);
 const lines = computed(() => library.detail?.lines ?? []);
 const lineId = ref<string | null>(null);
 
@@ -269,16 +310,21 @@ const currentLineId = computed(() => {
   if (lineIdParam.value) return lineIdParam.value;
   // BB-01：口令/黑匣子直达（路由没带集 id）时按上次实际在用的线路起播
   const anchorLine = blackboxAnchor.value?.lineId;
-  if (anchorLine && lines.value.some((line) => line.id === anchorLine)) return anchorLine;
+  if (anchorLine && lines.value.some((line) => line.id === anchorLine))
+    return anchorLine;
   return lines.value[0]?.id ?? null;
 });
-const currentLine = computed(() => lines.value.find((l) => l.id === currentLineId.value) ?? null);
+const currentLine = computed(
+  () => lines.value.find((l) => l.id === currentLineId.value) ?? null,
+);
 
 const episodes = computed<Episode[]>(() => {
   const det = library.detail;
   if (!det) return [];
   const id = currentLineId.value;
-  const filtered = id ? det.episodes.filter((ep) => ep.lineId === id) : det.episodes;
+  const filtered = id
+    ? det.episodes.filter((ep) => ep.lineId === id)
+    : det.episodes;
   return filtered.sort((a, b) => a.number - b.number);
 });
 
@@ -299,14 +345,18 @@ const episodeResolution = computed(() =>
       episodeIdParam.value === null
         ? null
         : (history.items.find(
-            (r) => r.mediaId === mediaId.value && r.episodeId === episodeIdParam.value,
+            (r) =>
+              r.mediaId === mediaId.value &&
+              r.episodeId === episodeIdParam.value,
           )?.episodeNumber ?? null),
     anchorNumber: blackboxAnchor.value?.episodeNumber ?? null,
     offlineNumber: offlineEpisodeNumber.value,
   }),
 );
 
-const currentEpisode = computed<Episode | null>(() => episodeResolution.value.episode);
+const currentEpisode = computed<Episode | null>(
+  () => episodeResolution.value.episode,
+);
 
 /** 路由明确指向某一集，但当前线路里没有任何口径能定位到它 */
 const targetEpisodeMissing = computed(() => episodeResolution.value.missing);
@@ -320,7 +370,9 @@ const targetEpisodeNumber = computed<number | null>(() => {
   if (ep) return ep.number;
   const wanted = episodeIdParam.value;
   if (wanted !== null) {
-    const n = history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === wanted)?.episodeNumber;
+    const n = history.items.find(
+      (r) => r.mediaId === mediaId.value && r.episodeId === wanted,
+    )?.episodeNumber;
     if (n !== undefined && n !== null) return n;
   }
   return blackboxAnchor.value?.episodeNumber ?? null;
@@ -335,7 +387,9 @@ const targetEpisodeNumber = computed<number | null>(() => {
 const routeEpisodeNumber = computed<number | null>(() => {
   const wanted = episodeIdParam.value;
   if (wanted !== null) {
-    const byId = library.detail?.episodes.find((ep) => ep.id === wanted)?.number;
+    const byId = library.detail?.episodes.find(
+      (ep) => ep.id === wanted,
+    )?.number;
     if (byId !== undefined && byId !== null) return byId;
     const byHistory = history.items.find(
       (r) => r.mediaId === mediaId.value && r.episodeId === wanted,
@@ -346,7 +400,10 @@ const routeEpisodeNumber = computed<number | null>(() => {
 });
 
 /** 正在播放的真实身份：本地优先起播以本地任务为准，在线解析以解析出的当前集为准。 */
-const playingIdentity = computed<{ episodeId: string; episodeNumber: number | null } | null>(() => {
+const playingIdentity = computed<{
+  episodeId: string;
+  episodeNumber: number | null;
+} | null>(() => {
   const local = localIdentity.value;
   if (local) return local;
   const ep = currentEpisode.value;
@@ -356,8 +413,15 @@ const playingIdentity = computed<{ episodeId: string; episodeNumber: number | nu
 /** 批次1：线路健康状态 Map（供 LineSelector 显示状态点） */
 const lineStatuses = computed(() => {
   const it = item.value;
-  if (!it) return new Map<string, import('@/services/lineHealthService').LineHealthStatus>();
-  const map = new Map<string, import('@/services/lineHealthService').LineHealthStatus>();
+  if (!it)
+    return new Map<
+      string,
+      import("@/services/lineHealthService").LineHealthStatus
+    >();
+  const map = new Map<
+    string,
+    import("@/services/lineHealthService").LineHealthStatus
+  >();
   for (const line of lines.value) {
     const key = lineKey(it.sourceId, it.sourceItemId, line.name);
     map.set(line.id, lineHealthService.statusOf(key));
@@ -372,8 +436,11 @@ const lineLatencies = computed(() => {
   if (!it) return map;
   for (const line of lines.value) {
     const key = lineKey(it.sourceId, it.sourceItemId, line.name);
-    const known = lineHealthService.statusOf(key) !== 'unknown';
-    map.set(line.id, known ? (lineHealthService.entryOf(key)?.lastResolveMs ?? null) : null);
+    const known = lineHealthService.statusOf(key) !== "unknown";
+    map.set(
+      line.id,
+      known ? (lineHealthService.entryOf(key)?.lastResolveMs ?? null) : null,
+    );
   }
   return map;
 });
@@ -435,42 +502,59 @@ const PLAYER_FALLBACK: PlayerSettings = {
   seekStepSec: 10,
   longPressRate: 2,
   subtitle: {
-    size: 'medium',
-    color: 'white',
-    background: 'black',
+    size: "medium",
+    color: "white",
+    background: "black",
     offsetSec: 0,
     preferredLang: null,
   },
   lastVolume: 100,
-  resizeMode: 'contain',
+  resizeMode: "contain",
   autoSkipIntro: true,
   ambilight: true,
   ambilightIntensity: 85,
 };
-const GESTURE_FALLBACK: GestureSettings = { sensitivity: 'medium', seekMaxSec: 90 };
+const GESTURE_FALLBACK: GestureSettings = {
+  sensitivity: "medium",
+  seekMaxSec: 90,
+};
 
-const playerSettings = computed<PlayerSettings>(() => settings.player ?? PLAYER_FALLBACK);
-const gestureSettings = computed<GestureSettings>(() => settings.gesture ?? GESTURE_FALLBACK);
+const playerSettings = computed<PlayerSettings>(
+  () => settings.player ?? PLAYER_FALLBACK,
+);
+const gestureSettings = computed<GestureSettings>(
+  () => settings.gesture ?? GESTURE_FALLBACK,
+);
 
 /** v1.8/CHG-25：实验性原生引擎（ExoPlayer）开关——注入 PlayerLoadOptions，控制器不读设置 */
-const nativeEngineEnabled = computed(() => settings.settings?.experimentalNativePlayer === true);
+const nativeEngineEnabled = computed(
+  () => settings.settings?.experimentalNativePlayer === true,
+);
 /** 黑屏兜底：本次会话强制原生引擎（不改用户设置，仅本页有效） */
 const forceNativeEngine = ref(false);
 /** 黑屏提示是否已被用户关掉（换线路/继续听声音） */
 const noVideoDismissed = ref(false);
 
-const defaultRate = computed<PlaybackRate>(() => playerSettings.value.defaultRate ?? 1);
+const defaultRate = computed<PlaybackRate>(
+  () => playerSettings.value.defaultRate ?? 1,
+);
 const autoPlayNext = computed(() => playerSettings.value.autoPlayNext);
-const longPressRate = computed<PlaybackRate>(() => (playerSettings.value.longPressRate ?? 2) as PlaybackRate);
+const longPressRate = computed<PlaybackRate>(
+  () => (playerSettings.value.longPressRate ?? 2) as PlaybackRate,
+);
 const subtitleSettings = computed<SubtitleSettings>(
   () => playerSettings.value.subtitle ?? PLAYER_FALLBACK.subtitle,
 );
-const currentResizeMode = computed(() => playerSettings.value.resizeMode ?? 'contain');
+const currentResizeMode = computed(
+  () => playerSettings.value.resizeMode ?? "contain",
+);
 /** C-09 氛围光：减少动效下整层不挂载（不是"变慢一点"，是不做持续变化的效果） */
 const ambilightEnabled = computed(
   () => playerSettings.value.ambilight !== false && !prefersReducedMotion(),
 );
-const ambilightIntensity = computed(() => playerSettings.value.ambilightIntensity ?? 85);
+const ambilightIntensity = computed(
+  () => playerSettings.value.ambilightIntensity ?? 85,
+);
 
 const stageRef = ref<HTMLElement | null>(null);
 
@@ -488,36 +572,38 @@ const playerCtl = usePlayerController({
   // 用动态 import 延迟到首次进入全屏：避免把 Capacitor status-bar 插件拉进首屏模块图
   // （会让路由级测试的模块加载变慢）。
   setStatusBarVisible: (visible) =>
-    import('@/services/deviceService')
+    import("@/services/deviceService")
       .then((m) => m.deviceService.setStatusBarVisible(visible))
       .catch(() => undefined),
   // 横屏全屏切 edge-to-edge：消除刘海安全边内缩露出的白色竖条；退出恢复系统栏
   setImmersive: (on) =>
-    import('@/native/playerUi')
+    import("@/native/playerUi")
       .then((m) => m.setPlayerImmersive(on))
       .catch(() => undefined),
   // AC-53：播放时保持屏幕常亮；Web 下 no-op。
   // 带本页令牌：路由切换时新页先挂、旧页后卸，旧页的释放不该清掉新页的锁。
   // 这里刻意不 catch：动态 import 失败要让上层控制器看见，它才会按 1s/3s/9s 补发。
   setKeepAwake: (on) =>
-    import('@/services/deviceService').then((m) => m.deviceService.keepAwake(on, keepAwakeOwner)),
+    import("@/services/deviceService").then((m) =>
+      m.deviceService.keepAwake(on, keepAwakeOwner),
+    ),
   // API-12 二期：亮度写窗口背光、音量写媒体流档位。
   // 原生能力缺失时这些方法返回 false/null，播放器整体退回「遮罩 + 播放器倍率」。
   levels: {
     setBrightness: (percent) =>
-      import('@/services/deviceService')
+      import("@/services/deviceService")
         .then((m) => m.deviceService.setBrightness(percent))
         .catch(() => false),
     releaseBrightness: () =>
-      import('@/services/deviceService')
+      import("@/services/deviceService")
         .then((m) => m.deviceService.releaseBrightness())
         .catch(() => undefined),
     setVolume: (percent) =>
-      import('@/services/deviceService')
+      import("@/services/deviceService")
         .then((m) => m.deviceService.setVolume(percent))
         .catch(() => null),
     readVolume: () =>
-      import('@/services/deviceService')
+      import("@/services/deviceService")
         .then((m) => m.deviceService.readVolume())
         .catch(() => null),
   },
@@ -602,6 +688,7 @@ const {
   cancelAutoNext,
   resumeFromBackground,
   pauseAutoHide,
+  nudgeControls,
   setControlsVisible,
 } = playerCtl;
 
@@ -656,7 +743,7 @@ function fireBinge(atEnded: boolean): void {
     bingeSuspendedNext = true;
   }
   bingeShow.value = true;
-  haptic('medium');
+  haptic("medium");
   playDing();
 }
 
@@ -687,8 +774,10 @@ watch(countdown, (val) => {
 function toggleBackgroundPlayback(): void {
   const next = !backgroundPlayback.value;
   setBackgroundPlayback(next);
-  settings.updateNonBlocking({ player: { ...playerSettings.value, backgroundPlayback: next } });
-  ui.toast(next ? '切后台将继续播放' : '切后台将自动暂停', 'info', 1500);
+  settings.updateNonBlocking({
+    player: { ...playerSettings.value, backgroundPlayback: next },
+  });
+  ui.toast(next ? "切后台将继续播放" : "切后台将自动暂停", "info", 1500);
 }
 
 /** B3：睡眠定时——分钟档按真实时间走，「播完本集」等自然结束 */
@@ -701,17 +790,17 @@ const {
 
 function armSleepMinutes(minutes: number): void {
   sleepTimer.setMinutes(minutes);
-  ui.toast(`${minutes} 分钟后自动暂停`, 'info', 1800);
+  ui.toast(`${minutes} 分钟后自动暂停`, "info", 1800);
 }
 
 function armSleepEpisode(): void {
   sleepTimer.setFinishEpisode();
-  ui.toast('本集播完后停止播放', 'info', 1800);
+  ui.toast("本集播完后停止播放", "info", 1800);
 }
 
 function cancelSleep(): void {
   sleepTimer.cancel();
-  ui.toast('已关闭睡眠定时', 'info', 1500);
+  ui.toast("已关闭睡眠定时", "info", 1500);
 }
 
 /* ---------- 面板 ---------- */
@@ -722,8 +811,21 @@ const subtitleTrackOpen = ref(false);
 const audioTrackOpen = ref(false);
 const qualityOpen = ref(false);
 const displayModeOpen = ref(false);
-const episodeOpen = ref(false);
-const moreOpen = ref(false);
+/**
+ * ⑤' 播放面板抽屉：选集 / 线路 / 音画 / 更多四页签共用一个容器，
+ * 取代原来四个各开各的 BottomSheet（关闭路径与遮罩只剩一份）。
+ */
+const drawerOpen = ref(false);
+const drawerTab = ref<DrawerTab>("ep");
+/** 同一页签再点一次即收起（顶栏 chip、底栏按钮与 fold 磁贴都走这里） */
+function openDrawer(tab: DrawerTab): void {
+  if (drawerOpen.value && drawerTab.value === tab) {
+    drawerOpen.value = false;
+    return;
+  }
+  drawerTab.value = tab;
+  drawerOpen.value = true;
+}
 const sleepOpen = ref(false);
 const pickerOpen = ref(false);
 const downloading = ref(false);
@@ -754,7 +856,17 @@ function closeGestureHelp(): void {
 
 /** P1-3：任一面板打开时暂停控制条自动隐藏 */
 watch(
-  () => [speedOpen.value, subtitleOpen.value, subtitleTrackOpen.value, audioTrackOpen.value, qualityOpen.value, displayModeOpen.value, episodeOpen.value, moreOpen.value, pickerOpen.value, gestureHelpVisible.value],
+  () => [
+    speedOpen.value,
+    subtitleOpen.value,
+    subtitleTrackOpen.value,
+    audioTrackOpen.value,
+    qualityOpen.value,
+    displayModeOpen.value,
+    drawerOpen.value,
+    pickerOpen.value,
+    gestureHelpVisible.value,
+  ],
   (states) => {
     if (states.some(Boolean)) {
       pauseAutoHide();
@@ -847,7 +959,9 @@ watch(
 
 const skipMarkOpen = ref(false);
 /** 片头/片尾标记按「正在播的这一集」存取；本地起播时不能被详情列表带偏 */
-const playingEpisodeId = computed(() => playingIdentity.value?.episodeId ?? episodeIdParam.value ?? '');
+const playingEpisodeId = computed(
+  () => playingIdentity.value?.episodeId ?? episodeIdParam.value ?? "",
+);
 
 const skipIntro = useSkipIntro({
   mediaId,
@@ -860,7 +974,6 @@ const skipIntro = useSkipIntro({
 // 嵌套 ref 在模板里不会自动解包，摊平成顶层绑定再喂给控件
 const skipMarks = skipIntro.marks;
 const skipZone = skipIntro.zone;
-const skipCountdown = skipIntro.countdown;
 const skipAuto = skipIntro.auto;
 
 /**
@@ -868,17 +981,24 @@ const skipAuto = skipIntro.auto;
  * 源站返回体里没有章节载体（TVBox/爬虫都没有），所以现阶段只吃手动标记；
  * 将来有源站数据时在这里合并优先级，手动标记仍然最可信赖。
  */
-async function onSkipMark(side: 'intro' | 'credits', sec: number): Promise<void> {
-  const label = side === 'intro' ? '片头结束于' : '片尾开始于';
+async function onSkipMark(
+  side: "intro" | "credits",
+  sec: number,
+): Promise<void> {
+  const label = side === "intro" ? "片头结束于" : "片尾开始于";
   const ok =
-    side === 'intro'
+    side === "intro"
       ? await skipMarkService.markIntroEnd(mediaId.value, sec, player.duration)
-      : await skipMarkService.markCreditsStart(mediaId.value, sec, player.duration);
-  if (ok) toast.success(`${label} ${formatClock(sec)}，整季生效`);
-  else toast.error('这个位置离片头/片尾太近，标了也不会跳');
+      : await skipMarkService.markCreditsStart(
+          mediaId.value,
+          sec,
+          player.duration,
+        );
+  if (ok) toast.success(`${label} ${formatPlayerClock(sec)}，整季生效`);
+  else toast.error("这个位置离片头/片尾太近，标了也不会跳");
 }
 
-async function onSkipClear(side: 'intro' | 'credits'): Promise<void> {
+async function onSkipClear(side: "intro" | "credits"): Promise<void> {
   await skipMarkService.clearSide(mediaId.value, side);
 }
 
@@ -889,7 +1009,7 @@ function onAutoSkipChange(value: boolean): void {
 }
 
 /** 线路切换进行中（防连点造成两次并发加载，REV-05） */
-const switchingLine = ref(false);/**
+const switchingLine = ref(false); /**
  * 「本地文件不可用」任务（AC-78 / REV-23）。
  *
  * `resolvePlay` 优先本地播放；若该集已有 `completed` 任务但解析结果仍是网络源，
@@ -944,9 +1064,11 @@ function armLocalStallRedownload(): void {
     localStallTaskId.value = null;
     return;
   }
-  const record = history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === ep.id);
+  const record = history.items.find(
+    (r) => r.mediaId === mediaId.value && r.episodeId === ep.id,
+  );
   const completed = downloads.tasks.filter(
-    (t) => t.mediaId === mediaId.value && t.status === 'completed',
+    (t) => t.mediaId === mediaId.value && t.status === "completed",
   );
   const task = selectCompletedTask(completed, {
     episodeId: ep.id,
@@ -971,7 +1093,7 @@ async function onRedownload(): Promise<void> {
     // 任务已回到 queued（blobKey=null），提示条随状态变化消失
     localMissingTaskId.value = null;
     localStallTaskId.value = null;
-    toast.success('已重新加入下载队列', 3000);
+    toast.success("已重新加入下载队列", 3000);
   } catch (e) {
     toast.error(toErrorShape(e).message);
   } finally {
@@ -980,33 +1102,44 @@ async function onRedownload(): Promise<void> {
 }
 
 /**
- * FIX-PLAY-C3：本地播放「文件自检」——对 .ts 产物做包级对齐扫描。
+ * FIX-PLAY-C3：本地播放「文件自检」——按容器分工具诊断本机产物。
  *
  * 入口放在播放页「更多」菜单而不是下载列表：已完成任务点卡片是直接起播，
  * 详情弹层根本到不了；而怀疑文件坏掉的人本来就站在播放页里。
+ *
+ * P2-2：转封装交付的 `.mp4` 也进来——它要的正是轨道/时长/定位这三项，
+ * 拿包级 TS 扫描去查它只会得到一句错的结论。
  */
-const localScan = ref<{ running: boolean; text: string; path: string } | null>(null);
+const localScan = ref<{ running: boolean; text: string; path: string } | null>(
+  null,
+);
 const canScanLocalFile = computed(() => {
   const pb = currentPlayback.value;
-  return Boolean(pb?.isLocal && pb.localPath?.toLowerCase().endsWith('.ts') && isMediaToolAvailable());
+  return Boolean(
+    pb?.isLocal &&
+    /\.(ts|mp4)$/i.test(pb.localPath ?? "") &&
+    isMediaToolAvailable(),
+  );
 });
+/** 容器决定用哪把尺子：`.ts` 这个后缀在 fMP4 线路上不代表里面是 TS */
+const localScanIsTs = computed(() => currentPlayback.value?.format === "ts");
 
 async function runLocalFileScan(): Promise<void> {
   const playback = currentPlayback.value;
   const path = playback?.localPath;
   if (!path || localScan.value?.running) return;
-  localScan.value = { running: true, text: '', path };
+  localScan.value = { running: true, text: "", path };
   try {
     /*
      * P0-4：自检工具跟着判定出来的容器走。`.ts` 这个名字在传输期与容器无关
      * （fMP4 线路的合并产物也叫 `.ts`），拿包级 TS 扫描去查一份 fMP4 只会得到
      * 「这个文件不是标准 TS 分片数据」这句错的结论。
      */
-    if (playback && playback.format !== 'ts') {
+    if (!localScanIsTs.value) {
       const verdict = await verifyRemuxedMedia(path);
       localScan.value = {
         running: false,
-        text: verdict ? describeMediaVerify(verdict) : '当前版本不支持文件自检',
+        text: verdict ? describeMediaVerify(verdict) : "当前版本不支持文件自检",
         path,
       };
       return;
@@ -1014,13 +1147,13 @@ async function runLocalFileScan(): Promise<void> {
     const result = await scanTsFile(path);
     localScan.value = {
       running: false,
-      text: result ? describeTsScan(result) : '当前版本不支持文件自检',
+      text: result ? describeTsScan(result) : "当前版本不支持文件自检",
       path,
     };
   } catch (e) {
     // 读文件/路径类失败是真实故障，不能伪装成结论
     localScan.value = null;
-    toast.error(toErrorShape(e).message || '文件自检失败');
+    toast.error(toErrorShape(e).message || "文件自检失败");
   }
 }
 
@@ -1034,14 +1167,14 @@ watch(currentPlayback, () => {
  * resolvePlay → preparing → connecting → buffering → done，按阶段权重推进 progress。
  * 同一阶段内按已耗时秒数做对数渐进，避免视觉卡死。
  */
-const loadingStageText = ref('正在加载…');
+const loadingStageText = ref("正在加载…");
 const loadingProgress = ref(0);
 const loadingElapsed = ref(0);
 let loadingStartTime = 0;
 let loadingRafId = 0;
 /** 当前所处阶段及其权重区间 [from, to] */
-type StageKey = 'resolving' | 'preparing' | 'connecting' | 'buffering' | 'done';
-let currentStage: StageKey = 'resolving';
+type StageKey = "resolving" | "preparing" | "connecting" | "buffering" | "done";
+let currentStage: StageKey = "resolving";
 const STAGE_RANGES: Record<StageKey, [number, number]> = {
   resolving: [0, 45],
   preparing: [45, 52],
@@ -1050,17 +1183,17 @@ const STAGE_RANGES: Record<StageKey, [number, number]> = {
   done: [95, 100],
 };
 const STAGE_TEXT: Record<StageKey, string> = {
-  resolving: '正在解析播放地址…',
-  preparing: '正在准备数据…',
-  connecting: '正在连接播放器…',
-  buffering: '正在缓冲首帧…',
-  done: '即将播放',
+  resolving: "正在解析播放地址…",
+  preparing: "正在准备数据…",
+  connecting: "正在连接播放器…",
+  buffering: "正在缓冲首帧…",
+  done: "即将播放",
 };
 
 function setStage(stage: StageKey, detail?: string): void {
   if (stage === currentStage && !detail) return;
   currentStage = stage;
-  if (stage === 'done') {
+  if (stage === "done") {
     loadingProgress.value = 100;
     loadingStageText.value = STAGE_TEXT.done;
     return;
@@ -1078,7 +1211,7 @@ function startLoadingProgress(): void {
   loadingStartTime = Date.now();
   loadingProgress.value = 0;
   loadingElapsed.value = 0;
-  currentStage = 'resolving';
+  currentStage = "resolving";
   loadingStageText.value = STAGE_TEXT.resolving;
   const tick = (): void => {
     const elapsedMs = Date.now() - loadingStartTime;
@@ -1086,13 +1219,13 @@ function startLoadingProgress(): void {
     const [from, to] = STAGE_RANGES[currentStage];
     const span = to - from;
     // 对数渐进：阶段内按 sqrt(elapsed/预算) 逼近上限，避免卡死感
-    const stageBudgetMs = currentStage === 'resolving' ? 10000 : 5000;
+    const stageBudgetMs = currentStage === "resolving" ? 10000 : 5000;
     const ratio = Math.min(1, Math.sqrt(elapsedMs / stageBudgetMs));
     const target = from + span * ratio * 0.9; // 留 10% 给事件驱动跳变
     if (target > loadingProgress.value) loadingProgress.value = target;
     // 6s 后升级文案（保留旧逻辑的"源响应较慢"提示）
-    if (elapsedMs > 6000 && currentStage === 'resolving') {
-      loadingStageText.value = '源响应较慢，仍在连接…';
+    if (elapsedMs > 6000 && currentStage === "resolving") {
+      loadingStageText.value = "源响应较慢，仍在连接…";
     }
     loadingRafId = requestAnimationFrame(tick);
   };
@@ -1107,9 +1240,9 @@ function cancelLoadingProgress(): void {
 }
 
 // 监听 play:stage 事件（来自 libraryService 重试上报等）
-const offPlayStage = appEvents.on('play:stage', (payload) => {
-  if (payload.stage === 'retrying') {
-    setStage('resolving', '首次连接失败，正在重试…');
+const offPlayStage = appEvents.on("play:stage", (payload) => {
+  if (payload.stage === "retrying") {
+    setStage("resolving", "首次连接失败，正在重试…");
     loadingProgress.value = 20;
     loadingStartTime = Date.now(); // 重置已耗时
   }
@@ -1120,7 +1253,9 @@ onBeforeUnmount(offPlayStage);
  * 直链带防盗链头时经本机回环代理注入（P1-6）。
  * HLS 由 hls.js 的 xhrSetup 注入头，不需要；代理失败沿用原地址（与旧行为一致）。
  */
-async function preparePlayback(playback: PlaybackSource): Promise<PlaybackSource> {
+async function preparePlayback(
+  playback: PlaybackSource,
+): Promise<PlaybackSource> {
   const proxied = await localProxyUrl(playback);
   return proxied ? { ...playback, url: proxied } : playback;
 }
@@ -1164,7 +1299,9 @@ async function loadLocalPlay(
     const prepared = await preparePlayback(playback);
     currentPlayback.value = prepared;
     // 从历史记录获取起播位置
-    const record = history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === episodeId);
+    const record = history.items.find(
+      (r) => r.mediaId === mediaId.value && r.episodeId === episodeId,
+    );
     let start = 0;
     if (record && !restart.value) {
       start = record.positionSec;
@@ -1175,9 +1312,9 @@ async function loadLocalPlay(
     // P0-3：与 resolveAndLoad 走同一个组合式 load——自动起播（await c.play()）
     // 与错误落点（player.error）都在那条链里，直连 controller.load 会两者都错过。
     await load({
-      mediaId: mediaId.value ?? 'local',
+      mediaId: mediaId.value ?? "local",
       episodeId,
-      lineId: 'local',
+      lineId: "local",
       title,
       posterUrl,
       playback: prepared,
@@ -1188,7 +1325,7 @@ async function loadLocalPlay(
     });
   } catch (e) {
     if (isCanceled(e)) return;
-    loadError.value = toErrorShape(e, 'E_NO_PLAY_URL').message;
+    loadError.value = toErrorShape(e, "E_NO_PLAY_URL").message;
   } finally {
     pageLoading.value = false;
     cancelLoadingProgress();
@@ -1204,9 +1341,11 @@ async function loadLocalPlay(
  * 由调用方回落到常规（网络）链路。
  */
 async function tryPlayLocalFirst(episodeId: string): Promise<boolean> {
-  const record = history.items.find((r) => r.mediaId === mediaId.value && r.episodeId === episodeId);
+  const record = history.items.find(
+    (r) => r.mediaId === mediaId.value && r.episodeId === episodeId,
+  );
   const completed = downloads.tasks.filter(
-    (t) => t.mediaId === mediaId.value && t.status === 'completed',
+    (t) => t.mediaId === mediaId.value && t.status === "completed",
   );
   // 与 resolvePlay 同一套匹配口径（P0-2）：宁可不起播，也不播成别的集
   const localTask = selectCompletedTask(completed, {
@@ -1240,19 +1379,19 @@ async function resolveAndLoad(): Promise<boolean> {
   const ep = currentEpisode.value;
   if (targetEpisodeMissing.value) {
     // P1-1：目标集在当前线路定位不到——不起播，把选择权交回用户
-    logger.warn('目标集在当前线路无法定位，已拦在起播前', {
+    logger.warn("目标集在当前线路无法定位，已拦在起播前", {
       mediaId: mediaId.value,
       episodeId: episodeIdParam.value,
       lineId: currentLineId.value,
       episodeCount: episodes.value.length,
     });
-    loadError.value = '要播的这一集在当前线路里已经找不到了';
+    loadError.value = "要播的这一集在当前线路里已经找不到了";
     loadErrorShape.value = null;
     pageLoading.value = false;
     return false;
   }
   if (!it || !ep) {
-    loadError.value = '找不到要播放的内容';
+    loadError.value = "找不到要播放的内容";
     pageLoading.value = false;
     return false;
   }
@@ -1263,18 +1402,22 @@ async function resolveAndLoad(): Promise<boolean> {
   startLoadingProgress();
   // P0-2：起播时刻即本轮预算的起算点；预算住在跨路由存活的会话里，重建不再归零
   noteFailoverLoad(
-    failoverAttemptKey(it?.sourceId ?? '', currentLineId.value, ep.id),
-    'resolveAndLoad',
+    failoverAttemptKey(it?.sourceId ?? "", currentLineId.value, ep.id),
+    "resolveAndLoad",
     userIntent,
   );
   const resolveStartTime = Date.now();
   try {
-    const playback = await library.resolvePlay(it.id, ep.id, currentLineId.value);
+    const playback = await library.resolvePlay(
+      it.id,
+      ep.id,
+      currentLineId.value,
+    );
     if (!pageAlive || epoch !== loadEpoch) return false;
-    setStage('preparing');
+    setStage("preparing");
     const prepared = await preparePlayback(playback);
     if (!pageAlive || epoch !== loadEpoch) return false;
-    setStage('connecting');
+    setStage("connecting");
     currentPlayback.value = prepared;
     const rec = history.progressOf(it.sourceId, it.id);
     let start = 0;
@@ -1283,7 +1426,8 @@ async function resolveAndLoad(): Promise<boolean> {
       if (tParamSec.value !== null) {
         start = tParamSec.value;
       } else if (rec && rec.episodeId === ep.id) {
-        const duration = rec.durationSec > 0 ? rec.durationSec : (ep.durationSec ?? 0);
+        const duration =
+          rec.durationSec > 0 ? rec.durationSec : (ep.durationSec ?? 0);
         const ratio = duration > 0 ? rec.positionSec / duration : 0;
         if (ratio > 0.05 && ratio < 0.95) start = rec.positionSec;
       }
@@ -1291,8 +1435,12 @@ async function resolveAndLoad(): Promise<boolean> {
       // 口径与 history 相同的首尾闸门；`?ep=` 深链带显式 t 之外的一切首轮起播都适用
       if (start === 0 && tParamSec.value === null) {
         const bb = blackboxAnchor.value;
-        if (bb && (bb.episodeNumber === null || bb.episodeNumber === ep.number)) {
-          const ratio = bb.durationSec > 0 ? bb.positionSec / bb.durationSec : 0;
+        if (
+          bb &&
+          (bb.episodeNumber === null || bb.episodeNumber === ep.number)
+        ) {
+          const ratio =
+            bb.durationSec > 0 ? bb.positionSec / bb.durationSec : 0;
           if (ratio > 0.05 && ratio < 0.95) start = bb.positionSec;
         }
       }
@@ -1322,8 +1470,12 @@ async function resolveAndLoad(): Promise<boolean> {
       preferNativeEngine: nativeEngineEnabled.value || forceNativeEngine.value,
       resolveEpisode: async (targetEpisodeId) => {
         const target = episodes.value.find((e) => e.id === targetEpisodeId);
-        if (!target) throw new Error('剧集不存在');
-        const nextPlayback = await library.resolvePlay(it.id, target.id, currentLineId.value);
+        if (!target) throw new Error("剧集不存在");
+        const nextPlayback = await library.resolvePlay(
+          it.id,
+          target.id,
+          currentLineId.value,
+        );
         const nextPrepared = await preparePlayback(nextPlayback);
         return {
           mediaId: it.id,
@@ -1336,14 +1488,15 @@ async function resolveAndLoad(): Promise<boolean> {
           totalEpisodes: episodes.value.length,
           episodes: episodeRefs,
           preferLocal: nextPrepared.isLocal,
-          preferNativeEngine: nativeEngineEnabled.value || forceNativeEngine.value,
+          preferNativeEngine:
+            nativeEngineEnabled.value || forceNativeEngine.value,
         };
       },
     };
 
     await load(opts);
     if (!pageAlive || epoch !== loadEpoch) return false;
-    setStage('done');
+    setStage("done");
     // 「本地文件不可用，已切换网络源」时在页面给出「重新下载」入口（AC-78②）
     void detectLocalMissing();
     // `load()` 内部把失败写入 player.error 而不抛出，这里显式判定
@@ -1354,7 +1507,10 @@ async function resolveAndLoad(): Promise<boolean> {
       // 批次1：记录线路成功
       const line = currentLine.value;
       if (line && it) {
-        lineHealthService.recordSuccess(lineKey(it.sourceId, it.sourceItemId, line.name), Date.now() - resolveStartTime);
+        lineHealthService.recordSuccess(
+          lineKey(it.sourceId, it.sourceItemId, line.name),
+          Date.now() - resolveStartTime,
+        );
       }
     }
     return ok;
@@ -1362,18 +1518,21 @@ async function resolveAndLoad(): Promise<boolean> {
     if (!pageAlive || epoch !== loadEpoch) return false;
     // P0-3：解析失败也失效缓存，避免重试复用坏 URL
     library.invalidatePlayCache(mediaId.value);
-    const shape = toErrorShape(e, 'E_NO_PLAY_URL');
+    const shape = toErrorShape(e, "E_NO_PLAY_URL");
     // 批次1：记录线路失败（按错误分类）
     const line = currentLine.value;
     if (line && it) {
-      lineHealthService.recordFail(lineKey(it.sourceId, it.sourceItemId, line.name), shape.code);
+      lineHealthService.recordFail(
+        lineKey(it.sourceId, it.sourceItemId, line.name),
+        shape.code,
+      );
     }
     // 失败换线时并发解析会双跑：先成功者已在播，后失败者（嗅探 15s 超时）若把
     // 错误面板盖上去，用户看到的是「有声音却报无播放地址」。播放中一律不覆盖。
     if (player.playing) return false;
     loadErrorShape.value = shape;
     loadError.value = shape.message;
-    void runFailover(shape, 'resolve');
+    void runFailover(shape, "resolve");
     return false;
   } finally {
     // 只有最新一代负责收尾，避免旧任务把新任务的 loading 关掉
@@ -1388,8 +1547,10 @@ async function resolveAndLoad(): Promise<boolean> {
  * deviceService 延迟加载：与状态栏/常亮同一处理方式，避免把 Capacitor 插件拉进首屏模块图
  * （会让路由级测试的模块加载变慢）。
  */
-function deviceApi(): Promise<typeof import('@/services/deviceService').deviceService> {
-  return import('@/services/deviceService').then((m) => m.deviceService);
+function deviceApi(): Promise<
+  typeof import("@/services/deviceService").deviceService
+> {
+  return import("@/services/deviceService").then((m) => m.deviceService);
 }
 
 /**
@@ -1408,7 +1569,7 @@ async function initPlaybackLevels(): Promise<void> {
 
   if (!levels) {
     player.patch({
-      levelSource: 'app',
+      levelSource: "app",
       brightness: BRIGHTNESS_MAX,
       volume: settings.player?.lastVolume ?? 100,
     });
@@ -1416,7 +1577,7 @@ async function initPlaybackLevels(): Promise<void> {
   }
 
   player.patch({
-    levelSource: 'system',
+    levelSource: "system",
     brightness: levels.brightness,
     volume: levels.volume,
   });
@@ -1425,10 +1586,21 @@ async function initPlaybackLevels(): Promise<void> {
 onMounted(async () => {
   void detectCastSupport();
   // REV-24：sources 用于详情失败时判断源是否存在
-  await Promise.all([settings.load(), history.load(), favorites.load(), downloads.load(), sources.load(), achievements.load()]);
+  await Promise.all([
+    settings.load(),
+    history.load(),
+    favorites.load(),
+    downloads.load(),
+    sources.load(),
+    achievements.load(),
+  ]);
   // F2：连看计数（彩蛋开关 gate）。播放页逐集重建，计数落在 store 才能跨集累积。
   if (settings.easterEggsEnabled) {
-    achievements.noteEpisodeEntry(mediaId.value, episodeIdParam.value, item.value?.title ?? null);
+    achievements.noteEpisodeEntry(
+      mediaId.value,
+      episodeIdParam.value,
+      item.value?.title ?? null,
+    );
   }
   // P1-4 + API-12：亮度/音量起点（必须在 createController 之前，决定引擎倍率的初值）
   await initPlaybackLevels();
@@ -1439,9 +1611,14 @@ onMounted(async () => {
     if (resume && pageAlive) blackboxAnchor.value = resume;
   }
 
-  const episodeParam = typeof route.params.episodeId === 'string' ? route.params.episodeId : '';
+  const episodeParam =
+    typeof route.params.episodeId === "string" ? route.params.episodeId : "";
   // P1-4：下载列表入口（`?local=1`）先本地起播，详情后台补——离线时不再被网络解析吊住
-  if (route.query.local === '1' && episodeParam && (await tryPlayLocalFirst(episodeParam))) {
+  if (
+    route.query.local === "1" &&
+    episodeParam &&
+    (await tryPlayLocalFirst(episodeParam))
+  ) {
     detailReady.value = true;
     void library.loadDetail(mediaId.value);
     return;
@@ -1449,10 +1626,10 @@ onMounted(async () => {
 
   await library.loadDetail(mediaId.value);
   detailReady.value = true;
-  if (library.detailState === 'error') {
+  if (library.detailState === "error") {
     // REV-24：详情失败但本地有下载完成的任务时，允许直接本地播放
     if (episodeParam && (await tryPlayLocalFirst(episodeParam))) return;
-    loadError.value = library.error?.message ?? '详情加载失败';
+    loadError.value = library.error?.message ?? "详情加载失败";
     pageLoading.value = false;
     return;
   }
@@ -1477,12 +1654,18 @@ onMounted(async () => {
  * 已归零——所以播放中持续留一份最近快照，卸载时用 `force` 补写这份，而不是现场读引擎。
  * 落盘由服务内部 30s 节流，这里 10s 一拍只为缩短卸载瞬间的陈旧度。
  */
-let blackboxLive: Omit<BlackboxSnapshot, 'at'> | null = null;
+let blackboxLive: Omit<BlackboxSnapshot, "at"> | null = null;
 function captureBlackbox(): void {
   const identity = playingIdentity.value;
   const durationSec = Math.floor(player.duration || 0);
   const positionSec = Math.floor(player.currentTime || 0);
-  if (!identity || !mediaId.value || durationSec <= 0 || positionSec > durationSec) return;
+  if (
+    !identity ||
+    !mediaId.value ||
+    durationSec <= 0 ||
+    positionSec > durationSec
+  )
+    return;
   blackboxLive = {
     mediaId: mediaId.value,
     episodeNumber: identity.episodeNumber,
@@ -1523,7 +1706,7 @@ watch(
   (volume) => {
     lastVolumeForMemory = Math.round(volume);
   },
-  { flush: 'sync' },
+  { flush: "sync" },
 );
 
 onBeforeUnmount(() => {
@@ -1542,7 +1725,7 @@ onBeforeUnmount(() => {
   // P0-2：换源搜索的超时器与在飞请求随实例收口；本轮预算只有在"不是自己引起的导航"
   // 时才收回——换线引起的重建必须把 deadline 与已试线路带过去，否则又回到无限重试。
   cancelAlternateSourceSearch();
-  if (!hasPendingFailoverNavigation()) cancelFailoverRound('cancelled');
+  if (!hasPendingFailoverNavigation()) cancelFailoverRound("cancelled");
   // P1-4：音量记忆写回。音量在原生下由系统自己记住，这里存的值只在退回倍率路径时使用。
   settings.updateNonBlocking({
     player: {
@@ -1559,19 +1742,82 @@ watch(() => currentPlayback.value, clearSeekPreview);
 const titleText = computed(() => fallbackTitle.value);
 
 /** 音频模式的背景层只是 `blur(28px)` 的色底，按原图请求纯属浪费 */
-const audioBlurSrc = computed(() => sizedImage(item.value?.posterUrl ?? null, IMG_W_BLUR));
+const audioBlurSrc = computed(() =>
+  sizedImage(item.value?.posterUrl ?? null, IMG_W_BLUR),
+);
 const episodeLabel = computed(() => {
   const identity = playingIdentity.value;
-  if (!identity) return '';
+  if (!identity) return "";
   const ep = currentEpisode.value;
-  const number = identity.episodeNumber ?? (ep?.id === identity.episodeId ? ep.number : null);
-  if (number === null) return '';
-  if (!hasEpisodeNav.value && episodes.value.length <= 1) return '';
+  const number =
+    identity.episodeNumber ??
+    (ep?.id === identity.episodeId ? ep.number : null);
+  if (number === null) return "";
+  if (!hasEpisodeNav.value && episodes.value.length <= 1) return "";
   // 副标题只有当详情里的这一集正是正在播的这一集时才可信
-  const sub = ep && ep.number === number && ep.title && ep.title !== `第 ${number} 集` ? ` · ${ep.title}` : '';
+  const sub =
+    ep && ep.number === number && ep.title && ep.title !== `第 ${number} 集`
+      ? ` · ${ep.title}`
+      : "";
   return `第 ${number} 集${sub}`;
 });
-const qualityLabel = computed(() => (resolvedQuality.value === QUALITY_AUTO ? '自动' : resolvedQuality.value));
+/** chrome 摘要用的集号/总集数（1 起；单集影片不给集号） */
+const epTotal = computed(() =>
+  hasEpisodeNav.value ? episodes.value.length : 0,
+);
+const epIndex = computed(() => {
+  const ep = currentEpisode.value;
+  if (!ep) return 0;
+  const index = episodes.value.findIndex((item) => item.id === ep.id);
+  return index >= 0 ? index + 1 : ep.number;
+});
+/** 跳过条右侧的数字：片头给结束时刻，片尾给片尾长度 */
+const skipTargetSec = computed(() => {
+  const marks = skipMarks.value;
+  if (!marks) return 0;
+  if (skipZone.value === "credits") {
+    return marks.creditsStartSec === null
+      ? 0
+      : Math.max(0, player.duration - marks.creditsStartSec);
+  }
+  return marks.introEndSec ?? 0;
+});
+
+/** 精细倍速滑杆会给出预设档之外的值（0.5~2，步进 0.05），引擎按浮点接受 */
+function onSetRate(value: number): void {
+  setRate(value as PlaybackRate);
+}
+
+/** 弹层滑杆与手势走同一条路：HUD、落点（app/system）、记忆都由 onGesture 统一处理 */
+function onSetVolume(value: number): void {
+  onGesture({ type: "volume", value, delta: value - player.volume });
+}
+
+function onSetBrightness(value: number): void {
+  onGesture({ type: "brightness", value, delta: value - player.brightness });
+}
+
+/** ⑥ fold 常驻滑杆：input 给的是字符串，转数值后与手势走同一条路 */
+function onFoldVolume(ev: Event): void {
+  onSetVolume(Number((ev.target as HTMLInputElement).value));
+}
+
+function onFoldBrightness(ev: Event): void {
+  onSetBrightness(Number((ev.target as HTMLInputElement).value));
+}
+
+/** 缓冲水位：player.buffered 是「已缓冲到的秒数」，换算成百分比才读得懂 */
+const foldBufferPercent = computed(() =>
+  player.duration > 0
+    ? Math.round(
+        Math.min(100, Math.max(0, (player.buffered / player.duration) * 100)),
+      )
+    : 0,
+);
+
+const qualityLabel = computed(() =>
+  resolvedQuality.value === QUALITY_AUTO ? "自动" : resolvedQuality.value,
+);
 
 /* ---------- 操作 ---------- */
 
@@ -1596,9 +1842,14 @@ function goBack(): void {
   }
   void playerCtl.controller.value?.flushProgress();
   // 封面飞回入口卡片：必须在导航发起前立浮层，App.vue 才会把滑入换成淡入
-  rewindSharedCover(stageRef.value, mediaId.value, item.value?.posterUrl ?? null);
+  rewindSharedCover(
+    stageRef.value,
+    mediaId.value,
+    item.value?.posterUrl ?? null,
+  );
   if (globalThis.history.length > 1) router.back();
-  else void router.replace({ name: 'detail', params: { mediaId: mediaId.value } });
+  else
+    void router.replace({ name: "detail", params: { mediaId: mediaId.value } });
 }
 
 useBackButton({
@@ -1611,7 +1862,7 @@ useBackButton({
 });
 
 function openDetail(): void {
-  void router.replace({ name: 'detail', params: { mediaId: mediaId.value } });
+  void router.replace({ name: "detail", params: { mediaId: mediaId.value } });
 }
 
 /** REV-24：源已移除时，删除该历史记录并返回首页 */
@@ -1620,7 +1871,7 @@ async function removeHistoryAndGoBack(): Promise<void> {
   if (record) {
     await history.remove(record.id);
   }
-  void router.replace({ name: 'home' });
+  void router.replace({ name: "home" });
 }
 
 /* ---------- 切换线路（AC-31 保持集号 / AC-55 失败回退原线路） ---------- */
@@ -1643,15 +1894,21 @@ let pendingMediaSwitch: string | null = null;
  */
 function episodeOnLine(lineIdValue: string, number: number): Episode | null {
   const all = library.detail?.episodes ?? [];
-  const list = all.filter((ep) => ep.lineId === lineIdValue).sort((a, b) => a.number - b.number);
+  const list = all
+    .filter((ep) => ep.lineId === lineIdValue)
+    .sort((a, b) => a.number - b.number);
   return list.find((ep) => ep.number === number) ?? null;
 }
 
 /** 只更新路由（集号 / 线路 query），加载由调用方统一负责 */
-async function replaceRoute(episodeId: string | null, targetLineId: string | null): Promise<void> {
-  if (episodeId === episodeIdParam.value && targetLineId === lineIdParam.value) return;
+async function replaceRoute(
+  episodeId: string | null,
+  targetLineId: string | null,
+): Promise<void> {
+  if (episodeId === episodeIdParam.value && targetLineId === lineIdParam.value)
+    return;
   await router.replace({
-    name: 'player',
+    name: "player",
     params: { mediaId: mediaId.value, ...(episodeId ? { episodeId } : {}) },
     query: targetLineId ? { lineId: targetLineId } : {},
   });
@@ -1685,22 +1942,28 @@ async function playFromFirstEpisode(): Promise<void> {
  * P0-2：`auto: true`（自动兜底链发起）时**不回滚**——回滚等于重播上一条失败线路，
  * 正是"来回跳"的来源；自动链只在候选之间向前推进，收口交给会话与错误面板。
  */
-async function switchLine(targetLineId: string, opts: { auto?: boolean } = {}): Promise<boolean> {
+async function switchLine(
+  targetLineId: string,
+  opts: { auto?: boolean } = {},
+): Promise<boolean> {
   const it = item.value;
   const previousLineId = currentLineId.value;
-  if (!it || targetLineId === previousLineId || switchingLine.value) return false;
+  if (!it || targetLineId === previousLineId || switchingLine.value)
+    return false;
   const current = currentEpisode.value;
   if (!current) return false;
   const previousEpisodeId = current.id;
   const targetEpisode = episodeOnLine(targetLineId, current.number);
   if (!targetEpisode) {
-    const name = lines.value.find((l) => l.id === targetLineId)?.name ?? '该线路';
+    const name =
+      lines.value.find((l) => l.id === targetLineId)?.name ?? "该线路";
     toast.info(`${name} 没有第 ${current.number} 集，已保持原线路`);
     return false;
   }
 
   // P1-4: 记住当前播放位置，切线后续播
-  const currentPositionSec = playerCtl.controller.value?.getState().currentTime ?? 0;
+  const currentPositionSec =
+    playerCtl.controller.value?.getState().currentTime ?? 0;
 
   switchingLine.value = true;
   try {
@@ -1726,7 +1989,9 @@ async function switchLine(targetLineId: string, opts: { auto?: boolean } = {}): 
     lineId.value = previousLineId;
     pendingLineSwitchEpisode = previousEpisodeId;
     const restored = await resolveAndLoad();
-    toast.info(restored ? '切换失败，已保持原线路' : '切换失败，原线路也无法播放');
+    toast.info(
+      restored ? "切换失败，已保持原线路" : "切换失败，原线路也无法播放",
+    );
     return false;
   } finally {
     pendingLineSwitchEpisode = null;
@@ -1736,7 +2001,7 @@ async function switchLine(targetLineId: string, opts: { auto?: boolean } = {}): 
 
 async function onSwitchLine(): Promise<void> {
   if (lines.value.length <= 1) {
-    toast.info('该内容只有一条线路');
+    toast.info("该内容只有一条线路");
     return;
   }
   const next = lines.value.find((l) => l.id !== currentLineId.value);
@@ -1748,24 +2013,24 @@ async function onSwitchLine(): Promise<void> {
 
 /** 源侧故障码（与 17.6 口径一致 + 解码/无地址），命中才考虑自动兜底 */
 const FAILOVER_ERROR_CODES = new Set([
-  'E_NETWORK',
-  'E_TIMEOUT',
-  'E_DECODE',
-  'E_SOURCE_UNAVAILABLE',
-  'E_NO_PLAY_URL',
-  'E_UNSUPPORTED_FORMAT',
-  'E_PARSE',
+  "E_NETWORK",
+  "E_TIMEOUT",
+  "E_DECODE",
+  "E_SOURCE_UNAVAILABLE",
+  "E_NO_PLAY_URL",
+  "E_UNSUPPORTED_FORMAT",
+  "E_PARSE",
 ]);
 
 /** v1.8/CHG-26：错误码指向「源健康问题」时，错误面板给出去体检的入口 */
 const HEALTH_CHECK_CODES = new Set([
-  'E_SOURCE_UNAVAILABLE',
-  'E_NETWORK',
-  'E_TIMEOUT',
-  'E_HTTP_401',
-  'E_HTTP_403',
-  'E_HTTP_429',
-  'E_HTTP_5XX',
+  "E_SOURCE_UNAVAILABLE",
+  "E_NETWORK",
+  "E_TIMEOUT",
+  "E_HTTP_401",
+  "E_HTTP_403",
+  "E_HTTP_429",
+  "E_HTTP_5XX",
 ]);
 
 const canHealthCheck = computed(() => {
@@ -1774,12 +2039,16 @@ const canHealthCheck = computed(() => {
 });
 
 /** v1.8/CHG-26：手动换源可用性——有详情且在线（跨源候选搜索需要网络） */
-const canSwitchSourceManual = computed(() => item.value !== null && isOnlineNow());
+const canSwitchSourceManual = computed(
+  () => item.value !== null && isOnlineNow(),
+);
 
 /* ---------- P0-1 / P1-4：解析失败的可行动引导 ---------- */
 
 /** 解析失败的可行动原因（源站真死 / 解析超时 / 协议不支持 / 规则脚本异常） */
-const loadErrorGuidance = computed(() => (loadErrorShape.value ? guidanceOf(loadErrorShape.value) : null));
+const loadErrorGuidance = computed(() =>
+  loadErrorShape.value ? guidanceOf(loadErrorShape.value) : null,
+);
 
 /** 磁力地址：有值时给「用外部应用打开」，否则重试没有任何意义 */
 const loadErrorMagnet = computed(() => magnetUrlOf(loadErrorShape.value));
@@ -1790,12 +2059,12 @@ const loadErrorMagnet = computed(() => magnetUrlOf(loadErrorShape.value));
  */
 async function retryWithNativeEngine(): Promise<void> {
   forceNativeEngine.value = true;
-  toast.info('已切换原生引擎重试');
+  toast.info("已切换原生引擎重试");
   await resolveAndLoad();
   if (!pageAlive) return;
   if (player.error || loadError.value) {
     forceNativeEngine.value = false;
-    toast.info('原生引擎也没能解码，建议换线路');
+    toast.info("原生引擎也没能解码，建议换线路");
   }
 }
 
@@ -1807,11 +2076,11 @@ function dismissNoVideo(): void {
 async function openExternalUrl(url: string): Promise<void> {
   const result = await castService.openExternal(url);
   if (result.started) return;
-  if (result.reason === 'unsupported-platform') {
-    toast.info('当前环境无法打开外部链接（仅 Android App 支持）');
+  if (result.reason === "unsupported-platform") {
+    toast.info("当前环境无法打开外部链接（仅 Android App 支持）");
     return;
   }
-  toast.error(result.error?.message ?? '打开失败，请安装下载器后重试');
+  toast.error(result.error?.message ?? "打开失败，请安装下载器后重试");
 }
 
 /**
@@ -1835,9 +2104,13 @@ function failoverHandle(): FailoverRound | null {
  * 目标相同就沿用上一轮预算，所以换线引起的路由重建拿不到新预算；只有换集 / 换片 /
  * 用户明确重试（`userIntent`）才开新一轮。
  */
-function noteFailoverLoad(key: string | null, trigger: string, userIntent = false): void {
+function noteFailoverLoad(
+  key: string | null,
+  trigger: string,
+  userIntent = false,
+): void {
   const anchor: FailoverAnchor = {
-    seasonNumber: parseSeasonNumber(item.value?.title ?? ''),
+    seasonNumber: parseSeasonNumber(item.value?.title ?? ""),
     episodeNumber: routeEpisodeNumber.value,
   };
   failoverRound.value = beginLoadAttempt({ anchor, trigger, key, userIntent });
@@ -1897,7 +2170,7 @@ async function lookupAlternateSource(round?: FailoverRound | null): Promise<{
   alternateSearchAbort = abort;
   alternateSearchTimer = setTimeout(() => abort.abort(), budgetMs);
   const onPageAbort = () => abort.abort();
-  pageAbort.signal.addEventListener('abort', onPageAbort, { once: true });
+  pageAbort.signal.addEventListener("abort", onPageAbort, { once: true });
   try {
     const [result, allSources] = await Promise.all([
       libraryService.search({ keyword: it.title, signal: abort.signal }),
@@ -1905,8 +2178,12 @@ async function lookupAlternateSource(round?: FailoverRound | null): Promise<{
     ]);
     if (!pageAlive) return null;
     const sourceById = new Map(allSources.map((s) => [s.id, s]));
-    const candidates = pickPlayCandidates(it.title, it.year, result.items, sourceById, (id) =>
-      healthService.latencyOf(id),
+    const candidates = pickPlayCandidates(
+      it.title,
+      it.year,
+      result.items,
+      sourceById,
+      (id) => healthService.latencyOf(id),
     )
       .filter((candidate) => candidate.source.id !== it.sourceId)
       .filter((candidate) => !isSourceBlocked(candidate.source.id))
@@ -1924,7 +2201,11 @@ async function lookupAlternateSource(round?: FailoverRound | null): Promise<{
             ? (detail.episodes[0] ?? null)
             : (detail.episodes.find((ep) => ep.number === number) ?? null);
         if (!target) continue;
-        return { mediaId: candidate.item.id, episodeId: target.id, sourceName: candidate.source.name };
+        return {
+          mediaId: candidate.item.id,
+          episodeId: target.id,
+          sourceName: candidate.source.name,
+        };
       } catch {
         continue; // 候选源也失败 → 顺延下一个
       }
@@ -1932,7 +2213,7 @@ async function lookupAlternateSource(round?: FailoverRound | null): Promise<{
   } catch {
     /* 搜索失败/超时/已取消：按无候选处理 */
   } finally {
-    pageAbort.signal.removeEventListener('abort', onPageAbort);
+    pageAbort.signal.removeEventListener("abort", onPageAbort);
     if (alternateSearchTimer !== null) {
       clearTimeout(alternateSearchTimer);
       alternateSearchTimer = null;
@@ -1963,7 +2244,7 @@ async function applyAlternateSource(target: {
   try {
     // P0-2：显式清空 lineId query，避免旧线路 id 残留导致新源 0 集
     await router.replace({
-      name: 'player',
+      name: "player",
       params: { mediaId: target.mediaId, episodeId: target.episodeId },
       query: {},
     });
@@ -1995,7 +2276,10 @@ function isOnlineNow(): boolean {
  *
  * 离线时直接落错误面板——换线/换源都要网络，徒增等待。
  */
-async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): Promise<void> {
+async function runFailover(
+  error: AppErrorShape,
+  origin: "player" | "resolve",
+): Promise<void> {
   if (failoverRunning.value) return;
   if (!FAILOVER_ERROR_CODES.has(error.code)) return;
   const opened = failoverHandle();
@@ -2015,7 +2299,8 @@ async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): 
     // P1-1 + P0-2：只试"确实有正在播的这一集"的线路——否则换线"成功"等于悄悄换了集。
     // 集号以会话钉住的目标为准（当前集定位失败时仍不能拿首集当代号）。
     const it = item.value;
-    const number = opened.anchor.episodeNumber ?? currentEpisode.value?.number ?? null;
+    const number =
+      opened.anchor.episodeNumber ?? currentEpisode.value?.number ?? null;
     const ranked = it
       ? rankLines({
           lines: lines.value,
@@ -2035,7 +2320,11 @@ async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): 
       if (!pageAlive) return;
       const targetEpisode = episodeOnLine(candidate.id, number ?? 0);
       round.chargeLineAttempt(
-        failoverAttemptKey(it?.sourceId ?? '', candidate.id, targetEpisode?.id ?? ''),
+        failoverAttemptKey(
+          it?.sourceId ?? "",
+          candidate.id,
+          targetEpisode?.id ?? "",
+        ),
       );
       toast.info(`起播失败，自动切换到线路「${candidate.name}」…`);
       await switchLine(candidate.id, { auto: true });
@@ -2048,7 +2337,7 @@ async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): 
     if (round && round.allowSource()) {
       round.chargeSourceAttempt();
       player.patch({ error: null });
-      toast.info('当前源无法播放，正在尝试其它来源…');
+      toast.info("当前源无法播放，正在尝试其它来源…");
       const target = await lookupAlternateSource(round);
       if (!pageAlive) return;
       if (target) {
@@ -2066,10 +2355,13 @@ async function runFailover(error: AppErrorShape, origin: 'player' | 'resolve'): 
 }
 
 /** 兜底链走完仍失败（或根本不该兜底）时，保证错误面板落在位且不重复覆盖画面 */
-function publishFailoverError(error: AppErrorShape, origin: 'player' | 'resolve'): void {
+function publishFailoverError(
+  error: AppErrorShape,
+  origin: "player" | "resolve",
+): void {
   if (!pageAlive) return;
   if (player.error === null && loadError.value === null) {
-    if (origin === 'player') player.patch({ error });
+    if (origin === "player") player.patch({ error });
     else {
       loadErrorShape.value = error;
       loadError.value = error.message;
@@ -2084,7 +2376,7 @@ watch(
       // P0-2 / FIX-PLAY-C1：离线文件自身的问题（时间轴停滞、解码损坏）与线路/源无关——
       // 不记线路失败、不作废播放地址缓存，只挂出"重新下载"出口
       // （两者都不在 FAILOVER_ERROR_CODES 内，不会走换线/换源）
-      if (error.code === 'E_LOCAL_STALL' || error.code === 'E_LOCAL_CORRUPT') {
+      if (error.code === "E_LOCAL_STALL" || error.code === "E_LOCAL_CORRUPT") {
         armLocalStallRedownload();
         return;
       }
@@ -2094,9 +2386,12 @@ watch(
       const line = currentLine.value;
       const it = item.value;
       if (line && it) {
-        lineHealthService.recordFail(lineKey(it.sourceId, it.sourceItemId, line.name), error.code);
+        lineHealthService.recordFail(
+          lineKey(it.sourceId, it.sourceItemId, line.name),
+          error.code,
+        );
       }
-      void runFailover(error, 'player');
+      void runFailover(error, "player");
     } else {
       // 错误清除（重试/换集成功）：停滞出口跟着撤
       localStallTaskId.value = null;
@@ -2121,7 +2416,7 @@ async function onSwitchSource(): Promise<void> {
   failoverRunning.value = true;
   player.patch({ error: null });
   try {
-    toast.info('正在尝试其它来源…');
+    toast.info("正在尝试其它来源…");
     const target = await lookupAlternateSource();
     if (!pageAlive) return;
     if (target) {
@@ -2142,7 +2437,7 @@ async function onSwitchSource(): Promise<void> {
 
 /** v1.8/CHG-26：跳设置页源管理区（一键禁用失效源入口） */
 function goHealthCheck(): void {
-  void router.push('/settings');
+  void router.push("/settings");
 }
 
 async function onCast(): Promise<void> {
@@ -2151,24 +2446,26 @@ async function onCast(): Promise<void> {
     const supported = await castService.isSupported();
     if (!supported) {
       castSupported.value = false;
-      toast.info('当前平台不支持投屏，请在 Android App 内使用');
+      toast.info("当前平台不支持投屏，请在 Android App 内使用");
       return;
     }
     const playback = currentPlayback.value;
     if (!playback) {
-      toast.info('暂无可投屏的内容');
+      toast.info("暂无可投屏的内容");
       return;
     }
     playerCtl.controller.value?.pause();
     const result = await castService.cast({
-      kind: 'url',
+      kind: "url",
       url: playback.url,
-      mime: playback.format === 'hls' ? 'application/x-mpegURL' : 'video/*',
+      mime: playback.format === "hls" ? "application/x-mpegURL" : "video/*",
       title: titleText.value,
       linkedUrl: playback.url,
     });
     if (!result.started) {
-      toast.info(result.reason === 'canceled' ? '已取消投屏' : '未找到可用的投屏目标');
+      toast.info(
+        result.reason === "canceled" ? "已取消投屏" : "未找到可用的投屏目标",
+      );
     }
   } catch (e) {
     toast.info(toErrorShape(e).message);
@@ -2184,14 +2481,15 @@ async function onDownloadCurrent(): Promise<void> {
     const inputs = await library.toDownloadInputs(it.id, [ep.id]);
     // P3-3：换一条线路（不同源、不同 id）时，`createMany` 的字面判重认不出来，本地能攒下
     // 同一集的若干份；下单前把重复摊开说清楚，但只确认不拦截——换线路常正因为上一份下不动。
-    if (!(await guards.confirmCrossLineDuplicates(inputs, downloads.tasks))) return;
+    if (!(await guards.confirmCrossLineDuplicates(inputs, downloads.tasks)))
+      return;
     // REV-07 / AC-76：Web 端 >1GB 在下单前提示改用 App；确认后仍可继续
     const largeFileHint = await downloads.checkLargeFile(inputs);
     if (largeFileHint !== null) {
       const goOn = await ui.confirm({
-        title: '文件较大',
+        title: "文件较大",
         message: largeFileHint,
-        confirmText: '仍要下载',
+        confirmText: "仍要下载",
       });
       if (!goOn) return;
     }
@@ -2199,10 +2497,12 @@ async function onDownloadCurrent(): Promise<void> {
     const { created, skipped } = await downloads.createMany(inputs);
     pickerOpen.value = false;
     if (created.length === 0 && skipped.length > 0) {
-      toast.info('该集已在下载列表中');
+      toast.info("该集已在下载列表中");
       return;
     }
-    toast.success(skipped.length > 0 ? '已加入下载（该集已在列表中）' : '已加入下载');
+    toast.success(
+      skipped.length > 0 ? "已加入下载（该集已在列表中）" : "已加入下载",
+    );
   } catch (e) {
     toast.error(toErrorShape(e).message);
   } finally {
@@ -2226,7 +2526,7 @@ async function onToggleFavorite(): Promise<void> {
       type: it.type,
       year: it.year,
     });
-    toast.success(added ? '已收藏' : '已取消收藏');
+    toast.success(added ? "已收藏" : "已取消收藏");
   } catch (e) {
     toast.error(toErrorShape(e).message);
   } finally {
@@ -2242,7 +2542,9 @@ const isFavorite = computed(() => {
 const downloadedIds = computed(() => {
   const it = item.value;
   if (!it) return [];
-  return downloads.tasks.filter((t) => t.mediaId === it.id && t.status === 'completed').map((t) => t.episodeId);
+  return downloads.tasks
+    .filter((t) => t.mediaId === it.id && t.status === "completed")
+    .map((t) => t.episodeId);
 });
 
 async function copyError(): Promise<void> {
@@ -2253,15 +2555,15 @@ async function copyError(): Promise<void> {
   const lines = [
     `code=${err.code}`,
     `message=${err.message}`,
-    `detail=${err.detail ?? ''}`,
-    `http=${err.httpStatus ?? ''}`,
-    `format=${playback?.format ?? ''}`,
-    `url=${playback?.url ?? ''}`,
+    `detail=${err.detail ?? ""}`,
+    `http=${err.httpStatus ?? ""}`,
+    `format=${playback?.format ?? ""}`,
+    `url=${playback?.url ?? ""}`,
   ];
-  const text = lines.join('\n');
+  const text = lines.join("\n");
   try {
     await navigator.clipboard?.writeText(text);
-    toast.success('已复制错误信息');
+    toast.success("已复制错误信息");
   } catch {
     toast.info(text);
   }
@@ -2280,23 +2582,24 @@ async function shareWatchCode(): Promise<void> {
     title: it.title,
     year: it.year ?? null,
     // 单集内容（电影/正片）不带集号；多线路长剧才需要定位到集
-    episodeNumber: episodes.value.length <= 1 ? null : identity?.episodeNumber ?? null,
+    episodeNumber:
+      episodes.value.length <= 1 ? null : (identity?.episodeNumber ?? null),
     positionSec: Math.floor(player.currentTime || 0),
   };
   const text = buildShareText(payload);
-  moreOpen.value = false;
+  drawerOpen.value = false;
   try {
-    if (typeof navigator.share === 'function') {
+    if (typeof navigator.share === "function") {
       await navigator.share({ title: it.title, text });
       return;
     }
-    throw new Error('no-share-target');
+    throw new Error("no-share-target");
   } catch (e) {
     // 系统分享面板取消不算失败；无分享面板/失败退回剪贴板
-    if (e instanceof DOMException && e.name === 'AbortError') return;
+    if (e instanceof DOMException && e.name === "AbortError") return;
     try {
       await navigator.clipboard.writeText(text);
-      toast.success('观影口令已复制，粘到对方的搜索框即可续上');
+      toast.success("观影口令已复制，粘到对方的搜索框即可续上");
     } catch {
       toast.info(text, 8000);
     }
@@ -2308,7 +2611,9 @@ async function shareWatchCode(): Promise<void> {
  * 直接写存储会把 IDB 写打成一片。本地值保持即时（画面跟着动），落盘收敛成一次。
  */
 const persistSubtitles = useDebounce(() => {
-  settings.updateNonBlocking({ player: { ...playerSettings.value, subtitle: { ...localSubtitles.value } } });
+  settings.updateNonBlocking({
+    player: { ...playerSettings.value, subtitle: { ...localSubtitles.value } },
+  });
 }, 300);
 // 卸载时挂起的最后一次不能丢：useDebounce 自己的 onBeforeUnmount 只做 cancel，这里补 flush
 onBeforeUnmount(() => persistSubtitles.flush());
@@ -2321,15 +2626,21 @@ function onSubtitleSettings(patch: Partial<SubtitleSettings>): void {
 
 function onDisplayModeSelect(mode: ResizeMode): void {
   setResizeMode(mode);
-  settings.updateNonBlocking({ player: { ...playerSettings.value, resizeMode: mode } });
+  settings.updateNonBlocking({
+    player: { ...playerSettings.value, resizeMode: mode },
+  });
 }
 
 function setAmbilight(on: boolean): void {
-  settings.updateNonBlocking({ player: { ...playerSettings.value, ambilight: on } });
+  settings.updateNonBlocking({
+    player: { ...playerSettings.value, ambilight: on },
+  });
 }
 
 function setAmbilightIntensity(value: number): void {
-  settings.updateNonBlocking({ player: { ...playerSettings.value, ambilightIntensity: value } });
+  settings.updateNonBlocking({
+    player: { ...playerSettings.value, ambilightIntensity: value },
+  });
 }
 
 /**
@@ -2338,12 +2649,12 @@ function setAmbilightIntensity(value: number): void {
  * 所以直接持久化，避免每次进播放页都白跑一遍取样定时器。
  */
 function onAmbilightBlocked(reason: AmbilightBlockReason): void {
-  if (reason === 'reduced-motion') return;
+  if (reason === "reduced-motion") return;
   setAmbilight(false);
   toast.info(
-    reason === 'no-video'
-      ? '原生引擎取不到画面像素，氛围光已自动关闭'
-      : '画面像素不可读取（源站未开放跨域），氛围光已自动关闭',
+    reason === "no-video"
+      ? "原生引擎取不到画面像素，氛围光已自动关闭"
+      : "画面像素不可读取（源站未开放跨域），氛围光已自动关闭",
     2600,
   );
 }
@@ -2354,10 +2665,10 @@ function onAmbilightBlocked(reason: AmbilightBlockReason): void {
  * 且旧请求被取消后还会把 E_ABORTED 写进错误面板。
  */
 function chooseEpisode(ep: Episode): void {
-  episodeOpen.value = false;
+  drawerOpen.value = false;
   if (ep.id === currentEpisode.value?.id) return;
   void router.replace({
-    name: 'player',
+    name: "player",
     params: { mediaId: mediaId.value, episodeId: ep.id },
     query: currentLineId.value ? { lineId: currentLineId.value } : {},
   });
@@ -2406,8 +2717,8 @@ const danmakuSettings = computed(
       merge: true,
       safeBottomPercent: 15,
       bold: false,
-      strokeStyle: 'shadow' as const,
-      density: 'normal' as const,
+      strokeStyle: "shadow" as const,
+      density: "normal" as const,
       filterTop: false,
       filterBottom: false,
       interactive: true,
@@ -2416,7 +2727,12 @@ const danmakuSettings = computed(
 );
 
 /** 弹幕可用性：设置开启 + 正在播放 + 有当前集号 */
-const danmakuReady = computed(() => danmakuSettings.value.enabled && currentEpisode.value !== null && !pageLoading.value);
+const danmakuReady = computed(
+  () =>
+    danmakuSettings.value.enabled &&
+    currentEpisode.value !== null &&
+    !pageLoading.value,
+);
 
 /** 按当前媒体/集号拉取弹幕（缓存命中离线可用；关闭开关不发请求） */
 /**
@@ -2433,11 +2749,18 @@ async function loadDanmaku(): Promise<boolean> {
   try {
     const match = await danmakuService.match(it.title, it.year, ep.number);
     if (match === null || match.comments.length === 0) return false;
-    const base = danmakuSettings.value.merge ? danmakuService.dedupe(match.comments) : match.comments;
+    const base = danmakuSettings.value.merge
+      ? danmakuService.dedupe(match.comments)
+      : match.comments;
     // 弹弹play 的 `shift`：缓存里存原始时间轴，偏移只在渲染时叠加（换源/重进不回写缓存）
     const offset = Number.isFinite(match.offsetSec) ? match.offsetSec : 0;
     danmakuOverlay.value?.load(
-      offset === 0 ? base : base.map((comment) => ({ ...comment, time: Math.max(0, comment.time + offset) })),
+      offset === 0
+        ? base
+        : base.map((comment) => ({
+            ...comment,
+            time: Math.max(0, comment.time + offset),
+          })),
     );
     return true;
   } catch {
@@ -2456,32 +2779,47 @@ async function importLocalDanmaku(file: File): Promise<void> {
   if (!it || !ep) return;
   let count = 0;
   try {
-    count = await danmakuService.importLocalXml(it.title, it.year, ep.number, file);
+    count = await danmakuService.importLocalXml(
+      it.title,
+      it.year,
+      ep.number,
+      file,
+    );
   } catch {
-    toast.info('本地弹幕文件读取失败', 2400);
+    toast.info("本地弹幕文件读取失败", 2400);
     return;
   }
   if (count === 0) {
-    toast.info('这个文件没有解析出弹幕（需要 B 站格式 xml）', 2800);
+    toast.info("这个文件没有解析出弹幕（需要 B 站格式 xml）", 2800);
     return;
   }
   if (!danmakuSettings.value.enabled) {
-    await settings.update({ danmaku: { ...danmakuSettings.value, enabled: true } });
+    await settings.update({
+      danmaku: { ...danmakuSettings.value, enabled: true },
+    });
   }
   const loaded = await loadDanmaku();
-  toast.info(loaded ? `已导入本地弹幕 ${count} 条` : '导入成功，重进本集后生效', loaded ? 1800 : 2600);
+  toast.info(
+    loaded ? `已导入本地弹幕 ${count} 条` : "导入成功，重进本集后生效",
+    loaded ? 1800 : 2600,
+  );
 }
 
 async function toggleDanmaku(): Promise<void> {
   const next = !danmakuSettings.value.enabled;
-  await settings.update({ danmaku: { ...danmakuSettings.value, enabled: next } });
+  await settings.update({
+    danmaku: { ...danmakuSettings.value, enabled: next },
+  });
   if (!next) {
     danmakuOverlay.value?.clear();
-    toast.info('弹幕已关闭');
+    toast.info("弹幕已关闭");
     return;
   }
   const loaded = await loadDanmaku();
-  toast.info(loaded ? '弹幕已开启' : '当前集没有匹配到弹幕（B 站/腾讯可能都没有该片）', loaded ? 1800 : 2800);
+  toast.info(
+    loaded ? "弹幕已开启" : "当前集没有匹配到弹幕（B 站/腾讯可能都没有该片）",
+    loaded ? 1800 : 2800,
+  );
 }
 
 /** v1.8 修复：原生引擎 surface 移到 WebView 之下，DOM 层（弹幕/字幕）可见，无需互斥 */
@@ -2495,7 +2833,7 @@ async function toggleDanmaku(): Promise<void> {
  * （如 `shared/healthTier` 的排序偏好）先存 localStorage，并已在自测记录里
  * 列为「待协调：迁移到 settings schema」。字幕偏好走 settings 的 `preferredLang`。
  */
-const AUDIO_LANG_STORAGE_KEY = 'peanutmov.player.audio-language';
+const AUDIO_LANG_STORAGE_KEY = "peanutmov.player.audio-language";
 
 const embeddedTracks = ref<EmbeddedTrackState>(emptyEmbeddedTracks());
 const tracksLoading = ref(false);
@@ -2504,13 +2842,22 @@ const tracksError = ref<string | null>(null);
 let trackPrefsAppliedFor: string | null = null;
 let detachTrackSubscription: (() => void) | null = null;
 
-const engineIsNative = computed(() => player.engineKind === 'native');
+const engineIsNative = computed(() => player.engineKind === "native");
+/** 字幕是否生效：原生引擎看内嵌轨选中项，WebView 引擎看外挂字幕 id */
+const subtitleOn = computed(() =>
+  engineIsNative.value
+    ? embeddedTracks.value.activeTextId !== null
+    : player.activeSubtitleId !== null,
+);
 const activeAudioTrack = computed(
-  () => embeddedTracks.value.audio.find((t) => t.id === embeddedTracks.value.activeAudioId) ?? null,
+  () =>
+    embeddedTracks.value.audio.find(
+      (t) => t.id === embeddedTracks.value.activeAudioId,
+    ) ?? null,
 );
 /** 沉浸态浮动音轨入口文案：有选中轨时带名称 */
 const audioChipLabel = computed(() =>
-  activeAudioTrack.value ? `音轨 · ${activeAudioTrack.value.label}` : '音轨',
+  activeAudioTrack.value ? `音轨 · ${activeAudioTrack.value.label}` : "音轨",
 );
 
 /** 订阅控制器轨道状态（控制器在 onMounted 里创建，创建后调用一次） */
@@ -2546,7 +2893,7 @@ function writeAudioLanguagePref(value: string): void {
 
 /** 偏好作用域：按集（同一影片切集也重新应用一次） */
 function trackPrefsKey(): string {
-  return `${mediaId.value}:${currentEpisode.value?.id ?? ''}`;
+  return `${mediaId.value}:${currentEpisode.value?.id ?? ""}`;
 }
 
 /**
@@ -2602,7 +2949,7 @@ async function refreshEmbeddedTracks(): Promise<void> {
     embeddedTracks.value = c.getEmbeddedTracks();
     tracksError.value = null;
   } catch (e) {
-    tracksError.value = toErrorShape(e, 'E_NOT_IMPLEMENTED').message;
+    tracksError.value = toErrorShape(e, "E_NOT_IMPLEMENTED").message;
   } finally {
     tracksLoading.value = false;
   }
@@ -2627,14 +2974,24 @@ async function onSelectEmbeddedSubtitle(id: number | null): Promise<void> {
   if (!c) return;
   try {
     await c.setEmbeddedSubtitleTrack(id);
-    const track = id === null ? null : embeddedTracks.value.text.find((t) => t.id === id) ?? null;
+    const track =
+      id === null
+        ? null
+        : (embeddedTracks.value.text.find((t) => t.id === id) ?? null);
     // 记住偏好：语言码；「关闭字幕」落 null，下次起播保持关闭
     void settings
-      .update({ player: { subtitle: { ...subtitleSettings.value, preferredLang: track?.language ?? null } } })
+      .update({
+        player: {
+          subtitle: {
+            ...subtitleSettings.value,
+            preferredLang: track?.language ?? null,
+          },
+        },
+      })
       .catch(() => undefined);
-    toast.info(track ? `已切换字幕：${track.label}` : '字幕已关闭', 1500);
+    toast.info(track ? `已切换字幕：${track.label}` : "字幕已关闭", 1500);
   } catch (e) {
-    toast.info(toErrorShape(e, 'E_NOT_IMPLEMENTED').message);
+    toast.info(toErrorShape(e, "E_NOT_IMPLEMENTED").message);
   }
 }
 
@@ -2649,7 +3006,7 @@ async function onSelectAudioTrack(id: number): Promise<void> {
       toast.info(`已切换音轨：${track.label}`, 1500);
     }
   } catch (e) {
-    toast.info(toErrorShape(e, 'E_NOT_IMPLEMENTED').message);
+    toast.info(toErrorShape(e, "E_NOT_IMPLEMENTED").message);
   }
 }
 
@@ -2690,10 +3047,14 @@ watch(danmakuReady, (ready) => {
 });
 
 // 设置变化（字号/速度等）即时生效
-watch(danmakuSettings, (next) => danmakuOverlay.value?.setSettings(next), { deep: true });
+watch(danmakuSettings, (next) => danmakuOverlay.value?.setSettings(next), {
+  deep: true,
+});
 
 /** 智能配色（11-17）：缺省开——老设置里没有这个键 */
-const danmakuAutoContrast = computed(() => danmakuSettings.value.autoContrast !== false);
+const danmakuAutoContrast = computed(
+  () => danmakuSettings.value.autoContrast !== false,
+);
 
 const { blocked: danmakuContrastBlocked } = useDanmakuContrast({
   overlay: danmakuOverlay,
@@ -2727,7 +3088,9 @@ watch(
 
 /* ---------- B-04：点中弹幕 → 冻结它 + 头顶出操作条 ---------- */
 
-const danmakuInteractive = computed(() => danmakuSettings.value.enabled && danmakuSettings.value.interactive);
+const danmakuInteractive = computed(
+  () => danmakuSettings.value.enabled && danmakuSettings.value.interactive,
+);
 
 const danmakuPick = useDanmakuPick({
   overlay: danmakuOverlay,
@@ -2746,7 +3109,7 @@ const danmakuLikeCount = danmakuPick.likeCount;
 async function copyDanmakuText(text: string): Promise<void> {
   try {
     await navigator.clipboard?.writeText(text);
-    toast.success('已复制弹幕');
+    toast.success("已复制弹幕");
   } catch {
     toast.info(text);
   }
@@ -2762,11 +3125,12 @@ function onDanmakuLike(): void {
  */
 function onStageIntent(intent: GestureIntent): void {
   // 长按帮助不进 onGesture：它不是播放控制，且要过弹出策略
-  if (intent.type === 'long-press-help') {
+  if (intent.type === "long-press-help") {
     maybeShowGestureHelp();
     return;
   }
-  if (intent.type === 'single-tap' && danmakuPick.tapAt(intent.x, intent.y)) return;
+  if (intent.type === "single-tap" && danmakuPick.tapAt(intent.x, intent.y))
+    return;
   onGesture(intent);
 }
 
@@ -2783,7 +3147,8 @@ onBeforeUnmount(() => {
 watch(episodeIdParam, async (next, prev) => {
   if (!detailReady.value || next === prev) return;
   // 线路切换内部改路由时由 `switchLine` 自己加载，这里跳过以免同一集加载两次
-  if (pendingLineSwitchEpisode !== null && next === pendingLineSwitchEpisode) return;
+  if (pendingLineSwitchEpisode !== null && next === pendingLineSwitchEpisode)
+    return;
   await resolveAndLoad();
   // 直接带旧集号进入（历史/继续观看）时同样提示已下线（AC-68）
   announceOfflineEpisode();
@@ -2810,43 +3175,37 @@ watch(mediaId, async (next, prev) => {
 /* ---------- 沉浸态 ---------- */
 const immersive = computed(() => player.fullscreen);
 
+/* ---------- 非常态层的单一开关（设计规范 ⑦） ----------
+ * 加载 / 缓冲 / 错误三层的显隐只看这一枚属性，各层不再自带背景与 z-index。
+ * 判定顺序与原挂载条件保持一致，避免出现「面板挂着但压暗没铺上」的双口径。 */
+const chromeState = computed<
+  "idle" | "loading" | "buffering" | "playing" | "paused" | "error"
+>(() => {
+  if (player.error && !pageLoading.value) return "error";
+  if (loadError.value) return "error";
+  if (pageLoading.value) return "loading";
+  if (player.loading || player.waiting) return "buffering";
+  if (player.playing) return "playing";
+  return "paused";
+});
+
 /* ---------- B4：横屏屏幕锁（防误触） ---------- */
 const screenLocked = ref(false);
-const lockRevealed = ref(false);
-let lockRevealTimer: ReturnType<typeof setTimeout> | null = null;
-
-/** 锁定态胶囊只在轻触后短暂露出；未锁定态跟随控件栏一起显隐 */
-const lockPillVisible = computed(() =>
-  screenLocked.value ? lockRevealed.value : controlsVisible.value,
-);
-
-function revealLockPill(): void {
-  lockRevealed.value = true;
-  if (lockRevealTimer !== null) clearTimeout(lockRevealTimer);
-  lockRevealTimer = setTimeout(() => {
-    lockRevealed.value = false;
-    lockRevealTimer = null;
-  }, 3000);
-}
-
-function clearLockReveal(): void {
-  if (lockRevealTimer !== null) {
-    clearTimeout(lockRevealTimer);
-    lockRevealTimer = null;
-  }
-  lockRevealed.value = false;
-}
 
 function toggleScreenLock(): void {
   screenLocked.value = !screenLocked.value;
   if (screenLocked.value) {
     // 锁屏会吃掉画面上的所有交互层，浮层必须真关掉而不是被隐藏，否则解锁后它又冒出来
     closeGestureHelp();
+    // 抽屉在层级上高于锁屏层（30 > 20），不关掉就等于「锁了但还能换集换线路」
+    drawerOpen.value = false;
     setControlsVisible(false);
-    revealLockPill();
-    ui.toast('已锁定屏幕，轻触画面可解锁', 'info', 2000);
+    // inert 只挡后续聚焦，已经落在信息区里的焦点要主动撤掉
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.closest(".pl-fold"))
+      active.blur();
+    ui.toast("已锁定屏幕，点画面左下角解锁", "info", 2000);
   } else {
-    clearLockReveal();
     setControlsVisible(true);
   }
 }
@@ -2855,72 +3214,163 @@ function toggleScreenLock(): void {
 watch(immersive, (on) => {
   if (!on && screenLocked.value) {
     screenLocked.value = false;
-    clearLockReveal();
     setControlsVisible(true);
   }
 });
 
-onBeforeUnmount(clearLockReveal);
-
-/* ---------- 键盘快捷键（桌面浏览器） ---------- */
+/* ---------- 键盘与滚轮（设计规范 ⑨：14 档按键 + Shift 组合 + 数字键） ---------- */
+const pictureRef = ref<HTMLElement | null>(null);
 /**
- * 焦点落在输入区或弹层内时让出键盘控制（REV-18，判定见 `player/shortcutGuard`）。
+ * 键盘驱动标记：置真时给进度条轨道补一层内描边焦点环（稿 `[data-keynav]`），
+ * 鼠标点过画面后立刻收回去——键盘焦点环不该在触屏操作中常驻。
+ */
+const keyNav = ref(false);
+/** `M` 静音前的音量档，再按一次用它还原（稿默认 60） */
+let volumeBeforeMute = 0;
+
+/**
+ * 按键 → 动作的对照表在 `player/keyboardActions`（纯函数，可单测逐档覆盖），
+ * 这里只负责把动作落到真实控制上；未命中的键不 preventDefault，还给浏览器与无障碍。
  */
 function onKeydown(ev: KeyboardEvent): void {
   if (shouldIgnoreShortcut(ev.target)) return;
-  // 锁屏时只留 Escape 作为退出全屏的逃生口（退出会自动解锁）
-  if (screenLocked.value && ev.key !== 'Escape') return;
-  const step = playerSettings.value.seekStepSec ?? 10;
-  switch (ev.key) {
-    case ' ':
-      ev.preventDefault();
+  const action = resolveKeyAction(ev, {
+    seekStep: playerSettings.value.seekStepSec ?? 10,
+    locked: screenLocked.value,
+  });
+  if (!action) return;
+  keyNav.value = true;
+  ev.preventDefault();
+  // Escape 是锁屏时的唯一逃生口，且不接管自动隐藏计时，故先于其它动作返回
+  if (action.kind === "escape") {
+    if (gestureHelpVisible.value) closeGestureHelp();
+    else if (drawerOpen.value) drawerOpen.value = false;
+    else if (player.fullscreen) void exitFullscreen();
+    return;
+  }
+  nudgeControls();
+  switch (action.kind) {
+    case "play":
       void togglePlay();
-      break;
-    case 'ArrowLeft':
-      seek(player.currentTime - step);
-      break;
-    case 'ArrowRight':
-      seek(player.currentTime + step);
-      break;
-    case 'ArrowUp': {
-      // 与手势同一条落点：原生下这是系统音量档位，Web 下是播放器倍率
-      const next = Math.min(100, player.volume + VOLUME_STEP);
-      onGesture({ type: 'volume', value: next, delta: next - player.volume });
-      break;
+      return;
+    case "seek":
+    case "frame":
+      // 方向键步长跟用户设置，j/l 是稿上固定的 10s，,/. 是一帧
+      seek(player.currentTime + action.delta);
+      return;
+    case "volume": {
+      // 与手势同一条落点（onGesture 统一处理 HUD、系统/应用音量、记忆）
+      const next = Math.min(100, Math.max(0, player.volume + action.delta));
+      onSetVolume(next);
+      return;
     }
-    case 'ArrowDown': {
-      const next = Math.max(0, player.volume - VOLUME_STEP);
-      onGesture({ type: 'volume', value: next, delta: next - player.volume });
-      break;
-    }
-    case 'f':
-    case 'F':
+    case "brightness":
+      onSetBrightness(
+        Math.min(BRIGHTNESS_MAX, Math.max(0, player.brightness + action.delta)),
+      );
+      return;
+    case "mute":
+      toggleMute();
+      return;
+    case "percent":
+      // 数字键 = 百分比定位（0→开头、9→九成处），比逐帧拖进度条快
+      if (player.duration > 0) seek(player.duration * (action.tenths / 10));
+      return;
+    case "fullscreen":
       void toggleFullscreen();
-      break;
-    case 'Escape':
+      return;
+    case "subtitle":
+      void toggleSubtitle();
+      return;
+    case "danmaku":
+      void toggleDanmaku();
+      return;
+    case "drawer":
+      if (drawerOpen.value) drawerOpen.value = false;
+      else openDrawer("ep");
+      return;
+    case "lock":
+      toggleScreenLock();
+      return;
+    case "help":
       if (gestureHelpVisible.value) closeGestureHelp();
-      else if (player.fullscreen) void exitFullscreen();
-      break;
-    default:
-      break;
+      else showGestureHelp();
+      return;
   }
 }
 
+/** `M`：音量归零但记住原档，再按一次还原；没有原档（本来就是 0）时给稿上的 60 */
+function toggleMute(): void {
+  if (player.volume > 0) {
+    volumeBeforeMute = player.volume;
+    onSetVolume(0);
+    return;
+  }
+  onSetVolume(volumeBeforeMute > 0 ? volumeBeforeMute : 60);
+}
+
+/**
+ * `S`：有轨可切就直接切/关，一轨都没有时打开字幕面板——
+ * 这键在没得切的情况下必须说句话，而不是什么都不发生。
+ * 原生引擎切内嵌轨（id 是数字），WebView 引擎切外挂轨，与面板同一条落点；
+ * `openSubtitlePanel()` 本身就按引擎分流（原生 = 内嵌字幕轨菜单），兜底不必再判一次。
+ */
+async function toggleSubtitle(): Promise<void> {
+  if (engineIsNative.value) {
+    if (subtitleOn.value) {
+      await onSelectEmbeddedSubtitle(null);
+      return;
+    }
+    const first = embeddedTracks.value.text[0]?.id;
+    if (first === undefined) {
+      openSubtitlePanel();
+      return;
+    }
+    await onSelectEmbeddedSubtitle(first);
+    return;
+  }
+  if (subtitleOn.value) {
+    await selectSubtitle(null);
+    return;
+  }
+  const first = player.subtitles[0]?.id;
+  if (!first) {
+    openSubtitlePanel();
+    return;
+  }
+  await selectSubtitle(first);
+}
+
+/** 滚轮调音量（稿：画面上一格 ±4）；锁屏与 PiP 下不接，且必须非被动才能吃掉页面滚动 */
+function onWheel(ev: WheelEvent): void {
+  if (screenLocked.value || pipActive.value) return;
+  if (shouldIgnoreShortcut(ev.target)) return;
+  ev.preventDefault();
+  const delta = ev.deltaY < 0 ? WHEEL_VOLUME_STEP : -WHEEL_VOLUME_STEP;
+  onSetVolume(Math.min(100, Math.max(0, player.volume + delta)));
+  nudgeControls();
+}
+
 onMounted(() => {
-  window.addEventListener('keydown', onKeydown);
+  window.addEventListener("keydown", onKeydown);
+  pictureRef.value?.addEventListener("wheel", onWheel, { passive: false });
 });
 
 /* 原生引擎（ExoPlayer）surface 在 WebView 之下：html/body/.app-root 任一不透明都会盖住画面 */
 watch(
   () => player.engineKind,
   (kind) => {
-    document.documentElement.classList.toggle('native-underlay', kind === 'native');
+    document.documentElement.classList.toggle(
+      "native-underlay",
+      kind === "native",
+    );
   },
 );
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown);
-  document.documentElement.classList.remove('native-underlay');
+  window.removeEventListener("keydown", onKeydown);
+  pictureRef.value?.removeEventListener("wheel", onWheel);
+  document.documentElement.classList.remove("native-underlay");
 });
 
 /* ---------- OPT-06 / EXT-07：画中画（PiP） ---------- */
@@ -2960,7 +3410,8 @@ function startPipPolling(): void {
   if (pipPollTimer !== null) return;
   pipPollTimer = setInterval(() => {
     void (async () => {
-      const active = (await playerCtl.controller.value?.isNativePipActive()) ?? false;
+      const active =
+        (await playerCtl.controller.value?.isNativePipActive()) ?? false;
       syncNativePipActive(active);
     })();
   }, PIP_POLL_MS);
@@ -2974,10 +3425,11 @@ async function initPip(): Promise<void> {
   pipActive.value = false;
   stopPipPolling();
 
-  if (player.engineKind === 'native') {
+  if (player.engineKind === "native") {
     pipNative.value = true;
     try {
-      pipSupported.value = (await playerCtl.controller.value?.isNativePipSupported()) ?? false;
+      pipSupported.value =
+        (await playerCtl.controller.value?.isNativePipSupported()) ?? false;
     } catch {
       pipSupported.value = false;
     }
@@ -3029,7 +3481,7 @@ async function togglePip(): Promise<void> {
   if (pipNative.value) {
     if (pipActive.value) {
       // Android 没有主动退出 PiP 的 API：引导用户操作小窗
-      toast.info('在画中画窗口里点关闭按钮或返回全屏即可退出', 2200);
+      toast.info("在画中画窗口里点关闭按钮或返回全屏即可退出", 2200);
       return;
     }
     try {
@@ -3038,7 +3490,7 @@ async function togglePip(): Promise<void> {
       startPipPolling();
     } catch (e) {
       // PiP 失败不阻断播放，仅提示（部分 ROM/设置会拒绝）
-      toast.info(toErrorShape(e, 'E_NOT_IMPLEMENTED').message);
+      toast.info(toErrorShape(e, "E_NOT_IMPLEMENTED").message);
       syncNativePipActive(false);
     }
     return;
@@ -3052,7 +3504,7 @@ async function togglePip(): Promise<void> {
     }
   } catch (e) {
     // PiP 失败不阻断播放，仅提示
-    toast.info(toErrorShape(e, 'E_NOT_IMPLEMENTED').message);
+    toast.info(toErrorShape(e, "E_NOT_IMPLEMENTED").message);
     pipActive.value = false;
   }
 }
@@ -3060,7 +3512,7 @@ async function togglePip(): Promise<void> {
 /** OPT-06：页面可见性变化时自动进入 PiP（设置开启 + 正在播放 + 非全屏） */
 function onVisibilityChangeForPip(): void {
   if (!pipSupported.value || !settings.settings?.pipAutoEnter) return;
-  if (document.visibilityState !== 'hidden') return;
+  if (document.visibilityState !== "hidden") return;
   if (!player.playing) return;
   if (player.fullscreen) return;
   if (pipActive.value) return;
@@ -3081,12 +3533,13 @@ function onVisibilityChangeForPip(): void {
 
 onMounted(() => {
   void initPip();
-  document.addEventListener('visibilitychange', onVisibilityChangeForPip);
+  document.addEventListener("visibilitychange", onVisibilityChangeForPip);
   // 回前台时补一次原生 PiP 状态（用户在小窗里点回 App 时退出 PiP）
   detachAppState = onAppStateChange((state) => {
-    if (state !== 'active' || !pipNative.value) return;
+    if (state !== "active" || !pipNative.value) return;
     void (async () => {
-      const active = (await playerCtl.controller.value?.isNativePipActive()) ?? false;
+      const active =
+        (await playerCtl.controller.value?.isNativePipActive()) ?? false;
       syncNativePipActive(active);
       if (active) startPipPolling();
     })();
@@ -3094,7 +3547,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  document.removeEventListener('visibilitychange', onVisibilityChangeForPip);
+  document.removeEventListener("visibilitychange", onVisibilityChangeForPip);
   detachAppState?.();
   detachAppState = null;
   stopPipPolling();
@@ -3113,7 +3566,7 @@ onBeforeUnmount(() => {
 <template>
   <main
     ref="rootRef"
-    class="player-root"
+    class="player-root pl-frame"
     :class="{
       'player-root--landscape': immersive,
       'player-root--native': player.engineKind === 'native',
@@ -3121,283 +3574,360 @@ onBeforeUnmount(() => {
     }"
     data-route="player"
   >
-    <!-- 竖屏顶部占位（保持返回按钮可见） -->
-    <div class="player-page">
-      <div ref="stageRef" class="player-stage">
-        <PlayerSurface
-          :subtitle-text="player.subtitleText"
-          :subtitle="localSubtitles"
-          :brightness="player.brightness"
-          :mask="player.levelSource === 'app'"
-          :immersive="immersive"
-          :ambilight-enabled="ambilightEnabled && !engineIsNative && !pipActive"
-          :ambilight-intensity="ambilightIntensity"
-          @ambilight-blocked="onAmbilightBlocked"
-        >
-          <!-- B2：纯音频模式原生画面层已隐藏，用海报 + 声波把「还在播」表达出来 -->
-          <div v-if="audioOnly && !pipActive" class="audio-stage">
-            <img
-              v-if="audioBlurSrc"
-              class="audio-stage__blur"
-              :src="audioBlurSrc"
-              alt=""
-              aria-hidden="true"
-              loading="lazy"
-              decoding="async"
-              draggable="false"
-            />
-            <div class="audio-stage__scrim" aria-hidden="true" />
-            <div class="audio-stage__body">
-              <div class="audio-stage__cover">
-                <PosterImage :src="item?.posterUrl ?? null" :alt="titleText" :fallback-title="titleText" eager />
-              </div>
-              <div class="audio-stage__meta">
-                <span class="audio-stage__badge">纯音频</span>
-                <p class="audio-stage__title">{{ titleText }}</p>
-                <p v-if="episodeLabel" class="audio-stage__sub">{{ episodeLabel }}</p>
-                <div
-                  class="audio-stage__bars"
-                  :class="{ 'audio-stage__bars--still': !player.playing }"
-                  aria-hidden="true"
-                >
-                  <i v-for="n in 5" :key="n" />
+    <!-- 播放器外壳：竖屏＝画面带 + 下方信息区，横屏/全屏＝画面铺满、信息区收起 -->
+    <div
+      class="player-page pl-shell"
+      :data-chrome="controlsVisible ? 'visible' : 'hidden'"
+      :data-fit="currentResizeMode"
+      :data-state="chromeState"
+      :data-help="gestureHelpVisible ? '1' : '0'"
+      :data-locked="screenLocked ? '1' : '0'"
+      :data-danmaku="danmakuSettings.enabled ? '1' : '0'"
+      :data-drawer="drawerOpen ? '1' : '0'"
+      :data-keynav="keyNav ? '1' : '0'"
+      @pointerdown="keyNav = false"
+    >
+      <div ref="stageRef" class="player-stage pl-stage">
+        <!-- 视频矩形：所有 chrome 严格限制在这一层内，竖屏不再压住整块屏 -->
+        <div ref="pictureRef" class="pl-picture">
+          <PlayerSurface
+            :subtitle-text="player.subtitleText"
+            :subtitle="localSubtitles"
+            :brightness="player.brightness"
+            :mask="player.levelSource === 'app'"
+            :immersive="immersive"
+            :ambilight-enabled="
+              ambilightEnabled && !engineIsNative && !pipActive
+            "
+            :ambilight-intensity="ambilightIntensity"
+            :native-engine="engineIsNative"
+            @ambilight-blocked="onAmbilightBlocked"
+          >
+            <!-- B2：纯音频模式原生画面层已隐藏，用海报 + 声波把「还在播」表达出来 -->
+            <div v-if="audioOnly && !pipActive" class="audio-stage">
+              <img
+                v-if="audioBlurSrc"
+                class="audio-stage__blur"
+                :src="audioBlurSrc"
+                alt=""
+                aria-hidden="true"
+                loading="lazy"
+                decoding="async"
+                draggable="false"
+              />
+              <div class="audio-stage__scrim" aria-hidden="true" />
+              <div class="audio-stage__body">
+                <div class="audio-stage__cover">
+                  <PosterImage
+                    :src="item?.posterUrl ?? null"
+                    :alt="titleText"
+                    :fallback-title="titleText"
+                    eager
+                  />
+                </div>
+                <div class="audio-stage__meta">
+                  <span class="audio-stage__badge">纯音频</span>
+                  <p class="audio-stage__title">{{ titleText }}</p>
+                  <p v-if="episodeLabel" class="audio-stage__sub">
+                    {{ episodeLabel }}
+                  </p>
+                  <div
+                    class="audio-stage__bars"
+                    :class="{ 'audio-stage__bars--still': !player.playing }"
+                    aria-hidden="true"
+                  >
+                    <i v-for="n in 5" :key="n" />
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <!-- A-03：拖动进度时把目标帧垫在主画面位置，引擎到位后撤掉 -->
-          <div v-if="seekPreviewUrl && !pipActive" class="seek-preview" aria-hidden="true">
-            <img :src="seekPreviewUrl" alt="" draggable="false" />
-          </div>
-
-          <!-- B-06：播放头进入片头/片尾区时出胶囊；右下角让给连播提示时不出 -->
-          <SkipIntroPrompt
-            v-if="skipZone && !pipActive && countdown === null"
-            :zone="skipZone"
-            :countdown="skipCountdown"
-            :total="skipIntro.total"
-            :auto="skipAuto"
-            @skip="skipIntro.skip"
-            @dismiss="skipIntro.dismiss"
-          />
-
-          <!-- B-04：点中弹幕后浮在它头顶的操作条（canvas 不吃指针，靠手势层递坐标） -->
-          <DanmakuActions
-            v-if="danmakuPicked"
-            :pick="danmakuPicked"
-            :liked="danmakuLiked"
-            :like-count="danmakuLikeCount"
-            @like="onDanmakuLike"
-            @copy="danmakuPick.copyText"
-            @locate="danmakuPick.locate"
-            @close="danmakuPick.close"
-          />
-
-          <GestureLayer
-            v-if="!pageLoading && !loadError && !player.error && !screenLocked"
-            :seek-max-sec="gestureSettings.seekMaxSec"
-            :sensitivity="gestureSettings.sensitivity"
-            :long-press-help-enabled="gestureHelpEnabled"
-            @intent="onStageIntent"
-            @pointer-down="onGesturePointerDown"
-          />
-
-          <!-- P1-1：手势引导（首次进入自动显示） -->
-          <GestureGuide v-if="!pageLoading && !loadError && !player.error && !screenLocked" />
-
-          <!-- OPT-10：手势帮助浮层（暂停态长按 3 秒 / 「更多 → 手势说明」） -->
-          <GestureHelpOverlay :visible="gestureHelpVisible" @close="closeGestureHelp" />
-
-          <PlayerHud
-            :kind="hud.kind"
-            :value="hud.value"
-            :delta-sec="hud.deltaSec"
-            :rate="player.rate"
-          />
-
-          <PlayerControls
-            v-if="!loadError"
-            :visible="controlsVisible && !screenLocked"
-            :title="titleText"
-            :episode-label="episodeLabel"
-            :playing="player.playing"
-            :waiting="player.loading || player.waiting"
-            :current-time="player.currentTime"
-            :duration="player.duration"
-            :buffered="player.buffered"
-            :rate="player.rate"
-            :can-prev="canPrev"
-            :can-next="canNext"
-            :show-episode-nav="hasEpisodeNav"
-            :fullscreen="player.fullscreen"
-            :subtitle-active="player.activeSubtitleId !== null"
-            :quality-label="qualityLabel"
-            :can-download="!!currentEpisode"
-            :downloading="downloading"
-            :cast-disabled="castSupported === false"
-            :immersive="immersive"
-            :compact="!immersive"
-            :danmaku-enabled="danmakuSettings.enabled"
-            :seek-step="playerSettings.seekStepSec"
-            :pip-supported="pipSupported"
-            :pip-active="pipActive"
-            :film="seekFilm"
-            :marks="skipMarks"
-            @back="goBack"
-            @toggle-play="togglePlay"
-            @prev="goToPrevEpisode"
-            @next="goToNextEpisode"
-            @seek="onSeekCommit"
-            @seeking="onSeekPreview"
-            @open-speed="speedOpen = true"
-            @open-subtitle="openSubtitlePanel"
-            @open-quality="qualityOpen = true"
-            @open-display-mode="displayModeOpen = true"
-            @toggle-fullscreen="toggleFullscreen"
-            @download="onDownloadCurrent"
-            @cast="onCast"
-            @toggle-danmaku="toggleDanmaku"
-            @open-danmaku-settings="danmakuOpen = true"
-            @open-danmaku-style="danmakuStylePanelOpen = !danmakuStylePanelOpen"
-            @toggle-pip="togglePip"
-          />
-
-          <!-- EXT-07：沉浸态音轨入口（横屏控制条没有音轨位，用浮动胶囊补齐） -->
-          <button
-            v-if="engineIsNative && immersive && !pipActive && !screenLocked && embeddedTracks.audio.length > 0"
-            class="player-audio-chip"
-            :class="{ 'player-audio-chip--hidden': !controlsVisible }"
-            type="button"
-            :aria-label="`音轨：${audioChipLabel}`"
-            data-test="player-audio-chip"
-            @click="openEmbeddedAudioMenu"
-          >
-            {{ audioChipLabel }}
-          </button>
-
-          <!-- loading -->
-          <div v-if="pageLoading && !loadError" class="player-loading" role="status" aria-live="polite">
-            <PlayLoadingBar
-              :progress="loadingProgress"
-              :stage-text="loadingStageText"
-              :elapsed="loadingElapsed"
-            />
-            <button class="btn btn--ghost btn--sm" type="button" @click="goBack">取消</button>
-          </div>
-
-          <!-- 错误面板 -->
-          <PlayerErrorPanel
-            v-if="player.error && !pageLoading"
-            :error="player.error"
-            :can-switch-line="lines.length > 1 && currentPlayback?.isLocal !== true"
-            :can-switch-source="canSwitchSourceManual"
-            :can-health-check="canHealthCheck"
-            :can-redownload="localStallTaskId !== null"
-            @retry="retryPanel"
-            @switch-line="onSwitchLine"
-            @switch-source="onSwitchSource"
-            @health-check="goHealthCheck"
-            @redownload="onRedownload"
-            @back="openDetail"
-            @copy="copyError"
-            @open-external="openExternalUrl"
-          />
-
-          <!-- 页面级错误（详情/解析失败） -->
-          <div v-if="loadError && !player.error" class="player-loading" role="alert">
-            <!-- REV-24：详情失败时用上下文文案，否则用原始 loadError -->
-            <p class="player-loading__text">{{ detailErrorMessage ?? loadError }}</p>
-            <!-- P0-1：给出可行动原因（源站死 / 超时 / 磁力 / 规则脚本异常） -->
-            <p v-if="loadErrorGuidance" class="player-loading__hint">{{ loadErrorGuidance.hint }}</p>
-            <!-- P1-1：目标集定位失败时说明原因，不假装"重试"能解决 -->
-            <p v-if="targetEpisodeMissing" class="player-loading__hint" data-test="episode-missing-hint">
-              源可能更新过选集，这一集已经不在当前线路里了；可在下方选集或换线路
-            </p>
-            <div class="player-loading__actions">
-              <!-- REV-24：源已移除时提供删除记录入口 -->
-              <button
-                v-if="detailErrorKind === 'source-removed'"
-                class="btn btn--primary btn--sm"
-                type="button"
-                @click="removeHistoryAndGoBack"
-              >
-                删除记录并返回
-              </button>
-              <!-- P1-4：磁力链接只能外部打开，重试无意义 -->
-              <button
-                v-else-if="loadErrorMagnet"
-                class="btn btn--primary btn--sm"
-                type="button"
-                @click="openExternalUrl(loadErrorMagnet)"
-              >
-                用外部应用打开
-              </button>
-              <!-- P1-1：定位不到目标集时，"从头开始"必须是用户明确选的，不是静默兜底 -->
-              <button
-                v-else-if="targetEpisodeMissing"
-                class="btn btn--primary btn--sm"
-                type="button"
-                data-test="play-first-episode"
-                @click="playFromFirstEpisode"
-              >
-                从第 1 集播放
-              </button>
-              <button
-                v-else-if="!loadErrorMagnet"
-                class="btn btn--primary btn--sm"
-                type="button"
-                @click="resolveAndLoad"
-              >
-                重试
-              </button>
-              <!-- v1.8/CHG-26：解析失败常是源坏了，直接给换源路径 -->
-              <button
-                v-if="canSwitchSourceManual"
-                class="btn btn--secondary btn--sm"
-                type="button"
-                @click="onSwitchSource"
-              >
-                换源重播
-              </button>
-              <button class="btn btn--ghost btn--sm" type="button" @click="openDetail">返回详情</button>
+            <!-- A-03：拖动进度时把目标帧垫在主画面位置，引擎到位后撤掉 -->
+            <div
+              v-if="seekPreviewUrl && !pipActive"
+              class="seek-preview"
+              aria-hidden="true"
+            >
+              <img :src="seekPreviewUrl" alt="" draggable="false" />
             </div>
-          </div>
 
-          <!-- 自动连播 -->
-          <NextEpisodePrompt
-            v-if="countdown !== null"
-            mode="auto-next"
-            :countdown="countdown"
-            :next-label="canNext ? '下一集' : ''"
-            @confirm="goToNextEpisode"
-            @cancel="cancelAutoNext"
+            <!-- B-04：点中弹幕后浮在它头顶的操作条（canvas 不吃指针，靠手势层递坐标） -->
+            <DanmakuActions
+              v-if="danmakuPicked"
+              :pick="danmakuPicked"
+              :liked="danmakuLiked"
+              :like-count="danmakuLikeCount"
+              @like="onDanmakuLike"
+              @copy="danmakuPick.copyText"
+              @locate="danmakuPick.locate"
+              @close="danmakuPick.close"
+            />
+
+            <GestureLayer
+              v-if="
+                !pageLoading && !loadError && !player.error && !screenLocked
+              "
+              :seek-max-sec="gestureSettings.seekMaxSec"
+              :sensitivity="gestureSettings.sensitivity"
+              :long-press-help-enabled="gestureHelpEnabled"
+              @intent="onStageIntent"
+              @pointer-down="onGesturePointerDown"
+            />
+
+            <!-- P1-1：手势引导（首次进入自动显示） -->
+            <GestureGuide
+              v-if="
+                !pageLoading && !loadError && !player.error && !screenLocked
+              "
+            />
+
+            <PlayerHud
+              :kind="hud.kind"
+              :value="hud.value"
+              :delta-sec="hud.deltaSec"
+              :rate="player.rate"
+            />
+
+            <PlayerControls
+              v-if="!loadError"
+              :visible="controlsVisible && !screenLocked"
+              :title="titleText"
+              :ep-index="epIndex"
+              :ep-total="epTotal"
+              :playing="player.playing"
+              :waiting="player.loading || player.waiting"
+              :current-time="player.currentTime"
+              :duration="player.duration"
+              :buffered="player.buffered"
+              :rate="player.rate"
+              :can-prev="canPrev"
+              :can-next="canNext"
+              :show-episode-nav="hasEpisodeNav"
+              :fullscreen="player.fullscreen"
+              :subtitle-active="subtitleOn"
+              :quality-label="qualityLabel"
+              :line-name="currentLine?.name ?? ''"
+              :danmaku-enabled="danmakuSettings.enabled"
+              :seek-step="playerSettings.seekStepSec"
+              :volume="player.volume"
+              :brightness="player.brightness"
+              :locked="screenLocked"
+              :skip-zone="pipActive || countdown !== null ? null : skipZone"
+              :skip-target-sec="skipTargetSec"
+              :film="seekFilm"
+              :marks="skipMarks"
+              @back="goBack"
+              @toggle-play="togglePlay"
+              @prev="goToPrevEpisode"
+              @next="goToNextEpisode"
+              @seek="onSeekCommit"
+              @seeking="onSeekPreview"
+              @set-rate="onSetRate"
+              @set-volume="onSetVolume"
+              @set-brightness="onSetBrightness"
+              @open-quality="openDrawer('av')"
+              @open-line="openDrawer('line')"
+              @open-subtitle="openSubtitlePanel"
+              @open-episodes="openDrawer('ep')"
+              @open-more="openDrawer('more')"
+              @toggle-danmaku="toggleDanmaku"
+              @toggle-fullscreen="toggleFullscreen"
+              @toggle-lock="toggleScreenLock"
+              @skip="skipIntro.skip"
+              @skip-dismiss="skipIntro.dismiss"
+              @pause-auto-hide="pauseAutoHide"
+              @nudge="nudgeControls"
+            />
+
+            <!-- EXT-07：沉浸态音轨入口（横屏控制条没有音轨位，用浮动胶囊补齐） -->
+            <button
+              v-if="
+                engineIsNative &&
+                immersive &&
+                !pipActive &&
+                !screenLocked &&
+                embeddedTracks.audio.length > 0
+              "
+              class="player-audio-chip"
+              :class="{ 'player-audio-chip--hidden': !controlsVisible }"
+              type="button"
+              :aria-label="`音轨：${audioChipLabel}`"
+              data-test="player-audio-chip"
+              @click="openEmbeddedAudioMenu"
+            >
+              {{ audioChipLabel }}
+            </button>
+
+            <!-- ⑦ 加载中 / 缓冲：同一层。加载交代「走到哪一步、等了多久」，
+                 缓冲只交代在等——分阶段信息只在首次起播那条链上才有。 -->
+            <div
+              v-if="chromeState === 'loading' || chromeState === 'buffering'"
+              class="pl-buf"
+              role="status"
+              aria-live="polite"
+            >
+              <PlayLoadingBar
+                v-if="chromeState === 'loading'"
+                :progress="loadingProgress"
+                :stage-text="loadingStageText"
+                :elapsed="loadingElapsed"
+              />
+              <template v-else>
+                <span class="pl-buf__ring" aria-hidden="true" />
+                <p class="pl-buf__text">正在缓冲…</p>
+              </template>
+              <div v-if="chromeState === 'loading'" class="pl-buf__acts">
+                <button
+                  class="pl-cta pl-cta--ghost"
+                  type="button"
+                  @click="goBack"
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+
+            <!-- 错误面板 -->
+            <PlayerErrorPanel
+              v-if="player.error && !pageLoading"
+              :error="player.error"
+              :can-switch-line="
+                lines.length > 1 && currentPlayback?.isLocal !== true
+              "
+              :can-switch-source="canSwitchSourceManual"
+              :can-health-check="canHealthCheck"
+              :can-redownload="localStallTaskId !== null"
+              @retry="retryPanel"
+              @switch-line="onSwitchLine"
+              @switch-source="onSwitchSource"
+              @health-check="goHealthCheck"
+              @redownload="onRedownload"
+              @back="openDetail"
+              @copy="copyError"
+              @open-external="openExternalUrl"
+            />
+
+            <!-- ⑦ 页面级错误（详情/解析失败）：与 PlayerErrorPanel 同一个 pl-err 壳，只换内容 -->
+            <div v-if="loadError && !player.error" class="pl-err" role="alert">
+              <div class="pl-err__card">
+                <!-- REV-24：详情失败时用上下文文案，否则用原始 loadError -->
+                <h2 class="pl-err__title">
+                  {{ detailErrorMessage ?? loadError }}
+                </h2>
+                <!-- P0-1：给出可行动原因（源站死 / 超时 / 磁力 / 规则脚本异常） -->
+                <p v-if="loadErrorGuidance" class="pl-err__desc">
+                  {{ loadErrorGuidance.hint }}
+                </p>
+                <!-- P1-1：目标集定位失败时说明原因，不假装"重试"能解决 -->
+                <p
+                  v-if="targetEpisodeMissing"
+                  class="pl-err__desc"
+                  data-test="episode-missing-hint"
+                >
+                  源可能更新过选集，这一集已经不在当前线路里了；可在下方选集或换线路
+                </p>
+                <div class="pl-err__acts">
+                  <!-- REV-24：源已移除时提供删除记录入口 -->
+                  <button
+                    v-if="detailErrorKind === 'source-removed'"
+                    class="pl-cta"
+                    type="button"
+                    @click="removeHistoryAndGoBack"
+                  >
+                    删除记录并返回
+                  </button>
+                  <!-- P1-4：磁力链接只能外部打开，重试无意义 -->
+                  <button
+                    v-else-if="loadErrorMagnet"
+                    class="pl-cta"
+                    type="button"
+                    @click="openExternalUrl(loadErrorMagnet)"
+                  >
+                    用外部应用打开
+                  </button>
+                  <!-- P1-1：定位不到目标集时，"从头开始"必须是用户明确选的，不是静默兜底 -->
+                  <button
+                    v-else-if="targetEpisodeMissing"
+                    class="pl-cta"
+                    type="button"
+                    data-test="play-first-episode"
+                    @click="playFromFirstEpisode"
+                  >
+                    从第 1 集播放
+                  </button>
+                  <button
+                    v-else-if="!loadErrorMagnet"
+                    class="pl-cta"
+                    type="button"
+                    @click="resolveAndLoad"
+                  >
+                    重试
+                  </button>
+                  <!-- v1.8/CHG-26：解析失败常是源坏了，直接给换源路径 -->
+                  <button
+                    v-if="canSwitchSourceManual"
+                    class="pl-cta pl-cta--ghost"
+                    type="button"
+                    @click="onSwitchSource"
+                  >
+                    换源重播
+                  </button>
+                  <button
+                    class="pl-cta pl-cta--ghost"
+                    type="button"
+                    @click="openDetail"
+                  >
+                    返回详情
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 自动连播 -->
+            <NextEpisodePrompt
+              v-if="countdown !== null"
+              mode="auto-next"
+              :countdown="countdown"
+              :next-label="canNext ? '下一集' : ''"
+              @confirm="goToNextEpisode"
+              @cancel="cancelAutoNext"
+            />
+
+            <!-- 回前台续播 -->
+            <NextEpisodePrompt
+              v-if="backgroundPaused"
+              mode="resume"
+              @confirm="onBackgroundContinue"
+              @cancel="onBackgroundExit"
+            />
+
+            <!-- B4：屏幕锁（⑦）：拦截与解锁键都在 pl-lock 层，靠 --z-lock 压住上面各层，
+                 不再依赖 DOM 顺序；抽屉/折叠区已在 toggleScreenLock() 里真关掉。
+                 竖屏也生效（稿 `K`）：锁屏层只铺画面矩形，信息区靠 inert 让位，
+                 出口是层内那枚常驻解锁键——退出全屏会自动解锁，但竖屏本来就没有全屏可退。 -->
+            <PlayerScreenLock
+              v-if="!pipActive && !loadError && !player.error"
+              :locked="screenLocked"
+              @toggle="toggleScreenLock"
+            />
+          </PlayerSurface>
+
+          <!-- 弹幕样式实时调节面板（非模态，叠在视频矩形内） -->
+          <DanmakuStylePanel
+            :open="danmakuStylePanelOpen && !screenLocked"
+            :contrast-blocked="danmakuContrastBlocked"
           />
-
-          <!-- 回前台续播 -->
-          <NextEpisodePrompt
-            v-if="backgroundPaused"
-            mode="resume"
-            @confirm="onBackgroundContinue"
-            @cancel="onBackgroundExit"
-          />
-
-          <!-- B4：横屏屏幕锁（放在最后，锁定态拦截片要盖住上面所有交互层） -->
-          <PlayerScreenLock
-            v-if="immersive && !pipActive && !loadError && !player.error"
-            :locked="screenLocked"
-            :revealed="lockPillVisible"
-            @toggle="toggleScreenLock"
-            @reveal="revealLockPill"
-          />
-        </PlayerSurface>
-
-        <!-- 弹幕样式实时调节面板（非模态，叠在 player-stage 内） -->
-        <DanmakuStylePanel :open="danmakuStylePanelOpen && !screenLocked" :contrast-blocked="danmakuContrastBlocked" />
+        </div>
+        <!-- /.pl-picture -->
       </div>
 
-      <!-- 竖屏下方信息区（全屏时隐藏） -->
-      <div v-if="!immersive" class="player-info">
+      <!-- ⑥ 竖屏下方信息区（横屏/全屏隐藏，入口由 chrome 与更多面板承载） -->
+      <section
+        v-if="!immersive"
+        class="pl-fold"
+        :inert="screenLocked || undefined"
+        aria-label="播放信息与快捷控制"
+      >
         <!-- 黑屏检测：声音在播但一帧画面都没解出来（多为 WebView 不支持该编码） -->
         <div
           v-if="noVideo && !noVideoDismissed && !pageLoading && !player.error"
@@ -3407,10 +3937,15 @@ onBeforeUnmount(() => {
         >
           <p class="player-novideo__title">当前线路只有声音，没有画面</p>
           <p class="player-novideo__hint">
-            该视频编码（常见 HEVC）WebView 解不出来，换线路或改用原生引擎通常可解。
+            该视频编码（常见 HEVC）WebView
+            解不出来，换线路或改用原生引擎通常可解。
           </p>
           <div class="player-novideo__actions">
-            <button class="btn btn--primary btn--sm" type="button" @click="retryWithNativeEngine">
+            <button
+              class="btn btn--primary btn--sm"
+              type="button"
+              @click="retryWithNativeEngine"
+            >
               用原生引擎重试
             </button>
             <button
@@ -3421,18 +3956,19 @@ onBeforeUnmount(() => {
             >
               换线路
             </button>
-            <button class="btn btn--ghost btn--sm" type="button" @click="dismissNoVideo">
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              @click="dismissNoVideo"
+            >
               继续听声音
             </button>
           </div>
         </div>
 
-
-        <h1 class="player-info__title">{{ titleText }}</h1>
-        <p v-if="episodeLabel" class="player-info__episode">{{ episodeLabel }}</p>
         <p
           v-if="offlineEpisodeNumber !== null"
-          class="player-info__offline"
+          class="pl-fold__offline"
           role="status"
           data-test="episode-offline"
         >
@@ -3446,7 +3982,9 @@ onBeforeUnmount(() => {
           role="status"
           data-test="local-missing"
         >
-          <span class="player-local-missing__text">本地文件不可用，已切换网络源</span>
+          <span class="player-local-missing__text"
+            >本地文件不可用，已切换网络源</span
+          >
           <button
             class="btn btn--secondary btn--sm player-local-missing__btn"
             type="button"
@@ -3454,7 +3992,7 @@ onBeforeUnmount(() => {
             :disabled="redownloading"
             @click="onRedownload"
           >
-            {{ redownloading ? '重新下载中…' : '重新下载' }}
+            {{ redownloading ? "重新下载中…" : "重新下载" }}
           </button>
         </div>
 
@@ -3465,7 +4003,9 @@ onBeforeUnmount(() => {
           role="status"
           data-test="local-stall"
         >
-          <span class="player-local-missing__text">离线文件异常（时间轴停滞或解码损坏），本机播放器无法续读</span>
+          <span class="player-local-missing__text"
+            >离线文件异常（时间轴停滞或解码损坏），本机播放器无法续读</span
+          >
           <button
             class="btn btn--secondary btn--sm player-local-missing__btn"
             type="button"
@@ -3473,103 +4013,508 @@ onBeforeUnmount(() => {
             :disabled="redownloading"
             @click="onRedownload"
           >
-            {{ redownloading ? '重新下载中…' : '重新下载' }}
+            {{ redownloading ? "重新下载中…" : "重新下载" }}
           </button>
         </div>
 
-        <div class="player-info__actions">
-          <button class="player-info__action" type="button" @click="pickerOpen = true">
-            <IconDownload :size="18" />
-            下载
+        <p class="pl-fold__stat">
+          <span>
+            已观看 <b>{{ formatPlayerClock(player.currentTime) }}</b> /
+            <span class="pl-num">{{ formatPlayerClock(player.duration) }}</span>
+          </span>
+          <span class="sep">·</span>
+          <span
+            >缓冲 <b>{{ foldBufferPercent }}%</b></span
+          >
+          <span class="sep">·</span>
+          <span>进度每 5 秒自动保存</span>
+        </p>
+
+        <!-- 常驻滑杆：手势之外的可见入口（画面上左半屏亮度 / 右半屏音量依旧可拖） -->
+        <div class="pl-fold__sliders">
+          <div class="pl-slider-cell">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4Z" />
+              <path d="M15.4 9a4.2 4.2 0 0 1 0 6" />
+            </svg>
+            <input
+              class="pl-rng"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              :value="player.volume"
+              :style="{ '--fill': `${player.volume}%` }"
+              aria-label="音量"
+              @input="onFoldVolume"
+            />
+            <span class="pl-num">{{ Math.round(player.volume) }}</span>
+          </div>
+          <div class="pl-slider-cell">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="3.6" />
+              <path
+                d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.5 1.5M16.9 16.9l1.5 1.5M18.4 5.6l-1.5 1.5M7.1 16.9l-1.5 1.5"
+              />
+            </svg>
+            <input
+              class="pl-rng"
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              :value="player.brightness"
+              :style="{ '--fill': `${player.brightness}%` }"
+              aria-label="屏幕亮度"
+              @input="onFoldBrightness"
+            />
+            <span class="pl-num">{{ Math.round(player.brightness) }}</span>
+          </div>
+        </div>
+
+        <div class="pl-fold__acts">
+          <button
+            class="pl-act"
+            type="button"
+            :disabled="episodes.length < 2"
+            @click="openDrawer('ep')"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M4 7h11M4 12h11M4 17h7" />
+              <path d="M18.5 9.5 21 12l-2.5 2.5" />
+            </svg>
+            选集
+            <span v-if="epTotal > 1" class="pl-num"
+              >{{ epIndex }}/{{ epTotal }}</span
+            >
           </button>
           <button
-            class="player-info__action"
-            :class="{ 'player-info__action--on': isFavorite }"
+            class="pl-act"
             type="button"
+            :disabled="lines.length < 2"
+            @click="openDrawer('line')"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M12 20v-8" />
+              <path d="M7.8 8.2a6 6 0 1 1 8.4 0" />
+              <path d="M9.6 11.6a3.4 3.4 0 1 1 4.8 0" />
+            </svg>
+            线路
+          </button>
+          <button class="pl-act" type="button" @click="openDrawer('av')">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <path d="M4 17V7M10 17v-6M16 17v-9M22 17v-4" />
+            </svg>
+            音画
+          </button>
+          <button
+            class="pl-act"
+            type="button"
+            :aria-pressed="isFavorite"
             :disabled="favoritePending"
             @click="onToggleFavorite"
           >
-            <IconHeart :size="18" :filled="isFavorite" />
-            {{ isFavorite ? '已收藏' : '收藏' }}
+            <svg
+              viewBox="0 0 24 24"
+              :fill="isFavorite ? 'currentColor' : 'none'"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 4.6 14.1 9l4.9.7-3.6 3.4.9 4.8-4.3-2.3-4.3 2.3.9-4.8L5 9.7 9.9 9Z"
+              />
+            </svg>
+            {{ isFavorite ? "已收藏" : "收藏" }}
           </button>
           <button
-            class="player-info__action"
-            :class="{
-              'player-info__action--on': isFavorite,
-              'player-info__action--disabled': castSupported === false,
-            }"
+            class="pl-act"
             type="button"
-            :aria-label="castSupported === false ? '投屏（当前平台不支持投屏）' : '投屏'"
-            :aria-disabled="castSupported === false ? 'true' : undefined"
-            :disabled="castSupported === false"
-            :title="castSupported === false ? '当前平台不支持投屏' : undefined"
-            @click="onCast"
+            :disabled="downloading || !currentEpisode"
+            @click="pickerOpen = true"
           >
-            <IconCast :size="18" />
-            投屏
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M12 4v10M8 11l4 4 4-4M5 19h14" />
+            </svg>
+            {{ downloading ? "加入中…" : "下载本集" }}
           </button>
-          <!-- EXT-07：内嵌轨道入口（仅原生引擎；WebView 引擎没有内嵌轨可切） -->
-          <template v-if="engineIsNative">
-            <button
-              class="player-info__action"
-              :class="{ 'player-info__action--on': embeddedTracks.activeTextId !== null }"
-              type="button"
-              data-test="open-subtitle-tracks"
-              @click="openEmbeddedSubtitleMenu"
-            >
-              字幕轨
-            </button>
-            <button
-              class="player-info__action"
-              :class="{ 'player-info__action--on': embeddedTracks.audio.length > 1 }"
-              type="button"
-              data-test="open-audio-tracks"
-              @click="openEmbeddedAudioMenu"
-            >
-              音轨
-            </button>
-          </template>
           <button
-            class="player-info__action"
+            class="pl-act"
             type="button"
             data-test="open-more-sheet"
-            @click="moreOpen = true"
+            @click="openDrawer('more')"
           >
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <circle cx="5" cy="12" r="2" />
+              <circle cx="12" cy="12" r="2" />
+              <circle cx="19" cy="12" r="2" />
+            </svg>
             更多
           </button>
         </div>
-
-        <section v-if="episodes.length > 0" class="player-info__section">
-          <div class="player-info__head">
-            <h2 class="section-title">选集 <span class="player-info__count">共 {{ episodes.length }} 集</span></h2>
-            <LineSelector
-              v-if="lines.length > 1"
-              :lines="lines"
-              :model-value="currentLineId"
-              :line-statuses="lineStatuses"
-              :line-latencies="lineLatencies"
-              :recommended-line-id="recommendedLineId"
-              @update:model-value="onSwitchLineById"
-            />
-          </div>
+      </section>
+      <!-- ⑤' 播放面板抽屉：选集/线路/音画/更多四页签共用一个容器，
+         横屏＝画面让位的右侧栏，竖屏＝底部弹层（形态由容器查询选）。
+         内容仍是原来的面板组件与行项，只是关闭路径与遮罩只剩一份。 -->
+      <PlayerDrawer v-model:open="drawerOpen" v-model:tab="drawerTab">
+        <template #ep>
+          <p v-if="epTotal > 1" class="pl-pane__note">
+            全 {{ epTotal }} 集 · 当前第 {{ epIndex }} 集 · 绿点＝已下载
+          </p>
           <EpisodeList
             :episodes="episodes"
             :current-id="playingIdentity?.episodeId ?? null"
             :downloaded-ids="downloadedIds"
             @select="chooseEpisode"
           />
-        </section>
+        </template>
 
-        <p class="player-info__progress-note">
-          已看到 {{ formatClock(player.currentTime) }} / {{ formatClock(player.duration) }}
-          · 进度每 5 秒自动保存
-        </p>
-      </div>
+        <template #line>
+          <LineSelector
+            :lines="lines"
+            :model-value="currentLineId"
+            :line-statuses="lineStatuses"
+            :line-latencies="lineLatencies"
+            :recommended-line-id="recommendedLineId"
+            @update:model-value="onSwitchLineById"
+          />
+        </template>
+
+        <template #more>
+          <ul class="sheet-list">
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="openDetail"
+              >
+                查看详情
+              </button>
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="shareWatchCode"
+              >
+                生成观影口令
+              </button>
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="pickerOpen = true"
+              >
+                下载本集
+              </button>
+            </li>
+            <!-- FIX-PLAY-C3 / P2-2：自检只对本机文件产物有意义（blob 兜底没有文件可扫）；工具按容器分：TS 查包对齐，MP4 查轨道/时长/定位 -->
+            <li v-if="canScanLocalFile">
+              <button
+                class="sheet-list__item local-scan__item"
+                type="button"
+                :disabled="localScan?.running"
+                @click="runLocalFileScan"
+              >
+                <span>{{
+                  localScan?.running ? "正在自检文件…" : "文件自检"
+                }}</span>
+                <span class="sheet-list__value">{{
+                  localScanIsTs ? "TS 分片对齐诊断" : "MP4 轨道/时长/定位"
+                }}</span>
+              </button>
+              <p
+                v-if="localScan && !localScan.running"
+                class="sheet-list__note local-scan__result"
+              >
+                {{ localScan.text }}
+              </p>
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="skipMarkOpen = true"
+              >
+                片头 / 片尾标记
+              </button>
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="
+                  drawerOpen = false;
+                  sleepOpen = true;
+                "
+              >
+                <span>睡眠定时</span>
+                <span
+                  class="sheet-list__value"
+                  :class="{ 'sheet-list__value--on': sleepActive }"
+                >
+                  {{ sleepLabel }}
+                </span>
+              </button>
+            </li>
+            <li class="sheet-list__row">
+              <span class="sheet-list__label">
+                后台播放
+                <small class="sheet-list__note">
+                  {{
+                    engineIsNative
+                      ? "切到后台或锁屏后继续播放"
+                      : "仅原生播放器支持"
+                  }}
+                </small>
+              </span>
+              <ToggleSwitch
+                :model-value="backgroundPlayback"
+                :disabled="!engineIsNative"
+                label="后台播放"
+                @change="toggleBackgroundPlayback"
+              />
+            </li>
+            <li class="sheet-list__row">
+              <span class="sheet-list__label">
+                纯音频
+                <small class="sheet-list__note">
+                  {{
+                    engineIsNative
+                      ? "收起画面只听声音，省电省流量"
+                      : "仅原生播放器支持"
+                  }}
+                </small>
+              </span>
+              <ToggleSwitch
+                :model-value="audioOnly"
+                :disabled="!engineIsNative"
+                label="纯音频模式"
+                @change="setAudioOnly"
+              />
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                :aria-pressed="isFavorite"
+                :disabled="favoritePending"
+                @click="onToggleFavorite"
+              >
+                <span>收藏</span>
+                <span
+                  class="sheet-list__value"
+                  :class="{ 'sheet-list__value--on': isFavorite }"
+                >
+                  {{ isFavorite ? "已收藏" : "未收藏" }}
+                </span>
+              </button>
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                :disabled="castSupported === false"
+                @click="
+                  drawerOpen = false;
+                  onCast();
+                "
+              >
+                投屏
+              </button>
+            </li>
+            <li v-if="pipSupported">
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="
+                  drawerOpen = false;
+                  togglePip();
+                "
+              >
+                {{ pipActive ? "退出画中画" : "画中画" }}
+              </button>
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="
+                  drawerOpen = false;
+                  showGestureHelp();
+                "
+              >
+                手势说明
+              </button>
+            </li>
+          </ul>
+        </template>
+
+        <!-- ⑥「音画」页签：倍速/画质/画面比例/字幕/音轨/弹幕参数收在一处 -->
+        <template #av>
+          <ul class="sheet-list">
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="
+                  drawerOpen = false;
+                  qualityOpen = true;
+                "
+              >
+                <span>画质</span>
+                <span class="sheet-list__value">{{ qualityLabel }}</span>
+              </button>
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="
+                  drawerOpen = false;
+                  displayModeOpen = true;
+                "
+              >
+                画面比例
+              </button>
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                :data-test="engineIsNative ? 'open-subtitle-tracks' : undefined"
+                @click="
+                  drawerOpen = false;
+                  openSubtitlePanel();
+                "
+              >
+                <span>字幕</span>
+                <span
+                  class="sheet-list__value"
+                  :class="{ 'sheet-list__value--on': subtitleOn }"
+                >
+                  {{ subtitleOn ? "已开启" : "未开启" }}
+                </span>
+              </button>
+            </li>
+            <!-- EXT-07：内嵌音轨仅原生引擎可切，WebView 引擎没有内嵌轨 -->
+            <li v-if="engineIsNative">
+              <button
+                class="sheet-list__item"
+                type="button"
+                data-test="open-audio-tracks"
+                @click="
+                  drawerOpen = false;
+                  openEmbeddedAudioMenu();
+                "
+              >
+                <span>音轨</span>
+                <span class="sheet-list__value">
+                  {{
+                    embeddedTracks.audio.length > 1
+                      ? `${embeddedTracks.audio.length} 条`
+                      : "默认"
+                  }}
+                </span>
+              </button>
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="
+                  drawerOpen = false;
+                  danmakuOpen = true;
+                "
+              >
+                <span>弹幕设置</span>
+                <span
+                  class="sheet-list__value"
+                  :class="{ 'sheet-list__value--on': danmakuSettings.enabled }"
+                >
+                  {{ danmakuSettings.enabled ? "已开启" : "已关闭" }}
+                </span>
+              </button>
+            </li>
+            <li v-if="danmakuSettings.enabled">
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="
+                  drawerOpen = false;
+                  danmakuStylePanelOpen = true;
+                "
+              >
+                弹幕样式
+              </button>
+            </li>
+          </ul>
+        </template>
+      </PlayerDrawer>
+
+      <!-- OPT-10：手势帮助浮层（暂停态长按 3 秒 / 「更多 → 手势说明」）
+           挂在壳层而不是画面矩形内（稿里 help 在 picture 下）：稿的竖屏没有信息区，
+           picture 就是整屏；真实页 390 宽的 16:9 画面带只有 ~219px，21 行快捷键
+           被压成 187px 的滚动卡。这里跟抽屉一样是「要给足高度的面板」，
+           横屏/全屏时 picture 与壳等尺寸，位置变化不影响观感。 -->
+      <GestureHelpOverlay
+        :visible="gestureHelpVisible"
+        @close="closeGestureHelp"
+      />
     </div>
 
     <!-- 面板 -->
     <SpeedSheet v-model="speedOpen" :rate="player.rate" @select="setRate" />
-    <DanmakuSettingsSheet v-model:open="danmakuOpen" :import-xml="importLocalDanmaku" />
+    <DanmakuSettingsSheet
+      v-model:open="danmakuOpen"
+      :import-xml="importLocalDanmaku"
+    />
     <SkipMarkSheet
       v-model="skipMarkOpen"
       :marks="skipMarks"
@@ -3607,79 +4552,6 @@ onBeforeUnmount(() => {
       @set-ambilight-intensity="setAmbilightIntensity"
     />
 
-    <BottomSheet v-model="episodeOpen" title="选集">
-      <EpisodeList
-        :episodes="episodes"
-        :current-id="playingIdentity?.episodeId ?? null"
-        @select="chooseEpisode"
-      />
-    </BottomSheet>
-
-    <BottomSheet v-model="moreOpen" title="更多">
-      <ul class="sheet-list">
-        <li><button class="sheet-list__item" type="button" @click="openDetail">查看详情</button></li>
-        <li><button class="sheet-list__item" type="button" @click="shareWatchCode">生成观影口令</button></li>
-        <li><button class="sheet-list__item" type="button" @click="pickerOpen = true">下载本集</button></li>
-        <!-- FIX-PLAY-C3：自检只对本机 .ts 产物有意义（转封装成 mp4 后不适用，blob 兜底没有文件可扫） -->
-        <li v-if="canScanLocalFile">
-          <button
-            class="sheet-list__item local-scan__item"
-            type="button"
-            :disabled="localScan?.running"
-            @click="runLocalFileScan"
-          >
-            <span>{{ localScan?.running ? '正在自检文件…' : '文件自检' }}</span>
-            <span class="sheet-list__value">TS 分片对齐诊断</span>
-          </button>
-          <p v-if="localScan && !localScan.running" class="sheet-list__note local-scan__result">
-            {{ localScan.text }}
-          </p>
-        </li>
-        <li><button class="sheet-list__item" type="button" @click="skipMarkOpen = true">片头 / 片尾标记</button></li>
-        <li>
-          <button class="sheet-list__item" type="button" @click="moreOpen = false; sleepOpen = true">
-            <span>睡眠定时</span>
-            <span class="sheet-list__value" :class="{ 'sheet-list__value--on': sleepActive }">
-              {{ sleepLabel }}
-            </span>
-          </button>
-        </li>
-        <li class="sheet-list__row">
-          <span class="sheet-list__label">
-            后台播放
-            <small class="sheet-list__note">
-              {{ engineIsNative ? '切到后台或锁屏后继续播放' : '仅原生播放器支持' }}
-            </small>
-          </span>
-          <ToggleSwitch
-            :model-value="backgroundPlayback"
-            :disabled="!engineIsNative"
-            label="后台播放"
-            @change="toggleBackgroundPlayback"
-          />
-        </li>
-        <li class="sheet-list__row">
-          <span class="sheet-list__label">
-            纯音频
-            <small class="sheet-list__note">
-              {{ engineIsNative ? '收起画面只听声音，省电省流量' : '仅原生播放器支持' }}
-            </small>
-          </span>
-          <ToggleSwitch
-            :model-value="audioOnly"
-            :disabled="!engineIsNative"
-            label="纯音频模式"
-            @change="setAudioOnly"
-          />
-        </li>
-        <li>
-          <button class="sheet-list__item" type="button" @click="moreOpen = false; showGestureHelp()">
-            手势说明
-          </button>
-        </li>
-      </ul>
-    </BottomSheet>
-
     <SleepTimerSheet
       v-model="sleepOpen"
       :choice="sleepChoice"
@@ -3692,8 +4564,13 @@ onBeforeUnmount(() => {
     <BottomSheet v-model="pickerOpen" :title="`下载 · ${titleText}`">
       <p class="picker-desc">将当前集加入下载队列。</p>
       <template #footer>
-        <button class="btn btn--primary btn--md picker-btn" type="button" :disabled="downloading" @click="onDownloadCurrent">
-          {{ downloading ? '加入中…' : '开始下载' }}
+        <button
+          class="btn btn--primary btn--md picker-btn"
+          type="button"
+          :disabled="downloading"
+          @click="onDownloadCurrent"
+        >
+          {{ downloading ? "加入中…" : "开始下载" }}
         </button>
       </template>
     </BottomSheet>
@@ -3720,33 +4597,17 @@ onBeforeUnmount(() => {
     />
 
     <!-- F2：连看里程碑爆米花桶仪式（暂停 / 片尾触发，不干扰播放） -->
-    <BingeCelebration :show="bingeShow" :title="item ? item.title : null" @dismiss="dismissBinge" />
+    <BingeCelebration
+      :show="bingeShow"
+      :title="item ? item.title : null"
+      @dismiss="dismissBinge"
+    />
   </main>
 </template>
 
 <style scoped>
-.player-root {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-  background-color: var(--color-bg-base);
-}
-
-.player-page {
-  display: flex;
-  flex-direction: column;
-  flex: 1 1 auto;
-  min-height: 0;
-}
-
-.player-stage {
-  position: relative;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  flex: 0 0 auto;
-  background-color: #000;
-}
+/* 骨架（frame/shell/stage/picture）的尺寸与背景由 player-chrome.css 的容器分档决定，
+   这里不再重复声明：scoped 选择器特异性更高，重复写会压掉横屏档。 */
 
 /*
  * A-03 拖动预览帧：铺在视频容器的位置上，用同样的 contain 留黑边，
@@ -3863,10 +4724,18 @@ onBeforeUnmount(() => {
   animation: audio-bar 900ms var(--ease-standard) infinite alternate;
 }
 
-.audio-stage__bars i:nth-child(2) { animation-duration: 620ms; }
-.audio-stage__bars i:nth-child(3) { animation-duration: 1080ms; }
-.audio-stage__bars i:nth-child(4) { animation-duration: 760ms; }
-.audio-stage__bars i:nth-child(5) { animation-duration: 940ms; }
+.audio-stage__bars i:nth-child(2) {
+  animation-duration: 620ms;
+}
+.audio-stage__bars i:nth-child(3) {
+  animation-duration: 1080ms;
+}
+.audio-stage__bars i:nth-child(4) {
+  animation-duration: 760ms;
+}
+.audio-stage__bars i:nth-child(5) {
+  animation-duration: 940ms;
+}
 
 .audio-stage__bars--still i {
   animation-play-state: paused;
@@ -3875,8 +4744,12 @@ onBeforeUnmount(() => {
 }
 
 @keyframes audio-bar {
-  from { transform: scaleY(0.2); }
-  to { transform: scaleY(1); }
+  from {
+    transform: scaleY(0.2);
+  }
+  to {
+    transform: scaleY(1);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3885,46 +4758,31 @@ onBeforeUnmount(() => {
     transform: scaleY(0.6);
   }
 
-  .audio-stage__bars i:nth-child(2) { transform: scaleY(0.9); }
-  .audio-stage__bars i:nth-child(4) { transform: scaleY(0.4); }
+  .audio-stage__bars i:nth-child(2) {
+    transform: scaleY(0.9);
+  }
+  .audio-stage__bars i:nth-child(4) {
+    transform: scaleY(0.4);
+  }
 }
 
-.player-root--landscape {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-player);
-  background-color: #000;
-}
-
-/* v1.8 修复：原生引擎 surface 在 WebView 之下，播放器背景需透明让视频透出 */
-.player-root--native {
-  background-color: transparent;
-}
-
-.player-root--native .player-stage {
-  background-color: transparent;
-}
-
-.player-root--native.player-root--landscape {
-  background-color: transparent;
-}
-
+/* v1.8 修复：原生引擎 surface 在 WebView 之下，播放器背景需透明让视频透出。
+   frame/shell/stage/picture 四层的透明由 player-chrome.css 统一声明，这里只补子组件。 */
 .player-root--native :deep(.player-surface) {
   background-color: transparent;
 }
 
 /* EXT-07：原生 PiP 小窗只留画面——信息区收起、画面铺满、浮动入口隐藏 */
-.player-root--pip .player-page {
-  height: 100%;
-}
-
-.player-root--pip .player-stage {
+.player-root--pip .pl-stage {
   flex: 1 1 auto;
-  aspect-ratio: auto;
-  height: 100%;
 }
 
-.player-root--pip .player-info {
+.player-root--pip .pl-picture {
+  height: 100%;
+  aspect-ratio: auto;
+}
+
+.player-root--pip .pl-fold {
   display: none;
 }
 
@@ -3953,7 +4811,9 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   transform: translateY(-50%);
-  transition: opacity var(--duration-slow) var(--ease-standard), var(--transition-color);
+  transition:
+    opacity var(--duration-slow) var(--ease-standard),
+    var(--transition-color);
 }
 
 .player-audio-chip:active {
@@ -3966,34 +4826,14 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 
-.player-root--landscape .player-page {
-  height: 100%;
-}
-
-.player-root--landscape .player-stage {
+/* 沉浸态（全屏）画面铺满：竖屏下全屏也不留 16:9 黑带，特异性压过容器分档 */
+.player-root--landscape .pl-stage {
   flex: 1 1 auto;
-  aspect-ratio: auto;
+}
+
+.player-root--landscape .pl-picture {
   height: 100%;
-}
-
-.player-loading {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-4);
-  background-color: rgba(0, 0, 0, 0.72);
-  color: #ffffff;
-  text-align: center;
-}
-
-.player-loading__text {
-  font: var(--text-label);
-  color: rgba(255, 255, 255, 0.86);
+  aspect-ratio: auto;
 }
 
 /* 黑屏检测提示条：放在竖屏信息区顶部（不覆盖画面，排版不受画面尺寸影响） */
@@ -4028,41 +4868,6 @@ onBeforeUnmount(() => {
   margin-top: var(--space-1);
 }
 
-/* P0-1：解析失败的可行动原因（分类建议），比错误标题低一级 */
-.player-loading__hint {
-  max-width: 260px;
-  font: var(--text-caption);
-  color: rgba(255, 255, 255, 0.6);
-  line-height: 1.6;
-}
-
-.player-loading__actions {
-  display: flex;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
-}
-
-.player-info {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--space-4) var(--layout-page-padding-x) calc(var(--space-6) + var(--safe-bottom));
-  /* 原生引擎模式下整页透明，信息区必须自带不透明底色，否则露出 Activity 白色窗口 */
-  background-color: var(--color-bg-base);
-}
-
-.player-info__title {
-  font: var(--text-title-2);
-  color: var(--color-text-primary);
-  overflow-wrap: anywhere;
-}
-
-.player-info__offline {
-  margin-top: var(--space-1);
-  font: var(--text-label);
-  color: var(--color-warning);
-}
-
 /* 本地文件不可用提示条（AC-78②） */
 .player-local-missing {
   display: flex;
@@ -4083,75 +4888,6 @@ onBeforeUnmount(() => {
 
 .player-local-missing__btn {
   flex: 0 0 auto;
-}
-
-.player-info__episode {
-  margin-top: var(--space-1);
-  font: var(--text-label);
-  color: var(--color-text-secondary);
-}
-
-.player-info__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-}
-
-.player-info__action {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: var(--space-1);
-  min-height: 40px;
-  padding: 0 var(--space-4);
-  white-space: nowrap;
-  border-radius: var(--radius-full);
-  background-color: var(--color-bg-surface);
-  border: var(--border-strong);
-  color: var(--color-text-primary);
-  font: var(--text-button-sm);
-}
-
-.player-info__action--on {
-  color: var(--color-brand-text);
-  border-color: var(--color-brand);
-  background-color: var(--color-brand-soft);
-}
-
-/* 投屏不可用（AC-84）：设计规范禁用色 + 不可点 */
-.player-info__action:disabled,
-.player-info__action--disabled {
-  color: var(--color-text-disabled);
-  border-color: var(--color-border);
-  background-color: transparent;
-  cursor: not-allowed;
-  pointer-events: none;
-}
-
-.player-info__section {
-  margin-top: var(--space-5);
-}
-
-.player-info__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-}
-
-.player-info__count {
-  margin-left: var(--space-2);
-  font: var(--text-caption);
-  color: var(--color-text-tertiary);
-}
-
-.player-info__progress-note {
-  margin-top: var(--space-4);
-  font: var(--text-caption);
-  color: var(--color-text-tertiary);
-  text-align: center;
 }
 
 .sheet-list {

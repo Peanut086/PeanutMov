@@ -24,3 +24,28 @@ export async function isPrewarmThrottled(): Promise<boolean> {
     return false;
   }
 }
+
+/**
+ * P1-3：用户点播在途计数。
+ *
+ * 分类页/详情页/搜索扇出前的预热走的是同一批爬虫实例，而用户点「播放」时等的正是同一条
+ * 原生串行闸门（`SpiderAdapter.reserveNativeCall`）。后台预热这时候插队，用户看到的就是
+ * 「该源正忙（上一次调用约 N 秒后结束）」——N 往往就是刚被预热吃掉的那次加载。
+ * 所以后台预热必须给点播让路：计数只由 `libraryService` 的播放解析路径增删。
+ */
+let playbackInFlight = 0;
+
+/** 点播解析开始（必须与 `endPlaybackDemand` 成对，用 try/finally 包住） */
+export function beginPlaybackDemand(): void {
+  playbackInFlight += 1;
+}
+
+/** 点播解析结束（含失败与取消） */
+export function endPlaybackDemand(): void {
+  playbackInFlight = Math.max(0, playbackInFlight - 1);
+}
+
+/** 是否有用户点播正在等爬虫实例——后台预热据此收手 */
+export function isPlaybackDemandInFlight(): boolean {
+  return playbackInFlight > 0;
+}

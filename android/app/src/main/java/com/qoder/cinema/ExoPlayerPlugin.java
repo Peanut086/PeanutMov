@@ -13,6 +13,7 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.util.Rational;
 import android.view.PixelCopy;
+import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
@@ -868,6 +869,9 @@ public class ExoPlayerPlugin extends Plugin {
     private void applyAudioOnly() {
         if (overlay != null) {
             overlay.setVisibility(audioOnly ? View.GONE : View.VISIBLE);
+            // P1-4：GONE 只是隐藏 SurfaceControl，surface 往往还 valid，holder 回调不会来。
+            // 取样目标在这一刻已经变了，必须显式换代并回执，否则 JS 会对着藏起来的画面继续轮询。
+            bumpSurfaceGeneration();
         }
         if (player == null) return;
         try {
@@ -999,6 +1003,8 @@ public class ExoPlayerPlugin extends Plugin {
             recycleLumaScratch();
             if (playerView != null) playerView.setPlayer(null);
             if (overlay != null) overlay.setVisibility(View.GONE);
+            // P1-4：离开播放页 = 取样目标作废，明确告诉 JS 停轮询（别等它自己数满失败次数）
+            bumpSurfaceGeneration();
             // 恢复 WebView 透明：让 CSS 主题背景负责绘制，避免深色主题下闪白
             getBridge().getWebView().setBackgroundColor(Color.TRANSPARENT);
             call.resolve();
@@ -1183,8 +1189,108 @@ public class ExoPlayerPlugin extends Plugin {
      * 复用同一张位图时被并发写入会取到半帧，所以这里直接让后来者拿到"本轮无帧"。
      */
     private boolean lumaBusy = false;
+    /** P1-4：已要求回收位图，但还有一帧在飞——等它落地再真的回收 */
+    private boolean lumaRetired = false;
     /** 降采样专用线程（惰性创建，单条串行，天然避免两轮同时写同一张位图） */
     private ExecutorService lumaDownsampler;
+
+    /**
+     * P1-4：取样目标的代次。surface 建/毁、纯音频收起画面、离开播放页都算换了一代。
+     *
+     * JS 侧据此做两件事：代次变了就丢掉手里那张旧亮度场（别把上一代画面的配色贴到新画面上），
+     * 以及 surface 无效时**停掉轮询**而不是每 333ms 白跑一次桥 + PixelCopy。
+     */
+    private int surfaceGeneration = 0;
+
+    /** P1-4 取证标签：只走 logcat，不进 SpiderLogStore，免得 3Hz 取样把日志页灌满 */
+    private static final String LUMA_TRACE_TAG = "ExoLuma";
+    /** 上一条取证属于哪一代 surface */
+    private int lumaLogGeneration = -1;
+    /** 上一条取证的结论，用于"只有翻转才落一行" */
+    private String lumaLogState = "";
+    /** sampleFrameLuma 被调起来的累计次数（不是真的截到帧的次数） */
+    private long lumaReads = 0;
+    /** 上一次取样尝试的时刻，用来识别"静默了 2s 以上又重新开始" */
+    private long lumaPrevAttemptAt = 0;
+    /** 静默多久算断档：稳态 3Hz（333ms）和恢复探测的 1Hz 都不算，暂停/退后台/引擎释放才跨得过去 */
+    private static final int LUMA_QUIET_GAP_MS = 2000;
+    /** 本轮 PixelCopy 发起时刻，只用于回执耗时取证 */
+    private long lumaCopyStartedAt = 0;
+
+    /**
+     * P1-4：取样结论只在**换代、结论翻转或断档后重新开始**时落一行 V 级日志。
+     *
+     * 稳态（同一代、同一结论、间隔没超过 2s）零输出，所以 3Hz 轮询不会淹掉 logcat；而"重新开始"
+     * 这一行本身带时间戳，和上一行一减就是验收要的 resumeMs。
+     */
+    private void logLumaTransition(String surfaceState, long elapsedMs) {
+        long now = SystemClock.elapsedRealtime();
+        boolean changed = surfaceGeneration != lumaLogGeneration || !surfaceState.equals(lumaLogState);
+        boolean resumed = now - lumaPrevAttemptAt > LUMA_QUIET_GAP_MS;
+        lumaPrevAttemptAt = now;
+        if (!changed && !resumed) return;
+        lumaLogGeneration = surfaceGeneration;
+        lumaLogState = surfaceState;
+        Log.v(LUMA_TRACE_TAG, "lumaState generation=" + surfaceGeneration
+                + " valid=" + surfaceSamplable()
+                + " surfaceState=" + surfaceState
+                + " reads=" + lumaReads
+                + " elapsedMs=" + elapsedMs
+                + (resumed && !changed ? " resumed=1" : ""));
+    }
+
+    /** 代次推进 + 当前可取样状态一起推给 JS（只在主线程调用） */
+    private void bumpSurfaceGeneration() {
+        surfaceGeneration += 1;
+        Log.v(LUMA_TRACE_TAG, "surfaceBump generation=" + surfaceGeneration + " valid=" + surfaceSamplable());
+        JSObject data = new JSObject();
+        data.put("state", "surface");
+        data.put("generation", surfaceGeneration);
+        data.put("valid", surfaceSamplable());
+        notifyListeners("exostate", data);
+    }
+
+    /**
+     * 现在能不能真的截到一帧。
+     *
+     * `isShown()` 不可省：纯音频只是把 overlay 设成 GONE，SurfaceView 的 surface 往往仍然
+     * valid（系统只隐藏 SurfaceControl 不销毁它），只看 `isValid()` 会对着藏起来的画面空转。
+     */
+    @OptIn(markerClass = UnstableApi.class)
+    private boolean surfaceSamplable() {
+        if (playerView == null) return false;
+        View surface = playerView.getVideoSurfaceView();
+        if (!(surface instanceof SurfaceView)) return false;
+        SurfaceView view = (SurfaceView) surface;
+        return view.isShown()
+                && view.getWindowToken() != null
+                && view.getHolder().getSurface().isValid()
+                && view.getWidth() >= 4
+                && view.getHeight() >= 4;
+    }
+
+    /** surface 建/毁即换代（Media3 自己也挂了回调，addCallback 是叠加不是替换） */
+    @OptIn(markerClass = UnstableApi.class)
+    private void watchSurface(PlayerView view) {
+        View surface = view.getVideoSurfaceView();
+        if (!(surface instanceof SurfaceView)) return;
+        ((SurfaceView) surface).getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {
+                bumpSurfaceGeneration();
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                // 只是尺寸变了：取样位图按尺寸自适应，不算换代
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                bumpSurfaceGeneration();
+            }
+        });
+    }
 
     @PluginMethod
     @OptIn(markerClass = UnstableApi.class)
@@ -1198,30 +1304,38 @@ public class ExoPlayerPlugin extends Plugin {
             return;
         }
         getBridge().executeOnMainThread(() -> {
+            lumaReads += 1;
             if (playerView == null) {
                 // 还没起播（PlayerView 未创建）：这条路是通的，只是本轮没帧
+                logLumaTransition("no-player", 0);
                 resolveLumaUnavailable(call);
                 return;
             }
             View surface = playerView.getVideoSurfaceView();
             if (!(surface instanceof SurfaceView)) {
                 // 纹理渲染 / 未挂播放器：系统没有可截的 surface，永久不通
+                logLumaTransition("unsupported", 0);
                 JSObject ret = new JSObject();
                 ret.put("unsupported", true);
+                ret.put("generation", surfaceGeneration);
                 call.resolve(ret);
                 return;
             }
+            // P1-4：surface 无效（未起播、纯音频收起画面、离开播放页、尺寸还没量出来）时
+            // 直接回执，不再排 PixelCopy 和 1.5s 兜底定时器——JS 收到这一档就停轮询等恢复。
+            if (!surfaceSamplable()) {
+                logLumaTransition("surface-invalid", 0);
+                resolveLumaSurfaceInvalid(call);
+                return;
+            }
             if (lumaBusy) {
+                logLumaTransition("busy", 0);
                 resolveLumaUnavailable(call);
                 return;
             }
             SurfaceView surfaceView = (SurfaceView) surface;
             int width = surfaceView.getWidth();
             int height = surfaceView.getHeight();
-            if (width < 4 || height < 4) {
-                resolveLumaUnavailable(call);
-                return;
-            }
             if (lumaFrame == null || lumaFrame.getWidth() != width || lumaFrame.getHeight() != height) {
                 if (lumaFrame != null) lumaFrame.recycle();
                 lumaFrame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
@@ -1230,18 +1344,21 @@ public class ExoPlayerPlugin extends Plugin {
             final Bitmap dest = lumaFrame;
             final int[] row = lumaRow;
             final JSObject box = lumaBoxOf(surfaceView);
+            // 抓帧是异步的：回执带上**发起时**的代次，JS 才能认出"这张图属于上一代 surface"
+            final int generation = surfaceGeneration;
             // SurfaceView 版 PixelCopy 只有异步回调（Window 版才同步返回状态），框架也不保证
             // 一定会回调，所以这一轮用 settled 收口一次：兜底超时与回调都排在 mainHandler 上，天然串行。
             final boolean[] settled = new boolean[1];
-            final Runnable deadline = () -> settleLuma(call, settled, null, null);
+            final Runnable deadline = () -> settleLuma(call, settled, null, null, generation);
             lumaBusy = true;
+            lumaCopyStartedAt = SystemClock.elapsedRealtime();
             mainHandler.postDelayed(deadline, LUMA_COPY_TIMEOUT_MS);
             try {
                 PixelCopy.request(surfaceView, dest, result -> {
                     mainHandler.removeCallbacks(deadline);
                     if (result != PixelCopy.SUCCESS) {
                         // 超时 / surface 暂无 buffer（切集、进 PiP、纯音频）：本轮无帧
-                        settleLuma(call, settled, null, null);
+                        settleLuma(call, settled, null, null, generation);
                         return;
                     }
                     // PixelCopy 只能整帧拷贝，逐格求均值放到专用线程，别在播放的主线程上卡出掉帧
@@ -1253,13 +1370,13 @@ public class ExoPlayerPlugin extends Plugin {
                             com.qoder.cinema.AppLog.w("ExoPlayerPlugin", "lumaCells failed: " + e);
                         }
                         final JSArray cells = computed;
-                        mainHandler.post(() -> settleLuma(call, settled, cells, box));
+                        mainHandler.post(() -> settleLuma(call, settled, cells, box, generation));
                     });
                 }, mainHandler);
             } catch (Throwable e) {
                 mainHandler.removeCallbacks(deadline);
                 com.qoder.cinema.AppLog.w("ExoPlayerPlugin", "sampleFrameLuma failed: " + e);
-                settleLuma(call, settled, null, null);
+                settleLuma(call, settled, null, null, generation);
             }
         });
     }
@@ -1268,18 +1385,26 @@ public class ExoPlayerPlugin extends Plugin {
      * 结束一轮取样：cells 为 null 表示本轮没有帧。
      * 只在主线程调用，所以 settled / lumaBusy 都不需要额外同步。
      */
-    private void settleLuma(PluginCall call, boolean[] settled, JSArray cells, JSObject box) {
+    private void settleLuma(PluginCall call, boolean[] settled, JSArray cells, JSObject box, int generation) {
         if (settled[0]) return;
         settled[0] = true;
         lumaBusy = false;
+        long elapsedMs = SystemClock.elapsedRealtime() - lumaCopyStartedAt;
+        // 抓帧期间 surface 换了一代（切集 / 纯音频 / 离开播放页）：这张图属于旧画面，不交出去
+        boolean stale = generation != surfaceGeneration;
+        if (stale) cells = null;
+        if (lumaRetired) disposeLumaScratch();
         if (cells == null || box == null) {
+            logLumaTransition(stale ? "stale-generation" : "no-frame", elapsedMs);
             resolveLumaUnavailable(call);
             return;
         }
+        logLumaTransition("sampling", elapsedMs);
         JSObject ret = new JSObject();
         ret.put("available", true);
         ret.put("cells", cells);
         ret.put("box", box);
+        ret.put("generation", generation);
         call.resolve(ret);
     }
 
@@ -1294,6 +1419,16 @@ public class ExoPlayerPlugin extends Plugin {
     private void resolveLumaUnavailable(PluginCall call) {
         JSObject ret = new JSObject();
         ret.put("available", false);
+        ret.put("generation", surfaceGeneration);
+        call.resolve(ret);
+    }
+
+    /** P1-4：surface 这一代根本截不到（区别于"这一轮没帧"）——JS 据此停轮询，等 surface 事件恢复 */
+    private void resolveLumaSurfaceInvalid(PluginCall call) {
+        JSObject ret = new JSObject();
+        ret.put("available", false);
+        ret.put("surfaceInvalid", true);
+        ret.put("generation", surfaceGeneration);
         call.resolve(ret);
     }
 
@@ -1365,6 +1500,15 @@ public class ExoPlayerPlugin extends Plugin {
 
     /** 离开播放页 / 销毁：把取样用的整帧位图还给系统 */
     private void recycleLumaScratch() {
+        lumaRetired = true;
+        // 还有一帧在飞（PixelCopy 最长 1.5s 才回执）：此刻抽走目标位图等于让框架往已回收的内存里写。
+        // 交给 settleLuma 落地后再回收，兜底定时器保证它一定会来。
+        if (lumaBusy) return;
+        disposeLumaScratch();
+    }
+
+    private void disposeLumaScratch() {
+        lumaRetired = false;
         lumaBusy = false;
         if (lumaDownsampler != null) {
             lumaDownsampler.shutdownNow();
@@ -1402,6 +1546,7 @@ public class ExoPlayerPlugin extends Plugin {
         overlay.setFocusable(false);
         overlay.addView(view);
         playerView = view;
+        watchSurface(view);
         // v1.8 修复：surface 放到 WebView 之下（z 序最低），HTML 控件叠在视频之上
         // WebView 背景透明后，视频从下层透出；控件/字幕/弹幕在 WebView 里渲染，自然可见
         ViewGroup parent = (ViewGroup) getBridge().getWebView().getParent();

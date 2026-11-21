@@ -65,6 +65,9 @@ const LINE_FAILURE_CODES = new Set<ErrorCode>([
 /** 不计线路失败的错误码（账号/网络/取消） */
 const NON_LINE_FAILURE_CODES = new Set<ErrorCode>([
   'E_NETDISK_LOGIN_REQUIRED',
+  // P1-3：源正忙说的是"上一个请求还压在这个爬虫实例上"，与这条线路能不能播无关。
+  // 让它连败两次，等于把一条好线路判死——正是"崩过一次之后集号来回跳、越换越差"的放大器。
+  'E_SOURCE_BUSY',
   'E_NETWORK',
   'E_ABORTED',
   'E_CANCELED',

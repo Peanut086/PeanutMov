@@ -91,15 +91,27 @@ function tick(times: number): void {
   }
 }
 
+/** 挂起后的恢复探测周期（只查元素，不读像素） */
+const PROBE_PERIOD = 1000;
+
+/** P1-4：页面生命周期用真的 visibilitychange 事件驱动，不伪造内部状态 */
+function setVisibility(state: 'visible' | 'hidden'): void {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: state });
+  document.dispatchEvent(new Event('visibilitychange'));
+}
+
 interface Harness {
   api: AmbilightApi;
   enabled: { value: boolean };
   intensity: { value: number };
+  native: { value: boolean };
   glow: FakeCtx;
   setVideoReady: (ready: boolean) => void;
+  /** 换集/换线会把 video 拆了重建：用它模拟元素消失与回来 */
+  setVideoPresent: (present: boolean) => void;
 }
 
-function setup(options: { video?: boolean; enabled?: boolean } = {}): {
+function setup(options: { video?: boolean; enabled?: boolean; native?: boolean } = {}): {
   harness: Harness;
   wrapper: VueWrapper;
 } {
@@ -107,16 +119,18 @@ function setup(options: { video?: boolean; enabled?: boolean } = {}): {
   const canvas = ref<HTMLCanvasElement | null>(null);
   const enabled = ref(options.enabled ?? true);
   const intensity = ref(85);
+  const native = ref(options.native ?? false);
   const withVideo = options.video !== false;
+  const videoPresent = ref(withVideo);
   let api!: AmbilightApi;
 
   const wrapper = mount(
     defineComponent({
       setup() {
-        api = useAmbilight({ host, canvas, enabled, intensity });
+        api = useAmbilight({ host, canvas, enabled, intensity, native });
         return () =>
           h('div', [
-            h('div', { ref: host }, withVideo ? [h('video')] : []),
+            h('div', { ref: host }, videoPresent.value ? [h('video')] : []),
             enabled.value ? h('canvas', { ref: canvas }) : null,
           ]);
       },
@@ -130,7 +144,11 @@ function setup(options: { video?: boolean; enabled?: boolean } = {}): {
       api,
       enabled,
       intensity,
+      native,
       glow: ctxFor(wrapper.find('canvas').element),
+      setVideoPresent: (present) => {
+        videoPresent.value = present;
+      },
       setVideoReady: (ready) => {
         const el = wrapper.find('video').element;
         Object.defineProperty(el, 'videoWidth', { configurable: true, value: ready ? 1280 : 0 });
@@ -142,13 +160,14 @@ function setup(options: { video?: boolean; enabled?: boolean } = {}): {
 
 let mounted: VueWrapper | null = null;
 
-function boot(options: { video?: boolean; enabled?: boolean } = {}): Harness {
+function boot(options: { video?: boolean; enabled?: boolean; native?: boolean } = {}): Harness {
   const { harness, wrapper } = setup(options);
   mounted = wrapper;
   return harness;
 }
 
 beforeEach(() => {
+  setVisibility('visible');
   timers.clear();
   periods.clear();
   timerId = 0;
@@ -170,7 +189,10 @@ beforeEach(() => {
     return timerId as unknown as ReturnType<typeof setInterval>;
   }) as unknown as typeof setInterval);
   vi.spyOn(globalThis, 'clearInterval').mockImplementation(((id?: number) => {
-    if (typeof id === 'number') timers.delete(id);
+    if (typeof id === 'number') {
+      timers.delete(id);
+      periods.delete(id);
+    }
   }) as unknown as typeof clearInterval);
 
   Object.defineProperty(navigator, 'hardwareConcurrency', {
@@ -215,7 +237,7 @@ describe('useAmbilight 取样与关档', () => {
   });
 
   it('原生引擎（DOM 里没有 video）：连续取不到帧后自动关闭并报 no-video', () => {
-    const h1 = boot({ video: false });
+    const h1 = boot({ video: false, native: true });
 
     tick(11);
     expect(h1.api.blocked.value).toBeNull();
@@ -322,7 +344,7 @@ describe('useAmbilight 取样与关档', () => {
   });
 
   it('自动关闭后重新打开：清掉 blocked 并重新起定时器', async () => {
-    const h1 = boot({ video: false });
+    const h1 = boot({ video: false, native: true });
     tick(12);
     expect(h1.api.blocked.value).toBe('no-video');
 
@@ -333,5 +355,83 @@ describe('useAmbilight 取样与关档', () => {
 
     expect(h1.api.blocked.value).toBeNull();
     expect(timers.size).toBe(1);
+  });
+});
+
+/**
+ * P1-4：取样跟着页面生命周期与视频元素代次走。
+ *
+ * 旧实现只有"一直 8Hz 画"和"数满 12 次永久关档"两态：切后台仍在逐帧画渐变，
+ * 换集把 video 拆了重建超过 1.5s 就把氛围光判死，回到前台/元素回来也不再恢复。
+ */
+describe('useAmbilight 取样生命周期（P1-4）', () => {
+  it('页面不可见：停表并擦掉光晕，不再读像素；回前台自动恢复', () => {
+    const h1 = boot();
+    h1.setVideoReady(true);
+    tick(1);
+    expect(reads).toBe(1);
+    const clears = h1.glow.clears;
+
+    setVisibility('hidden');
+    expect(timers.size).toBe(0);
+    expect(h1.glow.clears).toBe(clears + 1);
+    expect(h1.api.edges.value).toBeNull();
+    // 停表不是判死：面板不该弹"氛围光不可用"
+    expect(h1.api.blocked.value).toBeNull();
+    tick(5);
+    expect(reads).toBe(1);
+
+    setVisibility('visible');
+    expect(timers.size).toBe(1);
+    expect([...periods.values()]).toEqual([HIGH_PERIOD]);
+    tick(1);
+    expect(reads).toBe(2);
+    expect(h1.api.edges.value).not.toBeNull();
+  });
+
+  it('WebView 引擎换集重建：找不到 video 是挂起而不是判死，元素回来就恢复取样', async () => {
+    const h1 = boot();
+    h1.setVideoReady(true);
+    tick(1);
+    expect(reads).toBe(1);
+
+    h1.setVideoPresent(false);
+    await nextTick();
+    tick(12);
+    expect(h1.api.blocked.value).toBeNull();
+    // 取样定时器撤掉，只留 1Hz 存在性探测
+    expect(timers.size).toBe(1);
+    expect([...periods.values()]).toEqual([PROBE_PERIOD]);
+    const readsBefore = reads;
+    tick(3);
+    expect(reads).toBe(readsBefore);
+
+    h1.setVideoPresent(true);
+    await nextTick();
+    h1.setVideoReady(true);
+    tick(1); // 这一轮是探测：发现元素回来了，重新起取样时钟
+    expect([...periods.values()]).toEqual([HIGH_PERIOD]);
+    tick(1);
+    expect(reads).toBe(readsBefore + 1);
+    expect(h1.api.edges.value).not.toBeNull();
+  });
+
+  it('换了视频元素就是换了一代：旧光晕先擦掉，再按新画面重画', async () => {
+    const h1 = boot();
+    h1.setVideoReady(true);
+    tick(1);
+    const clears = h1.glow.clears;
+
+    frame = solidFrame(40, 90, 210);
+    h1.setVideoPresent(false);
+    await nextTick();
+    h1.setVideoPresent(true);
+    await nextTick();
+    h1.setVideoReady(true);
+    tick(1);
+
+    // 一次来自换代作废，一次来自本轮重画前的清空
+    expect(h1.glow.clears).toBeGreaterThanOrEqual(clears + 2);
+    expect((h1.api.edges.value as AmbilightEdges).top).toEqual([40, 90, 210]);
   });
 });

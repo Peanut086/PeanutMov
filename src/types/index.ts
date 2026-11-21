@@ -27,6 +27,14 @@ export type ErrorCode =
   | 'E_NOT_IMPLEMENTED'
   | 'E_SOURCE_DISABLED'
   | 'E_SOURCE_UNAVAILABLE'
+  /**
+   * P1-3：「源正忙」独立成一档。
+   *
+   * 之前它和真正的死源共用 `E_SOURCE_UNAVAILABLE`，于是被下游当成同一件事处理：
+   * 即时重试第二次（同一个 jar 仍然忙，只是把原生池越占越满）、换线路（换的是同源的另一条线，
+   * 还是同一个爬虫实例）、以及线路健康计一次失败（连败 2 次就把好线路判死）。
+   */
+  | 'E_SOURCE_BUSY'
   | 'E_NO_PLAY_URL'
   | 'E_NETDISK_LOGIN_REQUIRED'
   | 'E_UNSUPPORTED_FORMAT'
@@ -1103,6 +1111,14 @@ export interface SourceAdapter {
    * 并把超时文案区分成「源加载超时」与「搜索超时」。未实现视为不冷（行为与既有一致）。
    */
   isSourceCold?(source: Source): boolean;
+  /**
+   * P1-3：该源此刻的真实"忙度"，用于把重试预算对准在飞时长而不是写死秒数。
+   *
+   * `inFlightMs` = 已投进原生、尚未落定的调用还剩多久（含冷却窗口剩余）；
+   * `queueDepth` = JS 侧对该源已发出的在飞调用数。原生线程池的队列长度在 JS 侧不可观测，
+   * 所以这里给的是"能实测的那一半"，命名上刻意不叫 poolQueue。未实现按 0 处理。
+   */
+  busyStateOf?(sourceId: string): { inFlightMs: number; queueDepth: number };
   testConnection(source: Source, signal?: AbortSignal): Promise<ConnectionResult>;
   /** CHG-15：后台预热（加载 jar/规则拿句柄），实现方自行吞错、失败静默 */
   warmup?(source: Source): Promise<void>;

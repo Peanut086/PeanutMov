@@ -57,7 +57,11 @@ export function installConsoleCapture(): void {
     originalConsole.warn(...args);
   };
   console.error = (...args: unknown[]) => {
-    capture('E', args);
+    // 第三方桥（Capacitor native-bridge 的 logFromNative）把失败回执原样 console.error 出来，
+    // 形状是「唯一参数 = 裸普通对象」。那是原生拒绝的镜像、不是应用异常，落 E 会把日志页
+    // 和健康中心的错误计数灌满（同一件事我们已经在 SpiderAdapter 按 W 记过一遍）。
+    const mirror = isBridgeMirror(args);
+    capture(mirror ? 'W' : 'E', args, false, mirror ? 'bridge' : undefined);
     originalConsole.error(...args);
   };
 
@@ -75,17 +79,31 @@ export function installConsoleCapture(): void {
 }
 
 /**
+ * 「唯一参数是裸普通对象」——只有桥的失败回执镜像这么打（JSON.parse 出来的字面对象）。
+ * Error、类实例、数组、多参数都不算，所以真异常仍按 E 记。
+ */
+function isBridgeMirror(args: unknown[]): boolean {
+  if (args.length !== 1) return false;
+  const value = args[0];
+  if (typeof value !== 'object' || value === null || value instanceof Error || Array.isArray(value)) {
+    return false;
+  }
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
  * 捕获日志条目
  */
-function capture(level: LogLevel, args: unknown[], isError = false): void {
+function capture(level: LogLevel, args: unknown[], isError = false, tagOverride?: string): void {
   if (inCapture) return; // 防递归
   inCapture = true;
   try {
-    const { tag, message } = parseArgs(args, isError);
+    const { tag: parsedTag, message } = parseArgs(args, isError);
     const entry: LogBusEntry = {
       id: String(nextId++),
       level,
-      tag,
+      tag: tagOverride ?? parsedTag,
       message,
       ts: Date.now(),
     };

@@ -123,6 +123,11 @@ public final class CrashEventsCollector {
         try (BufferedWriter w = new BufferedWriter(
                 new LogRedactor.RedactingWriter(new FileWriter(out)))) {
             w.write("===== PeanutMov crash evidence =====\n");
+            // P1-5：崩溃证据包也要带构建标识——否则分不清这轮包究竟含不含那个修复
+            SpiderLogStore store = SpiderLogStore.get();
+            w.write(LogBuildIdentity.header(ctx, "crash-event",
+                    store == null ? 0 : store.getDroppedNoisy(),
+                    store == null ? 0 : store.getDroppedKey()));
             w.write("event: " + target.id + "\n");
             w.write("kind: " + target.kind + "\n");
             w.write("time: " + fmtTime(target.ts) + "\n\n");

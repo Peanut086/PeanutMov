@@ -52,6 +52,9 @@ const TARGETS: Record<Exclude<DownloadAction, 'remove'>, DownloadStatus> = {
 /** 终态：仅允许 remove */
 const TERMINAL: ReadonlySet<DownloadStatus> = new Set(['completed', 'canceled']);
 
+/** `pauseAll` 按轮重扫的轮数上限：只有本轮暂停到任务才再来一轮 */
+const PAUSE_ALL_MAX_ROUNDS = 4;
+
 export function canTransition(from: DownloadStatus, action: DownloadAction): boolean {
   if (action === 'remove') return true;
   return TRANSITIONS[action].includes(from);
@@ -237,6 +240,19 @@ export class DownloadQueue {
   private disposed = false;
   /** 合并同一轮同步 enqueue 的调度，保证按 priority 排序后再启动 */
   private pumpScheduled = false;
+  /**
+   * `pauseAll` 窗口内禁止分派新任务。
+   *
+   * 原实现先快照 `active`+`pending`，再逐个 `await load(id)`：await 期间 `pump` 照旧把队列里
+   * 的任务投出去，而这条 id 不在快照里、也没人再管它——「切后台」之后仍有一路在下载。
+   */
+  private pausing = false;
+  /**
+   * 已交给 `startOne` 但尚未落 `downloading` 的任务（卡在 `beforeStart` 的直链刷新上）。
+   * 这段可能跨过 `pauseAll` 窗口，闸门解除后才走到 `start`，所以按 id 记下暂缓标记；
+   * 下次 `enqueue`（用户点继续、回前台 requeue）即撤销。
+   */
+  private readonly startBlocked = new Set<string>();
   // P1-3: 每个任务的互斥锁，防止并发操作导致状态回写竞态
   private readonly taskLocks = new Map<string, Promise<void>>();
 
@@ -299,6 +315,8 @@ export class DownloadQueue {
 
   /** 加入待执行队列（去重；按 priority/createdAt 排序保证 FIFO，AC-71） */
   enqueue(task: DownloadTask): void {
+    // 显式入队就是「要让它跑」的意图，撤销 `pauseAll` 给这条任务挂上的暂缓标记
+    this.startBlocked.delete(task.id);
     if (this.active.has(task.id)) {
       /**
        * DL-P1-2：任务还占着执行槽（旧 runner 尚未退出）时，把它压进 pending 也没用——
@@ -329,6 +347,7 @@ export class DownloadQueue {
 
   /** 从队列移除（删除任务时调用） */
   dequeue(id: string): void {
+    this.startBlocked.delete(id);
     const index = this.pending.findIndex((entry) => entry.id === id);
     if (index >= 0) this.pending.splice(index, 1);
   }
@@ -363,7 +382,7 @@ export class DownloadQueue {
    * 槽位在同步阶段占位，避免 async 初始化期间被重复计入。
    */
   pump(): void {
-    if (this.disposed || !this.runner) return;
+    if (this.disposed || this.pausing || !this.runner) return;
     const runner = this.runner;
     while (this.active.size < this.concurrency && this.pending.length > 0) {
       const entry = this.pending.shift();
@@ -387,7 +406,8 @@ export class DownloadQueue {
       await this.opts.beforeStart?.(task);
       // 钩子可能换了地址、也可能直接把这条判成失败；两个方向都以库里的新行为准
       const current = (await this.opts.load(id)) ?? task;
-      if (current.status !== 'queued') return;
+      // 闸门拦窗口内的分派，startBlocked 拦被 beforeStart 拖出窗口的那次起跑
+      if (this.pausing || this.startBlocked.has(id) || current.status !== 'queued') return;
 
       const now = this.opts.now ?? Date.now;
       const started = transition(current, 'start', now());
@@ -542,19 +562,50 @@ export class DownloadQueue {
     });
   }
 
-  /** 全部暂停（切后台，AC-72） */
+  /**
+   * 全部暂停（切后台，AC-72）。
+   *
+   * 以实时结构为准、按轮重扫：逐个 `await load(id)` 期间仍可能有任务把状态推成 `downloading`
+   * 或新入队，按快照口径会把它们留在门外。窗口内 `pausing` 挡住 `pump`，`startBlocked`
+   * 拦下已被 `startOne` 取走、还停在 `beforeStart` 的任务；落在 `queued` 的那些交给
+   * 回前台的 `requeuePending` 捞回（`queued → paused` 不是合法迁移，不能在这里改状态）。
+   */
   async pauseAll(reason: DownloadPausedBy = 'user'): Promise<DownloadTask[]> {
-    const ids = [...this.active.keys(), ...this.pending.map((entry) => entry.id)];
+    this.pausing = true;
     const out: DownloadTask[] = [];
-    for (const id of ids) {
-      try {
-        const task = await this.opts.load(id);
-        if (task && task.status === 'downloading') out.push(await this.pause(id, reason));
-      } catch {
-        // 单条失败不影响其它任务
+    try {
+      const paused = new Set<string>();
+      const blocked = new Set<string>();
+      for (let round = 0; round < PAUSE_ALL_MAX_ROUNDS; round += 1) {
+        const ids = [...this.active.keys(), ...this.pending.map((entry) => entry.id)];
+        let progressed = false;
+        for (const id of ids) {
+          try {
+            const task = await this.opts.load(id);
+            if (!task) continue;
+            if (task.status !== 'downloading') {
+              // 仍停在 queued = 起跑尚未落地，暂缓它跨过窗口的这次 start
+              if (task.status === 'queued' && this.active.has(id) && !blocked.has(id)) {
+                this.startBlocked.add(id);
+                blocked.add(id);
+                progressed = true;
+              }
+              continue;
+            }
+            if (paused.has(id)) continue;
+            out.push(await this.pause(id, reason));
+            paused.add(id);
+            progressed = true;
+          } catch {
+            // 单条失败不影响其它任务
+          }
+        }
+        if (!progressed) break;
       }
+      this.pending.length = 0;
+    } finally {
+      this.pausing = false;
     }
-    this.pending.length = 0;
     return out;
   }
 

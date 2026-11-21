@@ -13,6 +13,7 @@ import { STORE_NAMES, type DanmakuCacheRecord, type EpgCacheRecord } from '@/db/
 import {
   DANMAKU_CACHE_MAX,
   DANMAKU_CACHE_TTL_MS,
+  DANMAKU_MATCH_RULE_VER,
   EPG_CACHE_MAX,
   EPG_CACHE_TTL_MS,
 } from '@/shared/constants';
@@ -63,6 +64,11 @@ export const cacheRepo = {
     const db = await getDb();
     const record = await db.get(STORE_NAMES.danmakuCache, key);
     if (!record) return null;
+    // 选片规则改版后命中的可能是串来的弹幕（旧存量没有 ruleVer，同样作废）：删掉让上层按新规则重取
+    if (record.ruleVer !== DANMAKU_MATCH_RULE_VER) {
+      await db.delete(STORE_NAMES.danmakuCache, key);
+      return null;
+    }
     if (Date.now() - record.fetchedAt > DANMAKU_CACHE_TTL_MS) {
       await db.delete(STORE_NAMES.danmakuCache, key);
       return null;
@@ -72,7 +78,12 @@ export const cacheRepo = {
 
   async putDanmaku(key: string, match: DanmakuMatch): Promise<void> {
     const db = await getDb();
-    const record: DanmakuCacheRecord = { key, match, fetchedAt: Date.now() };
+    const record: DanmakuCacheRecord = {
+      key,
+      match,
+      fetchedAt: Date.now(),
+      ruleVer: DANMAKU_MATCH_RULE_VER,
+    };
     await db.put(STORE_NAMES.danmakuCache, record);
     await trimToCap(STORE_NAMES.danmakuCache);
   },

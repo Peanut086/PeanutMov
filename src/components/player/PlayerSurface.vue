@@ -34,8 +34,10 @@ const props = withDefaults(
     ambilightEnabled?: boolean;
     /** 氛围光强度 0~100 */
     ambilightIntensity?: number;
+    /** 当前是否原生引擎：原生 surface 在 WebView 之下，DOM 里不会有 video */
+    nativeEngine?: boolean;
   }>(),
-  { immersive: false, ambilightEnabled: false, ambilightIntensity: 85 },
+  { immersive: false, ambilightEnabled: false, ambilightIntensity: 85, nativeEngine: false },
 );
 
 const emit = defineEmits<{ (e: 'ambilight-blocked', reason: AmbilightBlockReason): void }>();
@@ -61,6 +63,7 @@ const { blocked } = useAmbilight({
   canvas: glowEl,
   enabled: ambilightOn,
   intensity: ambilightLevel,
+  native: computed(() => props.nativeEngine),
 });
 watch(blocked, (reason) => {
   if (reason) emit('ambilight-blocked', reason);

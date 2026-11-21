@@ -153,8 +153,32 @@ export function withQuery(
   return `${head}${sep}${query}${hash ? `#${hash}` : ''}`;
 }
 
+/**
+ * 签名形态判定：≥8 位、字符集受限、字母与数字同时出现。
+ * 口径与原生 `LogRedactor.isSignatureShape` 一致——界面与日志必须给出同一句话。
+ */
+const SIGNATURE_CHARS = /^[A-Za-z0-9%._+/=-]{8,}$/;
+
+/**
+ * 短键签名参数：`?s=` 是夸克直链签名，`?do=` 是网盘代理转发口令。
+ * 单/双字母键不能无条件打码——真机 39 处 `?s=` 里 35 处是采集站的搜索词，
+ * 「哪个词发到了哪个源」是请求侧唯一的线索，只有长成签名样子的才盖。
+ */
+const SHORT_SIGNED_PARAM = /([?&](?:s|do)=)([^&#\s]{1,256})/gi;
+
+function isSignatureShape(value: string): boolean {
+  if (!SIGNATURE_CHARS.test(value)) return false;
+  return /[0-9]/.test(value) && /[A-Za-z]/.test(value);
+}
+
 /** 去除 URL 中的敏感查询参数（日志用，技术方案 13 章） */
 export function redactUrl(url: string): string {
   if (typeof url !== 'string' || url.length === 0) return '';
-  return url.replace(/([?&](?:token|api_key|apikey|password|pwd|pw|auth|sign|key)=)[^&#]*/gi, '$1***');
+  const named = url.replace(
+    /([?&](?:token|api_key|apikey|password|pwd|pw|auth|sign|key)=)[^&#]*/gi,
+    '$1***',
+  );
+  return named.replace(SHORT_SIGNED_PARAM, (match, head: string, value: string) =>
+    isSignatureShape(value) ? `${head}***` : match,
+  );
 }

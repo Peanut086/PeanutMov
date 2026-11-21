@@ -185,6 +185,11 @@ export interface DanmakuCacheRecord {
   key: string;
   match: DanmakuMatch;
   fetchedAt: number;
+  /**
+   * 写入时的选片规则版本（`DANMAKU_MATCH_RULE_VER`）。
+   * 缺省＝更早版本的存量，读到时一律作废：命中结果可能来自已修复的串片判据。
+   */
+  ruleVer?: number;
 }
 
 /** EPG 缓存记录（CHG-23：TTL 见 EPG_CACHE_TTL_MS；结构与 epgService.EpgProgramme 对齐） */

@@ -9,10 +9,13 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { APP_VERSION } from '@/shared/constants';
 import {
   classifyDeterministicLoadFailure,
+  clearAttemptedArtifacts,
   clearLoadFailure,
+  findAttemptedArtifact,
   fingerprintOf,
   findSuppressedLoadFailure,
   listLoadFailures,
+  markArtifactAttempted,
   noteLoadFailure,
   sourceLedgerKey,
 } from '@/services/spiderLoadLedger';
@@ -147,3 +150,60 @@ async function writeLedger(rows: unknown[]): Promise<void> {
   const { kvRepo } = await import('@/db/repositories/kvRepo');
   await kvRepo.set('spider_load_failures', rows);
 }
+
+/**
+ * P1-3：进程内"已经真跑过、且确定性失败"的构件。
+ *
+ * 与持久账本的分工：持久账本只跳过**后台预热**，这一份让同一份 jar / 同一条规则在同一个
+ * 运行里不再被重新下载 + dex + 初始化一遍，而是立刻用第一次的真实原因失败（分类不变、
+ * 源不被判死）。进程重启即清空——换运行时就是新证据。
+ */
+describe('进程内已知坏构件（P1-3）', () => {
+  const bad = () => source({ key: 'session-bad' });
+  const REASON = 'java.lang.IncompatibleClassChangeError: csp_PanWebShare';
+
+  beforeEach(async () => {
+    await resetAll();
+    clearAttemptedArtifacts('session-bad');
+    clearAttemptedArtifacts('session-other');
+  });
+
+  it('命中时带回第一次的真实原因，而不是笼统一句"源不可用"', () => {
+    markArtifactAttempted(bad(), 'class_incompatible', JAR, REASON);
+    const hit = findAttemptedArtifact(bad(), JAR);
+    expect(hit?.kind).toBe('class_incompatible');
+    expect(hit?.message).toBe(REASON);
+    expect(hit?.sourceKey).toBe('session-bad');
+    expect(hit?.runtime).toBe(APP_VERSION);
+  });
+
+  it('换 jar 地址、换源、空目标都不命中（不能顺手把别的构件一起判死）', () => {
+    markArtifactAttempted(bad(), 'class_incompatible', JAR, REASON);
+    expect(findAttemptedArtifact(bad(), 'https://example.com/new.jar')).toBeNull();
+    expect(findAttemptedArtifact(source({ key: 'session-other' }), JAR)).toBeNull();
+    expect(findAttemptedArtifact(bad(), '')).toBeNull();
+    // 没记过就是没记过：不能因为空目标误命中
+    markArtifactAttempted(bad(), 'script_syntax', '', REASON);
+    expect(findAttemptedArtifact(bad(), '')).toBeNull();
+  });
+
+  it('按源清理，不动别的源', () => {
+    markArtifactAttempted(bad(), 'class_incompatible', JAR, REASON);
+    markArtifactAttempted(source({ key: 'session-other' }), 'script_syntax', RULE, "SyntaxError: expecting ';'");
+    expect(clearAttemptedArtifacts('session-bad')).toBe(1);
+    expect(findAttemptedArtifact(bad(), JAR)).toBeNull();
+    expect(findAttemptedArtifact(source({ key: 'session-other' }), RULE)?.kind).toBe('script_syntax');
+    expect(clearAttemptedArtifacts('session-bad')).toBe(0);
+  });
+
+  it('复检同时清掉持久账本与进程内判定（否则复检只清了个账面）', async () => {
+    markArtifactAttempted(bad(), 'class_incompatible', JAR, REASON);
+    await noteLoadFailure(bad(), 'class_incompatible', JAR, REASON);
+    expect(await findSuppressedLoadFailure(bad(), JAR)).not.toBeNull();
+
+    expect(await clearLoadFailure('session-bad')).toBe(1);
+
+    expect(await findSuppressedLoadFailure(bad(), JAR)).toBeNull();
+    expect(findAttemptedArtifact(bad(), JAR)).toBeNull();
+  });
+});

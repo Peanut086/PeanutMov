@@ -316,6 +316,98 @@ describe('下载队列调度（AC-71）', () => {
     expect(store.get('f')?.status).toBe('failed');
     expect(store.get('f')?.retries).toBe(2);
   });
+
+  it('pauseAll：窗口内被重新入队的任务不得起跑（回前台 requeue 与再次切后台交错）', async () => {
+    const store = new Map<string, DownloadTask>();
+    const a = task({ id: 'a', priority: 1, createdAt: 1 });
+    const b = task({ id: 'b', priority: 2, createdAt: 2 });
+    const c = task({ id: 'c', priority: 3, createdAt: 3 });
+    for (const t of [a, b, c]) store.set(t.id, t);
+    const started: string[] = [];
+    const queue = new DownloadQueue({
+      load: async (id) => {
+        // 每条 load 都让出一次事件循环：pauseAll 的 await 期间微任务照常跑 pump
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return store.get(id) ?? null;
+      },
+      save: async (t) => {
+        store.set(t.id, t);
+      },
+      concurrency: 3,
+      sleep: async () => undefined,
+    });
+    queue.run((t, ctx) => {
+      started.push(t.id);
+      return new Promise((_resolve, reject) => {
+        ctx.signal.addEventListener('abort', () => reject(new AppError('E_ABORTED')));
+      });
+    });
+    queue.enqueue(a);
+    for (let i = 0; i < 50 && store.get('a')?.status !== 'downloading'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(store.get('a')?.status).toBe('downloading');
+
+    const pausing = queue.pauseAll('background');
+    // 快照取完之后才有新任务入队——旧口径里这两个 id 谁都不会再看第二眼
+    queue.enqueue(b);
+    queue.enqueue(c);
+    const paused = await pausing;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+
+    expect(paused.map((t) => t.id)).toEqual(['a']);
+    expect(started).toEqual(['a']);
+    expect(store.get('a')?.status).toBe('paused');
+    expect(store.get('b')?.status).toBe('queued');
+    expect(store.get('c')?.status).toBe('queued');
+    expect([...store.values()].some((t) => t.status === 'downloading')).toBe(false);
+    expect(queue.pendingIds).toEqual([]);
+  });
+
+  it('pauseAll：卡在 beforeStart 的任务不能等窗口关掉才落 downloading', async () => {
+    const store = new Map<string, DownloadTask>();
+    const a = task({ id: 'a', priority: 1, createdAt: 1 });
+    const b = task({ id: 'b', priority: 2, createdAt: 2 });
+    store.set(a.id, a);
+    store.set(b.id, b);
+    const started: string[] = [];
+    const queue = new DownloadQueue({
+      load: async (id) => store.get(id) ?? null,
+      save: async (t) => {
+        store.set(t.id, t);
+      },
+      // b 的起跑被直链刷新拖到 pauseAll 返回之后
+      beforeStart: async (t) => {
+        if (t.id === 'b') await new Promise((resolve) => setTimeout(resolve, 30));
+      },
+      concurrency: 2,
+      sleep: async () => undefined,
+    });
+    queue.run((t, ctx) => {
+      started.push(t.id);
+      return new Promise((_resolve, reject) => {
+        ctx.signal.addEventListener('abort', () => reject(new AppError('E_ABORTED')));
+      });
+    });
+    queue.enqueue(a);
+    queue.enqueue(b);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(store.get('a')?.status).toBe('downloading');
+    expect(store.get('b')?.status).toBe('queued');
+
+    await queue.pauseAll('background');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(started).toEqual(['a']);
+    expect(store.get('a')?.status).toBe('paused');
+    expect(store.get('b')?.status).toBe('queued');
+    // 恢复入口：回前台/继续按钮重新入队后，暂缓标记撤销，b 照常起跑
+    queue.enqueue(store.get('b')!);
+    for (let i = 0; i < 50 && !started.includes('b'); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(started).toEqual(['a', 'b']);
+  });
 });
 
 describe('停滞误报收口（11-17）', () => {

@@ -15,8 +15,9 @@
  * 版权现状：乐视片库大量下架，搜索能命中本名才继续，命中不到直接放弃（不拿花絮/cut 版顶）。
  */
 import { requestWithHeaders } from './nativeHttp';
+import { pickCandidate, titleMatchScore } from './titlePick';
 import { fetchInBatches, parseDurationSec } from './segments';
-import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
+import { stripTitleNoise } from '@/sources/douban/playMatch';
 import type { DanmakuComment } from '@/types';
 import type { DanmakuProvider, DanmakuQuery } from './provider';
 
@@ -98,22 +99,17 @@ function parseResults(html: string): LeResult[] {
   return out;
 }
 
-/** 片名归一化相等才算候选：cut 版/花絮/纪录片与前缀同名的衍生条目会被自然排除 */
+/**
+ * 候选按片名精度选：归一化相等优先，年份只在同分候选内做优选。
+ * cut 版/花絮/纪录片与前缀同名的衍生条目在精度分层里自然落到低分。
+ */
 function pickResult(results: LeResult[], query: DanmakuQuery): LeResult | null {
-  const target = stripTitleNoise(query.title);
-  const exact = normalizeTitleForMatch(query.title);
-  if (target.length === 0) return null;
-  const candidates = results.filter(
-    (item) => stripTitleNoise(item.title) === target || normalizeTitleForMatch(item.title) === exact,
-  );
-  if (candidates.length === 0) return null;
-  if (query.year !== null) {
-    const sameYear = candidates.find((item) => item.year === query.year);
-    if (sameYear !== undefined) return sameYear;
-    // 年份能校验却全都对不上，宁可无弹幕也不串到别的片子
-    if (candidates.some((item) => item.year !== null)) return null;
-  }
-  return candidates[0] ?? null;
+  const candidates = results.map((item) => ({
+    item,
+    score: titleMatchScore(item.title, query.title),
+    year: item.year,
+  }));
+  return pickCandidate(candidates, query.year)?.item ?? null;
 }
 
 /* ---------- 本集时长与类型 ---------- */

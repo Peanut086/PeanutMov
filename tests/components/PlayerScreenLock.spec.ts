@@ -1,58 +1,56 @@
 /**
- * 横屏屏幕锁（B4 · UI 侧）
+ * 横屏屏幕锁（B4 · UI 侧 · 设计规范 ⑦ `pl-lock`）
  *
  * 只核对真机上最容易翻车的三件事：
- * 锁定态有没有真的铺出拦截片、胶囊隐藏后还能不能靠轻触画面唤回、
- * 以及点胶囊到底发的是 toggle 还是 reveal（发错就永远解不开）。
+ * 锁定态有没有真的铺出拦截片、拦截片会不会被误点成解锁、
+ * 以及解锁键是不是常驻（锁屏时控制条已收起，顶部那颗键点不到，
+ * 出口一旦要「先轻触画面唤回」就等于没有出口）。
  */
-import { mount } from '@vue/test-utils';
-import { describe, expect, it } from 'vitest';
+import { mount } from "@vue/test-utils";
+import { describe, expect, it } from "vitest";
 
-import PlayerScreenLock from '@/components/player/PlayerScreenLock.vue';
+import PlayerScreenLock from "@/components/player/PlayerScreenLock.vue";
 
-describe('PlayerScreenLock', () => {
-  it('未锁定：不铺拦截片，胶囊发 toggle', async () => {
-    const wrapper = mount(PlayerScreenLock, { props: { locked: false, revealed: true } });
+describe("PlayerScreenLock", () => {
+  it("未锁定：整层不渲染（画面与手势都不该被吃）", () => {
+    const wrapper = mount(PlayerScreenLock, { props: { locked: false } });
 
-    expect(wrapper.find('.lock-shield').exists()).toBe(false);
-    const pill = wrapper.get('.lock-pill');
-    expect(pill.text()).toContain('锁屏');
-    expect(pill.attributes('aria-pressed')).toBe('false');
-
-    await pill.trigger('click');
-    expect(wrapper.emitted('toggle')).toHaveLength(1);
-    expect(wrapper.emitted('reveal')).toBeUndefined();
+    expect(wrapper.find(".pl-lock").exists()).toBe(false);
+    expect(wrapper.find(".pl-lock__btn").exists()).toBe(false);
   });
 
-  it('锁定：铺拦截片，轻触画面只发 reveal，不解锁', async () => {
-    const wrapper = mount(PlayerScreenLock, { props: { locked: true, revealed: false } });
+  it("锁定：铺拦截片并给出常驻解锁键", () => {
+    const wrapper = mount(PlayerScreenLock, { props: { locked: true } });
 
-    const shield = wrapper.get('.lock-shield');
-    expect(wrapper.find('.lock-pill').exists()).toBe(false);
+    expect(wrapper.get(".pl-lock").attributes("class")).toContain("pl-lock");
+    expect(wrapper.get(".pl-lock__hint").text()).toContain("屏幕已锁定");
 
-    await shield.trigger('click');
-    expect(wrapper.emitted('reveal')).toHaveLength(1);
-    expect(wrapper.emitted('toggle')).toBeUndefined();
+    const btn = wrapper.get(".pl-lock__btn");
+    expect(btn.text()).toContain("解锁");
+    expect(btn.attributes("aria-label")).toBe("解锁屏幕");
   });
 
-  it('锁定 + 胶囊露出：点胶囊发 toggle，不会穿透成 reveal', async () => {
-    const wrapper = mount(PlayerScreenLock, { props: { locked: true, revealed: true } });
+  it("点解锁键发 toggle，且不穿透到拦截片", async () => {
+    const wrapper = mount(PlayerScreenLock, { props: { locked: true } });
 
-    const pill = wrapper.get('.lock-pill');
-    expect(pill.text()).toContain('已锁定');
-    expect(pill.attributes('aria-pressed')).toBe('true');
-    expect(pill.attributes('aria-label')).toBe('解锁屏幕');
-
-    await pill.trigger('click');
-    expect(wrapper.emitted('toggle')).toHaveLength(1);
-    expect(wrapper.emitted('reveal')).toBeUndefined();
+    await wrapper.get(".pl-lock__btn").trigger("click");
+    expect(wrapper.emitted("toggle")).toHaveLength(1);
   });
 
-  it('胶囊按 revealed 显隐', async () => {
-    const wrapper = mount(PlayerScreenLock, { props: { locked: false, revealed: true } });
-    expect(wrapper.find('.lock-pill').exists()).toBe(true);
+  it("点画面区域只吞事件，不解锁", async () => {
+    const wrapper = mount(PlayerScreenLock, { props: { locked: true } });
 
-    await wrapper.setProps({ revealed: false });
-    expect(wrapper.find('.lock-pill').exists()).toBe(false);
+    await wrapper.get(".pl-lock").trigger("click");
+    expect(wrapper.emitted("toggle")).toBeUndefined();
+  });
+
+  it("画面区域上的指针事件不会变成解锁动作", async () => {
+    const wrapper = mount(PlayerScreenLock, { props: { locked: true } });
+    const layer = wrapper.get(".pl-lock");
+
+    await layer.trigger("pointerdown");
+    await layer.trigger("pointermove");
+    await layer.trigger("pointerup");
+    expect(wrapper.emitted("toggle")).toBeUndefined();
   });
 });

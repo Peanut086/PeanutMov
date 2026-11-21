@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { getDb } from '@/db/index';
 import { cacheRepo } from '@/db/repositories/cacheRepo';
 import { STORE_NAMES } from '@/db/schema';
-import { DANMAKU_CACHE_MAX, EPG_CACHE_TTL_MS } from '@/shared/constants';
+import { DANMAKU_CACHE_MAX, DANMAKU_MATCH_RULE_VER, EPG_CACHE_TTL_MS } from '@/shared/constants';
 import type { DanmakuMatch } from '@/types';
 
 import { resetAll } from './helpers';
@@ -99,5 +99,23 @@ describe('缓存淘汰（OPT-10）', () => {
     expect(swept).toEqual({ danmaku: 0, epg: 0 });
     expect(await cacheRepo.getDanmaku('keep-1')).not.toBeNull();
     expect(await cacheRepo.getEpg('epgv2:src:chK:2026-11-16')).not.toBeNull();
+  });
+
+  it('弹幕选片规则改版：旧版本命中的条目读取即作废并删除', async () => {
+    await cacheRepo.putDanmaku('fresh-1', makeMatch('fresh-1'));
+    // 旧存量没有 ruleVer 字段；有字段但版本落后的是"改版后仍按旧判据命中"的形态
+    await putRawDanmaku('legacy-1', Date.now());
+    const db = await getDb();
+    await db.put(STORE_NAMES.danmakuCache, {
+      key: 'old-rule',
+      match: makeMatch('old-rule'),
+      fetchedAt: Date.now(),
+      ruleVer: DANMAKU_MATCH_RULE_VER - 1,
+    });
+
+    expect(await cacheRepo.getDanmaku('legacy-1')).toBeNull();
+    expect(await cacheRepo.getDanmaku('old-rule')).toBeNull();
+    expect(await cacheRepo.getDanmaku('fresh-1')).not.toBeNull();
+    expect(await danmakuKeys()).toEqual(['fresh-1']);
   });
 });

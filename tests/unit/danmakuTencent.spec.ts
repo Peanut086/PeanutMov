@@ -96,19 +96,54 @@ describe('tencentProvider', () => {
     expect(JSON.parse(String(options?.body)).query).toBe('庆余年');
   });
 
-  it('按年份选中对应季（2019 → 第一季，2024 → 第二季）', async () => {
+  it('年份只在完全同名候选内生效（2019 → 「庆余年」那条）', async () => {
     mockedRequest
       .mockResolvedValueOnce(SEARCH_RESPONSE)
       .mockResolvedValueOnce({ c: { title: '庆余年', video_ids: [] } });
     await tencentProvider.match({ title: '庆余年', year: 2019, episode: 1 });
     expect(mockedRequest.mock.calls[1]?.[0]).toContain('cid=rjae621myqca41h');
+  });
 
-    mockedRequest.mockReset();
+  it('年份指向去噪同名候选时不采用（错标年份会整集串片）', async () => {
+    mockedRequest.mockResolvedValueOnce(SEARCH_RESPONSE);
+
+    // 2024 只有「庆余年第二季」，与查询「庆余年」只满足去噪同名；完全同名那条是 2019
+    const result = await tencentProvider.match({ title: '庆余年', year: 2024, episode: 1 });
+
+    expect(result).toBeNull();
+    expect(mockedRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('查询缺年份时取完全同名那条，而不是搜索结果首条', async () => {
     mockedRequest
       .mockResolvedValueOnce(SEARCH_RESPONSE)
-      .mockResolvedValueOnce({ c: { title: '庆余年第二季', video_ids: [] } });
-    await tencentProvider.match({ title: '庆余年', year: 2024, episode: 1 });
-    expect(mockedRequest.mock.calls[1]?.[0]).toContain('cid=season2');
+      .mockResolvedValueOnce({ c: { title: '庆余年', video_ids: [] } });
+    await tencentProvider.match({ title: '庆余年', year: null, episode: 1 });
+    expect(mockedRequest.mock.calls[1]?.[0]).toContain('cid=rjae621myqca41h');
+  });
+
+  it('错年 + 同名不同内容：年份不许把「第2季」顶到完全同名候选前面', async () => {
+    // 电视剧《士兵突击》2006 年；腾讯另有一档 2013 年的同名纪实节目《士兵突击 第2季》。
+    // 资源站把电视剧标成 2013（本次线上问题的形态），必须停在完全同名那条的池子里判年份不符。
+    mockedRequest.mockResolvedValueOnce({
+      ret: 0,
+      data: {
+        areaBoxList: [
+          {
+            boxId: 'MainNeed',
+            itemList: [
+              { doc: { id: 'doc2013' }, videoInfo: { title: '士兵突击 第2季', year: 2013, typeName: '纪实' } },
+              { doc: { id: 'doc2006' }, videoInfo: { title: '士兵突击', year: 2006, typeName: '电视剧' } },
+            ],
+          },
+        ],
+      },
+    });
+
+    const result = await tencentProvider.match({ title: '士兵突击', year: 2013, episode: 1 });
+
+    expect(result).toBeNull();
+    expect(mockedRequest).toHaveBeenCalledTimes(1);
   });
 
   it('季号冲突的标题不采用（防串到别的季）', async () => {

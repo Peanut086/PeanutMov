@@ -16,49 +16,49 @@
 /* ---------- 1. 原始色板（primitive，不直接使用） ---------- */
 :root {
   --p-neutral-1000: #000000;
-  --p-neutral-980: #0B0D10;
-  --p-neutral-950: #14171C;
-  --p-neutral-900: #1D2128;
-  --p-neutral-850: #24282F;
-  --p-neutral-800: #2C313A;
-  --p-neutral-700: #3A404A;
-  --p-neutral-600: #4C525C;
-  --p-neutral-500: #5C6673;
-  --p-neutral-400: #6B7480;
-  --p-neutral-300: #8A93A0;
-  --p-neutral-200: #9BA3AF;
-  --p-neutral-100: #D4D8DF;
-  --p-neutral-50: #F2F4F7;
+  --p-neutral-980: #0b0d10;
+  --p-neutral-950: #14171c;
+  --p-neutral-900: #1d2128;
+  --p-neutral-850: #24282f;
+  --p-neutral-800: #2c313a;
+  --p-neutral-700: #3a404a;
+  --p-neutral-600: #4c525c;
+  --p-neutral-500: #5c6673;
+  --p-neutral-400: #6b7480;
+  --p-neutral-300: #8a93a0;
+  --p-neutral-200: #9ba3af;
+  --p-neutral-100: #d4d8df;
+  --p-neutral-50: #f2f4f7;
   --p-neutral-0: #ffffff;
 
-  --p-amber-700: #8A5606;
-  --p-amber-600: #B8730A;
-  --p-amber-500: #D98A12;
-  --p-amber-400: #F0A82E;
-  --p-amber-300: #FFC761;
+  --p-amber-700: #8a5606;
+  --p-amber-600: #b8730a;
+  --p-amber-500: #d98a12;
+  --p-amber-400: #f0a82e;
+  --p-amber-300: #ffc761;
 
-  --p-green-400: #34D399;
-  --p-amber-warn-400: #FBBF24;
-  --p-red-400: #FB7185;
-  --p-blue-400: #60A5FA;
+  --p-green-400: #34d399;
+  --p-amber-warn-400: #fbbf24;
+  --p-red-400: #fb7185;
+  --p-blue-400: #60a5fa;
   /* 线路质量「极速」档紫（深色取高亮档、浅色取加深档） */
-  --p-violet-300: #A78BFA;
-  --p-violet-700: #6D28D9;
+  --p-violet-300: #a78bfa;
+  --p-violet-700: #6d28d9;
 }
 
 /* ---------- 2. 语义层 · 深色（默认） ---------- */
 :root,
-[data-theme='dark'] {
+[data-theme="dark"] {
   /* 背景层级：OLED 真黑起，靠亮度差分层 */
-  --color-bg-base: #000000;             /* 页面底色 */
-  --color-bg-surface: #0B0D10;          /* 卡片 / 列表容器 */
-  --color-bg-elevated: #14171C;         /* 弹层 / 浮层 / 输入框 */
-  --color-bg-pressed: #1D2128;          /* 按压态 / 分段选中 */
+  --color-bg-base: #000000; /* 页面底色 */
+  --color-bg-surface: #0b0d10; /* 卡片 / 列表容器 */
+  --color-bg-elevated: #14171c; /* 弹层 / 浮层 / 输入框 */
+  --color-bg-pressed: #1d2128; /* 按压态 / 分段选中 */
   --color-bg-overlay: rgba(0, 0, 0, 0.72);
   --color-bg-overlay-soft: rgba(0, 0, 0, 0.45);
-  --color-bg-sunken: #000000;           /* 播放器画布底 */
-  --color-bg-skeleton: #171A20;
-  --color-bg-skeleton-shine: #24282F;
+  --color-bg-sunken: #000000; /* 播放器画布底 */
+  --color-bg-skeleton: #171a20;
+  --color-bg-skeleton-shine: #24282f;
 
   /* 玻璃层（悬浮 TabBar / 播放器 HUD） */
   --color-bg-glass: rgba(20, 23, 28, 0.86);
@@ -66,28 +66,28 @@
   --color-border-glass: rgba(255, 255, 255, 0.14);
 
   /* 文字 */
-  --color-text-primary: #F2F4F7;        /* 16.9:1 */
-  --color-text-secondary: #9BA3AF;      /* 7.9:1 */
-  --color-text-tertiary: #6B7480;       /* 4.7:1（AA 正文可用） */
-  --color-text-disabled: #565E6B;
-  --color-text-on-brand: #170F00;
+  --color-text-primary: #f2f4f7; /* 16.9:1 */
+  --color-text-secondary: #9ba3af; /* 7.9:1 */
+  --color-text-tertiary: #6b7480; /* 4.7:1（AA 正文可用） */
+  --color-text-disabled: #565e6b;
+  --color-text-on-brand: #170f00;
 
   /* 品牌 */
-  --color-brand: #F0A82E;
-  --color-brand-strong: #FFC761;
-  --color-brand-press: #D98A12;
+  --color-brand: #f0a82e;
+  --color-brand-strong: #ffc761;
+  --color-brand-press: #d98a12;
   --color-brand-soft: rgba(240, 168, 46, 0.14);
-  --color-brand-text: #F0A82E;
-  --color-brand-ink: #170F00;
+  --color-brand-text: #f0a82e;
+  --color-brand-ink: #170f00;
   /* 兼容别名（历史代码引用） */
   --color-accent: var(--color-brand);
   --color-text: var(--color-text-primary);
 
   /* 语义 */
-  --color-success: #34D399;
-  --color-warning: #FBBF24;
-  --color-danger: #FB7185;
-  --color-info: #60A5FA;
+  --color-success: #34d399;
+  --color-warning: #fbbf24;
+  --color-danger: #fb7185;
+  --color-info: #60a5fa;
   --color-success-soft: rgba(52, 211, 153, 0.14);
   --color-warning-soft: rgba(251, 191, 36, 0.14);
   --color-danger-soft: rgba(251, 113, 133, 0.14);
@@ -120,12 +120,34 @@
   --color-overlay-handle: rgba(255, 255, 255, 0.24);
 
   /* 渐变与遮罩 */
-  --gradient-hero: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.86) 62%, #000000 100%);
-  --gradient-top-fade: linear-gradient(180deg, rgba(0, 0, 0, 0.68) 0%, rgba(0, 0, 0, 0) 100%);
-  --gradient-bottom-fade: linear-gradient(0deg, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0) 100%);
-  --gradient-brand: linear-gradient(135deg, #FFC761 0%, #F0A82E 55%, #D98A12 100%);
+  --gradient-hero: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0) 0%,
+    rgba(0, 0, 0, 0.86) 62%,
+    #000000 100%
+  );
+  --gradient-top-fade: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.68) 0%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  --gradient-bottom-fade: linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.8) 0%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  --gradient-brand: linear-gradient(
+    135deg,
+    #ffc761 0%,
+    #f0a82e 55%,
+    #d98a12 100%
+  );
   --gradient-brand-cta: var(--gradient-brand);
-  --gradient-glass: linear-gradient(180deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0) 100%);
+  --gradient-glass: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.06) 0%,
+    rgba(255, 255, 255, 0) 100%
+  );
 
   /* 阴影 · elevation */
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -146,38 +168,38 @@
 }
 
 /* ---------- 浅色主题对照（WCAG AA 已逐项核对） ---------- */
-[data-theme='light'] {
-  --color-bg-base: #EDEFF3;
-  --color-bg-surface: #FFFFFF;
-  --color-bg-elevated: #FFFFFF;
-  --color-bg-pressed: #EEF1F5;
+[data-theme="light"] {
+  --color-bg-base: #edeff3;
+  --color-bg-surface: #ffffff;
+  --color-bg-elevated: #ffffff;
+  --color-bg-pressed: #eef1f5;
   --color-bg-overlay: rgba(15, 20, 26, 0.42);
   --color-bg-overlay-soft: rgba(15, 20, 26, 0.26);
   --color-bg-sunken: #000000;
-  --color-bg-skeleton: #E4E7EC;
-  --color-bg-skeleton-shine: #F1F3F6;
+  --color-bg-skeleton: #e4e7ec;
+  --color-bg-skeleton-shine: #f1f3f6;
 
   --color-bg-glass: rgba(255, 255, 255, 0.92);
   --color-bg-glass-strong: rgba(255, 255, 255, 0.96);
   --color-border-glass: rgba(15, 20, 26, 0.1);
 
-  --color-text-primary: #0F141A;        /* 15.8:1 */
-  --color-text-secondary: #414B58;      /* 8.6:1 */
-  --color-text-tertiary: #5C6673;       /* 6.2:1 */
-  --color-text-disabled: #9AA3AE;
-  --color-text-on-brand: #FFFFFF;
+  --color-text-primary: #0f141a; /* 15.8:1 */
+  --color-text-secondary: #414b58; /* 8.6:1 */
+  --color-text-tertiary: #5c6673; /* 6.2:1 */
+  --color-text-disabled: #9aa3ae;
+  --color-text-on-brand: #ffffff;
 
-  --color-brand: #B87406;               /* 填充色（配白字 4.6:1） */
-  --color-brand-strong: #8A5606;
-  --color-brand-press: #6B4204;
+  --color-brand: #b87406; /* 填充色（配白字 4.6:1） */
+  --color-brand-strong: #8a5606;
+  --color-brand-press: #6b4204;
   --color-brand-soft: rgba(201, 122, 5, 0.12);
-  --color-brand-text: #8A5606;
-  --color-brand-ink: #FFFFFF;
+  --color-brand-text: #8a5606;
+  --color-brand-ink: #ffffff;
 
-  --color-success: #0F7B4C;
-  --color-warning: #8A5A00;
-  --color-danger: #C62A32;
-  --color-info: #1A6FD4;
+  --color-success: #0f7b4c;
+  --color-warning: #8a5a00;
+  --color-danger: #c62a32;
+  --color-info: #1a6fd4;
   --color-success-soft: rgba(15, 123, 76, 0.12);
   --color-warning-soft: rgba(138, 90, 0, 0.12);
   --color-danger-soft: rgba(198, 42, 50, 0.12);
@@ -206,12 +228,34 @@
   --color-overlay-track: rgba(15, 20, 26, 0.14);
   --color-overlay-handle: rgba(15, 20, 26, 0.22);
 
-  --gradient-hero: linear-gradient(180deg, rgba(237, 239, 243, 0) 0%, rgba(237, 239, 243, 0.88) 62%, #EDEFF3 100%);
-  --gradient-top-fade: linear-gradient(180deg, rgba(0, 0, 0, 0.5) 0%, rgba(0, 0, 0, 0) 100%);
-  --gradient-bottom-fade: linear-gradient(0deg, rgba(0, 0, 0, 0.66) 0%, rgba(0, 0, 0, 0) 100%);
-  --gradient-brand: linear-gradient(135deg, #F0A82E 0%, #C97A05 58%, #A35F04 100%);
+  --gradient-hero: linear-gradient(
+    180deg,
+    rgba(237, 239, 243, 0) 0%,
+    rgba(237, 239, 243, 0.88) 62%,
+    #edeff3 100%
+  );
+  --gradient-top-fade: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.5) 0%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  --gradient-bottom-fade: linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.66) 0%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  --gradient-brand: linear-gradient(
+    135deg,
+    #f0a82e 0%,
+    #c97a05 58%,
+    #a35f04 100%
+  );
   --gradient-brand-cta: var(--gradient-brand);
-  --gradient-glass: linear-gradient(180deg, rgba(15, 20, 26, 0.04) 0%, rgba(15, 20, 26, 0) 100%);
+  --gradient-glass: linear-gradient(
+    180deg,
+    rgba(15, 20, 26, 0.04) 0%,
+    rgba(15, 20, 26, 0) 100%
+  );
 
   --shadow-1: 0 1px 2px rgba(15, 20, 26, 0.08);
   --shadow-2: 0 4px 14px rgba(15, 20, 26, 0.1);
@@ -224,26 +268,119 @@
   color-scheme: light;
 }
 
+/* ---------- 2.5 播放器画面叠加层（恒定暗色孤岛） ----------
+   chrome 永远压在视频上，底下不是 app 背景。若跟随浅色主题，控制条会变成
+   黑底黑字、白色叠色反而刺眼，故这一组刻意不随 [data-theme] 反转，写在两套
+   主题块之后以保证优先级。品牌色不在其中——它仍走 --color-brand，皮肤/调色盘
+   覆盖在播放器里同样生效（浅色档琥珀 #B87406 对黑底仍有 4.5:1）。 */
+:root {
+  /* 表面 */
+  --player-bg-surface: #0b0d10;
+  --player-bg-elevated: #14171c;
+  --player-bg-pressed: #1d2128;
+
+  /* 文字（对黑底：主 16.9:1 / 次 7.9:1 / 三 4.7:1） */
+  --player-tx-1: #f2f4f7;
+  --player-tx-2: #9ba3af;
+  --player-tx-3: #6b7480;
+  --player-tx-dis: #565e6b;
+
+  /* 叠色（控件在画面上的明度全部从这里取，不允许各写各的 rgba） */
+  --player-ov-hair: rgba(255, 255, 255, 0.07);
+  --player-ov-line: rgba(255, 255, 255, 0.14);
+  --player-ov-track: rgba(255, 255, 255, 0.16);
+  --player-ov-handle: rgba(255, 255, 255, 0.24);
+  --player-ov-press: rgba(255, 255, 255, 0.1);
+  --player-ov-hover: rgba(255, 255, 255, 0.07);
+  --player-ov-fill: rgba(255, 255, 255, 0.92);
+
+  /* 玻璃 + 渐隐遮罩 */
+  --player-glass: rgba(12, 14, 18, 0.72);
+  --player-glass-strong: rgba(8, 9, 12, 0.88);
+  --player-glass-line: rgba(255, 255, 255, 0.1);
+  --player-blur-glass: saturate(150%) blur(18px);
+  --player-scrim-top: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.72) 0%,
+    rgba(0, 0, 0, 0.34) 46%,
+    rgba(0, 0, 0, 0) 100%
+  );
+  --player-scrim-bottom: linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.84) 0%,
+    rgba(0, 0, 0, 0.42) 42%,
+    rgba(0, 0, 0, 0) 100%
+  );
+
+  /* 阴影与焦点环（画面上必须重阴影 + 黑垫双层环，任何帧上都 ≥3:1） */
+  --player-sh-2: 0 4px 14px rgba(0, 0, 0, 0.45);
+  --player-sh-3: 0 12px 32px rgba(0, 0, 0, 0.55);
+  --player-sh-4: 0 24px 64px rgba(0, 0, 0, 0.66);
+  --player-ring:
+    0 0 0 2px rgba(0, 0, 0, 0.55), 0 0 0 4px rgba(240, 168, 46, 0.78);
+
+  /* 状态色：只出现在孤岛上，固定深档实值，浅色主题转深后在视频上不可读 */
+  --player-ok: #34d399;
+  --player-warn: #fbbf24;
+  --player-danger: #fb7185;
+  --player-info: #60a5fa;
+  --player-tier-fast: #a78bfa;
+
+  /* 字幕/弹幕组件层（抽屉里的「字幕样式」只改这几枚变量，不写散落样式） */
+  --player-sub-color: #ffffff;
+  --player-sub-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  --player-sub-bg: rgba(0, 0, 0, 0.62);
+  --player-danmaku-color: #ffffff;
+
+  /* 进度轨道与预览窗（设计稿 ⑤ 的原始叠色，集中在此便于逐 token 核对） */
+  --player-ov-rail: rgba(255, 255, 255, 0.18);
+  --player-ov-buf: rgba(255, 255, 255, 0.34);
+  --player-ov-solid: #ffffff;
+  --player-ov-hatch: rgba(255, 255, 255, 0.22);
+  --player-ov-hatch-end: rgba(251, 113, 133, 0.34);
+  --player-peek-stripe: rgba(255, 255, 255, 0.07);
+  --player-peek-film: linear-gradient(160deg, #16202b, #0a0d12);
+  --player-chip-scrim: rgba(0, 0, 0, 0.28);
+  --player-brand-line: rgba(240, 168, 46, 0.5);
+  --player-brand-line-soft: rgba(240, 168, 46, 0.42);
+  --player-brand-ink-soft: rgba(23, 15, 0, 0.28);
+  --player-warn-line: rgba(251, 191, 36, 0.42);
+}
+
 /* ---------- 3. 字体 ---------- */
 :root {
-  --font-family-base: -apple-system, BlinkMacSystemFont, 'Inter', 'PingFang SC', 'HarmonyOS Sans SC',
-    'Noto Sans CJK SC', 'Source Han Sans SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
-  --font-family-number: 'Inter', 'SF Pro Display', -apple-system, 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+  --font-family-base:
+    -apple-system, BlinkMacSystemFont, "Inter", "PingFang SC",
+    "HarmonyOS Sans SC", "Noto Sans CJK SC", "Source Han Sans SC",
+    "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --font-family-number:
+    "Inter", "SF Pro Display", -apple-system, "Roboto", "Helvetica Neue", Arial,
+    sans-serif;
 
   /* 字号（px）与对应行高 */
+  --font-size-11: 11px;
   --font-size-12: 12px;
+  --font-size-13: 13px;
   --font-size-14: 14px;
+  --font-size-15: 15px;
   --font-size-16: 16px;
+  --font-size-17: 17px;
   --font-size-18: 18px;
   --font-size-20: 20px;
+  --font-size-22: 22px;
   --font-size-24: 24px;
   --font-size-32: 32px;
 
+  --line-height-11: 14px;
   --line-height-12: 16px;
+  --line-height-13: 18px;
   --line-height-14: 20px;
-  --line-height-16: 24px;   /* 正文 1.5，长文可读性优先 */
+  --line-height-15: 20px;
+  --line-height-16: 24px; /* 正文 1.5，长文可读性优先 */
+  --line-height-17: 24px;
   --line-height-18: 26px;
   --line-height-20: 28px;
+  --line-height-22: 28px;
   --line-height-24: 32px;
   --line-height-32: 40px;
 
@@ -252,24 +389,35 @@
   --font-weight-semibold: 600;
   --font-weight-bold: 700;
 
-  --letter-spacing-tight: -0.02em;   /* 大标题收紧 */
+  --letter-spacing-tight: -0.02em; /* 大标题收紧 */
   --letter-spacing-normal: 0;
-  --letter-spacing-wide: 0.06em;     /* 分组小标题 */
+  --letter-spacing-wide: 0.06em; /* 分组小标题 */
 
   /* 组合：标题 / 正文 / 字幕 / 按钮 */
-  --text-display: var(--font-weight-bold) var(--font-size-32) / var(--line-height-32) var(--font-family-base);
-  --text-title-1: var(--font-weight-bold) 22px / 28px var(--font-family-base);
-  --text-title-2: var(--font-weight-semibold) var(--font-size-20) / var(--line-height-20) var(--font-family-base);
-  --text-title-3: var(--font-weight-semibold) 17px / 24px var(--font-family-base);
-  --text-body: var(--font-weight-regular) var(--font-size-16) / var(--line-height-16) var(--font-family-base);
-  --text-body-strong: var(--font-weight-medium) var(--font-size-16) / var(--line-height-16) var(--font-family-base);
-  --text-label: var(--font-weight-regular) var(--font-size-14) / var(--line-height-14) var(--font-family-base);
-  --text-label-strong: var(--font-weight-medium) var(--font-size-14) / var(--line-height-14) var(--font-family-base);
-  --text-caption: var(--font-weight-regular) var(--font-size-12) / var(--line-height-12) var(--font-family-base);
+  --text-display: var(--font-weight-bold) var(--font-size-32) /
+    var(--line-height-32) var(--font-family-base);
+  --text-title-1: var(--font-weight-bold) var(--font-size-22) /
+    var(--line-height-22) var(--font-family-base);
+  --text-title-2: var(--font-weight-semibold) var(--font-size-20) /
+    var(--line-height-20) var(--font-family-base);
+  --text-title-3: var(--font-weight-semibold) 17px / 24px
+    var(--font-family-base);
+  --text-body: var(--font-weight-regular) var(--font-size-16) /
+    var(--line-height-16) var(--font-family-base);
+  --text-body-strong: var(--font-weight-medium) var(--font-size-16) /
+    var(--line-height-16) var(--font-family-base);
+  --text-label: var(--font-weight-regular) var(--font-size-14) /
+    var(--line-height-14) var(--font-family-base);
+  --text-label-strong: var(--font-weight-medium) var(--font-size-14) /
+    var(--line-height-14) var(--font-family-base);
+  --text-caption: var(--font-weight-regular) var(--font-size-12) /
+    var(--line-height-12) var(--font-family-base);
   --text-button: var(--font-weight-semibold) 15px / 20px var(--font-family-base);
-  --text-button-sm: var(--font-weight-medium) 13px / 18px var(--font-family-base);
+  --text-button-sm: var(--font-weight-medium) 13px / 18px
+    var(--font-family-base);
   /* 字幕：播放器叠加层专用，行高更松便于阅读 */
-  --text-subtitle: var(--font-weight-medium) var(--font-size-18) / 1.5 var(--font-family-base);
+  --text-subtitle: var(--font-weight-medium) var(--font-size-18) / 1.5
+    var(--font-family-base);
 }
 
 /* ---------- 4. 间距（4pt 基准）与圆角 ---------- */
@@ -290,7 +438,7 @@
   --radius-lg: 16px;
   --radius-xl: 22px;
   --radius-full: 999px;
-  --radius-card: 14px;      /* 海报/媒体卡 */
+  --radius-card: 14px; /* 海报/媒体卡 */
   --radius-pill: 999px;
 
   --border-width-hairline: 1px;
@@ -307,18 +455,19 @@
 :root {
   --layout-header-height: 56px;
   --layout-tabbar-height: 64px;
-  --layout-tabbar-inset: 12px;        /* 悬浮胶囊左右/底部内缩 */
-  --layout-tabbar-gap: 10px;          /* 胶囊与屏幕底的距离 */
+  --layout-tabbar-inset: 12px; /* 悬浮胶囊左右/底部内缩 */
+  --layout-tabbar-gap: 10px; /* 胶囊与屏幕底的距离 */
   /* 页面内容需避让的总高度（胶囊 + 底部间距 + 呼吸空间） */
   --layout-tabbar-safe: calc(
-    var(--layout-tabbar-height) + var(--layout-tabbar-gap) + var(--safe-bottom) + var(--space-4)
+    var(--layout-tabbar-height) + var(--layout-tabbar-gap) +
+      var(--safe-bottom) + var(--space-4)
   );
   --layout-page-padding-x: 20px;
   --layout-content-max-width: 720px;
-  --layout-grid-columns: 2;           /* 默认手机竖屏 2 列 */
+  --layout-grid-columns: 2; /* 默认手机竖屏 2 列 */
   --layout-grid-gap: 12px;
   --layout-poster-ratio: 2 / 3;
-  --fade-height: 118px;               /* TabBar 上方渐隐遮罩高度 */
+  --fade-height: 118px; /* TabBar 上方渐隐遮罩高度 */
 
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
@@ -354,6 +503,8 @@
   --duration-fast: 150ms;
   --duration-base: 200ms;
   --duration-slow: 300ms;
+  /* 抽屉 / 底部弹层的位移时长：比 slow 长一档，让 368px 级的让位动画不至于闪跳 */
+  --duration-sheet: 360ms;
   --duration-skeleton: 1400ms;
 
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
@@ -363,7 +514,8 @@
   /* 对称呼吸曲线：只有「起来又落回去」的循环动画该用它（`EpisodeList` 的解析中脉冲） */
   --ease-in-out: ease-in-out;
 
-  --transition-color: color var(--duration-fast) var(--ease-standard),
+  --transition-color:
+    color var(--duration-fast) var(--ease-standard),
     background-color var(--duration-fast) var(--ease-standard),
     border-color var(--duration-fast) var(--ease-standard);
   --transition-transform: transform var(--duration-base) var(--ease-standard);
@@ -376,6 +528,7 @@
     --duration-fast: 0ms;
     --duration-base: 0ms;
     --duration-slow: 0ms;
+    --duration-sheet: 0ms;
     --duration-skeleton: 0ms;
   }
 }

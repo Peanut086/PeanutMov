@@ -12,6 +12,10 @@ import type { Source } from '@/types';
  *    不再一律喊 30 秒；重投只有一次，绝不循环；
  * 3. zombie（自己这次都没等到回执，实例疑似卡死）→ 维持 F3 的 30 秒快速失败，
  *    且后续调用不再往卡死的实例上补刀。
+ *
+ * P1-3 把 busy / zombie 两种成因对外统一成 `E_SOURCE_BUSY`（此前借道
+ * `E_SOURCE_UNAVAILABLE`，于是被下游当成死源：即时重投第二次、换同源另一条线路、
+ * 线路健康记一次连败）；等待预算改由 `busyStateOf` 的真实在飞剩余提供。
  */
 
 const HOME_JSON = JSON.stringify({
@@ -185,7 +189,7 @@ describe('SpiderAdapter 源忙冷却（P1-5）', () => {
     await vi.advanceTimersByTimeAsync(5_100);
     const error = await settled;
 
-    expect(error.code).toBe('E_SOURCE_UNAVAILABLE');
+    expect(error.code).toBe('E_SOURCE_BUSY');
     expect(error.message).toContain('该源正忙');
     expect(error.message).toContain('请稍后重试');
     expect(error.message).not.toContain('请检查网络');
@@ -217,7 +221,7 @@ describe('SpiderAdapter 源忙冷却（P1-5）', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     const error = await settled;
 
-    expect(error.code).toBe('E_SOURCE_UNAVAILABLE');
+    expect(error.code).toBe('E_SOURCE_BUSY');
     expect(error.message).toMatch(/约 30 秒后结束/);
     // 僵尸窗口不排队、不补刀：原生只被调用过一次
     expect(invoke).toHaveBeenCalledTimes(1);
@@ -245,5 +249,55 @@ describe('SpiderAdapter 源忙冷却（P1-5）', () => {
     expect(invoke).toHaveBeenCalledTimes(3);
     held[0]?.release();
     await first;
+  });
+
+  it('busyStateOf：真实在飞剩余随时间递减，落定后归零（上层重试预算的唯一来源）', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const { held, state } = mockBusyPlugin();
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource();
+
+    expect(adapter.busyStateOf('未知源')).toEqual({ inFlightMs: 0, queueDepth: 0 });
+
+    // 先跑一次把 jar 句柄焐热：冷加载那一串 await 会吃掉在飞时刻，让断言不稳定
+    await adapter.listCategories(source);
+    state.hang = true;
+    const running = adapter.listCategories(source);
+    await flushMicrotasks();
+    expect(state.inFlight).toBe(1);
+
+    const before = adapter.busyStateOf(source.id);
+    expect(before.inFlightMs).toBeGreaterThan(0);
+    expect(before.queueDepth).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(6_000);
+    const after = adapter.busyStateOf(source.id);
+    // 剩余就是「同一条 deadline 还剩多久」，不掺任何写死的秒数
+    expect(before.inFlightMs - after.inFlightMs).toBe(6_000);
+
+    held[0]?.release();
+    await running;
+    expect(adapter.busyStateOf(source.id)).toEqual({ inFlightMs: 0, queueDepth: 0 });
+  });
+
+  it('僵尸窗口：原生不回执时 busyStateOf 仍给出 30 秒量级，上层据此不盲目重投', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const { state } = mockBusyPlugin();
+    const { SpiderAdapter: Adapter } = await import('@/sources/spider/SpiderAdapter');
+    const adapter = new Adapter();
+    const source = makeSource();
+
+    state.hang = true;
+    const running = adapter.listCategories(source);
+    const settled = rejectsWith(running);
+    await vi.advanceTimersByTimeAsync(30_100);
+    expect((await settled).code).toBe('E_TIMEOUT');
+
+    // 僵尸冷却 30 秒已挂上，原生那条调用仍未落定 → 队列深度留在 1
+    const zombie = adapter.busyStateOf(source.id);
+    expect(zombie.inFlightMs).toBeGreaterThan(29_000);
+    expect(zombie.inFlightMs).toBeLessThanOrEqual(30_000);
+    expect(zombie.queueDepth).toBe(1);
   });
 });

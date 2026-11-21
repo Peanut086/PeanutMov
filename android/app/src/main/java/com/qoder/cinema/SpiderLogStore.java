@@ -17,14 +17,18 @@ import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.GZIPOutputStream;
 
@@ -64,6 +68,7 @@ public final class SpiderLogStore {
 
     private static volatile SpiderLogStore instance;
 
+    private final Context appContext;
     private final File logDir;
     /** F3：xCrash 原生 tombstone 目录（导出包内附带原文，避免只有摘要帧拿不到真凶 .so） */
     private final File tombstoneDir;
@@ -73,6 +78,9 @@ public final class SpiderLogStore {
     private final HandlerThread worker;
     private final Handler workerHandler;
     private final BlockingQueue<String> queue = new ArrayBlockingQueue<>(MAX_QUEUE);
+    /** P1-5：队列溢出时的丢弃计数，按「噪音行 / 关键行」分开记，导出头部如实报出 */
+    private final AtomicInteger droppedNoisy = new AtomicInteger();
+    private final AtomicInteger droppedKey = new AtomicInteger();
     private final Object fileLock = new Object();
     private final SimpleDateFormat dayFmt = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
     private final SimpleDateFormat tsFmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
@@ -99,6 +107,8 @@ public final class SpiderLogStore {
     }
 
     private SpiderLogStore(Context appContext) {
+        // 导出头部要读包信息与 jar 目录，留一个应用级 Context（不会压住 Activity）
+        this.appContext = appContext.getApplicationContext();
         this.logDir = new File(appContext.getFilesDir(), LOG_DIR_NAME);
         if (!logDir.exists()) logDir.mkdirs();
         this.tombstoneDir = new File(appContext.getFilesDir(), CrashNative.TOMBSTONE_DIR_NAME);
@@ -124,6 +134,11 @@ public final class SpiderLogStore {
 
     public boolean isEnabled() { return enabled; }
 
+    /** P1-5：队列溢出丢弃计数（导出头部如实报出，崩溃证据包也要读同一份） */
+    public int getDroppedNoisy() { return droppedNoisy.get(); }
+
+    public int getDroppedKey() { return droppedKey.get(); }
+
     public void setEnabled(boolean value) {
         this.enabled = value;
         prefs.edit().putBoolean(KEY_ENABLED, value).apply();
@@ -138,16 +153,16 @@ public final class SpiderLogStore {
         boolean isError = "W".equals(level) || "E".equals(level) || "F".equals(level);
         if (!enabled && !isError) return;
         if (message == null) message = "";
-        logcat(level, tag, message);
-        String line = formatLine(level, tag, message);
+        // P1-5：logcat 是「原生日志」的第三个面——`dev-install` 抓的、用户能贴出去的就是这一份。
+        // 此前只有落盘那一路打码，logcat 里的 cookie 与直链签名一直是原文。
+        String safe = redact(message);
+        logcat(level, tag, safe);
+        String line = formatLine(level, tag, safe);
         if ("F".equals(level)) {
             // 崩溃路径上等不起 80ms 批缓冲与「清空日志」，同步落一份独立副本
             writeCrashRing(line);
         }
-        if (!queue.offer(line)) {
-            queue.poll();
-            queue.offer(line);
-        }
+        enqueue(line);
         if (!workerHandler.hasMessages(MSG_DRAIN)) {
             workerHandler.sendEmptyMessageDelayed(MSG_DRAIN, DRAIN_DELAY_MS);
         }
@@ -180,6 +195,57 @@ public final class SpiderLogStore {
     /** 写入前脱敏：口径与导出时完全一致，统一在 {@link LogRedactor} 里定义 */
     private String redact(String s) {
         return LogRedactor.redact(s);
+    }
+
+    /**
+     * 入队；队列满时不再无差别丢最旧。
+     *
+     * <p>P1-5 要的是「高频预热刷不掉关键记录」。真机导出 63200 行里 {@code CatVodSpider}
+     * 与 {@code JS} 两个 tag 占 47553 行（75%），一轮批量预热能在几十秒里灌满 2048 的缓冲，
+     * 旧策略按 FIFO 把最前面那批——往往正是崩溃归因、隔离判定、交付改指——挤了出去：
+     * 磁盘写满不算问题，问题是最需要看的行先没。
+     *
+     * <p>因此溢出时优先丢队里<b>最旧的噪音行</b>；整队都是关键行才退回丢最旧（此时确实没得选）。
+     * 两个计数分开累加并在导出头部如实报出——丢过就要看得出来，静默丢弃等于伪造证据链。
+     */
+    private void enqueue(String line) {
+        if (queue.offer(line)) return;
+        List<String> snapshot = new ArrayList<>(queue.size() + 1);
+        queue.drainTo(snapshot);
+        int victim = pickVictimIndex(snapshot);
+        if (isNoisyLine(snapshot.get(victim))) droppedNoisy.incrementAndGet();
+        else droppedKey.incrementAndGet();
+        snapshot.remove(victim);
+        queue.addAll(snapshot);
+        queue.offer(line);
+    }
+
+    /** 溢出时丢下标几：第一个噪音行；一个都没有则只能丢最旧那条 */
+    static int pickVictimIndex(List<String> snapshot) {
+        for (int i = 0; i < snapshot.size(); i++) {
+            if (isNoisyLine(snapshot.get(i))) return i;
+        }
+        return 0;
+    }
+
+    /**
+     * 噪音行 = 调试/信息级的爬虫内部日志（jar 自己打的）与 JS 桥转发行。
+     *
+     * <p>行格式固定为 {@code yyyy-MM-dd HH:mm:ss.SSS <level> [<thread>] <tag>: <text>}：
+     * 时间戳恒占 23 字符，加一个空格后第 24 位就是等级，认不出的形态一律按关键行保住。
+     */
+    private static final Set<String> NOISY_TAGS = new HashSet<>(Arrays.asList("CatVodSpider", "JS"));
+    private static final int TS_FIELD_LEN = 23;
+
+    static boolean isNoisyLine(String line) {
+        if (line == null || line.length() <= TS_FIELD_LEN + 2) return false;
+        char level = line.charAt(TS_FIELD_LEN + 1);
+        if (level != 'D' && level != 'I') return false;
+        int bracket = line.indexOf("] ", TS_FIELD_LEN + 2);
+        if (bracket < 0) return false;
+        int colon = line.indexOf(": ", bracket + 2);
+        String tag = colon > 0 ? line.substring(bracket + 2, colon) : "";
+        return NOISY_TAGS.contains(tag);
     }
 
     private void drain() {
@@ -407,12 +473,10 @@ public final class SpiderLogStore {
     private void logWithTs(String level, String tag, String message, long clientTs) {
         boolean isError = "W".equals(level) || "E".equals(level);
         if (!enabled && !isError) return;
-        logcat(level, tag, message);
-        String line = formatLineWithTs(level, tag, message, clientTs);
-        if (!queue.offer(line)) {
-            queue.poll();
-            queue.offer(line);
-        }
+        String safe = redact(message);
+        logcat(level, tag, safe);
+        String line = formatLineWithTs(level, tag, safe, clientTs);
+        enqueue(line);
         if (!workerHandler.hasMessages(MSG_DRAIN)) {
             workerHandler.sendEmptyMessageDelayed(MSG_DRAIN, DRAIN_DELAY_MS);
         }
@@ -427,7 +491,9 @@ public final class SpiderLogStore {
             day = dayFmt.format(d);
         }
         String thread = Thread.currentThread().getName();
-        return ts + " " + level + " [" + thread + "] " + tag + ": " + message + "\n";
+        // P1-5：这条路径此前直接写原文。它承接的正是 JS 侧 appendBatch 的转发行
+        // （真机导出 63200 行里 12723 行是 JS tag），于是「写入层已脱敏」的说法对这两成日志根本不成立。
+        return ts + " " + level + " [" + thread + "] " + tag + ": " + redact(message) + "\n";
     }
 
     /**
@@ -627,6 +693,10 @@ public final class SpiderLogStore {
         // 导出再走一遍脱敏：日志文件里可能混着旧版本落的原文，tombstone / 崩溃栈本来也不经过写入脱敏
         try (BufferedWriter w = new BufferedWriter(
                 new LogRedactor.RedactingWriter(new FileWriter(exportFile)))) {
+            // P1-5：开头先带构建标识——版本、设备、PID、jar 构件指纹、队列丢弃计数，
+            // 拿日志的人第一行就能判断这是哪一轮包、有没有东西被刷掉过
+            w.write(LogBuildIdentity.header(appContext, scope, droppedNoisy.get(), droppedKey.get()));
+            w.newLine();
             if (!crashOnly) {
                 for (File f : files) {
                     if ("today".equals(scope) && !f.getName().contains(today)) continue;

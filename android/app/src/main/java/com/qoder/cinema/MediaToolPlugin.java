@@ -314,6 +314,9 @@ public class MediaToolPlugin extends Plugin {
      * `path` 与 `remuxMp4` 同一口径（相对 `Directory.Data`，不接受绝对路径）。
      * 只读探测，不写文件；用的尺子和转封装交付校验是同一把（`MediaRemuxer.probePublished`），
      * 否则"当场通过、重启后判废"会自己打自己。
+     *
+     * P2-2：除了结论，还把轨道、时长和首/中/尾定位抽样一并回给前端，让「文件自检」能拿出证据。
+     * 可选 `expectedDurationUs`（下载记账的跨度）带上后同时验时长漂移。
      */
     @PluginMethod
     public void verifyMedia(PluginCall call) {
@@ -334,13 +337,37 @@ public class MediaToolPlugin extends Plugin {
             response.put("ok", false);
             response.put("probeVerdict", "missing");
             response.put("outputBytes", 0L);
+            response.put("seekPoints", new JSArray());
             call.resolve(response);
             return;
         }
-        String issue = MediaRemuxer.probePublished(file);
-        response.put("ok", issue == null);
-        response.put("probeVerdict", issue == null ? "pass" : issue);
+        Long expectedBoxed = call.getLong("expectedDurationUs");
+        long expectedDurationUs = expectedBoxed == null || expectedBoxed <= 0L ? 0L : expectedBoxed;
+        MediaRemuxer.ProbeReport report = MediaRemuxer.probeReport(file, expectedDurationUs);
+        boolean pass = report.verdict == null;
+        response.put("ok", pass);
+        response.put("probeVerdict", pass ? "pass" : report.verdict);
         response.put("outputBytes", file.length());
+        response.put("trackCount", report.trackCount);
+        response.put("audioTrackCount", report.audioTrackCount);
+        response.put("videoTrackIndex", report.videoTrackIndex);
+        response.put("videoMime", report.videoMime);
+        response.put("width", report.width);
+        response.put("height", report.height);
+        response.put("durationUs", report.durationUs);
+        response.put("expectedDurationUs", expectedDurationUs);
+        JSArray seeks = new JSArray();
+        for (MediaRemuxer.ProbeSeek seek : report.seeks) {
+            JSObject item = new JSObject();
+            item.put("phase", seek.phase);
+            item.put("requestedUs", seek.requestedUs);
+            item.put("sampleUs", seek.sampleUs);
+            item.put("deltaUs", seek.sampleUs < 0 ? -1L : seek.sampleUs - seek.requestedUs);
+            item.put("sizeBytes", seek.sizeBytes);
+            item.put("hit", seek.hit);
+            seeks.put(item);
+        }
+        response.put("seekPoints", seeks);
         call.resolve(response);
     }
 

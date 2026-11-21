@@ -48,6 +48,37 @@ export function stripTitleNoise(title: string): string {
   );
 }
 
+/** 中文数字季号：支持「十」「十二」「二十」「二十三」，其余形态返回 null */
+function chineseNumber(raw: string): number | null {
+  const digitOf = (ch: string | undefined): number => '零一二三四五六七八九'.indexOf(ch ?? '');
+  const tensAt = raw.indexOf('十');
+  if (tensAt === -1) {
+    const single = digitOf(raw[0]);
+    return raw.length === 1 && single >= 0 ? single : null;
+  }
+  if (tensAt > 1 || raw.length > tensAt + 2) return null;
+  const tens = tensAt === 0 ? 1 : digitOf(raw[0]);
+  const ones = raw.length === tensAt + 1 ? 0 : digitOf(raw[tensAt + 1]);
+  if (tens < 0 || ones < 0) return null;
+  return tens * 10 + ones;
+}
+
+/**
+ * 「第 2 季」/「第二季」/「第2部」/「Season 2」→ 2；无季号返回 null（单季剧与不带季号按同义处理）。
+ *
+ * `stripTitleNoise` 会把季号整段剥掉，所以「士兵突击」与「士兵突击 第2季」在它眼里是同一部片；
+ * 需要区分季号的场合（弹幕选片、串片校验）单独用它。
+ */
+export function seasonOfTitle(title: string): number | null {
+  const normalized = normalizeTitleForMatch(title);
+  const latin = /(?:season|part)([0-9]+)/.exec(normalized);
+  if (latin !== null) return Number(latin[1]);
+  const match = /第([0-9一二三四五六七八九十]+)[季部]/.exec(normalized);
+  if (match === null) return null;
+  const raw = match[1] ?? '';
+  return /^\d+$/.test(raw) ? Number(raw) : chineseNumber(raw);
+}
+
 export interface PlayCandidate {
   source: Source;
   item: MediaItem;

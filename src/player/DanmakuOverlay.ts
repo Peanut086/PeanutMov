@@ -127,7 +127,10 @@ export class DanmakuOverlay {
     this.detach();
     const canvas = document.createElement('canvas');
     canvas.className = 'danmaku-overlay';
-    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:5;';
+    // 层级走岛内尺度（--z-danmaku:2，在字幕 3 / 微进度 4 / HUD 5 之下）；
+    // 原先写死 5 与 HUD 同层，弹幕会盖住字幕和手势反馈。取不到变量时退回 2。
+    canvas.style.cssText =
+      'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:var(--z-danmaku,2);';
     container.appendChild(canvas);
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');

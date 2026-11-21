@@ -16,6 +16,7 @@ import type { AppErrorShape } from '@/types';
 /** 源失败原因（面向用户的可行动分类） */
 export type SourceFailureKind =
   | 'source_dead'
+  | 'source_busy'
   | 'timeout'
   | 'protocol_unsupported'
   | 'rule_script'
@@ -26,6 +27,7 @@ export type SourceFailureKind =
   | 'spider_mismatch'
   | 'jar_conflict'
   | 'auth'
+  | 'netdisk_login'
   | 'rate_limited'
   | 'quota_exhausted'
   | 'no_play_url'
@@ -69,6 +71,14 @@ export const QUARANTINE_MESSAGE = '该爬虫因连续崩溃被隔离';
 export const COOLDOWN_MESSAGE = '该爬虫刚崩过一次，短时冷却中';
 /** 订阅 api 类名与 jar 内容不匹配 */
 export const SPIDER_MISMATCH_MESSAGE = '爬虫类缺失，源配置与 jar 不匹配';
+/**
+ * P1-3：「源正忙」——同一个爬虫实例上一次调用还在原生线程里跑，串行闸门拒绝第二次并发。
+ *
+ * 它既不是源死了（内容没问题，只是排不过去），也不是限流（上游没说过频繁），处置只有
+ * 「等它落定」或「换别的源」。之前它借 `E_SOURCE_UNAVAILABLE` 出门，于是下游三件事全做错：
+ * 即时重试第二次（更挤原生池）、自动换线路（同源另一条线仍是同一个实例）、线路健康计一次失败。
+ */
+export const SOURCE_BUSY_MESSAGE = '该源正忙，上一次请求还没跑完';
 /** 爬虫 jar 之间的依赖冲突（同一 dex 里同类名不同签名） */
 export const JAR_CONFLICT_MESSAGE = '爬虫 jar 依赖冲突，无法加载';
 /** 源返回了结果但全部与关键词无关（典型：采集站关闭搜索，返回最新目录） */
@@ -178,6 +188,22 @@ export function isQuotaExhaustedMessage(raw: string | null | undefined): boolean
 }
 
 /**
+ * P1-3：判定上游/闸门是否在说「上一次调用还在跑」。
+ *
+ * 两侧措辞都要认：JS 侧 `busyMessage` 写「该源正忙（上一次调用约 N 秒后结束）」，
+ * 原生 F1 锁抛的是 `IllegalStateException("源正忙（上一次调用仍在原生线程执行）…")`。
+ * 后者若不在这里截住，会被 `isSourceInternalMessage` 收进 `source_internal`（那是可重试档），
+ * 于是"忙"又变回"立刻再投一次"——正是要修的那件事。
+ *
+ * 词表只认这两个特征短语：`正忙` 与 `上一次调用`。不认 `busy`——原生线程名里
+ * 带 `busy` 的日志片段会在 detail 里顺路出现，宽一格就把正常源判成忙。
+ */
+export function isSourceBusyMessage(raw: string | null | undefined): boolean {
+  if (typeof raw !== 'string' || raw.length === 0) return false;
+  return /正忙|上一次调用|上一次请求还没跑完/.test(raw);
+}
+
+/**
  * 用户可见文案收敛：
  * - 脚本内部异常 → 「规则脚本异常（源站问题）」
  * - jar 依赖冲突 → 「爬虫 jar 依赖冲突，无法加载」
@@ -212,6 +238,12 @@ export function classifySourceFailure(error: AppErrorShape | null | undefined): 
   if (error.message === QUARANTINE_MESSAGE || /quarantined/i.test(text)) return 'quarantined';
   // P0-1：冷却不是隔离——到点自动放行，也不进隔离名单。混在一起说会让用户去解一份没有记录的隔离。
   if (error.message === COOLDOWN_MESSAGE || /cooling down/i.test(text)) return 'cooldown';
+  // P1-3：串行闸门拒绝 ≠ 源失效，必须先于 jar 冲突/脚本/内部异常判定——
+  // 原生那句 `IllegalStateException(源正忙…)` 只要晚一步就会被 `source_internal` 接走，
+  // 而 `source_internal` 在可重试档里，于是"忙"又被立刻重投一次。
+  if (error.code === 'E_SOURCE_BUSY' || error.message === SOURCE_BUSY_MESSAGE || isSourceBusyMessage(text)) {
+    return 'source_busy';
+  }
   if (error.message === SPIDER_MISMATCH_MESSAGE) return 'spider_mismatch';
   // F9：jar 依赖冲突是进程内确定性的，必须先于「脚本/内部异常」判定，否则会被归成可重试的 source_internal
   if (isJarLinkageMessage(text) || error.message === JAR_CONFLICT_MESSAGE) return 'jar_conflict';
@@ -236,6 +268,10 @@ export function classifySourceFailure(error: AppErrorShape | null | undefined): 
     case 'E_HTTP_401':
     case 'E_HTTP_403':
       return 'auth';
+    // P1-2 真机补档：夸克未登录的原文此前一律落 unknown，于是播放页只给一句通用提示，
+    // 而 `E_NETDISK_LOGIN_REQUIRED` 明明已经带出来了——登录态问题和改源凭据是两条处置路径。
+    case 'E_NETDISK_LOGIN_REQUIRED':
+      return 'netdisk_login';
     default:
       break;
   }
@@ -276,6 +312,11 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
   source_dead: {
     title: '源站已失效',
     hint: '该源没有返回可用内容（源站下线、改版或被限制）。换一个源通常最快。',
+    actions: ['switch-source', 'retry'],
+  },
+  source_busy: {
+    title: SOURCE_BUSY_MESSAGE,
+    hint: '这个源是同一个爬虫进程在服务，上一次请求还压在原生线程里没跑完（不是源站下线，也不是网络问题）。App 已经给它排过一次队；再等几秒或换个源都行，但此刻连着重试只会让后面的请求一起排队。换同一源的另一条线路没有用——线路共用同一个爬虫实例。',
     actions: ['switch-source', 'retry'],
   },
   timeout: {
@@ -328,6 +369,11 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
     hint: '账号、Token 或访问权限失效。请到源管理更新凭据后重试。',
     actions: ['edit-source', 'switch-source'],
   },
+  netdisk_login: {
+    title: '网盘未登录，取不到播放地址',
+    hint: '这条线路走的是网盘直链，App 里没有读到有效的网盘登录态（爬虫原文里的「配置中心」是 TVBox 的说法，本 App 的入口在「设置 → 网盘登录」）。登录后回来重试即可；在登录之前重试和换源都没用。',
+    actions: ['retry'],
+  },
   rate_limited: {
     title: '请求过于频繁，被限流了',
     hint: '上游明确说这一阵子请求太多（HTTP 429 / Retry-After）。立刻重试只会续上限，等一会儿再试或先换源；已取消这次请求，不占用爬虫线程。',
@@ -361,6 +407,10 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
  * 适用场景：guard jar 惰性初始化失败（首次 NPE，第二次热路径成功）、
  * 解析页偶发空结果（E_NO_PLAY_URL）、源站瞬时 5xx/超时。
  * 不适用：鉴权、磁力、DRM、安全模式、隔离、类名不匹配、jar 依赖冲突——这些重试无意义。
+ *
+ * P1-3 特意不把 `source_busy` 放进来：忙的时候再投一次，排的还是同一个原生实例，
+ * 只会把 core8/max8/queue32 那个池越占越满。真正的"等空位再重投一次"在
+ * `SpiderAdapter.waitForNativeIdle` / `invokeJar` 里做（那里看得见在飞调用，也守得住串行闸门）。
  */
 export function isTransientFailure(kind: SourceFailureKind): boolean {
   return (

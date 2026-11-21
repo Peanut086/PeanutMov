@@ -8,10 +8,21 @@ import { bilibiliProvider, clearBilibiliCache } from '@/services/danmaku/bilibil
 import { setDanmuApiBaseUrl, type DanmakuQuery } from '@/services/danmaku/provider';
 import { danmakuService, thinComments } from '@/services/danmakuService';
 import { httpClient } from '@/sources/base/httpClient';
+import { DANMAKU_MIN_COMMENTS } from '@/shared/constants';
+import { logger } from '@/shared/logger';
 
 vi.mock('@/sources/base/httpClient', () => ({
-  httpClient: { request: vi.fn(), requestWithMeta: vi.fn() },
+  httpClient: { request: vi.fn(), requestWithMeta: vi.fn() } as Record<string, unknown>,
 }));
+
+/** B 站口径的弹幕条目（弹弹play 与自建聚合源共用同一 `p`/`m` 形态） */
+function biliItems(count = DANMAKU_MIN_COMMENTS) {
+  return Array.from({ length: count }, (_, index) => ({
+    cid: index + 1,
+    p: `${index}.00,1,16777215,1001`,
+    m: `弹幕${index}`,
+  }));
+}
 
 const BILI_XML = [
   '<?xml version="1.0" encoding="UTF-8"?>',
@@ -91,7 +102,9 @@ describe('danmakuService 回退链（AC-126）', () => {
         return { success: true, isMatched: true, matches: [{ episodeId: 10001, animeTitle: '狂飙', episodeTitle: '第05集', shift: 0 }] };
       }
       if (url.includes('/api/v2/comment/')) {
-        return { count: 1, comments: [{ cid: 1, p: '10.00,1,16777215,[BiliBili]', m: '聚合弹幕' }] };
+        const items = biliItems();
+        items[0] = { cid: 1, p: '10.00,1,16777215,[BiliBili]', m: '聚合弹幕' };
+        return { count: items.length, comments: items };
       }
       return { success: true, animes: [] };
     });
@@ -100,7 +113,8 @@ describe('danmakuService 回退链（AC-126）', () => {
 
     expect(result).not.toBeNull();
     expect(result!.provider).toBe('danmu-api');
-    expect(result!.comments).toEqual([{ time: 10, mode: 'scroll', color: 0xffffff, text: '聚合弹幕' }]);
+    expect(result!.comments[0]).toEqual({ time: 10, mode: 'scroll', color: 0xffffff, text: '聚合弹幕' });
+    expect(result!.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
     // 六个直连源排在前面；聚合源命中即停，不再打弹弹play官方接口
     const danmuIdx = urls.findIndex((url) => host(url, 'danmu.test'));
     expect(danmuIdx).toBeGreaterThan(0);
@@ -116,7 +130,7 @@ describe('danmakuService 回退链（AC-126）', () => {
         return { success: true, isMatched: true, matches: [{ episodeId: 42, animeTitle: '狂飙', episodeTitle: '第06集', shift: 0 }] };
       }
       if (url.includes('api.dandanplay.net/api/v2/comment/')) {
-        return { count: 1, comments: [{ cid: 1, p: '10.00,1,16777215,1001', m: '官方弹幕' }] };
+        return { count: biliItems().length, comments: biliItems() };
       }
       return undefined;
     });
@@ -136,7 +150,9 @@ describe('danmakuService 回退链（AC-126）', () => {
         return { success: true, isMatched: true, matches: [{ episodeId: 42, animeTitle: '庆余年', episodeTitle: '第01集', shift: 3 }] };
       }
       if (url.includes('/api/v2/comment/')) {
-        return { count: 1, comments: [{ cid: 1, p: '10.00,1,16777215,1001', m: '前方高能' }] };
+        const items = biliItems();
+        items[0] = { cid: 1, p: '10.00,1,16777215,1001', m: '前方高能' };
+        return { count: items.length, comments: items };
       }
       return undefined;
     });
@@ -144,7 +160,7 @@ describe('danmakuService 回退链（AC-126）', () => {
     const first = await danmakuService.match('庆余年', 2019, 1);
     expect(first).not.toBeNull();
     expect(first!.provider).toBe('dandanplay');
-    expect(first!.comments.length).toBe(1);
+    expect(first!.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
     // ⑤ shift 要穿过服务层交给渲染层（缓存里存原始时间轴）
     expect(first!.offsetSec).toBe(3);
 
@@ -164,7 +180,14 @@ describe('danmakuService 回退链（AC-126）', () => {
       }
       if (host(url, 'node.video.qq.com')) return { c: { title: '庆余年', video_ids: ['vidEp1', 'vidEp2'] } };
       if (url.includes('/barrage/base/')) return { segment_index: { '0': { segment_start: '0', segment_name: 't/v1/0/30000' } } };
-      if (url.includes('/barrage/segment/')) return { barrage_list: [{ content: '腾讯弹幕', time_offset: '5000' }] };
+      if (url.includes('/barrage/segment/')) {
+        return {
+          barrage_list: Array.from({ length: DANMAKU_MIN_COMMENTS }, (_, index) => ({
+            content: `腾讯弹幕${index}`,
+            time_offset: `${index * 5000}`,
+          })),
+        };
+      }
       return undefined;
     });
 
@@ -173,7 +196,8 @@ describe('danmakuService 回退链（AC-126）', () => {
 
     expect(result).not.toBeNull();
     expect(result!.provider).toBe('tencent');
-    expect(result!.comments).toEqual([{ time: 5, mode: 'scroll', color: 0xffffff, text: '腾讯弹幕' }]);
+    expect(result!.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
+    expect(result!.comments[0]).toEqual({ time: 0, mode: 'scroll', color: 0xffffff, text: '腾讯弹幕0' });
     // B 站 1 跳 + 腾讯 4 跳，命中即停
     expect(urls).toHaveLength(5);
     expect(urls.some((url) => url.includes('dandanplay'))).toBe(false);
@@ -216,7 +240,7 @@ describe('danmakuService 回退链（AC-126）', () => {
         return { success: true, isMatched: true, matches: [{ episodeId: 1, animeTitle: '完全无关的片', episodeTitle: '第01集', shift: 0 }] };
       }
       if (url.includes('/api/v2/comment/')) {
-        return { count: 1, comments: [{ cid: 1, p: '1.00,1,16777215,1001', m: '弹幕' }] };
+        return { count: biliItems().length, comments: biliItems() };
       }
       return undefined;
     });
@@ -224,6 +248,85 @@ describe('danmakuService 回退链（AC-126）', () => {
     const result = await danmakuService.match('伪装者', 2015, 1);
 
     expect(result).toBeNull();
+  });
+
+  it('命中题名带季号而查询没有时判为串片（士兵突击 ↔ 士兵突击 第2季）', async () => {
+    route((url) => {
+      if (host(url, 'api.bilibili.com') || host(url, 'pbaccess.video.qq.com')) return new Error('network down');
+      if (url.includes('/api/v2/match')) {
+        return { success: true, isMatched: true, matches: [{ episodeId: 1, animeTitle: '士兵突击 第2季', episodeTitle: '第01集', shift: 0 }] };
+      }
+      if (url.includes('/api/v2/comment/')) {
+        return { count: biliItems().length, comments: biliItems() };
+      }
+      return undefined;
+    });
+
+    expect(await danmakuService.match('士兵突击', 2013, 1)).toBeNull();
+  });
+
+  it('查询自带季号时，命中同季仍采用', async () => {
+    route((url) => {
+      if (host(url, 'api.bilibili.com') || host(url, 'pbaccess.video.qq.com')) return new Error('network down');
+      if (url.includes('/api/v2/match')) {
+        return { success: true, isMatched: true, matches: [{ episodeId: 1, animeTitle: '士兵突击 第2季', episodeTitle: '第01集', shift: 0 }] };
+      }
+      if (url.includes('/api/v2/comment/')) {
+        return { count: biliItems().length, comments: biliItems() };
+      }
+      return undefined;
+    });
+
+    const result = await danmakuService.match('士兵突击 第2季', 2013, 1);
+    expect(result?.provider).toBe('dandanplay');
+  });
+
+  it('整集条数低于门槛视为未命中：继续回退且不写缓存', async () => {
+    let comments = biliItems(2);
+    route((url) => {
+      if (url.includes('/api/v2/match')) {
+        return { success: true, isMatched: true, matches: [{ episodeId: 7, animeTitle: '残料剧', episodeTitle: '第01集', shift: 0 }] };
+      }
+      if (url.includes('/api/v2/comment/')) {
+        return { count: comments.length, comments };
+      }
+      return undefined;
+    });
+
+    expect(await danmakuService.match('残料剧', 2024, 1)).toBeNull();
+    // 同一套接线只改条数就能命中，证明拦下来的是门槛而不是用例写错了；
+    // 且门槛不过不能落缓存——否则这里会取到先前那 2 条。
+    comments = biliItems();
+    const second = await danmakuService.match('残料剧', 2024, 1);
+    expect(second?.provider).toBe('dandanplay');
+    expect(second?.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
+  });
+
+  it('命中时留一条 info 日志（源 + 题名 + 集号 + 条数 + 偏移）', async () => {
+    route((url) => {
+      if (url.includes('/api/v2/match')) {
+        return { success: true, isMatched: true, matches: [{ episodeId: 8, animeTitle: '命中日志剧', episodeTitle: '第01集', shift: 3 }] };
+      }
+      if (url.includes('/api/v2/comment/')) {
+        return { count: biliItems().length, comments: biliItems() };
+      }
+      return undefined;
+    });
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+
+    await danmakuService.match('命中日志剧', 2019, 1);
+
+    expect(info).toHaveBeenCalledWith(
+      '弹幕命中',
+      expect.objectContaining({
+        provider: 'dandanplay',
+        matchedTitle: '命中日志剧',
+        episode: 1,
+        count: DANMAKU_MIN_COMMENTS,
+        offsetSec: 3,
+      }),
+    );
+    info.mockRestore();
   });
 
   it('全失败落本地 xml', async () => {
@@ -251,7 +354,7 @@ describe('场景标记（预取不做补量扇出）', () => {
     const spy = vi.spyOn(bilibiliProvider, 'match').mockImplementation(
       (async (query: DanmakuQuery) => {
         seen.push(query.scene);
-        return { comments: [{ time: 1, mode: 'scroll', color: 0xffffff, text: '弹幕' }], matchedTitle: title };
+        return { comments: biliItems(), matchedTitle: title };
       }) as never,
     );
 

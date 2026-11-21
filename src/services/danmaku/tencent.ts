@@ -6,7 +6,8 @@
  * 注意：搜索接口缺 `Origin: https://v.qq.com` 会返回 ret=20607（空结果），不是 403。
  */
 import { requestWithHeaders } from './nativeHttp';
-import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
+import { pickCandidate, titleMatchScore } from './titlePick';
+import { seasonOfTitle } from '@/sources/douban/playMatch';
 import type { DanmakuComment } from '@/types';
 import type { DanmakuProvider, DanmakuQuery } from './provider';
 
@@ -111,21 +112,6 @@ async function searchItems(keyword: string, signal?: AbortSignal): Promise<TenSe
   return main?.itemList ?? response.data?.normalList?.itemList ?? [];
 }
 
-/** 「第 2 季」/「第二季」→ 2；无季号返回 null（单季剧按 1 处理） */
-function seasonOf(title: string): number | null {
-  const match = /第\s*([0-9一二三四五六七八九十]+)\s*季/.exec(title);
-  if (match === null) return null;
-  const raw = match[1] ?? '';
-  if (/^\d+$/.test(raw)) return Number(raw);
-  if (raw === '十') return 10;
-  const digits = [...raw].map((ch) => '零一二三四五六七八九'.indexOf(ch));
-  if (digits.some((digit) => digit < 0)) return null;
-  if (digits.length === 1) return digits[0] ?? null;
-  if (raw.startsWith('十')) return 10 + (digits[1] ?? 0);
-  if (raw[1] === '十') return (digits[0] ?? 0) * 10 + (digits[2] ?? 0);
-  return null;
-}
-
 interface CoverCandidate {
   cid: string;
   title: string;
@@ -136,13 +122,11 @@ interface CoverCandidate {
 
 /**
  * 从搜索结果挑正片：季号冲突直接排除（防止「庆余年」匹配到第三季），
- * 年份精确命中优先，其次完全同名，最后才用去噪同名的首条。
+ * 再按「片名精确度 > 年份」选——年份只在最高分候选内做优选，
+ * 不许把去噪同名的候选顶到完全同名候选前面（站点错标年份时会整集串片）。
  */
 function pickCover(items: TenSearchItem[], query: DanmakuQuery): CoverCandidate | null {
-  const targetExact = normalizeTitleForMatch(query.title);
-  const targetLoose = stripTitleNoise(query.title);
-  if (targetLoose.length === 0) return null;
-  const querySeason = seasonOf(query.title);
+  const querySeason = seasonOfTitle(query.title);
 
   const candidates: CoverCandidate[] = [];
   for (const item of items) {
@@ -151,27 +135,14 @@ function pickCover(items: TenSearchItem[], query: DanmakuQuery): CoverCandidate 
     if (!cid || !rawTitle) continue;
     if (item.videoInfo?.subTitle === '全网搜' || item.videoInfo?.playFlag === 2) continue;
     const title = plainTitle(rawTitle);
-    const candidateSeason = seasonOf(title) ?? 1;
+    const candidateSeason = seasonOfTitle(title) ?? 1;
     if (querySeason !== null && candidateSeason !== querySeason) continue;
-    const score =
-      normalizeTitleForMatch(title) === targetExact
-        ? 2
-        : stripTitleNoise(title) === targetLoose
-          ? 1
-          : 0;
+    const score = titleMatchScore(title, query.title);
     if (score === 0) continue;
     const year = item.videoInfo?.year;
     candidates.push({ cid, title, year: year && year > 0 ? year : null, score });
   }
-  if (candidates.length === 0) return null;
-
-  if (query.year !== null) {
-    const sameYear = candidates.find((item) => item.year === query.year);
-    if (sameYear) return sameYear;
-    // 年份对不上就不采用，宁可无弹幕也不串到别的季
-    if (candidates.some((item) => item.year !== null)) return null;
-  }
-  return [...candidates].sort((a, b) => b.score - a.score)[0] ?? null;
+  return pickCandidate(candidates, query.year);
 }
 
 /** 分集 vid 按正片顺序返回（float_vinfo2 的 video_ids 与选集一一对应） */

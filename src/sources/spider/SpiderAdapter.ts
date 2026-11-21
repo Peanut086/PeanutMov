@@ -37,7 +37,9 @@ import { recordUpstreamNotice, redactNoticeText } from '@/shared/noticeOrigin';
 import {
   LOAD_FAILURE_LABELS,
   classifyDeterministicLoadFailure,
+  findAttemptedArtifact,
   findSuppressedLoadFailure,
+  markArtifactAttempted,
   noteLoadFailure,
 } from '@/services/spiderLoadLedger';
 import { clearSourceBlock, isSourceBlocked, noteSourceBlocked } from '@/services/sourceBlockState';
@@ -689,9 +691,11 @@ export class SpiderAdapter extends BaseAdapter {
   }
 
   /**
-   * P1-2：所有候选地址都失败后，判一次是不是「同一输入必然同样失败」。
+   * P1-2 / P1-3：所有候选地址都失败后，判一次是不是「同一输入必然同样失败」。
    *
-   * 记账只影响后台预热，不改这次的报错——用户看到的仍然是对症错误。
+   * 持久记账只影响后台预热，不改这次的报错——用户看到的仍然是对症错误。
+   * P1-3 另外把它记进本进程：同一构件在这个运行里已经栽过一次，再下载再 dex 一遍
+   * 结论不会变（缺类还是缺类、语法错还是语法错），第二次直接用第一次的原因失败。
    */
   private async noteLoadFailureIfNeeded(
     source: Source,
@@ -702,11 +706,30 @@ export class SpiderAdapter extends BaseAdapter {
     const kind = classifyDeterministicLoadFailure(message);
     const target = this.loadVersionTarget(source, ext);
     if (!kind || !target) return;
+    markArtifactAttempted(source, kind, target, message);
     try {
       await noteLoadFailure(source, kind, target, message);
     } catch (e) {
       logger.debug('确定性失败记账失败（忽略）', e);
     }
+  }
+
+  /**
+   * P1-3：本进程已判定为确定性坏构件时，跳过重新下载/加载，直接用第一次的真实原因失败。
+   *
+   * 只跳过**同一份构件**（jar 地址含 `;md5;` 后缀、drpy 规则地址），换版本即重新真跑一次；
+   * 报错保持原判据（`isJarLinkageMessage` 等据此分类），不新造一套口径。
+   */
+  private knownBadArtifact(source: Source, ext: SpiderSourceExt): AppError | null {
+    const target = this.loadVersionTarget(source, ext);
+    const hit = findAttemptedArtifact(source, target);
+    if (!hit) return null;
+    logger.debug('同一构件本进程已确定性失败，跳过重复加载', source.name, LOAD_FAILURE_LABELS[hit.kind]);
+    // 走与第一次同一条文案收敛：账本里存的是原生原文，直接抛出去会让用户在第二次看到英文堆栈
+    return nativeErrorOf(
+      new Error(hit.message),
+      new AppError('E_SOURCE_UNAVAILABLE', LOAD_FAILURE_LABELS[hit.kind], { detail: source.name }),
+    );
   }
 
   /**
@@ -756,6 +779,10 @@ export class SpiderAdapter extends BaseAdapter {
     }
     const cleanJarUrl = ext.jarUrl.split(';')[0] ?? ext.jarUrl;
     const md5Suffix = ext.jarUrl.slice(cleanJarUrl.length);
+    // P1-3：这个 jar 在本次进程里已经确定性失败过（缺类/依赖冲突/md5 不过），
+    // 重下重 dex 结论不会变，直接用第一次的真实原因失败，不再占爬虫池。
+    const knownBad = this.knownBadArtifact(source, ext);
+    if (knownBad) throw knownBad;
     // P4-3: 网盘源附加画质/线程配置
     const initExt = isNetdiskSource(source) ? appendNetdiskConfig(ext.initExt) : ext.initExt;
     // 直连优先；失败时依次尝试镜像变体（CHG-11）。探活命中的镜像已记入 jarVariants。
@@ -825,6 +852,9 @@ export class SpiderAdapter extends BaseAdapter {
    * 命中的变体记入 jarVariants（js 源复用该映射存规则变体）。
    */
   private async loadJs(source: Source, ext: SpiderSourceExt, signal?: AbortSignal): Promise<string> {
+    // P1-3：同一条规则本次进程已因语法/引用错误失败过 → 不再重跑镜像变体数组
+    const knownBad = this.knownBadArtifact(source, ext);
+    if (knownBad) throw knownBad;
     const candidates = this.ruleUrlCandidates(source, ext);
     if (candidates.length === 0) {
       throw new AppError('E_UNSUPPORTED_FORMAT', '该 drpy 源缺少规则地址');
@@ -955,8 +985,9 @@ export class SpiderAdapter extends BaseAdapter {
             continue;
           }
           if (!(e instanceof AppError)) {
-            // 原生忙拒绝（F1 锁）：文案对准真实状态，别让 nativeErrorOf 收敛成"执行失败"
-            throw new AppError('E_SOURCE_UNAVAILABLE', this.busyMessage(source.id), {
+            // 原生忙拒绝（F1 锁）：P1-3 独立成 `E_SOURCE_BUSY`——文案对准真实状态，
+            // 也不再借"源不可用"被下游当成死源立刻重投、换线路、记线路连败
+            throw new AppError('E_SOURCE_BUSY', this.busyMessage(source.id), {
               detail: source.name,
               cause: e,
             });
@@ -1038,6 +1069,27 @@ export class SpiderAdapter extends BaseAdapter {
       : '该源正忙（上一次调用仍未结束），请稍后重试';
   }
 
+  /**
+   * P1-3：把「这个源现在有多忙」交给上层——等待预算必须来自真实在飞时长，不能再写死秒数。
+   *
+   * - `inFlightMs`：该源在飞调用最迟的 JS 截止时刻还剩多久（同 `enterBusyCooldown` 口径）。
+   *   僵尸那 30 秒也算在里面，所以调用方要按 `busyWaitBudgetMs` 的上限自己收口。
+   * - `queueDepth`：JS 侧已投进原生、尚未回执的调用数。**不是**原生池那条 32 长队列——
+   *   原生 `ThreadPoolExecutor` 的队列长度在 JS 侧不可观测，这里给的是能实测的那一半。
+   */
+  busyStateOf(sourceId: string): { inFlightMs: number; queueDepth: number } {
+    const now = Date.now();
+    let latest = 0;
+    for (const call of this.nativeCallDeadlines.get(sourceId) ?? []) {
+      latest = Math.max(latest, call.deadlineAt);
+    }
+    const cooldownRemain = (this.invokeCooldown.get(sourceId)?.until ?? 0) - now;
+    return {
+      inFlightMs: Math.max(0, Math.max(latest - now, cooldownRemain)),
+      queueDepth: this.nativeCallDeadlines.get(sourceId)?.size ?? 0,
+    };
+  }
+
   /** F3 + P1-5：冷却窗口内先按成因排队，排不上或僵尸窗口才快速失败 */
   private async reserveNativeCall(source: Source, signal?: AbortSignal): Promise<void> {
     const cooldown = this.invokeCooldown.get(source.id);
@@ -1048,7 +1100,7 @@ export class SpiderAdapter extends BaseAdapter {
       this.invokeCooldown.delete(source.id);
       return;
     }
-    throw new AppError('E_SOURCE_UNAVAILABLE', this.busyMessage(source.id), { detail: source.name });
+    throw new AppError('E_SOURCE_BUSY', this.busyMessage(source.id), { detail: source.name });
   }
 
   /* ---------------- 数据方法 ---------------- */

@@ -73,6 +73,13 @@ export interface ExoFrameLuma {
   unsupported?: boolean;
   /** 这一轮有没有拿到帧（未起播、surface 未就绪 = false，下一轮再问） */
   available?: boolean;
+  /**
+   * P1-4：这一代 surface 根本截不到（纯音频收起画面、离开播放页、尺寸还没量出来）。
+   * 与 `available:false` 的区别是"别再问了"——调用方应停轮询，等 `surface` 事件说恢复了再采。
+   */
+  surfaceInvalid?: boolean;
+  /** 取样目标的代次：抓帧是异步的，回执带的是**发起时**那一代，对不上就该丢掉这张图 */
+  generation?: number;
   cells?: number[];
   /** 内容区在原生播放器容器里的归一化矩形（cover/fill 时就是整块） */
   box?: { left: number; top: number; width: number; height: number };
@@ -137,10 +144,12 @@ export interface ExoPlayerPlugin {
   setAudioOnly(options: { enabled: boolean }): Promise<void>;
   /**
    * 状态监听（ready / buffering / ended / error / qualities / textTracks /
-   * audioTracks / playing / paused / remote）；返回解绑 handle。
+   * audioTracks / playing / paused / remote / surface）；返回解绑 handle。
    *
    * `remote` 是通知栏/锁屏/线控发来的指令，`command` 为 previous / next / stop；
    * `playing` / `paused` 是原生侧播放意图变化（含音频焦点被抢），JS 必须跟着同步。
+   * `surface` 是 P1-4 的取样目标代次变化（建/毁、纯音频收起画面、离开播放页），
+   * 带 `generation` 与 `valid`，亮度取样据此停轮询与恢复。
    */
   addListener(
     eventName: 'exostate',
@@ -152,6 +161,8 @@ export interface ExoPlayerPlugin {
       qualities?: ExoQuality[];
       textTracks?: ExoTextTrack[];
       audioTracks?: ExoAudioTrack[];
+      generation?: number;
+      valid?: boolean;
     }) => void,
   ): Promise<PluginListenerHandle>;
 }

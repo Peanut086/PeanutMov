@@ -16,10 +16,24 @@ import { sourceService } from '@/services/sourceService';
 import { sourceRegistry } from '@/sources/registry';
 import { categoryIdFor } from '@/sources/base/normalize';
 import { mediaRepo } from '@/db/repositories/mediaRepo';
+import { episodeRepo } from '@/db/repositories/episodeRepo';
+import { lineRepo } from '@/db/repositories/lineRepo';
+import { beginPlaybackDemand, endPlaybackDemand } from '@/services/prewarmState';
 import { mediaIdOf } from '@/shared/id';
 import { AppError } from '@/shared/errors';
 import { PAGE_SIZE } from '@/shared/constants';
-import type { Episode, LibraryFilters, MediaItem, MediaType, PlayLine } from '@/types';
+import { SOURCE_BUSY_MESSAGE } from '@/shared/sourceFailure';
+import type {
+  Episode,
+  LibraryFilters,
+  MediaDetail,
+  MediaItem,
+  MediaType,
+  PlaybackSource,
+  PlayLine,
+  Source,
+  SourceAdapter,
+} from '@/types';
 
 import { resetAll } from './helpers';
 
@@ -489,5 +503,251 @@ describe('findAlternateByTitle：候选必须真有剧集（空壳源跳过）',
     });
 
     await expect(libraryService.findAlternateByTitle(title, 2026, DEMO_SOURCE_ID)).resolves.toBeNull();
+  });
+});
+
+/**
+ * P1-3：分档落到 `libraryService` 这一侧的后果（真机「集号来回跳 + 所有线路都失败」的放大链）
+ *
+ * 覆盖点：
+ * 1. 「源正忙」不再被当成死源：不即时重投第二次（第二次排的还是同一个原生实例）；
+ * 2. 真·瞬态失败仍然重投一次——分档只收紧"忙"，没有顺手关掉原有的止血；
+ * 3. 重投前的陪等取自 `busyStateOf().inFlightMs`（真实在飞时长），僵尸的 30 秒封顶 2 秒；
+ * 4. 取消（E_ABORTED）不算瞬态失败，不重投；
+ * 5. 详情请求有自己的预算：到期取消、给对症文案、计时器不残留；
+ * 6. 点播在途时后台预热让路（否则用户看到的就是「该源正忙（约 N 秒后结束）」，N 是刚被预热吃掉的加载）。
+ */
+describe('源忙分档、详情预算与预热让路（P1-3）', () => {
+  /** site 适配器是单例：能力探针（busyStateOf）逐用例挂摘，爬虫源才有这个方法 */
+  const siteAdapter = (): SourceAdapter => sourceRegistry.get('site');
+
+  beforeEach(async () => {
+    await resetAll();
+    setOnline(true);
+    endPlaybackDemand();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    delete (siteAdapter() as unknown as { busyStateOf?: unknown }).busyStateOf;
+  });
+
+  /**
+   * 落一份「源 + 条目」（可选线路与剧集）。
+   * `withLines: false` 时缓存详情视为不存在——`getDetail` 的刷新失败兜底会返回缓存，
+   * 要观察 `withDetailBudget` 抛出的错误就必须让缓存为空。
+   */
+  async function seedPlayable(
+    opts?: { withLines?: boolean },
+  ): Promise<{ source: Source; item: MediaItem; line: PlayLine; episodeId: string }> {
+    const source = await sourceService.create({
+      name: '分档源',
+      type: 'site',
+      baseUrl: 'https://busy.example.com',
+    });
+    const now = Date.now();
+    const mediaId = mediaIdOf(source.id, 'b-1');
+    const item: MediaItem = {
+      id: mediaId,
+      sourceId: source.id,
+      sourceItemId: 'b-1',
+      title: '分档验证片',
+      originalTitle: null,
+      type: 'movie',
+      year: 2026,
+      area: null,
+      genres: [],
+      tags: [],
+      rating: null,
+      posterUrl: null,
+      backdropUrl: null,
+      description: null,
+      durationSec: null,
+      episodeCount: null,
+      titleLower: '分档验证片',
+      isDemo: false,
+      cachedAt: now,
+      updatedAt: now,
+    };
+    const line: PlayLine = {
+      id: `${mediaId}~l0`,
+      mediaId,
+      sourceId: source.id,
+      name: '主线',
+      quality: null,
+      format: 'mp4',
+      index: 0,
+    };
+    const episode: Episode = {
+      id: `${mediaId}~e1`,
+      mediaId,
+      sourceId: source.id,
+      lineId: line.id,
+      number: 1,
+      title: '第 1 集',
+      durationSec: null,
+      subtitles: [],
+      updatedAt: now,
+    };
+    await mediaRepo.save(item);
+    if (opts?.withLines !== false) {
+      await lineRepo.saveMany([line]);
+      await episodeRepo.saveMany([episode]);
+    }
+    return { source, item, line, episodeId: episode.id };
+  }
+
+  function playbackOf(lineId: string): PlaybackSource {
+    return {
+      url: 'https://cdn.example.com/1.mp4',
+      format: 'mp4',
+      headers: {},
+      subtitles: [],
+      lineId,
+      quality: null,
+      expiresAt: null,
+      isLocal: false,
+    };
+  }
+
+  it('源正忙：原样抛出、不重投第二次（第二次只是把原生池越占越满）', async () => {
+    const { item, episodeId } = await seedPlayable();
+    const resolveSpy = vi.spyOn(siteAdapter(), 'resolvePlayUrl').mockRejectedValue(
+      new AppError('E_SOURCE_BUSY', `${SOURCE_BUSY_MESSAGE}（约 14 秒后结束）`),
+    );
+
+    const thrown = await libraryService.resolvePlay({ mediaId: item.id, episodeId }).catch((e: unknown) => e);
+
+    expect(thrown).toBeInstanceOf(AppError);
+    expect((thrown as AppError).code).toBe('E_SOURCE_BUSY');
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('真·瞬态失败仍重投一次（分档只收紧「忙」，没有关掉原有止血）', async () => {
+    const { item, line, episodeId } = await seedPlayable();
+    const resolveSpy = vi
+      .spyOn(siteAdapter(), 'resolvePlayUrl')
+      .mockRejectedValueOnce(
+        // 爬虫 jar 惰性初始化的 Java 空指针：确定性不是"源站下线"，值得再投一次
+        new AppError('E_SOURCE_UNAVAILABLE', '爬虫调用失败: NullPointerException: Attempt to invoke virtual method'),
+      )
+      .mockResolvedValueOnce(playbackOf(line.id));
+
+    const playback = await libraryService.resolvePlay({ mediaId: item.id, episodeId });
+
+    expect(playback.url).toBe('https://cdn.example.com/1.mp4');
+    expect(resolveSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('重投前的陪等来自真实在飞时长，僵尸的 30 秒封顶 2 秒', async () => {
+    const { item, line, episodeId } = await seedPlayable();
+    const probe = siteAdapter() as unknown as { busyStateOf?: (id: string) => { inFlightMs: number; queueDepth: number } };
+
+    // ① 常态：挡回它的那次调用只剩 300ms → 陪着等这么久再投第二次
+    probe.busyStateOf = () => ({ inFlightMs: 300, queueDepth: 1 });
+    const quick = vi
+      .spyOn(siteAdapter(), 'resolvePlayUrl')
+      .mockRejectedValueOnce(new AppError('E_SOURCE_UNAVAILABLE', '爬虫调用失败: NullPointerException: x'))
+      .mockResolvedValueOnce(playbackOf(line.id));
+    const t0 = Date.now();
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId });
+    const waitedQuick = Date.now() - t0;
+    expect(quick).toHaveBeenCalledTimes(2);
+    expect(waitedQuick).toBeGreaterThanOrEqual(250);
+    expect(waitedQuick).toBeLessThan(1_500);
+
+    // ② 僵尸：在飞 30 秒不能把用户按在转圈里，预算封顶后照样只重投一次
+    libraryService.invalidatePlayCache(item.id);
+    probe.busyStateOf = () => ({ inFlightMs: 30_000, queueDepth: 1 });
+    const slow = vi
+      .spyOn(siteAdapter(), 'resolvePlayUrl')
+      .mockRejectedValueOnce(new AppError('E_SOURCE_UNAVAILABLE', '爬虫调用失败: NullPointerException: x'))
+      .mockResolvedValueOnce(playbackOf(line.id));
+    const t1 = Date.now();
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId });
+    const waitedZombie = Date.now() - t1;
+    expect(slow).toHaveBeenCalledTimes(2);
+    expect(waitedZombie).toBeLessThan(3_000);
+    expect(waitedZombie).toBeGreaterThanOrEqual(1_900);
+  });
+
+  it('取消不算瞬态失败：即使文案是瞬态形态也不重投', async () => {
+    const { item, episodeId } = await seedPlayable();
+    const resolveSpy = vi
+      .spyOn(siteAdapter(), 'resolvePlayUrl')
+      // 文案本身会被归成 source_internal（可重试），只有错误码说明这是用户取消
+      .mockRejectedValue(new AppError('E_ABORTED', '爬虫调用失败: NullPointerException: Attempt to invoke virtual method'));
+
+    const thrown = await libraryService.resolvePlay({ mediaId: item.id, episodeId }).catch((e: unknown) => e);
+
+    expect((thrown as AppError).code).toBe('E_ABORTED');
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('慢详情按预算取消并清掉计时器（不再裸奔等原生 30 秒回执）', async () => {
+    const adapter = siteAdapter() as SourceAdapter & { searchTimeoutMs?: number };
+    const originalTimeout = adapter.searchTimeoutMs;
+    // 预算下限 3s（SEARCH_BUDGET_MIN_MS）：把基线压到下限，用例只等 3 秒
+    adapter.searchTimeoutMs = 1;
+    const { item } = await seedPlayable({ withLines: false });
+    let seenSignal: AbortSignal | undefined;
+    const detailSpy = vi
+      .spyOn(adapter, 'getDetail')
+      // 真适配器被取消时会中断在途请求；模拟这个契约，才能看到"预算到期"确实把请求取消了
+      .mockImplementation(
+        (params) =>
+          new Promise<MediaDetail>((_resolve, reject) => {
+            seenSignal = params.signal;
+            params.signal?.addEventListener('abort', () => reject(new AppError('E_ABORTED')), { once: true });
+          }),
+      );
+
+    // 计时器泄漏的实证口径：预算计时器确实被 clearTimeout 摘掉（而不是留在池里等下一轮）
+    // id 类型按运行时给的原样记（DOM 是 number，Node 侧是 Timeout 对象）
+    const created = new Set<unknown>();
+    const cleared = new Set<unknown>();
+    const realSet = globalThis.setTimeout.bind(globalThis);
+    const realClear = globalThis.clearTimeout.bind(globalThis);
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: (...a: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
+      const id = realSet(fn, ms, ...rest);
+      created.add(id);
+      return id;
+    }) as unknown as typeof setTimeout);
+    vi.spyOn(globalThis, 'clearTimeout').mockImplementation(((id?: unknown) => {
+      cleared.add(id);
+      realClear(id as ReturnType<typeof setTimeout>);
+    }) as unknown as typeof clearTimeout);
+
+    const started = Date.now();
+    const thrown = await libraryService.getDetail(item.id, { refresh: true }).catch((e: unknown) => e);
+    const waited = Date.now() - started;
+    // 先把基线还回去再断言：断言失败也不能把 1ms 的超时留给后面的用例
+    adapter.searchTimeoutMs = originalTimeout;
+
+    expect(detailSpy).toHaveBeenCalledTimes(1);
+    expect((thrown as AppError).code).toBe('E_TIMEOUT');
+    expect((thrown as AppError).message).toMatch(/详情加载超过 \d+ 秒（源站响应过慢）/);
+    // 到期真的把请求取消，并且把预算计时器摘掉（不留"看起来还在等"的悬空状态）
+    expect(seenSignal?.aborted).toBe(true);
+    expect(waited).toBeLessThan(6_000);
+    expect([...created].some((id) => cleared.has(id))).toBe(true);
+  });
+
+  it('点播在途时详情刷新的后台预热让路，点播结束后恢复', async () => {
+    const { item, line } = await seedPlayable({ withLines: false });
+    // `warmup` 在接口上是可选方法，spy 的类型要按实现里确实存在的那一份声明
+    const warmupSpy = vi
+      .spyOn(siteAdapter() as SourceAdapter & { warmup: (source: Source) => Promise<void> }, 'warmup')
+      .mockResolvedValue(undefined);
+    vi.spyOn(siteAdapter(), 'getDetail').mockResolvedValue({ item, lines: [line], episodes: [] });
+
+    beginPlaybackDemand();
+    await libraryService.getDetail(item.id, { refresh: true });
+    expect(warmupSpy).not.toHaveBeenCalled();
+
+    endPlaybackDemand();
+    await libraryService.getDetail(item.id, { refresh: true });
+    expect(warmupSpy).toHaveBeenCalledTimes(1);
   });
 });

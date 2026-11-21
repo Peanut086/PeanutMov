@@ -72,10 +72,27 @@ function sanitize(value: unknown, depth = 0): unknown {
   return value;
 }
 
+/**
+ * 参数 → 可整行 grep 的文本。
+ *
+ * P1-5 真机实测：把结构化字段作为独立 console 参数交出去，过 Capacitor 的日志桥落到
+ * logcat 时只剩一个 `[object Object]`（一轮 10 分钟抓取里 191 行）。同一事件在落盘文件里
+ * 是完整 JSON、在 logcat 里是空壳——而 `dev-install` 与用户能贴到群里的恰恰是 logcat 那一份。
+ * 所以先序列化成字符串再交出去，两个面必须是同一句话。
+ */
+function asText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
 function emit(level: LogLevel, message: string, args: unknown[]): void {
   if (LEVEL_WEIGHT[level] < LEVEL_WEIGHT[currentLevel]) return;
   const prefix = `[${currentScope}]`;
-  const payload = args.map((a) => sanitize(a));
+  const payload = args.map((a) => asText(sanitize(a)));
   const consoleObj = typeof console !== 'undefined' ? console : undefined;
   if (!consoleObj) return;
   switch (level) {

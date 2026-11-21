@@ -12,6 +12,7 @@ import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor
 
 import { isNative } from '@/shared/platform';
 import { logger } from '@/shared/logger';
+import { formatClock } from '@/shared/time';
 
 export interface MediaToolPlugin {
   /** 查询可用剩余空间（相对 `Directory.Data` 的路径，缺省 `downloads`） */
@@ -53,7 +54,7 @@ export interface MediaToolPlugin {
   /** 取消进行中的转封装并清理 `.mp4.part` */
   cancelRemux(options: { taskId?: string; inputPath?: string }): Promise<{ canceled: boolean }>;
   /** P0-3：独立复检盘上产物（开机对账 / 采纳孤儿 MP4 前），`path` 同上口径 */
-  verifyMedia(options: { path: string }): Promise<MediaVerifyResult>;
+  verifyMedia(options: { path: string; expectedDurationUs?: number }): Promise<MediaVerifyRaw>;
   /**
    * A-03：从本地文件抽进度条预览帧。
    * `path` 是相对 `Directory.Data` 的路径（与 `remuxMp4` 同一口径，不接受绝对路径）。
@@ -172,11 +173,67 @@ export async function extractSeekFrames(
 
 /* ---------- P0-3：交付件复检 ---------- */
 
+/** P2-2：首/中/尾定位抽样的一条证据 */
+export interface MediaVerifySeekProbe {
+  /** `head` / `middle` / `tail` */
+  phase: string;
+  requestedUs: number;
+  sampleUs: number;
+  /** 命中样本与请求点之差（未命中为 -1） */
+  deltaUs: number;
+  sizeBytes: number;
+  hit: boolean;
+}
+
+/**
+ * 原生 `verifyMedia` 的线上返回。
+ *
+ * 与 `MediaVerifyResult` 分成两个类型是刻意的：定位明细在原生侧叫 `seekPoints`，
+ * 上一版按归一化后的 `seeks` 名字去读线上对象，明细永远为空且不报错——UI 只看到"没证据"，
+ * 而字段名不一致这种错，共用一个类型时编译期查不出来。
+ */
+export interface MediaVerifyRaw {
+  ok?: boolean;
+  probeVerdict?: string;
+  outputBytes?: number;
+  trackCount?: number;
+  audioTrackCount?: number;
+  videoTrackIndex?: number;
+  videoMime?: string | null;
+  width?: number;
+  height?: number;
+  durationUs?: number;
+  expectedDurationUs?: number;
+  seekPoints?: MediaVerifyRawSeekPoint[];
+}
+
+/** 原生线上的一条定位证据：字段全可选，归一化时缺啥补啥 */
+export interface MediaVerifyRawSeekPoint {
+  phase?: string;
+  requestedUs?: number;
+  sampleUs?: number;
+  deltaUs?: number;
+  sizeBytes?: number;
+  hit?: boolean;
+}
+
 export interface MediaVerifyResult {
   ok: boolean;
   /** `pass` / `missing` / `no-tracks` / `no-video-track` / `no-duration` / `duration-drift-NN` / `head-seek-miss` / `middle-seek-miss` / `tail-seek-miss` / `probe-error-Xxx` */
   probeVerdict: string;
   outputBytes: number;
+  /** 以下明细字段 P2-2 才有；旧 APK 不返回，一律可选 */
+  trackCount?: number;
+  audioTrackCount?: number;
+  videoMime?: string | null;
+  width?: number;
+  height?: number;
+  durationUs?: number;
+  seeks?: MediaVerifySeekProbe[];
+}
+
+function finiteOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 /**
@@ -184,16 +241,41 @@ export interface MediaVerifyResult {
  *
  * 与 `scanTsFile` 同一口径——只有"能力缺席"（Web / 旧 APK 未注册 `verifyMedia`）才返回 `null`，
  * 文件缺失或结构不合格是有效结论（`ok: false`），调用方必须据此放弃采纳该文件。
+ * `expectedDurationUs`（下载记账的跨度）传了才判时长漂移，不传只验结构。
  */
-export async function verifyRemuxedMedia(path: string): Promise<MediaVerifyResult | null> {
+export async function verifyRemuxedMedia(
+  path: string,
+  expectedDurationUs?: number,
+): Promise<MediaVerifyResult | null> {
   if (!isMediaToolAvailable()) return null;
   try {
-    const result = await MediaTool.verifyMedia({ path });
+    const result = await MediaTool.verifyMedia({
+      path,
+      ...(expectedDurationUs && expectedDurationUs > 0 ? { expectedDurationUs } : {}),
+    });
     if (typeof result?.probeVerdict !== 'string') return null;
+    const rawSeeks = Array.isArray(result.seekPoints) ? result.seekPoints : [];
+    const seeks = rawSeeks
+      .filter((item): item is MediaVerifyRawSeekPoint & { phase: string } => typeof item?.phase === 'string')
+      .map((item) => ({
+        phase: item.phase,
+        requestedUs: finiteOrUndefined(item.requestedUs) ?? 0,
+        sampleUs: finiteOrUndefined(item.sampleUs) ?? -1,
+        deltaUs: finiteOrUndefined(item.deltaUs) ?? -1,
+        sizeBytes: finiteOrUndefined(item.sizeBytes) ?? 0,
+        hit: item.hit === true,
+      }));
     return {
       ok: result.ok === true && result.probeVerdict === 'pass',
       probeVerdict: result.probeVerdict,
-      outputBytes: Number.isFinite(result.outputBytes) ? result.outputBytes : 0,
+      outputBytes: finiteOrUndefined(result.outputBytes) ?? 0,
+      trackCount: finiteOrUndefined(result.trackCount),
+      audioTrackCount: finiteOrUndefined(result.audioTrackCount),
+      videoMime: typeof result.videoMime === 'string' ? result.videoMime : null,
+      width: finiteOrUndefined(result.width),
+      height: finiteOrUndefined(result.height),
+      durationUs: finiteOrUndefined(result.durationUs),
+      seeks: seeks.length > 0 ? seeks : undefined,
     };
   } catch (e) {
     const message = (e as Error)?.message ?? String(e);
@@ -280,17 +362,55 @@ export function describeTsScan(r: TsScanResult): string {
  */
 export function describeMediaVerify(r: MediaVerifyResult): string {
   const size = `${(r.outputBytes / 1048576).toFixed(1)} MB`;
-  if (r.ok) return `容器、轨道与首中尾定位都正常（${size}）`;
+  const evidence = verifyEvidence(r);
+  const scope = evidence ? `${size} · ${evidence}` : size;
+  if (r.ok) return `容器、轨道与首中尾定位都正常（${scope}）`;
   const v = r.probeVerdict;
   if (v === 'missing') return `文件读不到了（记账 ${size}）——产物已不在盘上`;
-  if (v === 'no-tracks' || v === 'no-video-track') return `解不出可用的视频轨道（${size}）——这份产物播不了`;
-  if (v === 'no-duration') return `读不到时长（${size}）——时间轴信息缺失`;
-  if (v.startsWith('duration-drift-')) return `时长与记账偏差 ${v.slice('duration-drift-'.length)}，可能缺了尾部内容（${size}）`;
-  if (v.endsWith('-seek-miss')) {
-    const phase = v.slice(0, v.indexOf('-'));
-    const where = phase === 'head' ? '开头' : phase === 'middle' ? '中间' : phase === 'tail' ? '结尾' : phase;
-    return `定位不到${where}的采样点（${size}）——时间轴大概率损坏`;
+  if (v === 'no-tracks' || v === 'no-video-track') return `解不出可用的视频轨道（${scope}）——这份产物播不了`;
+  if (v === 'no-duration') return `读不到时长（${scope}）——时间轴信息缺失`;
+  if (v.startsWith('duration-drift-')) {
+    // 结论里的数字是"实测 ÷ 记账"的百分比，不是差值：72 = 只解出记账时长的 72%
+    const pct = v.slice('duration-drift-'.length);
+    const ratio = Number(pct);
+    if (Number.isFinite(ratio) && ratio > 100) return `实测时长是记账的 ${pct}%，时间轴信息可能不可信（${scope}）`;
+    return `实测时长只有记账的 ${pct}%，可能缺了尾部内容（${scope}）`;
   }
-  if (v.startsWith('probe-error-')) return `解封装探测报错 ${v.slice('probe-error-'.length)}（${size}）`;
-  return `复检未通过：${v}（${size}）`;
+  if (v.endsWith('-seek-miss')) {
+    return `定位不到${seekPhaseName(v.slice(0, v.indexOf('-')))}的采样点（${scope}）——时间轴大概率损坏`;
+  }
+  if (v.startsWith('invalid-dimensions')) return `视频轨解不出有效分辨率（${scope}）——轨道信息不完整`;
+  if (v.startsWith('probe-error-')) return `解封装探测报错 ${v.slice('probe-error-'.length)}（${scope}）`;
+  return `复检未通过：${v}（${scope}）`;
+}
+
+function seekPhaseName(phase: string): string {
+  return phase === 'head' ? '开头' : phase === 'middle' ? '中间' : phase === 'tail' ? '结尾' : phase;
+}
+
+/**
+ * P2-2：把复检抽到的轨道/时长/定位明细拼成可核对的一句证据。
+ * 旧 APK 不返回这些字段，返回空串让文案退回原来的一句话口径。
+ */
+function verifyEvidence(r: MediaVerifyResult): string {
+  const bits: string[] = [];
+  if (typeof r.trackCount === 'number' && r.trackCount > 0) {
+    const audio = typeof r.audioTrackCount === 'number' ? ` · 音频 ${r.audioTrackCount}` : '';
+    bits.push(`轨道 ${r.trackCount}${audio}`);
+  }
+  if (r.videoMime && r.width && r.height) {
+    bits.push(`${r.width}×${r.height} ${r.videoMime.replace('video/', '')}`);
+  }
+  if (r.durationUs && r.durationUs > 0) bits.push(`时长 ${formatClock(r.durationUs / 1_000_000)}`);
+  const seeks = r.seeks ?? [];
+  if (seeks.length > 0) {
+    const missed = seeks.filter((s) => !s.hit).map((s) => seekPhaseName(s.phase));
+    if (missed.length > 0) {
+      bits.push(`定位落空：${missed.join('、')}`);
+    } else {
+      const worstMs = Math.max(...seeks.map((s) => Math.abs(s.deltaUs))) / 1000;
+      bits.push(`定位偏差 ≤ ${Math.round(worstMs)}ms`);
+    }
+  }
+  return bits.join(' · ');
 }

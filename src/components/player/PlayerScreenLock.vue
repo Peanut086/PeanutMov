@@ -1,112 +1,43 @@
 <script setup lang="ts">
 /**
- * 横屏屏幕锁（B4）
+ * 屏幕锁（B4 → 设计规范 ⑦ `pl-lock`）
  *
- * 锁定态下铺一层全屏拦截片：所有手势/控件都不再响应，只有这枚胶囊能点。
- * 胶囊 3 秒自动隐去（由调用方控制 `revealed`），轻触画面任意处重新唤出——
- * 既防误触，又不会让人找不到解锁入口。
+ * 锁定态铺一层压暗片盖住画面矩形：所有手势/控件都不再响应，只留左下角一枚常驻「解锁」。
+ * 样式与显隐都在 player-chrome.css（`.pl-shell[data-locked="1"] .pl-lock`），
+ * 这里只管拦截与动作。入口常驻而不是「轻触画面唤回胶囊」——锁屏时控制条已收起，
+ * 顶部那颗锁定键点不到，再藏一次就真找不到出口了。
+ *
+ * 竖屏也生效（`K` 或顶栏锁键）：信息区由壳层 `inert` 让位，锁屏层只吃画面，
+ * 不铺满整屏，下方内容仍可正常滚动。
  */
-import IconLock from '@/components/icons/IconLock.vue';
+import IconLock from "@/components/icons/IconLock.vue";
 
-defineProps<{ locked: boolean; revealed: boolean }>();
+defineProps<{ locked: boolean }>();
 
-const emit = defineEmits<{ (e: 'toggle'): void; (e: 'reveal'): void }>();
+const emit = defineEmits<{ (e: "toggle"): void }>();
 </script>
 
 <template>
-  <div
-    v-if="locked"
-    class="lock-shield"
-    role="presentation"
-    @pointerdown.stop
-    @pointermove.stop
-    @pointerup.stop
-    @click.stop="emit('reveal')"
-  />
-
-  <Transition name="lock-pop">
-    <button
-      v-if="revealed"
-      class="lock-pill"
-      :class="{ 'lock-pill--locked': locked }"
-      type="button"
-      :aria-label="locked ? '解锁屏幕' : '锁定屏幕，防止误触'"
-      :aria-pressed="locked"
+  <Transition name="pl-lock">
+    <div
+      v-if="locked"
+      class="pl-lock"
       @pointerdown.stop
-      @click.stop="emit('toggle')"
+      @pointermove.stop
+      @pointerup.stop
+      @click.stop
     >
-      <IconLock :locked="locked" :size="18" />
-      <span class="lock-pill__text">{{ locked ? '已锁定' : '锁屏' }}</span>
-    </button>
+      <p class="pl-lock__hint">屏幕已锁定 · 手势与控制条已禁用</p>
+      <button
+        class="pl-btn pl-lock__btn"
+        type="button"
+        aria-label="解锁屏幕"
+        @pointerdown.stop
+        @click.stop="emit('toggle')"
+      >
+        <IconLock :locked="true" :size="22" />
+        <span>解锁</span>
+      </button>
+    </div>
   </Transition>
 </template>
-
-<style scoped>
-.lock-shield {
-  position: absolute;
-  inset: 0;
-  /* 高于舞台内所有浮层（手势引导 10 / 帮助 12 / 弹幕样式 20），锁定即全屏接管 */
-  z-index: 30;
-  /* 透明但吃事件：手势层已被移除，这里兜住所有落点 */
-  background-color: transparent;
-  touch-action: none;
-}
-
-.lock-pill {
-  position: absolute;
-  top: 50%;
-  left: max(var(--space-4), var(--safe-left));
-  z-index: 31;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  min-width: 56px;
-  min-height: 56px;
-  padding: var(--space-2);
-  transform: translateY(-50%);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-strong);
-  background-color: var(--color-bg-glass);
-  backdrop-filter: blur(12px);
-  color: var(--color-text-primary);
-}
-
-.lock-pill--locked {
-  border-color: var(--color-brand);
-  color: var(--color-brand-text);
-}
-
-.lock-pill__text {
-  font: var(--text-caption);
-}
-
-.lock-pill:focus-visible {
-  outline: none;
-  box-shadow: var(--shadow-focus);
-}
-
-.lock-pop-enter-active,
-.lock-pop-leave-active {
-  transition: opacity var(--duration-base) var(--ease-standard),
-    transform var(--duration-base) var(--ease-decelerate);
-}
-
-.lock-pop-enter-from,
-.lock-pop-leave-to {
-  opacity: 0;
-  transform: translate(-8px, -50%);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .lock-pop-enter-active,
-  .lock-pop-leave-active {
-    transition: none;
-  }
-
-  .lock-pop-enter-from,
-  .lock-pop-leave-to {
-    transform: translateY(-50%);
-  }
-}
-</style>

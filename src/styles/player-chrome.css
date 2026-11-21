@@ -1,0 +1,2038 @@
+/* ============================================================================
+   PeanutMov 播放器 chrome 样式层（播放页重设计 1:1 落地）
+   ----------------------------------------------------------------------------
+   设计源：.tmp/player-ui-redesign-20261120.html（已验收原型）
+   本文件是「非 scoped」全局层，与 player.css 同批加载，原因有三：
+   1. 容器查询的档位变量必须能跨组件边界下发（.pl-picture 是容器，chrome 在子组件里）；
+   2. 叠加层元素（弹幕 canvas、teleport 无关的 drawer）与 chrome 共享同一套层级尺度；
+   3. 逐 token 对照设计稿时，扁平选择器比 scoped 的 [data-v-xxx] 更可核对。
+
+   命名：原型里的 .shell/.top/.chip 等裸名一律加 pl- 前缀（避免与 global.css 的
+   .btn/.row/.chip/.toast 撞名），BEM 元素名保持原样，层级值与间距值不变。
+
+   颜色策略（重要）：画面之上的 chrome 是「恒定暗色孤岛」——它永远压在视频上，
+   若跟随浅色主题，控制条会变成黑底黑字。故表面/文字/叠色/阴影写成不变常量；
+   而品牌色、语义色走 tokens.css 语义层（保住皮肤/调色盘覆盖能力），
+   间距/圆角/字号/动效/安全区/触控尺寸全部直接引用 tokens.css。
+   ========================================================================== */
+
+/* ===== 1. 令牌桥接：原型短名 → 项目 token；仅作用于 .pl-frame 子树 ===== */
+.pl-frame {
+  /* 表面族（恒定暗色：黑底复用主题无关的 --color-bg-sunken） */
+  --bg-sunken: var(--color-bg-sunken);
+  --bg-base: var(--color-bg-sunken);
+  --bg-surface: var(--player-bg-surface);
+  --bg-elevated: var(--player-bg-elevated);
+  --bg-pressed: var(--player-bg-pressed);
+
+  /* 文字族：对黑底对比度 主 16.9:1 / 次 7.9:1 / 三 4.7:1 */
+  --tx-1: var(--player-tx-1);
+  --tx-2: var(--player-tx-2);
+  --tx-3: var(--player-tx-3);
+  --tx-dis: var(--player-tx-dis);
+
+  /* 品牌：走语义层，浅色主题与 useScopedPalette 覆盖继续生效 */
+  --brand: var(--color-brand);
+  --brand-strong: var(--color-brand-strong);
+  --brand-press: var(--color-brand-press);
+  --brand-ink: var(--color-brand-ink);
+  --brand-soft: var(--color-brand-soft);
+  /* 注意：这里不要再写 `--gradient-brand: var(--gradient-brand)`——自定义属性自引用
+     会在计算值阶段失效，岛内所有 var(--gradient-brand) 都取不到值（主 CTA 实底消失）。
+     该令牌由 tokens.css 的 :root 继承进来，皮肤覆盖同样生效。 */
+
+  /* 状态色：只出现在暗色孤岛上，取孤岛层的固定深档值 */
+  --ok: var(--player-ok);
+  --warn: var(--player-warn);
+  --danger: var(--player-danger);
+  --info: var(--player-info);
+  --tier-fast: var(--player-tier-fast);
+
+  /* 叠色层：控件在画面上的所有明度都从这里取 */
+  --ov-hair: var(--player-ov-hair);
+  --ov-line: var(--player-ov-line);
+  --ov-track: var(--player-ov-track);
+  --ov-handle: var(--player-ov-handle);
+  --ov-press: var(--player-ov-press);
+  --ov-hover: var(--player-ov-hover);
+  --ov-fill: var(--player-ov-fill);
+  --ov-rail: var(--player-ov-rail);
+  --ov-buf: var(--player-ov-buf);
+  --ov-solid: var(--player-ov-solid);
+  --ov-hatch: var(--player-ov-hatch);
+  --ov-hatch-end: var(--player-ov-hatch-end);
+  --peek-stripe: var(--player-peek-stripe);
+  --peek-film: var(--player-peek-film);
+  --chip-scrim: var(--player-chip-scrim);
+  --brand-line: var(--player-brand-line);
+  --brand-line-soft: var(--player-brand-line-soft);
+  --brand-ink-soft: var(--player-brand-ink-soft);
+  --warn-line: var(--player-warn-line);
+
+  /* 玻璃簇：控件分组的承载体（同一族，避免弹层/按钮风格漂移） */
+  --glass: var(--player-glass);
+  --glass-strong: var(--player-glass-strong);
+  --glass-line: var(--player-glass-line);
+  --blur-glass: var(--player-blur-glass);
+  --scrim-top: var(--player-scrim-top);
+  --scrim-bottom: var(--player-scrim-bottom);
+
+  /* 阴影 / 焦点环（画面上必须用重阴影，浅色档的阴影在视频上无效） */
+  --sh-2: var(--player-sh-2);
+  --sh-3: var(--player-sh-3);
+  --sh-4: var(--player-sh-4);
+  --sh-brand: var(--shadow-brand);
+  --ring: var(--player-ring);
+
+  /* 字体：短名 → tokens.css 组合档 */
+  --ff: var(--font-family-base);
+  --ff-num: var(--font-family-number);
+  --t-11: var(--font-weight-medium) var(--font-size-11) / var(--line-height-11)
+    var(--ff);
+  --t-12: var(--font-weight-regular) var(--font-size-12) / var(--line-height-12)
+    var(--ff);
+  --t-12n: var(--font-weight-medium) var(--font-size-12) / var(--line-height-12)
+    var(--ff-num);
+  --t-13: var(--font-weight-medium) var(--font-size-13) / var(--line-height-13)
+    var(--ff);
+  --t-13n: var(--font-weight-semibold) var(--font-size-13) /
+    var(--line-height-13) var(--ff-num);
+  --t-14: var(--font-weight-regular) var(--font-size-14) / var(--line-height-14)
+    var(--ff);
+  --t-15: var(--font-weight-medium) var(--font-size-15) / var(--line-height-15)
+    var(--ff);
+  --t-17: var(--font-weight-semibold) var(--font-size-17) /
+    var(--line-height-17) var(--ff);
+  --t-18: var(--font-weight-medium) var(--font-size-18) / var(--line-height-18)
+    var(--ff);
+  --t-22: var(--font-weight-bold) var(--font-size-22) / var(--line-height-22)
+    var(--ff);
+
+  /* 间距 / 圆角：直接引用，不重定义数值 */
+  --s1: var(--space-1);
+  --s2: var(--space-2);
+  --s3: var(--space-3);
+  --s4: var(--space-4);
+  --s5: var(--space-5);
+  --s6: var(--space-6);
+  --s7: var(--space-7);
+  --s8: var(--space-8);
+  --r-sm: var(--radius-sm);
+  --r-md: var(--radius-md);
+  --r-lg: var(--radius-lg);
+  --r-xl: var(--radius-xl);
+  --r-pill: var(--radius-full);
+
+  /* 动效 */
+  --d-fast: var(--duration-fast);
+  --d-base: var(--duration-base);
+  --d-slow: var(--duration-slow);
+  --d-sheet: var(--duration-sheet);
+  --ease: var(--ease-standard);
+  --ease-out: var(--ease-decelerate);
+
+  /* 安全区 */
+  --safe-t: var(--safe-top);
+  --safe-r: var(--safe-right);
+  --safe-b: var(--safe-bottom);
+  --safe-l: var(--safe-left);
+
+  /* 局部层级尺度（只在画面矩形内比较，全局 --z-player 之上再排） */
+  --z-canvas: 1;
+  --z-danmaku: 2;
+  --z-sub: 3;
+  --z-mini: 4;
+  --z-hud: 5;
+  --z-chrome: 10;
+  --z-lock: 20;
+  --z-drawer: 30;
+  --z-menu: 34;
+  --z-help: 38;
+  --z-toast: 40;
+
+  /* 布局可调量：JS 不改，容器查询改 */
+  --gutter-x: var(--s4);
+  --chrome-top-h: 60px;
+  --chrome-bottom-h: 124px;
+  --touch: var(--touch-min);
+  --track-h: 4px;
+  --mini-h: 3px;
+
+  /* 组件层：字幕 / 弹幕（抽屉里的「字幕样式」只改这几枚变量，不写散落样式） */
+  --p-black: var(--color-bg-sunken);
+  --sub-color: var(--player-sub-color);
+  --sub-shadow: var(--player-sub-shadow);
+  --sub-bg: var(--player-sub-bg);
+  --sub-offset: var(--space-3);
+  --danmaku-color: var(--player-danmaku-color);
+}
+
+/* ===== 2. 容器分档：只在此处调「档位变量」，各分区统一消费 ===== */
+/* 档位 P｜竖屏：画面只占 16:9，chrome 压在画面带内，控件走极简三件套 */
+@container player (max-aspect-ratio: 1/1) {
+  .pl-shell {
+    --chrome-top-h: 52px;
+    --chrome-bottom-h: 100px;
+    --gutter-x: var(--s3);
+    --track-h: 3px;
+  }
+}
+
+/* 档位 L｜横屏 / 全屏：画面铺满，安全区内缩，音量与倍速等参数簇完整展开 */
+@container player (min-aspect-ratio: 1/1) {
+  .pl-shell {
+    --chrome-top-h: 64px;
+    --chrome-bottom-h: 128px;
+    --gutter-x: var(--s5);
+    --track-h: 4px;
+  }
+}
+
+/* 档位 W｜宽屏（平板横屏 / 桌面）：留白加大、轨道更粗、次要簇显式露出 */
+@container player (min-width: 900px) {
+  .pl-shell {
+    --chrome-top-h: 68px;
+    --chrome-bottom-h: 132px;
+    --gutter-x: var(--s6);
+    --track-h: 5px;
+  }
+}
+
+@container player (min-width: 1280px) {
+  .pl-shell {
+    --gutter-x: var(--s7);
+  }
+}
+
+/* ===== 3. 骨架：frame（容器）→ shell → stage → picture（=视频矩形） ===== */
+/* frame 恒定 fixed 满幅：这样它的尺寸与内容无关（size 容器的前提），
+   竖屏/横屏/PiP 都由容器查询分档，不再靠 JS 加 landscape 类决定布局。 */
+.pl-frame {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-player);
+  /* size 容器：方向（aspect-ratio）与宽度两维都能查 */
+  container-type: size;
+  container-name: player;
+  background-color: var(--bg-base);
+  color: var(--tx-1);
+  overflow: hidden;
+}
+
+.pl-shell {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-base);
+  color: var(--tx-1);
+  overflow: hidden;
+}
+
+.pl-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-sunken);
+}
+
+.pl-picture {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--p-black);
+}
+
+/* 竖屏结构性差异：画面收成 16:9，剩余高度让给下方信息区（fold） */
+@container player (max-aspect-ratio: 1/1) {
+  .pl-stage {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+  .pl-picture {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+  }
+}
+
+/* 原生引擎（ExoPlayer）画面在 WebView 之下：chrome 所在的叠加链不能有实色背景，
+   否则整块视频被 DOM 背景盖掉（与 html.native-underlay / native-full 协同）。
+   沿用既有状态类 player-root--native，不另起炉灶。 */
+.player-root--native.pl-frame,
+.player-root--native .pl-shell,
+.player-root--native .pl-stage,
+.player-root--native .pl-picture {
+  background-color: transparent;
+}
+
+/* 真全屏：忽略外层尺寸，播放器独占整屏（--safe-* 由系统注入） */
+.pl-frame:fullscreen {
+  width: 100vw !important;
+  height: 100vh !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* 画面比例 = 铺满裁剪：等比放大后由 .pl-picture 的 overflow 裁掉出血 */
+.pl-shell[data-fit="cover"] .pl-surface__media {
+  transform: scale(1.18);
+}
+
+/* ===== 4. 画面层内的非 chrome 元素：字幕 / 微进度 ===== */
+/* 只接管字幕的「位置」：字号/颜色/描边仍由 player.css 的 .subtitle-overlay--*
+   修饰类负责（中档 = --text-subtitle 500 18px/1.5，与设计稿同值）。
+   位置由 --chrome-bottom-h 推导：控制条升起时让位，收起时下移补位，不被吃掉。 */
+.pl-picture .subtitle-overlay {
+  left: 6%;
+  right: 6%;
+  bottom: calc(var(--chrome-bottom-h) + var(--sub-offset));
+  z-index: var(--z-sub);
+  transition: bottom var(--d-slow) var(--ease);
+}
+
+.pl-shell[data-chrome="hidden"] .pl-picture .subtitle-overlay {
+  bottom: calc(var(--s6) + var(--sub-offset));
+}
+
+/* 微进度：控制条隐藏时，只在画面底缘留一条，播放进度不丢 */
+.pl-mini {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--mini-h);
+  background: var(--ov-line);
+  opacity: 0;
+  pointer-events: none;
+  z-index: var(--z-mini);
+  transition: opacity var(--d-base) var(--ease);
+}
+
+.pl-mini__buf,
+.pl-mini__played {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+}
+
+.pl-mini__buf {
+  background: var(--ov-track);
+}
+
+.pl-mini__played {
+  background: var(--brand);
+}
+
+.pl-shell[data-chrome="hidden"] .pl-mini {
+  opacity: 1;
+}
+
+/* =========================================================
+   ③ 顶部 chrome TOPBAR
+   ---------------------------------------------------------
+   分组（每屏一个主操作 + 同簇相邻）：
+   左＝身份簇（返回 / 片名 + 一行状态摘要）  右＝内容层簇（画质·线路·字幕·弹幕 / 锁定 / 更多）
+   · 高度由 --chrome-top-h 单点定义（容器查询分档），字幕与 fold 都靠它让位
+   · 显隐只用 opacity（不位移）：位移会让画面看起来在抖
+   =========================================================*/
+.pl-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-chrome);
+  min-height: var(--chrome-top-h);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--safe-t) var(--gutter-x) var(--s1);
+  background: var(--scrim-top);
+  transition: opacity var(--d-slow) var(--ease);
+}
+
+.pl-top__id {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pl-top__title {
+  margin: 0;
+  font: var(--t-17);
+  letter-spacing: -0.01em;
+  color: var(--tx-1);
+}
+
+.pl-top__meta {
+  margin: 0;
+  font: var(--t-12);
+  color: var(--tx-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pl-top__meta .sep {
+  color: var(--tx-3);
+  margin: 0 var(--s1);
+}
+
+/* 缓冲水位默认由 chip 轨承载；chip 让位的小横屏档改回摘要尾巴，读数不丢 */
+.pl-top__meta .pl-top__buf {
+  display: none;
+}
+
+.pl-top__meta b {
+  font: var(--t-12n);
+  color: var(--ov-fill);
+  font-weight: 500;
+}
+
+/* ---------- 图标按钮（视觉 44，命中区随 --touch） ---------- */
+.pl-ico {
+  flex: 0 0 auto;
+  width: var(--touch);
+  height: var(--touch);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ov-fill);
+  cursor: pointer;
+  transition:
+    background-color var(--d-fast) var(--ease),
+    color var(--d-fast) var(--ease);
+}
+
+.pl-ico svg {
+  width: 22px;
+  height: 22px;
+}
+
+.pl-ico[aria-expanded="true"],
+.pl-ico[aria-pressed="true"],
+.pl-ico.is-on {
+  color: var(--brand-strong);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pl-ico:hover {
+    background: var(--ov-hover);
+  }
+}
+
+.pl-ico:active {
+  background: var(--ov-press);
+}
+
+.pl-ico:disabled {
+  color: var(--tx-dis);
+  pointer-events: none;
+}
+
+/* ---------- 内容层簇：轨道式排布，窄容器优先让位 ---------- */
+.pl-top__chips {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent 0,
+    #000 10px,
+    #000 calc(100% - 14px),
+    transparent
+  );
+}
+
+.pl-top__chips::-webkit-scrollbar {
+  display: none;
+}
+
+.pl-chip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-pill);
+  background: var(--glass);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  color: var(--ov-fill);
+  font: var(--t-13);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color var(--d-fast) var(--ease),
+    color var(--d-fast) var(--ease),
+    background-color var(--d-fast) var(--ease);
+}
+
+button.pl-chip:hover {
+  border-color: var(--ov-handle);
+}
+
+button.pl-chip:active {
+  background: var(--ov-press);
+}
+
+.pl-chip__k {
+  color: var(--tx-2);
+  font: var(--t-12);
+}
+
+.pl-chip__v {
+  font: var(--t-13n);
+}
+
+.pl-chip svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 开关型 chip：靠「文字标签 + 颜色」双通道表达，不只用颜色 */
+.pl-chip[aria-pressed="true"] {
+  color: var(--brand-strong);
+  border-color: var(--brand-line-soft);
+}
+
+.pl-chip[aria-pressed="true"] .pl-chip__k {
+  color: var(--brand);
+}
+
+/* 只读指标（缓冲水位）：不可点，去掉按钮态 */
+.pl-chip--static {
+  cursor: default;
+  background: var(--chip-scrim);
+  border-style: dashed;
+}
+
+.pl-chip--warn {
+  color: var(--warn);
+  border-color: var(--warn-line);
+}
+
+/* 窄容器（手机竖屏 / 小屏横屏）：次要 chip 与状态尾巴让位给 fold，保证标题不被挤压。
+   竖屏顶栏要留给「返回 + 标题 + 锁定」，chip 只保留画质这一眼要看的读数 */
+@container player (max-width: 560px) {
+  .pl-top__chips .opt,
+  .pl-frame .pl-chip--sub {
+    display: none;
+  }
+  .pl-top__meta .tail {
+    display: none;
+  }
+}
+
+/* 小横屏（844 一类）：读数芯片最后让位，先保标题与线路/弹幕 */
+@container player (max-width: 900px) {
+  .pl-frame .pl-chip--net {
+    display: none;
+  }
+  .pl-top__meta .pl-top__buf {
+    display: inline;
+  }
+}
+
+/* 竖屏：顶栏字号收小、chip 间距收紧；音量/选集/更多改由 fold 常驻承载 */
+@container player (max-aspect-ratio: 1/1) {
+  .pl-top__title {
+    font: var(--t-15);
+  }
+  .pl-top__chips {
+    gap: var(--s1);
+  }
+}
+
+/* =========================================================
+   ④ 底部 chrome BOTTOMBAR
+   ---------------------------------------------------------
+   两簇（自上而下＝进度簇 → 传输簇；进度簇内部见 ⑨）：
+   · 只保留 1 个主按钮（播放/暂停，品牌色）；其余一律次级幽灵态
+   · 音量+亮度合并为同一个弹层（两个 range，一次点击到位）→ 底部按钮数从 8 降到 5
+   · 显隐：整层 opacity，隐藏时 pointer-events:none，画面底缘留微进度（见 ①）
+   =========================================================*/
+.pl-bottom {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-chrome);
+  min-height: var(--chrome-bottom-h);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: var(--s1);
+  padding: 0 var(--gutter-x) calc(var(--s3) + var(--safe-b));
+  background: var(--scrim-bottom);
+  transition: opacity var(--d-slow) var(--ease);
+}
+
+.pl-shell[data-chrome="hidden"] .pl-top,
+.pl-shell[data-chrome="hidden"] .pl-bottom {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pl-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+.pl-row__end {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+}
+
+/* ---------- 通用控件按钮 ---------- */
+.pl-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: var(--touch);
+  height: var(--touch);
+  padding: 0 var(--s2);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--ov-fill);
+  font: var(--t-13);
+  cursor: pointer;
+  transition:
+    background-color var(--d-fast) var(--ease),
+    color var(--d-fast) var(--ease);
+}
+
+.pl-btn svg {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
+.pl-btn:disabled {
+  color: var(--tx-dis);
+  pointer-events: none;
+}
+
+.pl-btn.is-on {
+  color: var(--brand-strong);
+}
+
+.pl-btn:active {
+  background: var(--ov-press);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pl-btn:hover {
+    background: var(--ov-hover);
+  }
+}
+
+/* 文字型数值按钮（倍速 1.25x）：等宽数字，切档不抖 */
+.pl-btn__val {
+  font: var(--t-13n);
+}
+
+/* ---------- 主按钮：播放/暂停 ---------- */
+.pl-btn--play {
+  width: 52px;
+  height: 52px;
+  min-width: 52px;
+  border-radius: var(--r-pill);
+  background: var(--gradient-brand);
+  color: var(--brand-ink);
+  box-shadow: var(--sh-brand);
+}
+
+.pl-btn--play svg {
+  width: 26px;
+  height: 26px;
+}
+
+.pl-btn--play:active {
+  background: var(--brand-press);
+  color: var(--brand-ink);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pl-btn--play:hover {
+    background: var(--brand-strong);
+    color: var(--brand-ink);
+  }
+}
+
+/* 缓冲中：主按钮换成环形进度，避免出现「点了没反应」 */
+.pl-btn--play[data-busy="1"] svg {
+  display: none;
+}
+
+.pl-btn--play[data-busy="1"]::after {
+  content: "";
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--brand-ink-soft);
+  border-top-color: var(--brand-ink);
+  animation: pl-spin 800ms linear infinite;
+}
+
+@keyframes pl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- 弹层宿主 ---------- */
+.pl-cell {
+  position: relative;
+  display: inline-flex;
+}
+
+/* ---------- 弹层（倍速 / 音量亮度 / 更多）：从触发按钮上方长出 ---------- */
+.pl-pop {
+  position: absolute;
+  bottom: calc(100% + var(--s2));
+  left: 50%;
+  z-index: var(--z-menu);
+  min-width: 220px;
+  padding: var(--s3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-lg);
+  background: var(--glass-strong);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  box-shadow: var(--sh-3);
+  transform: translate(-50%, 6px);
+  opacity: 0;
+  pointer-events: none;
+  /* 关闭态必须退出 Tab 序列：只靠 opacity 藏住可聚焦元素是反模式 */
+  visibility: hidden;
+  transition:
+    opacity var(--d-fast) var(--ease),
+    transform var(--d-base) var(--ease-out),
+    visibility 0s linear var(--d-fast);
+}
+
+.pl-pop[open] {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+  visibility: visible;
+  transition:
+    opacity var(--d-fast) var(--ease),
+    transform var(--d-base) var(--ease-out),
+    visibility 0s;
+}
+
+/* 靠边按钮的弹层不允许溢出画面矩形 */
+.pl-cell--end .pl-pop {
+  left: auto;
+  right: 0;
+  transform: translate(0, 6px);
+}
+
+.pl-cell--end .pl-pop[open] {
+  transform: translate(0, 0);
+}
+
+.pl-pop__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin: 0;
+  font: var(--t-12);
+  color: var(--tx-2);
+}
+
+.pl-pop__head b {
+  font: var(--t-13n);
+  color: var(--brand-strong);
+  font-weight: 600;
+}
+
+.pl-pop__head--note {
+  justify-content: flex-start;
+  color: var(--tx-3);
+  font: var(--t-11);
+  line-height: 15px;
+}
+
+.pl-pop__grid {
+  display: grid;
+  grid-auto-flow: column;
+  gap: var(--s1);
+}
+
+.pl-pop__grid--wrap {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+/* 弹层里的动作格（更多面板：画中画 / 纯音频 / 画面比例 …） */
+.pl-pop__acts {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--s1);
+}
+
+.pl-mini-btn {
+  height: 34px;
+  min-width: 44px;
+  padding: 0 var(--s2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--tx-1);
+  font: var(--t-13n);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+  transition:
+    background-color var(--d-fast) var(--ease),
+    color var(--d-fast) var(--ease);
+}
+
+.pl-mini-btn svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.pl-mini-btn:hover {
+  background: var(--bg-pressed);
+}
+
+.pl-mini-btn[aria-checked="true"],
+.pl-mini-btn[aria-pressed="true"] {
+  background: var(--brand-soft);
+  border-color: var(--brand-line);
+  color: var(--brand-strong);
+}
+
+.pl-mini-btn:disabled {
+  color: var(--tx-dis);
+  pointer-events: none;
+}
+
+/* ---------- range（音量 / 亮度 / 精细倍速）：统一 24px 行高 + 44 命中 ---------- */
+input[type="range"].pl-rng {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+input[type="range"].pl-rng::-webkit-slider-runnable-track {
+  height: var(--track-h);
+  border-radius: var(--r-pill);
+  background: linear-gradient(
+    90deg,
+    var(--brand) var(--fill, 50%),
+    var(--ov-track) var(--fill, 50%)
+  );
+}
+
+input[type="range"].pl-rng::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: calc((var(--track-h) - 14px) / 2);
+  border-radius: 50%;
+  background: var(--ov-fill);
+  box-shadow: var(--sh-2);
+}
+
+input[type="range"].pl-rng::-moz-range-track {
+  height: var(--track-h);
+  border-radius: var(--r-pill);
+  background: var(--ov-track);
+}
+
+input[type="range"].pl-rng::-moz-range-progress {
+  height: var(--track-h);
+  border-radius: var(--r-pill);
+  background: var(--brand);
+}
+
+input[type="range"].pl-rng::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ov-fill);
+}
+
+.pl-rng__row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  /* range 视觉只有 24px，命中区补到 44 */
+  min-height: var(--touch);
+}
+
+.pl-rng__row svg {
+  width: 18px;
+  height: 18px;
+  color: var(--tx-2);
+  flex: 0 0 auto;
+}
+
+.pl-rng__row .num {
+  min-width: 40px;
+  text-align: right;
+  font: var(--t-13n);
+  color: var(--tx-1);
+}
+
+/* 竖屏：音量/选集/更多在 fold 里常驻，底部行让位给全屏 */
+@container player (max-aspect-ratio: 1/1) {
+  .pl-frame .pl-cell--vol,
+  .pl-frame .pl-btn--eps,
+  .pl-frame .pl-ico--more {
+    display: none;
+  }
+  /* 顶栏 chip 轨在竖屏只保留画质，其余让给 fold，避免横向裁切 */
+  .pl-frame .pl-top__chips .opt,
+  .pl-frame .pl-chip--sub,
+  .pl-frame .pl-ico--more {
+    display: none;
+  }
+}
+
+/* =========================================================
+   ⑤ 进度簇外壳（SeekBar 内部样式在组件里，这里只管外壳与跳过条）
+   =========================================================*/
+
+.pl-timeline {
+  position: relative;
+}
+
+/* 片头/片尾跳过条：命中区间时才浮出，非常驻（降噪）；绝对定位不挤占时间行 */
+.pl-skip {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 2px);
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  z-index: var(--z-menu);
+}
+
+.pl-skip__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--brand-line);
+  border-radius: var(--r-pill);
+  background: var(--glass);
+  backdrop-filter: var(--blur-glass);
+  color: var(--brand-strong);
+  font: var(--t-13);
+}
+
+.pl-skip__btn:active {
+  background: var(--brand-soft);
+}
+
+.pl-skip__btn .num {
+  font: var(--t-12n);
+  color: var(--tx-2);
+}
+
+/* 本集不再提示：保留既有能力，视觉上退到条尾 */
+.pl-skip__dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-pill);
+  color: var(--tx-2);
+  background: var(--glass);
+  backdrop-filter: var(--blur-glass);
+}
+
+.pl-skip__dismiss svg {
+  width: 14px;
+  height: 14px;
+}
+
+.pl-skip__dismiss:active {
+  background: var(--ov-press);
+}
+
+/* chrome 宿主：整层放行手势，只有顶栏/底栏本身可点 */
+.pl-chrome {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-chrome);
+  pointer-events: none;
+}
+
+.pl-top,
+.pl-bottom {
+  pointer-events: auto;
+}
+
+/* 窄画面里「第 N/M 集」的汉字比数字更占位，改用紧凑写法保证剩余时间不被截断 */
+@container player (max-width: 480px) {
+  .pl-top__ep .wide {
+    display: none;
+  }
+}
+
+/* ===== ⑤' 侧栏抽屉 DRAWER =====
+   横屏/桌面＝右侧非模态栏（画面让位，可边看边选）；竖屏＝底部弹层（带遮罩）。
+   原先散在多个 BottomSheet 的入口收进同一面板的四个页签，关闭路径只剩一条。
+   「模态与否」由容器查询决定（只有竖屏吃遮罩），组件不再接方向标志。 */
+.pl-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: calc(var(--z-drawer) - 1);
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--d-sheet) var(--ease);
+}
+
+.pl-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-drawer);
+  width: min(368px, 46%);
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--glass-line);
+  background: var(--glass-strong);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  box-shadow: var(--sh-4);
+  transform: translateX(101%);
+  transition: transform var(--d-sheet) var(--ease-out);
+}
+
+.pl-shell[data-drawer="1"] .pl-drawer {
+  transform: none;
+}
+
+/* 抽屉里宿主的是各内容组件（选集网格、线路列表、行项列表、开关），
+   它们读的是主题长名；而 chrome 岛是恒定暗色层，浅色皮肤下会把抽屉变成黑底黑字。
+   在容器边界一次性把长名重映射到岛上——与 fold 的方向相反，内容组件无需各自适配。 */
+.pl-drawer {
+  --color-text-primary: var(--tx-1);
+  --color-text-secondary: var(--tx-2);
+  --color-text-tertiary: var(--tx-3);
+  --color-text-disabled: var(--tx-dis);
+  --color-border: var(--ov-hair);
+  --color-divider: var(--ov-hair);
+  --color-bg-surface: var(--bg-surface);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-overlay-press-strong: var(--ov-press);
+  --color-brand-text: var(--brand);
+  --color-success: var(--ok);
+  /* CTA 档在 :root 就被冻结成默认琥珀渐变（皮肤只覆盖 --gradient-brand），
+     抽屉里的选集芯片读的是 CTA 档；不重映射就会出现页签药丸绿、当前集琥珀的分叉。 */
+  --gradient-brand-cta: var(--gradient-brand);
+}
+
+/* 非模态面板不盖控件：打开时画面让位，进度条与右侧簇仍然可达 */
+@container player (min-aspect-ratio: 1/1) {
+  .pl-stage {
+    transition: padding-right var(--d-sheet) var(--ease-out);
+  }
+  .pl-shell[data-drawer="1"] .pl-stage {
+    padding-right: min(368px, 46%);
+  }
+}
+
+.pl-drawer__head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2) var(--s2) 0 var(--s4);
+  border-bottom: 1px solid var(--ov-hair);
+}
+
+.pl-tabs {
+  flex: 1 1 auto;
+  display: flex;
+  gap: var(--s1);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.pl-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.pl-tab {
+  position: relative;
+  flex: 0 0 auto;
+  height: var(--touch);
+  padding: 0 var(--s3);
+  border: 0;
+  background: transparent;
+  color: var(--tx-2);
+  font: var(--t-15);
+  cursor: pointer;
+}
+
+.pl-tab[aria-selected="true"] {
+  color: var(--tx-1);
+  font-weight: 600;
+}
+
+.pl-tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: var(--s3);
+  right: var(--s3);
+  bottom: 6px;
+  height: 2px;
+  border-radius: var(--r-pill);
+  background: var(--gradient-brand);
+}
+
+.pl-drawer__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--s3) var(--s4) calc(var(--s5) + var(--safe-b));
+}
+
+.pl-pane {
+  display: none;
+  flex-direction: column;
+  gap: var(--s3);
+}
+
+.pl-drawer[data-tab="ep"] .pl-pane[data-pane="ep"],
+.pl-drawer[data-tab="line"] .pl-pane[data-pane="line"],
+.pl-drawer[data-tab="av"] .pl-pane[data-pane="av"],
+.pl-drawer[data-tab="more"] .pl-pane[data-pane="more"] {
+  display: flex;
+}
+
+.pl-pane__note {
+  margin: 0;
+  font: var(--t-12);
+  color: var(--tx-2);
+}
+
+/* 选集格按设计稿 8.5 的 minmax(56px,1fr)：共享组件为了详情页宽列表用 44，
+   抽屉里（含 368 宽的横屏栏）按稿收到 5 列，芯片 40 高不变。
+   三位选择器（类+属性）压过 EpisodeList 的 scoped 规则。 */
+.pl-pane[data-pane="ep"] .episode-list__grid {
+  grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
+}
+
+.pl-pane__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.pl-pane__group > h3 {
+  margin: 0 0 var(--s1);
+  font: var(--t-12);
+  letter-spacing: 0.06em;
+  color: var(--tx-3);
+}
+
+/* 竖屏：抽屉变底部弹层，遮罩只在这一档生效 */
+@container player (max-aspect-ratio: 1/1) {
+  .pl-drawer {
+    top: auto;
+    left: 0;
+    right: 0;
+    width: auto;
+    height: 66%;
+    border-left: 0;
+    border-top: 1px solid var(--glass-line);
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    transform: translateY(101%);
+  }
+
+  .pl-shell[data-drawer="1"] .pl-drawer {
+    transform: none;
+  }
+
+  .pl-shell[data-drawer="1"] .pl-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* ===== ⑥ 竖屏下方信息区 FOLD =====
+   竖屏 16:9 画面只占 ~26% 高度，剩余空间是「白给的」——把音量/亮度滑杆、观看进度
+   与二级入口从画面上挪到这里。横屏/桌面画面铺满没有多余空间，本区整块隐藏。
+   fold 不压在画面上，故把短名重新指向主题语义层：浅色主题下不能是一块黑斑。 */
+.pl-fold {
+  --bg-surface: var(--color-bg-surface);
+  --bg-elevated: var(--color-bg-elevated);
+  --bg-pressed: var(--color-bg-pressed);
+  --tx-1: var(--color-text-primary);
+  --tx-2: var(--color-text-secondary);
+  --tx-dis: var(--color-text-disabled);
+  --ov-hair: var(--color-border);
+  --ov-track: var(--color-border-strong);
+  --ov-fill: var(--color-text-primary);
+
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s3) var(--gutter-x) calc(var(--s4) + var(--safe-b));
+  /* 原生引擎模式下整页透明，信息区必须自带不透明底色，否则露出 Activity 白色窗口 */
+  background: var(--bg-surface);
+  border-top: 1px solid var(--ov-hair);
+}
+
+@container player (max-aspect-ratio: 1/1) {
+  .pl-frame .pl-fold {
+    display: flex;
+  }
+}
+
+/* 锁屏＝连下方信息区一起冻结（防误触才是锁屏的用途），只留画面里的「解锁」 */
+.pl-shell[data-locked="1"] .pl-fold {
+  pointer-events: none;
+  opacity: 0.38;
+}
+
+.pl-fold__stat {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s2);
+  margin: 0;
+  font: var(--t-12);
+  color: var(--tx-2);
+}
+
+.pl-fold__stat b {
+  font: var(--t-13n);
+  color: var(--tx-1);
+  font-weight: 600;
+}
+
+.pl-fold__stat .pl-num {
+  font: var(--t-13n);
+  color: var(--tx-1);
+}
+
+.pl-fold__stat .sep {
+  color: var(--tx-dis);
+}
+
+.pl-fold__offline {
+  margin: 0;
+  font: var(--t-12);
+  color: var(--color-warning);
+}
+
+/* 常驻滑杆：解决「音量/亮度只能靠手势、无处可寻」 */
+.pl-fold__sliders {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--s2) var(--s4);
+}
+
+.pl-slider-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--touch);
+}
+
+.pl-slider-cell svg {
+  width: 18px;
+  height: 18px;
+  color: var(--tx-2);
+  flex: 0 0 auto;
+}
+
+.pl-slider-cell .pl-rng {
+  flex: 1 1 auto;
+  width: auto;
+}
+
+.pl-slider-cell .pl-num {
+  min-width: 34px;
+  text-align: right;
+  font: var(--t-13n);
+  color: var(--tx-1);
+}
+
+.pl-fold__acts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: var(--s2);
+}
+
+.pl-act {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: var(--touch);
+  padding: var(--s1);
+  border: 1px solid var(--ov-hair);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  color: var(--tx-1);
+  font: var(--t-12);
+  cursor: pointer;
+  transition:
+    background var(--d-fast) var(--ease),
+    transform var(--d-fast) var(--ease);
+}
+
+.pl-act svg {
+  width: 20px;
+  height: 20px;
+}
+
+.pl-act .pl-num {
+  font: var(--t-12n);
+  color: var(--tx-2);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pl-act:hover {
+    background: var(--bg-pressed);
+  }
+}
+
+.pl-act:active {
+  transform: scale(0.97);
+}
+
+.pl-act[aria-pressed="true"] {
+  color: var(--brand-strong);
+  border-color: var(--brand-line-soft);
+}
+
+.pl-act:disabled {
+  color: var(--tx-dis);
+  pointer-events: none;
+}
+
+.pl-act:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+/* =========================================================
+   ⑦ 非常态层 STATE：HUD / 加载·缓冲 / 错误 / 屏幕锁 / 手势帮助
+   ---------------------------------------------------------
+   单一开关：显隐只由 .pl-shell 的 data-state（+ data-locked / data-help）决定。
+   收口前这五层各写死各的 z-index（错误 4 / 弹幕 5 / HUD 2 / 帮助 12 / 锁屏 30）
+   并自带背景，与岛内尺度不同轴——「锁屏压不住抽屉」「错误压不住弹幕」就是这么来的。
+   压暗分档：缓冲 .34 < 锁屏 .28(常驻，必须最轻) < 错误 .55 < 帮助 .6，
+   都不铺全屏黑（原错误层 .86 会让人以为已经退出播放）。
+   =========================================================*/
+
+/* ---------- HUD：手势与快捷键的唯一出口 ---------- */
+.pl-hud {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: var(--z-hud);
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 148px;
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-lg);
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  color: var(--ov-fill);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.pl-hud__icon {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+}
+
+.pl-hud__texts {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.pl-hud__title {
+  font: var(--t-12);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.pl-hud__value {
+  font: var(--t-17);
+  font-family: var(--ff-num);
+}
+
+.pl-hud__sub {
+  font: var(--t-12n);
+  color: var(--brand);
+}
+
+.pl-hud__bar {
+  width: 96px;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--ov-track);
+  overflow: hidden;
+}
+
+/* 进度用 scaleX 而非 width：合成层动画，不触发布局 */
+.pl-hud__bar i {
+  display: block;
+  height: 100%;
+  background: var(--brand);
+  transform-origin: 0 50%;
+  transform: scaleX(var(--p, 0));
+}
+
+/* 播放/暂停：只剩一枚大图标，文字与进度条都撤走 */
+.pl-hud--pulse {
+  min-width: 0;
+  padding: var(--s4);
+  justify-content: center;
+}
+
+.pl-hud--pulse .pl-hud__icon {
+  width: 46px;
+  height: 46px;
+}
+
+.pl-hud--pulse .pl-hud__texts,
+.pl-hud--pulse .pl-hud__bar {
+  display: none;
+}
+
+@keyframes pl-hud-pop {
+  0% {
+    transform: translate(-50%, -50%) scale(0.62);
+    opacity: 0;
+  }
+  40% {
+    transform: translate(-50%, -50%) scale(1.06);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 1;
+  }
+}
+
+.pl-hud--in {
+  animation: pl-hud-pop 320ms var(--ease-out);
+}
+
+.pl-hud-enter-active,
+.pl-hud-leave-active {
+  transition: opacity var(--d-fast) var(--ease);
+}
+
+.pl-hud-enter-from,
+.pl-hud-leave-to {
+  opacity: 0;
+}
+
+/* ---------- 加载中 / 缓冲 ---------- */
+.pl-buf {
+  position: absolute;
+  inset: 0;
+  z-index: calc(var(--z-hud) - 1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s3);
+  padding: var(--s4);
+  background: rgba(0, 0, 0, 0.34);
+  color: var(--tx-1);
+  font: var(--t-13);
+  text-align: center;
+}
+
+.pl-buf__ring {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: var(--brand);
+  animation: pl-spin 900ms linear infinite;
+}
+
+/* 设计稿这里只有环 + 一行字；真实渲染还要交代「走到哪一步、等了多久」，
+   黑匣子与闪退归因都靠它，故外壳按稿、信息保留（等宽数字，跳动不推版面）。 */
+.pl-buf__track {
+  width: min(240px, 62%);
+  height: var(--mini-h);
+  border-radius: var(--r-pill);
+  background: var(--ov-track);
+  overflow: hidden;
+}
+
+.pl-buf__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--brand);
+  transition: width var(--d-base) var(--ease-out);
+}
+
+.pl-buf__text {
+  margin: 0;
+  max-width: 42ch;
+  font: var(--t-13);
+  color: var(--tx-1);
+}
+
+.pl-buf__hint {
+  margin: 0;
+  max-width: 46ch;
+  font: var(--t-12);
+  color: var(--tx-2);
+  line-height: 1.6;
+}
+
+.pl-buf__meta {
+  margin: 0;
+  font: var(--t-12n);
+  color: var(--tx-3);
+}
+
+.pl-buf__acts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s2);
+}
+
+/* ---------- 错误：说清「哪一步失败」并给可执行出口 ---------- */
+.pl-err {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-lock);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s4);
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.pl-err__card {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding: var(--s5);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-lg);
+  background: var(--glass-strong);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  box-shadow: var(--sh-4);
+}
+
+.pl-err__title {
+  margin: 0;
+  font: var(--t-17);
+  color: var(--tx-1);
+}
+
+.pl-err__desc {
+  margin: 0;
+  font: var(--t-13);
+  color: var(--tx-2);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* 失败步骤（HTTP 码 / 阶段名）用等宽 + 警示色，和散文分开 */
+.pl-err__desc code {
+  font-family: var(--ff-num);
+  color: var(--warn);
+}
+
+.pl-err__acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+/* 低权重的出口（复制错误信息、去源体检）不占按钮位，走文本链接 */
+.pl-err__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s4);
+}
+
+.pl-err__link {
+  min-height: 36px;
+  padding: 0 var(--s1);
+  font: var(--t-12);
+  color: var(--tx-3);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.pl-err__link:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: var(--r-sm);
+}
+
+/* ---------- CTA：错误面板与缓冲层共用 ---------- */
+.pl-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s1);
+  min-height: var(--touch);
+  padding: 0 var(--s4);
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: var(--gradient-brand);
+  color: var(--brand-ink);
+  font: var(--t-13);
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background var(--d-fast) var(--ease),
+    transform var(--d-fast) var(--ease);
+}
+
+.pl-cta:active {
+  background: var(--brand-press);
+  transform: scale(0.97);
+}
+
+.pl-cta--ghost {
+  background: transparent;
+  border-color: var(--ov-line);
+  color: var(--tx-1);
+}
+
+.pl-cta--ghost:active {
+  background: var(--ov-press);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .pl-cta--ghost:hover {
+    background: var(--ov-hover);
+  }
+}
+
+.pl-cta:focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+.pl-cta svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
+/* ---------- 屏幕锁：铺满画面矩形并吃掉所有手势，只留一枚解锁键 ---------- */
+.pl-lock {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-lock);
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-start;
+  padding: var(--gutter-x);
+  /* 常驻层，压暗必须最轻——锁屏时画面才是主角 */
+  background: rgba(0, 0, 0, 0.28);
+  touch-action: none;
+}
+
+.pl-lock__hint {
+  position: absolute;
+  top: var(--s4);
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  font: var(--t-12);
+  color: var(--tx-2);
+  white-space: nowrap;
+}
+
+.pl-lock__btn {
+  background: var(--glass-strong);
+  border: 1px solid var(--glass-line);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  box-shadow: var(--sh-3);
+  color: var(--tx-1);
+  padding: 0 var(--s4);
+}
+
+.pl-lock-enter-active,
+.pl-lock-leave-active {
+  transition: opacity var(--d-base) var(--ease);
+}
+
+.pl-lock-enter-from,
+.pl-lock-leave-to {
+  opacity: 0;
+}
+
+/* ---------- 手势 / 快捷键帮助 ---------- */
+.pl-help {
+  position: absolute;
+  inset: 0;
+  z-index: var(--z-help);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 上下只让 8px：卡内容 821px，390×844 竖屏按 16px 内缩只剩 810px 可用，
+     那 11px 缺口会把「关闭」按钮挤进滚动区；左右仍按栅格走 16px */
+  padding: var(--s2) var(--s4);
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.pl-help__card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(520px, 100%);
+  max-height: 100%;
+  overflow: hidden;
+  padding: var(--s4);
+  border: 1px solid var(--glass-line);
+  border-radius: var(--r-lg);
+  background: var(--glass-strong);
+  backdrop-filter: var(--blur-glass);
+  -webkit-backdrop-filter: var(--blur-glass);
+  box-shadow: var(--sh-4);
+  color: var(--tx-1);
+}
+
+/* 只有中间行区可滚：标题与「关闭」钉在卡的两端。横屏 390 高装不下 21 行，
+   整卡滚动会让按钮压在行文字上，所以把滚动收进 body，出口始终可见。 */
+.pl-help__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* 末组下方那 16px 是滚动区里的死空间：竖屏正好被它顶出一条滚动条 */
+.pl-help__body > .pl-help__group:last-child {
+  margin-bottom: 0;
+}
+
+.pl-help__card > .pl-help__head {
+  flex: none;
+}
+
+/* 稿里卡尾就是一枚「关闭」，这里再加一条发丝线：矮屏滚动区被裁在中行时，
+   有分隔线才读得出「下面是页脚」，而不是文字糊在按钮上 */
+.pl-help__card > .pl-err__acts {
+  flex: none;
+  margin-top: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--ov-hair);
+}
+
+.pl-help__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+.pl-help__card h2 {
+  margin: 0;
+  font: var(--t-17);
+  color: var(--tx-1);
+}
+
+.pl-help__group {
+  margin: 0 0 var(--s4);
+}
+
+.pl-help__group + .pl-help__group {
+  margin-top: var(--s5);
+}
+
+.pl-help__group-title {
+  margin: 0 0 var(--s2);
+  font: var(--t-12);
+  color: var(--tx-3);
+}
+
+/* 网格按可用宽度自动分列：窄屏 1 列、宽屏 2 列，不靠断点硬切 */
+.pl-help__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--s2) var(--s4);
+  margin: 0;
+  padding: 0;
+}
+
+.pl-help__list div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s3);
+  font: var(--t-13);
+  color: var(--tx-2);
+}
+
+.pl-help__list kbd {
+  font: var(--t-12n);
+  color: var(--tx-1);
+  padding: 2px 7px;
+  border: 1px solid var(--ov-line);
+  border-bottom-width: 2px;
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+}
+
+.pl-help__hint {
+  margin: var(--s4) 0 0;
+  font: var(--t-12);
+  color: var(--tx-3);
+  text-align: center;
+}
+
+/* 手势行的右列是「效果」而不是按键，用次级文字而非 kbd 的键帽样式 */
+.pl-help__list b {
+  font: var(--t-12);
+  font-weight: var(--font-weight-medium);
+  color: var(--tx-1);
+  text-align: right;
+}
+
+.pl-help__close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--touch);
+  height: var(--touch);
+  margin: calc(var(--s1) * -1);
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--tx-2);
+  cursor: pointer;
+}
+
+.pl-help__close svg {
+  width: 18px;
+  height: 18px;
+}
+
+.pl-help__close:active {
+  background: var(--ov-press);
+  color: var(--tx-1);
+}
+
+.pl-help-enter-active,
+.pl-help-leave-active {
+  transition: opacity var(--d-base) var(--ease);
+}
+
+.pl-help-enter-from,
+.pl-help-leave-to {
+  opacity: 0;
+}
+
+.pl-help-enter-active .pl-help__card,
+.pl-help-leave-active .pl-help__card {
+  transition: transform var(--d-base) var(--ease-out);
+}
+
+.pl-help-enter-from .pl-help__card,
+.pl-help-leave-to .pl-help__card {
+  transform: scale(0.96);
+}
+
+/* ---------- 显隐矩阵：非常态层只认这三个开关 ---------- */
+.pl-buf,
+.pl-err,
+.pl-lock,
+.pl-help {
+  display: none;
+}
+
+.pl-shell[data-state="loading"] .pl-buf,
+.pl-shell[data-state="buffering"] .pl-buf {
+  display: flex;
+}
+
+.pl-shell[data-state="error"] .pl-err {
+  display: flex;
+}
+
+.pl-shell[data-locked="1"] .pl-lock {
+  display: flex;
+}
+
+.pl-shell[data-help="1"] .pl-help {
+  display: flex;
+}
+
+/* ---------- PiP：系统小窗只该有画面（小窗控件由系统给） ---------- */
+.player-root--pip .pl-top,
+.player-root--pip .pl-bottom,
+.player-root--pip .pl-hud,
+.player-root--pip .pl-lock {
+  display: none;
+}
+
+/* ---------- toast：宿主仍是 App 级 ToastHost，这里只改播放页的落点 ----------
+   --chrome-bottom-h 定义在 .pl-shell 上（容器查询分档），ToastHost 不是它的后代、
+   取不到这枚变量，故按视口方向写等价 clearance（与 ③/④ 的 100 / 128 / 132 对齐）。 */
+body:has(.pl-shell) .toast-host {
+  bottom: calc(var(--safe-bottom) + var(--space-4) + 100px);
+}
+
+@media (min-aspect-ratio: 1/1) {
+  body:has(.pl-shell) .toast-host {
+    bottom: calc(var(--safe-bottom) + var(--space-4) + 128px);
+  }
+}
+
+@media (min-aspect-ratio: 1/1) and (min-width: 900px) {
+  body:has(.pl-shell) .toast-host {
+    bottom: calc(var(--safe-bottom) + var(--space-4) + 132px);
+  }
+}
+/* =========================================================
+   ♿ 无障碍 / 输入方式 / 系统偏好 A11Y
+   ---------------------------------------------------------
+   覆盖 §1（对比与焦点）§2（触控尺寸与反馈）§5（不用 opacity 藏可聚焦元素）§7（减少动态）。
+   全部限定在 .pl-frame 子树内：这条文件是全局非 scoped 的，写裸选择器会漏到
+   详情页/收藏页等十个视图（改共享样式的外溢代价远高于播放页的收益）。
+   =========================================================*/
+
+/* 属性选择器优先级高于 class：兜住 HUD/跳过条等自带 display 的元素 */
+.pl-frame [hidden] {
+  display: none !important;
+}
+
+/* 焦点可见：暗画面上用「黑垫 + 品牌环」双层，任何帧上都能看见 */
+.pl-frame :focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+}
+
+/* 键盘模式（稿 `[data-keynav="1"] .scrub`）：进度轨道补一圈内描边，
+   让「现在方向键/数字键作用在这里」不只在焦点元素上才看得出来。
+   轨道与焦点环分属两层（轨道在 SeekBar 内），故按壳层标记命中而不是 :focus-visible。 */
+.pl-shell[data-keynav="1"] .seekbar__track {
+  box-shadow: inset 0 0 0 1px rgba(240, 168, 46, 0.4);
+}
+
+/* 触摸：命中区最小 --touch，图标按钮也要靠内边距撑够 */
+@media (pointer: coarse) {
+  .pl-frame .pl-btn,
+  .pl-frame .pl-ico,
+  .pl-frame .pl-tab,
+  .pl-frame .pl-act,
+  .pl-frame .pl-cta {
+    min-height: var(--touch);
+  }
+
+  .pl-frame .pl-chip {
+    min-height: 34px;
+  }
+
+  .pl-frame .pl-skip__btn {
+    min-height: 36px;
+  }
+}
+
+/* 系统「减少动态效果」：装饰动画全停，但「正在缓冲」的环必须继续转——
+   停止的环等于「卡住了」，那是误导而不是克制。弹幕是 canvas 自绘，不受本条影响。 */
+@media (prefers-reduced-motion: reduce) {
+  .pl-frame *,
+  .pl-frame *::before,
+  .pl-frame *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .pl-frame .pl-buf__ring,
+  .pl-frame .pl-btn--play[data-busy="1"]::after {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
+/* Windows 高对比模式：不依赖背景色表达层级，边界一律描出来 */
+@media (forced-colors: active) {
+  .pl-frame .pl-chip,
+  .pl-frame .pl-pop,
+  .pl-frame .pl-drawer,
+  .pl-frame .pl-hud,
+  .pl-frame .pl-cta,
+  .pl-frame .pl-err__card,
+  .pl-frame .pl-help__card {
+    border: 1px solid CanvasText;
+  }
+
+  .pl-frame .pl-btn--play {
+    border: 1px solid CanvasText;
+  }
+
+  .pl-frame .pl-timeline {
+    border-top: 1px solid CanvasText;
+    border-bottom: 1px solid CanvasText;
+  }
+}

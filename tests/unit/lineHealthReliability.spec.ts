@@ -102,6 +102,16 @@ describe('线路可靠度（OPT-16）', () => {
     expect(lineHealthService.entryOf(key)).toBeUndefined();
     expect(lineHealthService.sourceReliability('s3')).toBe(0.5);
   });
+
+  it('源正忙不计入线路失败（P1-3：线路共用同一个爬虫实例，判死好线路正是集号乱跳的放大器）', () => {
+    const key = lineKey('sBusy', 'item1', '线A');
+    lineHealthService.recordFail(key, 'E_SOURCE_BUSY');
+    // immediate 是给确定性证据留的口子，"忙"不是确定性证据，同样不得计入
+    lineHealthService.recordFail(key, 'E_SOURCE_BUSY', { immediate: true });
+    expect(lineHealthService.entryOf(key)).toBeUndefined();
+    expect(lineHealthService.statusOf(key)).toBe('unknown');
+    expect(lineHealthService.sourceReliability('sBusy')).toBe(0.5);
+  });
 });
 
 /**

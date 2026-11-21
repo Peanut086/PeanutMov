@@ -2,15 +2,21 @@
 /**
  * 播放错误面板（AC-59）
  *
- * 覆盖画面：错误标题（ERROR_MESSAGES）+ 可能原因 + 重试/切换线路/返回/复制错误信息。
- * `retryable === false` 时隐藏"重试"，保留"切换线路/返回"。
+ * 覆盖画面：错误标题（ERROR_MESSAGES）+ 可能原因 + 技术细节 + 可执行出口。
+ * 压暗底、卡片、CTA 与显隐都在 player-chrome.css 的 ⑦ `.pl-err` / `.pl-cta` 上，
+ * 由 `.pl-shell[data-state="error"]` 统一驱动，本组件只管内容与动作。
+ * `retryable === false` 时隐藏「重试」，保留「切换线路/返回」。
  * v1.8/CHG-26：新增「换源重播」（同名同年跨源手动兜底）与「源体检」（源疑似失效时跳源管理）。
  */
-import { computed } from 'vue';
+import { computed } from "vue";
 
-import type { AppErrorShape } from '@/types';
-import { ERROR_MESSAGES } from '@/shared/errors';
-import { guidanceOf, magnetUrlOf, sanitizeSourceMessage } from '@/shared/sourceFailure';
+import type { AppErrorShape } from "@/types";
+import { ERROR_MESSAGES } from "@/shared/errors";
+import {
+  guidanceOf,
+  magnetUrlOf,
+  sanitizeSourceMessage,
+} from "@/shared/sourceFailure";
 
 const props = withDefaults(
   defineProps<{
@@ -26,60 +32,67 @@ const props = withDefaults(
     /** 复制错误信息回调 */
     copyText?: string;
   }>(),
-  { canSwitchLine: true, canSwitchSource: false, canHealthCheck: false, canRedownload: false, copyText: '' },
+  {
+    canSwitchLine: true,
+    canSwitchSource: false,
+    canHealthCheck: false,
+    canRedownload: false,
+    copyText: "",
+  },
 );
 
 const emit = defineEmits<{
-  (e: 'retry'): void;
-  (e: 'switch-line'): void;
-  (e: 'switch-source'): void;
-  (e: 'health-check'): void;
-  (e: 'back'): void;
-  (e: 'copy'): void;
+  (e: "retry"): void;
+  (e: "switch-line"): void;
+  (e: "switch-source"): void;
+  (e: "health-check"): void;
+  (e: "back"): void;
+  (e: "copy"): void;
   /** FIX-PLAY-C1：对当前集发起重新下载 */
-  (e: 'redownload'): void;
+  (e: "redownload"): void;
   /** P1-4：磁力等外部 scheme 交给系统 Intent 打开 */
-  (e: 'open-external', url: string): void;
+  (e: "open-external", url: string): void;
 }>();
 
 const title = computed(() => {
-  if (!props.error) return '播放失败';
+  if (!props.error) return "播放失败";
   return props.error.message || ERROR_MESSAGES[props.error.code];
 });
 
 /** P1-5：脚本内部异常不进 UI（服务层已收敛，这里兜底） */
-const detail = computed(() => sanitizeSourceMessage(props.error?.detail) || '');
+const detail = computed(() => sanitizeSourceMessage(props.error?.detail) || "");
 
 /** P1-4：磁力地址（有值时渲染「用外部应用打开」） */
 const magnetUrl = computed(() => magnetUrlOf(props.error));
 
 const hint = computed(() => {
-  if (!props.error) return '可能原因：播放过程中出现异常。可重试；若持续失败请返回详情页。';
+  if (!props.error)
+    return "可能原因：播放过程中出现异常。可重试；若持续失败请返回详情页。";
   // P0-1：源失败四分类优先（源站真死 / 解析超时 / 协议不支持 / 规则脚本异常）
   const guidance = guidanceOf(props.error);
-  if (guidance.kind !== 'unknown') return `可能原因：${guidance.hint}`;
+  if (guidance.kind !== "unknown") return `可能原因：${guidance.hint}`;
   switch (props.error.code) {
-    case 'E_NETWORK':
-      return '可能原因：网络已断开或源站不可达。请检查网络，或切换线路。';
-    case 'E_TIMEOUT':
-      return '可能原因：源站响应超时。可重试，或切换其他线路。';
-    case 'E_HTTP_403':
-    case 'E_HTTP_401':
-    case 'E_AUTH':
-      return '可能原因：播放地址鉴权失效。可切换线路，或回到详情页重新解析。';
-    case 'E_HTTP_404':
-      return '可能原因：播放地址已失效。可切换线路，或重新进入本集。';
-    case 'E_DECODE':
-    case 'E_UNSUPPORTED_FORMAT':
-    case 'E_DRM_PROTECTED':
-      return '可能原因：当前编码或封装不受支持。请切换其他线路或清晰度。';
-    case 'E_NO_PLAY_URL':
-      return '可能原因：该集暂无可用地址。请在详情页切换线路后重试。';
-    case 'E_LOCAL_STALL':
-    case 'E_LOCAL_CORRUPT':
-      return '可能原因：离线文件本身损坏（时间轴或分片数据异常）。重新下载这一集通常可解决，切换线路无效。';
+    case "E_NETWORK":
+      return "可能原因：网络已断开或源站不可达。请检查网络，或切换线路。";
+    case "E_TIMEOUT":
+      return "可能原因：源站响应超时。可重试，或切换其他线路。";
+    case "E_HTTP_403":
+    case "E_HTTP_401":
+    case "E_AUTH":
+      return "可能原因：播放地址鉴权失效。可切换线路，或回到详情页重新解析。";
+    case "E_HTTP_404":
+      return "可能原因：播放地址已失效。可切换线路，或重新进入本集。";
+    case "E_DECODE":
+    case "E_UNSUPPORTED_FORMAT":
+    case "E_DRM_PROTECTED":
+      return "可能原因：当前编码或封装不受支持。请切换其他线路或清晰度。";
+    case "E_NO_PLAY_URL":
+      return "可能原因：该集暂无可用地址。请在详情页切换线路后重试。";
+    case "E_LOCAL_STALL":
+    case "E_LOCAL_CORRUPT":
+      return "可能原因：离线文件本身损坏（时间轴或分片数据异常）。重新下载这一集通常可解决，切换线路无效。";
     default:
-      return '可能原因：播放过程中出现异常。可重试；若持续失败请返回详情页。';
+      return "可能原因：播放过程中出现异常。可重试；若持续失败请返回详情页。";
   }
 });
 
@@ -87,33 +100,20 @@ const showRetry = computed(() => props.error?.retryable !== false);
 </script>
 
 <template>
-  <div class="player-error" role="alert">
-    <div class="player-error__panel">
-      <svg
-        class="player-error__art"
-        viewBox="0 0 96 96"
-        fill="none"
-        stroke="var(--color-danger)"
-        stroke-opacity="0.85"
-        stroke-width="2.4"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-      >
-        <path d="M48 22 82 74H14Z" />
-        <path d="M48 40v16" />
-        <circle cx="48" cy="64" r="1.4" fill="var(--color-danger)" stroke="none" />
-      </svg>
+  <div class="pl-err" role="alert">
+    <div class="pl-err__card">
+      <h2 class="pl-err__title">{{ title }}</h2>
+      <p class="pl-err__desc">{{ hint }}</p>
+      <!-- 技术细节单列一行并套 code：等宽＋警示色，与散文一眼分得开 -->
+      <p v-if="detail" class="pl-err__desc">
+        <code>{{ detail }}</code>
+      </p>
 
-      <h2 class="player-error__title">{{ title }}</h2>
-      <p class="player-error__hint">{{ hint }}</p>
-      <p v-if="detail" class="player-error__detail">{{ detail }}</p>
-
-      <div class="player-error__actions">
+      <div class="pl-err__acts">
         <!-- P1-4：磁力链接只能用外部应用打开，这是唯一有效动作，放最前 -->
         <button
           v-if="magnetUrl"
-          class="btn btn--primary btn--md"
+          class="pl-cta"
           type="button"
           @click="emit('open-external', magnetUrl)"
         >
@@ -121,7 +121,7 @@ const showRetry = computed(() => props.error?.retryable !== false);
         </button>
         <button
           v-if="canRedownload"
-          class="btn btn--primary btn--md"
+          class="pl-cta"
           type="button"
           @click="emit('redownload')"
         >
@@ -129,7 +129,7 @@ const showRetry = computed(() => props.error?.retryable !== false);
         </button>
         <button
           v-if="showRetry"
-          class="btn btn--primary btn--md"
+          class="pl-cta"
           type="button"
           @click="emit('retry')"
         >
@@ -137,7 +137,7 @@ const showRetry = computed(() => props.error?.retryable !== false);
         </button>
         <button
           v-if="canSwitchLine"
-          class="btn btn--secondary btn--md"
+          class="pl-cta pl-cta--ghost"
           type="button"
           @click="emit('switch-line')"
         >
@@ -146,96 +146,36 @@ const showRetry = computed(() => props.error?.retryable !== false);
         <!-- v1.8/CHG-26：自动兜底只各试一次，手动换源让用户再推一把 -->
         <button
           v-if="canSwitchSource"
-          class="btn btn--secondary btn--md"
+          class="pl-cta pl-cta--ghost"
           type="button"
           @click="emit('switch-source')"
         >
           换源重播
         </button>
-        <button class="btn btn--ghost btn--md" type="button" @click="emit('back')">返回</button>
+        <button
+          class="pl-cta pl-cta--ghost"
+          type="button"
+          @click="emit('back')"
+        >
+          返回
+        </button>
       </div>
 
-      <!-- v1.8/CHG-26：错误码指向源健康问题时给去体检的路径 -->
-      <button
-        v-if="canHealthCheck"
-        class="player-error__copy"
-        type="button"
-        @click="emit('health-check')"
-      >
-        去源体检
-      </button>
+      <div class="pl-err__links">
+        <!-- v1.8/CHG-26：错误码指向源健康问题时给去体检的路径 -->
+        <button
+          v-if="canHealthCheck"
+          class="pl-err__link"
+          type="button"
+          @click="emit('health-check')"
+        >
+          去源体检
+        </button>
 
-      <button class="player-error__copy" type="button" @click="emit('copy')">
-        复制错误信息
-      </button>
+        <button class="pl-err__link" type="button" @click="emit('copy')">
+          复制错误信息
+        </button>
+      </div>
     </div>
   </div>
 </template>
-
-<style scoped>
-.player-error {
-  position: absolute;
-  inset: 0;
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-4);
-  background-color: rgba(0, 0, 0, 0.86);
-}
-
-.player-error__panel {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-2);
-  width: min(88vw, 400px);
-  padding: var(--space-5);
-  border-radius: var(--radius-xl);
-  background-color: var(--color-bg-elevated);
-  border: var(--border-default);
-  text-align: center;
-}
-
-.player-error__art {
-  width: 64px;
-  height: 64px;
-  margin-bottom: var(--space-2);
-}
-
-.player-error__title {
-  font: var(--text-title-3);
-  color: var(--color-text-primary);
-}
-
-.player-error__hint {
-  font: var(--text-caption);
-  color: var(--color-text-secondary);
-  line-height: 1.6;
-}
-
-.player-error__detail {
-  max-width: 100%;
-  font: var(--text-caption);
-  color: var(--color-text-disabled);
-  overflow-wrap: anywhere;
-}
-
-.player-error__actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-}
-
-.player-error__copy {
-  margin-top: var(--space-2);
-  min-height: 44px;
-  padding: 0 var(--space-3);
-  font: var(--text-caption);
-  color: var(--color-text-tertiary);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-</style>

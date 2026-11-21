@@ -72,6 +72,57 @@ describe('mgtvProvider', () => {
     expect(danmuUrls[0]?.searchParams.get('time')).toBe('0');
   });
 
+  it('年份指向去噪同名候选时不采用（错标年份会整集串片）', async () => {
+    mockedRequest.mockImplementation(((url: string) => {
+      if (url.startsWith('https://mobileso.bz.mgtv.com')) {
+        return Promise.resolve({
+          code: 20000,
+          data: {
+            contents: [
+              {
+                data: [
+                  { title: '士兵突击 第2季', vid: 2, desc: ['纪实', '内地', '2013'] },
+                  { title: '<em>士兵突击</em>', vid: 1, desc: ['电视剧', '内地', '2006'] },
+                ],
+              },
+            ],
+          },
+        });
+      }
+      return Promise.resolve(EPISODES_RESPONSE);
+    }) as never);
+
+    const result = await mgtvProvider.match({ title: '士兵突击', year: 2013, episode: 1 });
+
+    expect(result).toBeNull();
+    expect(mockedRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('完全同名那条缺年份时，仍然优先于带年份的低分候选', async () => {
+    mockedRequest.mockImplementation(((url: string) => {
+      if (url.startsWith('https://mobileso.bz.mgtv.com')) {
+        return Promise.resolve({
+          code: 20000,
+          data: {
+            contents: [
+              {
+                data: [
+                  { title: '士兵突击 第2季', vid: 2, desc: ['纪实', '内地', '2013'] },
+                  { title: '<em>士兵突击</em>', vid: 1, desc: ['电视剧', '内地'] },
+                ],
+              },
+            ],
+          },
+        });
+      }
+      return Promise.resolve({ data: { total: 1, info: { title: '士兵突击' }, list: [] } });
+    }) as never);
+
+    await mgtvProvider.match({ title: '士兵突击', year: 2013, episode: 1 });
+
+    expect(new URL(String(mockedRequest.mock.calls[1]?.[0])).searchParams.get('video_id')).toBe('1');
+  });
+
   it('45:40 → 46 个 60s 窗口，条目 time 是毫秒且相对视频起点', async () => {
     route(EPISODES_RESPONSE, (time) => {
       if (time === 0) {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isTitleMatch, normalizeTitleForMatch, pickPlayCandidate, pickSourceCandidates, stripTitleNoise } from '@/sources/douban/playMatch';
+import { isTitleMatch, normalizeTitleForMatch, pickPlayCandidate, pickSourceCandidates, seasonOfTitle, stripTitleNoise } from '@/sources/douban/playMatch';
 import type { MediaItem, Source } from '@/types';
 
 /**
