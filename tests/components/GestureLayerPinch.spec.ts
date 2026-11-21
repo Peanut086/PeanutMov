@@ -96,6 +96,35 @@ describe('pinch 打开时的分工', () => {
     expect(intents(wrapper)).toEqual([]);
   });
 
+  it('单指连点两次：不凭空凑出捏合会话，也不在抬手 500ms 后炸出倍速（真机两个症状）', () => {
+    // 真机取证（11-21）：全程只有单指、没有第二根手指落下过，却出现"2x 快进中"挂死 +
+    // 画面点什么都没人应答。序列就是两次最普通的点屏唤控制条。
+    vi.useFakeTimers();
+    const wrapper = mountLayer(true);
+    fire(wrapper, 'down', 1, 200, 200);
+    fire(wrapper, 'up', 1, 200, 200);
+    fire(wrapper, 'down', 2, 200, 200);
+    fire(wrapper, 'up', 2, 200, 200);
+    vi.advanceTimersByTime(1_000);
+
+    // 两次点合成一次双击应答；关键是没有任何 long-press-start、也没有凭空的捏合会话
+    expect(intents(wrapper)).toEqual(['double-tap']);
+    expect(samples(wrapper)).toHaveLength(0);
+    expect(wrapper.emitted('pinch-end')).toBeUndefined();
+  });
+
+  it('单指连点两次之后横向拖动仍然快进（症状 2：画面不许变成死的）', () => {
+    const wrapper = mountLayer(true);
+    fire(wrapper, 'down', 1, 200, 200);
+    fire(wrapper, 'up', 1, 200, 200);
+    fire(wrapper, 'down', 2, 200, 200);
+    fire(wrapper, 'up', 2, 200, 200);
+    dragRight(wrapper);
+
+    expect(intents(wrapper)).toContain('seek-preview');
+    expect(intents(wrapper)).toContain('seek-commit');
+  });
+
   it('在飞的长按倍速必须随着捏合开始而收尾', () => {
     vi.useFakeTimers();
     const wrapper = mountLayer(true);

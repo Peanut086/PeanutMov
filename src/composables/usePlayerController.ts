@@ -505,6 +505,12 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   }
 
   function setRate(rate: PlaybackRate): void {
+    // 用户显式选的倍速就是新的基准。长按临时倍速若还挂着（那份抬手在路上丢了），
+    // 不收尾就成了"我明明选了倍速，画面上却一直显示快进中"，引擎也停在长按档不动。
+    if (restoreRate !== null) {
+      restoreRate = null;
+      clearHud();
+    }
     controller.value?.setRate(rate);
     player.patch({ rate });
     ui.toast(`已切换到 ${rate}x`, 'info', 1500);
@@ -697,12 +703,14 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
         break;
       }
       case 'long-press-start':
-        if (restoreRate === null) {
-          restoreRate = player.rate;
-          const rate = options.longPressRate;
-          c.setRate(rate);
-          showHud({ kind: 'rate', value: rate, deltaSec: 0 }, 3_600_000);
+        if (restoreRate !== null) {
+          // 上一根的收尾没来（抬手半路被吞）：先把它结掉，基准才不会是好几个手势前的倍速
+          restoreBoostRate();
+          clearHud();
         }
+        restoreRate = player.rate;
+        c.setRate(options.longPressRate);
+        showHud({ kind: 'rate', value: options.longPressRate, deltaSec: 0 }, 3_600_000);
         break;
       case 'long-press-end':
         restoreBoostRate();

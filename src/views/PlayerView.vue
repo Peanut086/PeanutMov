@@ -3821,7 +3821,6 @@ onBeforeUnmount(() => {
               :kind="hud.kind"
               :value="hud.value"
               :delta-sec="hud.deltaSec"
-              :rate="player.rate"
             />
 
             <PlayerControls

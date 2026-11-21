@@ -299,4 +299,32 @@ describe('GestureRecognizer', () => {
     const last = after[after.length - 1];
     if (last?.type === 'brightness') expect(last.value).toBeCloseTo(12.5, 1);
   });
+
+  it('上次 up 丢失后新落下的主指针接管：先收尾在飞的长按，画面不再点不动', () => {
+    const { recognizer, intents } = makeRecognizer();
+    const ctx = makeCtx();
+    recognizer.pointerDown({ pointerId: 1, clientX: 180, clientY: 320 }, ctx);
+    vi.advanceTimersByTime(600);
+    expect(intents).toEqual([{ type: 'long-press-start' }]);
+
+    // 真机上"抬手半路被吞"后，下一次点屏拿到的是全新的 pointerId（WebView 单调递增），
+    // 但它仍是 primary。旧实现见 id 不符就直接 return：倍速挂着、这根手指也永远不进样本。
+    recognizer.pointerDown({ pointerId: 2, clientX: 100, clientY: 300, isPrimary: true }, ctx);
+    expect(intents).toEqual([{ type: 'long-press-start' }, { type: 'long-press-end' }]);
+
+    recognizer.pointerUp({ pointerId: 2, clientX: 100, clientY: 300 });
+    vi.advanceTimersByTime(300);
+    expect(intents[intents.length - 1]).toEqual({ type: 'single-tap', side: 'left', x: 100, y: 300 });
+  });
+
+  it('长按进行中整层被拆掉：补一次 long-press-end，倍速不跟着实例挂到天亮', () => {
+    const { recognizer, intents } = makeRecognizer();
+    recognizer.pointerDown({ pointerId: 1, clientX: 180, clientY: 320 }, makeCtx());
+    vi.advanceTimersByTime(600);
+    expect(intents).toEqual([{ type: 'long-press-start' }]);
+
+    // 锁屏/错误层把 GestureLayer 整层 v-if 掉时，这一根的抬手永远不会再来
+    recognizer.destroy();
+    expect(intents).toEqual([{ type: 'long-press-start' }, { type: 'long-press-end' }]);
+  });
 });

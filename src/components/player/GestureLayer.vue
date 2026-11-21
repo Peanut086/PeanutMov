@@ -10,9 +10,11 @@
  * OPT-10：增加触摸视觉反馈（光晕）。长按（含升级为帮助浮层）的时序统一由
  * `GestureRecognizer` 裁决，本层不再自建第二份长按计时器。
  *
- * G-A09：`pinch` 打开后，第二指落下即进入捏合会话——会话内所有事件只交给
- * `PinchResizeRecognizer`，并把在飞的单指手势（含长按倍速）撤销掉。关掉该 prop
- * 时，本层的事件分发与升级前完全一致。`pinch-start-mode` 只告诉识别器尺从哪一档起手，
+ * G-A09：`pinch` 打开后，第二指落下即进入捏合会话——会话内单指手势先撤销干净，
+ * 之后落下的手指只交给 `PinchResizeRecognizer`（不再起新的单指样本）。但
+ * `pointerup`/`pointercancel` 两个识别器都要收到：捏合只管两指间距的几何，
+ * 手势归属仍由单指识别器裁决，否则被跟踪的那根手指离开时没人收尾长按倍速。
+ * 关掉该 prop 时，本层的分发与升级前一致。`pinch-start-mode` 只告诉识别器尺从哪一档起手，
  * 本层不据此做任何判断。
  */
 import { ref, onBeforeUnmount } from 'vue';
@@ -124,12 +126,20 @@ function onPointerDown(ev: PointerEvent): void {
     const p = ensurePinch();
     // 会话中追加的手指：既不参与捏合几何（基准仍是最初两指），也不再喂给单指识别器
     if (p.inSession) return;
-    if (p.pointerDown(ev.pointerId, ev.clientX, ev.clientY)) abandonSinglePointerGestures();
+    // 会话刚由本指建立：单指手势已经撤销干净，本指也必须留在这里，
+    // 否则它自己会再起一份长按计时器，把捏合按成"按住不动=2 倍速"。
+    if (p.pointerDown(ev.pointerId, ev.clientX, ev.clientY)) {
+      abandonSinglePointerGestures();
+      return;
+    }
   }
 
   // 先通知父级校准基准：系统音量在按下前一刻仍可能被实体按键改动
   emit('pointer-down');
-  ensureRecognizer().pointerDown({ pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY }, ctx());
+  ensureRecognizer().pointerDown(
+    { pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY, isPrimary: ev.isPrimary },
+    ctx(),
+  );
 
   // OPT-10：触摸光晕
   if (props.touchGlow) {
@@ -154,21 +164,18 @@ function onPointerMove(ev: PointerEvent): void {
 
 function onPointerUp(ev: PointerEvent): void {
   (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId);
-  if (props.pinch && ensurePinch().pointerUp(ev.pointerId)) {
-    touchGlowVisible.value = false;
-    return;
-  }
+  // 抬手/取消必须先交单指识别器：捏合只拥有两指间距的几何，不拥有手势所有权。
+  // 早先是"捏合认领了就 return"，于是被跟踪的那根手指的 pointerup 永远送不到，
+  // 在飞的长按倍速与提示就挂成 60 分钟，识别器也再不收新手指（画面点什么都没人应答）。
   ensureRecognizer().pointerUp({ pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY });
   touchGlowVisible.value = false;
+  if (props.pinch) ensurePinch().pointerUp(ev.pointerId);
 }
 
 function onPointerCancel(ev: PointerEvent): void {
-  if (props.pinch && ensurePinch().pointerCancel(ev.pointerId)) {
-    touchGlowVisible.value = false;
-    return;
-  }
   ensureRecognizer().pointerCancel({ pointerId: ev.pointerId });
   touchGlowVisible.value = false;
+  if (props.pinch) ensurePinch().pointerCancel(ev.pointerId);
 }
 
 // REV-12：卸载时销毁 recognizer，避免残留计时器把 intent 打到已卸载实例

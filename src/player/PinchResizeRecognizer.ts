@@ -124,8 +124,11 @@ export class PinchResizeRecognizer {
   }
 
   private release(id: number, reason: 'up' | 'cancel'): boolean {
-    if (!this.session) return false;
+    // 先摘手指再看会话：非会话态（单指）直接 return 会让 `fingers` 只增不减，
+    // 两次单指点击就凑够 size===2 凭空开一个捏合会话——之后抬手全被判给捏合，
+    // 单指识别器再也收不到 pointerup，长按计时器在手指离开 500ms 后照样起爆倍速。
     this.fingers.delete(id);
+    if (!this.session) return false;
     if (this.fingers.size >= 2) {
       // 还有两指在场：以当前间距重新定基准，并保持画幅尺位置不变，避免抬手瞬间跳档
       this.reanchor();

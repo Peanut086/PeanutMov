@@ -195,3 +195,35 @@ describe('长按倍速 · 退后台收尾', () => {
     expect(RATE_CALLS()).toHaveLength(after);
   });
 });
+
+describe('长按倍速 · 显式选倍速与孤儿自愈', () => {
+  it('长按挂着时用户选了 1.5x：提示立刻清空，倍速停在用户选的档', () => {
+    // 真机症状 1 的观感来源——"我明明选了倍速，画面上却一直显示快进中"。
+    // 长按的收尾在半路被吞掉时，那份临时倍速就成了没人认领的僵尸。
+    const { api } = setup();
+    api.onGesture({ type: 'long-press-start' });
+    expect(api.hud.value.kind).toBe('rate');
+
+    api.setRate(1.5 as never);
+
+    expect(api.hud.value.kind).toBeNull();
+    expect(api.player.rate).toBe(1.5);
+    expect(LAST_RATE()).toBe(1.5);
+
+    // 最关键的一条：迟到的那次抬手不许把 1.5x 当成"临时值"恢复回旧基准
+    api.onGesture({ type: 'long-press-end' });
+    expect(LAST_RATE()).toBe(1.5);
+    expect(api.player.rate).toBe(1.5);
+  });
+
+  it('上一根的收尾丢失后再次长按：中间先回到基准，倍速不会在两次长按之间挂着', () => {
+    const { api } = setup();
+
+    api.onGesture({ type: 'long-press-start' });
+    api.onGesture({ type: 'long-press-start' });
+
+    // 1（建控默认）→ 2（第一次长按）→ 1（旧长按收尾）→ 2（第二次长按）
+    expect(RATE_CALLS()).toEqual([1, 2, 1, 2]);
+    expect(api.player.rate).toBe(1);
+  });
+});

@@ -16,13 +16,12 @@ export type HudKind =
 const props = withDefaults(
   defineProps<{
     kind: HudKind;
-    /** seek: 目标秒数；volume/brightness: 0~100；rate: 倍速 */
+    /** seek: 目标秒数；volume/brightness: 0~100；rate: 长按档倍速 */
     value?: number;
     /** seek: 相对秒数（正=快进） */
     deltaSec?: number;
-    rate?: number;
   }>(),
-  { value: 0, deltaSec: 0, rate: 2 },
+  { value: 0, deltaSec: 0 },
 );
 
 /** 播放/暂停大图标动画 key：每次 kind 切到 play/pause 时递增触发重新播放 */
@@ -46,7 +45,9 @@ const title = computed(() => {
     case "brightness":
       return props.value <= 0 ? "最低亮度" : "亮度";
     case "rate":
-      return `${props.rate}x 快进中`;
+      // 必须念长按档（value），不能念基准倍速：念基准会出现"1x 快进中"这种自相矛盾的话，
+      // 还会让人以为提示是跟着自己选的倍速来的。
+      return `${props.value}x 快进中`;
     case "play":
       return "播放";
     case "pause":

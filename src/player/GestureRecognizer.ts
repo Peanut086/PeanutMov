@@ -96,14 +96,25 @@ export class GestureRecognizer {
 
   /* ---------- 事件入口 ---------- */
 
-  pointerDown(ev: { pointerId: number; clientX: number; clientY: number }, ctx: GestureContext): void {
+  pointerDown(
+    ev: { pointerId: number; clientX: number; clientY: number; isPrimary?: boolean },
+    ctx: GestureContext,
+  ): void {
     // 多指：忽略新增手指——本类始终只跟踪一根手指，双指捏合由上层的
     // PinchResizeRecognizer 接管（G-A09）；
     // 同一指针重复 down（上一次 up/cancel 丢失）则丢弃陈旧样本，避免手势永久卡死
     if (this.sample !== null) {
-      if (this.sample.id !== ev.pointerId) return;
-      this.sample = null;
-      this.mode = 'none';
+      if (this.sample.id !== ev.pointerId) {
+        // 新落下的若是 primary 指针，说明上一根只是"抬手没送到"（系统收走触摸、捏合抢先认领），
+        // 而不是它还真按着。此时只 return 会让本类永久认为有一根手指在按：之后每次按下都被
+        // 当成多指丢弃，单击/拖动再也进不来，画面等于点什么都没人应答。
+        // 必须走 pointerCancel——它顺带把在飞的长按倍速收尾，否则提示与 2x 一起挂着。
+        if (ev.isPrimary !== true) return;
+        this.pointerCancel({ pointerId: this.sample.id });
+      } else {
+        this.sample = null;
+        this.mode = 'none';
+      }
     }
     this.cancelLongPress();
     const side = ev.clientX < ctx.width / 2 ? 'left' : 'right';
@@ -283,6 +294,12 @@ export class GestureRecognizer {
   /** 组件卸载时清理定时器，防止回调打到已卸载实例 */
   destroy(): void {
     this.cancelLongPress();
+    // 按住不动时本层被拆掉（锁屏/错误层把 GestureLayer 整层 v-if 掉）：抬手永不再来，
+    // 先交一次 long-press-end，否则临时倍速与"快进中"提示会跟着这个实例一起挂到天亮。
+    if (this.longPressActive) {
+      this.longPressActive = false;
+      this.callbacks.onIntent({ type: 'long-press-end' });
+    }
     if (this.pendingTapTimer !== null) {
       clearTimeout(this.pendingTapTimer);
       this.pendingTapTimer = null;

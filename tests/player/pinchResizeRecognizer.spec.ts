@@ -70,6 +70,25 @@ describe('单指与未成形的会话', () => {
     expect(onEnd).not.toHaveBeenCalled();
   });
 
+  it('单指按下抬手成对进出：连点两次也不凭空凑出捏合会话', () => {
+    const { rec, onSample, onEnd } = makeRecognizer();
+    // 真机上的"点画面唤控制条"就是这个序列。旧实现的 release() 在非会话态提前 return
+    // 不摘手指，两次单指点就把 `fingers` 凑满 2 个 → 凭空开会话。
+    for (const id of [1, 2]) {
+      expect(rec.pointerDown(id, 10, 10)).toBe(false);
+      expect(rec.pointerUp(id)).toBe(false);
+    }
+    expect(rec.inSession).toBe(false);
+    expect(onSample).not.toHaveBeenCalled();
+    expect(onEnd).not.toHaveBeenCalled();
+
+    // 泄漏的手指若还在，第三次落指同样会开会话，之后所有抬手被判给捏合
+    expect(rec.pointerDown(3, 10, 10)).toBe(false);
+    expect(rec.pointerMove(3, 90, 10)).toBe(false);
+    expect(rec.pointerUp(3)).toBe(false);
+    expect(onEnd).not.toHaveBeenCalled();
+  });
+
   it('两指落住但张合幅度没过阈值：不算捏合，抬手交出 null', () => {
     const { rec, onSample, onEnd } = makeRecognizer();
     startTwoFingers(rec);
