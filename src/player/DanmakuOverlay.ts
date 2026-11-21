@@ -11,6 +11,8 @@
  * - B-04 互动：`pick()` 按点击坐标命中单条并冻结它（其余照常滚动），canvas 全程不吃指针事件；
  * - 智能配色：播放器按 ~3Hz 推一帧 32×18 亮度场（`setLumaField`），只在原色看不清时
  *   接管颜色。配色判定跟着采样节奏走而不是逐帧走——逐帧重建位图就是上面那条红线。
+ * - 容器几何（旋屏 / 沉浸态 / PiP）变化后背板跟着重测：canvas 的 CSS 盒子自己会跟，
+ *   背板不跟就等于把整块贴图拉伸，字号与亮度场映射一起错。
  *
  * 设计取舍：不用 DOM 弹幕（数百节点调度易掉帧），canvas 绘制成本恒定。
  */
@@ -78,6 +80,11 @@ const DRIFT_SLEW_WINDOW_MS = 800;
 const DRIFT_TOLERANCE_SEC = 0.05;
 /** 超过该漂移视为 seek/换集（含前跳），清轨道重定位游标 */
 const BIG_JUMP_SEC = 2;
+/**
+ * 几何落定窗口（毫秒）。与 `NativeEngine` 的画面对齐同一套口径：旋屏/全屏时视口分几步落定，
+ * 单次防抖会停在中间态（那边真机实测错位数秒），所以变化后逐帧追到尺寸不再变才收工。
+ */
+const RECT_SETTLE_MS = 2000;
 
 export class DanmakuOverlay {
   private canvas: HTMLCanvasElement | null = null;
@@ -109,6 +116,13 @@ export class DanmakuOverlay {
   private canvasHeight = 0;
   /** 最近一帧画面亮度场（null = 还没有 / 智能配色不可用） */
   private lumaField: LumaField | null = null;
+  /** 上一次真正套用过的几何（`宽x高x像素比`）；一致就跳过 resize()，别空跑清画布 */
+  private sizeKey = '';
+  private rectObserver: ResizeObserver | null = null;
+  private rectSettleRaf: number | null = null;
+  private rectSettleUntil = 0;
+  /** 事件回调句柄（卸载时要拿同一个函数去 removeEventListener） */
+  private onGeometryChange: (() => void) | null = null;
 
   constructor(options: {
     settings: DanmakuSettings;
@@ -135,14 +149,18 @@ export class DanmakuOverlay {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.resize();
+    this.watchGeometry();
     this.start();
   }
 
   detach(): void {
     this.stop();
+    this.teardownGeometry();
     this.canvas?.remove();
     this.canvas = null;
     this.ctx = null;
+    // 下一轮 attach 必须先量一次：新 canvas 的 width/height 还是默认的 300×150
+    this.sizeKey = '';
     this.tracks = [];
     this.picked = null;
   }
@@ -313,12 +331,70 @@ export class DanmakuOverlay {
     return t;
   }
 
+  /**
+   * 盯着容器几何：竖屏 16:9 画面带 → 沉浸态铺满是必然会发生的一次尺寸跳变，
+   * 而 canvas 的 CSS 盒子（100%×100%）跟得上、背板跟不上，整块贴图会被拉伸——
+   * 表现就是弹幕字号不对，且横竖两个方向系数不同还会拉变形。
+   */
+  private watchGeometry(): void {
+    this.teardownGeometry();
+    const canvas = this.canvas;
+    if (!canvas) return;
+    const pump = (): void => {
+      if (this.rectSettleRaf !== null) return;
+      this.rectSettleRaf = requestAnimationFrame(() => {
+        this.rectSettleRaf = null;
+        this.resize();
+        if (performance.now() < this.rectSettleUntil) pump();
+      });
+    };
+    // 变化那一刻开一个落定窗口，逐帧量到尺寸不再变才停；ResizeObserver 的初次回调也会走进来，
+    // 所以挂在 watch 回调里的首次测量，即使早于本 tick 的布局落定也追得回来
+    const schedule = (): void => {
+      this.rectSettleUntil = performance.now() + RECT_SETTLE_MS;
+      pump();
+    };
+    this.onGeometryChange = schedule;
+    window.addEventListener('resize', schedule);
+    window.addEventListener('orientationchange', schedule);
+    document.addEventListener('fullscreenchange', schedule);
+    window.visualViewport?.addEventListener('resize', schedule);
+    if (typeof ResizeObserver !== 'undefined') {
+      this.rectObserver = new ResizeObserver(schedule);
+      this.rectObserver.observe(canvas);
+    }
+  }
+
+  private teardownGeometry(): void {
+    if (this.rectSettleRaf !== null) {
+      cancelAnimationFrame(this.rectSettleRaf);
+      this.rectSettleRaf = null;
+    }
+    this.rectSettleUntil = 0;
+    const handler = this.onGeometryChange;
+    if (handler !== null) {
+      window.removeEventListener('resize', handler);
+      window.removeEventListener('orientationchange', handler);
+      document.removeEventListener('fullscreenchange', handler);
+      window.visualViewport?.removeEventListener('resize', handler);
+      this.onGeometryChange = null;
+    }
+    if (this.rectObserver !== null) {
+      this.rectObserver.disconnect();
+      this.rectObserver = null;
+    }
+  }
+
   private resize(): void {
     const canvas = this.canvas;
     const ctx = this.ctx;
     if (!canvas || !ctx) return;
     const rect = canvas.getBoundingClientRect();
     const dpr = Math.min(globalThis.devicePixelRatio || 1, 2);
+    const key = `${rect.width}x${rect.height}x${dpr}`;
+    // 落定窗口里每帧都会进来：给 width/height 赋值本身会清空画布，尺寸没变就别白动
+    if (key === this.sizeKey) return;
+    this.sizeKey = key;
     canvas.width = Math.max(1, Math.round(rect.width * dpr));
     canvas.height = Math.max(1, Math.round(rect.height * dpr));
     // 逻辑坐标用 CSS px：绘制时 ctx 已被 dpr 缩放，这里再用设备像素会让弹幕画到屏幕外
