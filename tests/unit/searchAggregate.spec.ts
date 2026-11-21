@@ -3,7 +3,22 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { buildTailSuggestions, countDirectMatches, groupSearchResults, isKeywordIgnored, isNonFeatureContent, normalizeSearchKeyword, scoreRelevance, sortByRelevance, titleDedupKey } from '@/services/searchAggregate';
+import {
+  buildTailSuggestions,
+  countDirectGroupMatches,
+  countDirectItemMatches,
+  countDirectMatches,
+  groupRelevanceScore,
+  groupSearchResults,
+  isKeywordIgnored,
+  isNonFeatureContent,
+  matchesActor,
+  normalizeSearchKeyword,
+  relevanceScoreOf,
+  scoreRelevance,
+  sortByRelevance,
+  titleDedupKey,
+} from '@/services/searchAggregate';
 import type { MediaItem } from '@/types';
 
 function makeItem(overrides: Partial<MediaItem> & { sourceId: string; title: string }): MediaItem {
@@ -305,6 +320,82 @@ describe('isKeywordIgnored（P0-1：源忽略关键词检测）', () => {
       makeItem({ sourceId: 'a', title: `找新影视片 ${String(i).padStart(3, '0')}` }),
     );
     expect(isKeywordIgnored(items, '太阳雨', 15)).toBe(true);
+  });
+});
+
+describe('主演命中（演员搜索）', () => {
+  it('双向包含都认：整词与分词形态都比', () => {
+    expect(matchesActor(['沈腾', '尹正'], '沈腾')).toBe(true);
+    expect(matchesActor(['沈腾'], '飞驰人生 沈腾')).toBe(true);
+    expect(matchesActor(['凯莉·库恩'], '凯莉库恩')).toBe(true);
+    expect(matchesActor(['沈腾'], '三体')).toBe(false);
+  });
+
+  it('单字查询不比演员：门槛按归一化后的长度', () => {
+    expect(matchesActor(['沈腾'], '腾')).toBe(false);
+    expect(matchesActor(['王'], '王刚')).toBe(false);
+  });
+
+  it('季号/年份标注词不参与演员比对', () => {
+    expect(matchesActor(['庆余年'], '庆余年 第三季')).toBe(true);
+    expect(matchesActor(['十月'], '2024 十月')).toBe(true);
+  });
+
+  it('存量缓存没有 actors 字段时不报错', () => {
+    expect(matchesActor(undefined, '沈腾')).toBe(false);
+    expect(matchesActor([], '沈腾')).toBe(false);
+  });
+
+  it('标题档优先，标题完全不沾时主演命中算包含档', () => {
+    const byTitle = makeItem({ sourceId: 'a', title: '沈腾传', actors: ['张三'] });
+    expect(relevanceScoreOf(byTitle, '沈腾')).toBe(3);
+    const byActor = makeItem({ sourceId: 'a', title: '飞驰人生', actors: ['沈腾'] });
+    expect(relevanceScoreOf(byActor, '沈腾')).toBe(2);
+    expect(relevanceScoreOf(makeItem({ sourceId: 'a', title: '三体', actors: ['王佳怡'] }), '沈腾')).toBe(0);
+  });
+
+  it('主演命中计入直接命中，不再误报「没有直接匹配」', () => {
+    const shen = makeItem({ sourceId: 'a', title: '飞驰人生', actors: ['沈腾'] });
+    const jia = makeItem({ sourceId: 'b', title: '热辣滚烫', actors: ['贾玲'] });
+    const three = makeItem({ sourceId: 'c', title: '三体' });
+    expect(countDirectItemMatches([shen, jia, three], '沈腾')).toBe(1);
+    const groups = [
+      { key: 'k1', title: '飞驰人生', year: null, items: [shen] },
+      { key: 'k3', title: '三体', year: null, items: [three] },
+    ];
+    expect(countDirectGroupMatches(groups, '沈腾')).toBe(1);
+    expect(groupRelevanceScore(groups[0]!, '沈腾')).toBe(2);
+    expect(groupRelevanceScore(groups[1]!, '沈腾')).toBe(0);
+  });
+
+  it('P0-1：源按演员返回结果时不再整批判成「源忽略关键词」', () => {
+    const items = Array.from({ length: 20 }, (_, i) =>
+      makeItem({
+        sourceId: 'a',
+        title: `影片${String(i).padStart(2, '0')}`,
+        actors: i === 0 ? ['沈腾'] : ['其他人'],
+      }),
+    );
+    expect(isKeywordIgnored(items, '沈腾', 15)).toBe(false);
+  });
+
+  it('P0-1：目录页冒充结果（演员也不含关键词）仍判忽略，噪声没被放回来', () => {
+    const items = Array.from({ length: 20 }, (_, i) =>
+      makeItem({ sourceId: 'a', title: `找新影视片 ${String(i).padStart(3, '0')}`, actors: ['张三', '李四'] }),
+    );
+    expect(isKeywordIgnored(items, '太阳雨', 15)).toBe(true);
+  });
+
+  it('演员命中的条目不沉到最后（0 分之前）', () => {
+    const sorted = sortByRelevance(
+      [
+        makeItem({ sourceId: 'a', title: '三体' }),
+        makeItem({ sourceId: 'b', title: '飞驰人生', actors: ['沈腾'] }),
+        makeItem({ sourceId: 'c', title: '沈腾的节目' }),
+      ],
+      '沈腾',
+    );
+    expect(sorted.map((item) => relevanceScoreOf(item, '沈腾'))).toEqual([3, 2, 0]);
   });
 });
 

@@ -70,7 +70,9 @@ function go(tab: TabItem): void {
     scrollToTop();
     return;
   }
-  void router.push(tab.to);
+  // Tab 之间不入历史：用 replace 顶掉当前条目。用 push 的话，「首页→下载→我的」之后
+  // 按返回会把我的→下载→首页逐层翻回去——平级 Tab 之间没有"来时页"这层关系。
+  void router.replace(tab.to);
 }
 
 /* ---------- C4：选中态弹簧滑动指示器 ---------- */

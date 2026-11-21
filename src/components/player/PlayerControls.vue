@@ -16,6 +16,7 @@ import { RATE_OPTIONS } from "@/player/constants";
 import { formatPlayerClock } from "@/shared/time";
 
 import SeekBar from "@/components/player/SeekBar.vue";
+import type { RhythmBand } from "@/player/cutRhythm";
 import IconBack from "@/components/icons/IconBack.vue";
 import { useHaptic } from "@/composables/useHaptic";
 
@@ -63,6 +64,12 @@ const props = withDefaults(
       introEndSec: number | null;
       creditsStartSec: number | null;
     } | null;
+    /** G-A03：进度条磁吸强度 0~100（0 = 关闭，与升级前一致） */
+    seekDetent?: number;
+    /** G-A03：进度条一格代表几分之几时长（= 胶片格数；0 = 无分段，不画刻度） */
+    seekCells?: number;
+    /** G-C05：镜头节奏带（null = 没有数据，进度条与升级前一致） */
+    rhythm?: RhythmBand | null;
   }>(),
   {
     epIndex: 0,
@@ -78,6 +85,9 @@ const props = withDefaults(
     skipTargetSec: 0,
     film: null,
     marks: null,
+    seekDetent: 0,
+    seekCells: 0,
+    rhythm: null,
   },
 );
 
@@ -145,6 +155,15 @@ const miniProgress = computed(() =>
     ? Math.min(100, Math.max(0, (props.currentTime / props.duration) * 100))
     : 0,
 );
+
+/**
+ * G-A03：进度条刻度跨界给一次轻触觉，吸附到片头/片尾边界给一次中等触觉。
+ * 触觉留在本组件而不是 SeekBar 里——SeekBar 不依赖 Pinia，现有几何单测才能继续裸挂。
+ * 两档同帧触发时被 useHaptic 的 50ms 节流合成一次，不会叠成"嗡嗡响"。
+ */
+function onSeekDetent(kind: "tick" | "boundary"): void {
+  haptic(kind === "boundary" ? "medium" : "light");
+}
 const miniBuffered = computed(() =>
   props.duration > 0
     ? Math.min(100, Math.max(0, (props.buffered / props.duration) * 100))
@@ -387,8 +406,12 @@ onBeforeUnmount(() => {
           :seek-step="seekStep"
           :film="film"
           :marks="marks"
+          :detent="seekDetent"
+          :cells="seekCells"
+          :rhythm="rhythm"
           @seek="emit('seek', $event)"
           @seeking="emit('seeking', $event)"
+          @detent="onSeekDetent"
         />
       </div>
 

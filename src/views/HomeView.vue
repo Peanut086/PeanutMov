@@ -9,7 +9,7 @@
  * P0-4：「最近添加」读跨源缓存（library.homeRecent，毫秒级、离线可用），
  * 当前源首页由 store 后台预热；本页被 KeepAlive 缓存，回 tab 静默刷新不重闪骨架。
  */
-import { computed, onActivated, ref } from 'vue';
+import { computed, onActivated, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import type { HistoryRecord, MediaItem } from '@/types';
@@ -32,6 +32,14 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useAchievementStore } from '@/stores/achievementStore';
 import { useToast } from '@/composables/useToast';
 import { useHaptic } from '@/composables/useHaptic';
+// G-B08：把「继续观看」的位置变成停在哪儿的那一帧（只认本机已下载成品）
+import {
+  requestResumeFrames,
+  resumeFrameKey,
+  resumeFrameOf,
+  resumeFrameSupported,
+  resumeLocalPathOf,
+} from '@/services/resumeFrameService';
 import { playDing } from '@/services/sfxService';
 import { appEvents } from '@/services/events';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
@@ -74,6 +82,46 @@ const errorMessage = computed(() => localError.value ?? library.homeError?.messa
 
 const continueItems = computed(() => history.continueWatching.slice(0, 10));
 const recentItems = computed(() => library.homeRecent);
+
+/* ---------- 继续观看「停在哪儿」的那一帧（G-B08） ----------
+ * 只有本机已下载的成品能出帧：在线源没有可随机读的容器。
+ * 抽不出就继续显示海报——海报是"这部片子的封面"，冒充续播画面是"你没看到这里"。
+ * 判定（哪条历史对应哪个成品文件）在 `resumeLocalPathOf`，这里只做编排。
+ */
+
+/** 历史 id → 那一帧；只在服务真的写过缓存时重算（版本计数在服务里） */
+const resumeFrames = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {};
+  if (!resumeFrameSupported()) return map;
+  for (const rec of continueItems.value) {
+    const path = resumeLocalPathOf(rec, downloads.tasks);
+    if (!path) continue;
+    const frame = resumeFrameOf(resumeFrameKey(path, rec.positionSec));
+    if (frame) map[rec.id] = frame;
+  }
+  return map;
+});
+
+/**
+ * 历史或下载状态一变就补帧（服务自己幂等、单轮截上限）。
+ * 指纹里带上 `positionSec`：看完一集回首页时位置变了，才会补新帧而不是复用旧帧。
+ */
+watch(
+  () =>
+    continueItems.value
+      .map((rec) => `${rec.id}:${rec.positionSec}:${resumeLocalPathOf(rec, downloads.tasks) ?? ''}`)
+      .join('|'),
+  () => {
+    if (!resumeFrameSupported()) return;
+    requestResumeFrames(
+      continueItems.value.flatMap((rec) => {
+        const path = resumeLocalPathOf(rec, downloads.tasks);
+        return path ? [{ path, positionSec: rec.positionSec }] : [];
+      }),
+    );
+  },
+  { immediate: true },
+);
 
 /** 首页网格：取前 12 条，避免一次性渲染过多 */
 const recentRow = computed(() => recentItems.value.slice(0, 12));
@@ -311,6 +359,7 @@ async function onPullRefresh(): Promise<void> {
           </div>
           <ContinueWatchingRow
             :items="continueItems"
+            :frames="resumeFrames"
             compact
             @select="continuePlay"
             @remove="removeContinue"

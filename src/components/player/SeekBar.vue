@@ -8,10 +8,15 @@
  * - 拖动/hover 时在指针位置上方显示帧预览 + 时间
  * - A-03：给了 `film` 就铺跟手胶片，当前格放大描边；没给则只有时间气泡
  * - `role="slider"` + aria-valuetext
+ * - G-A03：`magnet` 决定磁吸强度（0 = 关掉一切新行为）。开启后轨面上铺一格一刻度，
+ *   拖动跨过格界发一次 `detent`，靠近片头/片尾边界则把预览值吸到边界上
+ *
+ * 本组件刻意不依赖 Pinia（触觉通过 `detent` 事件交给宿主），保持纯几何 + 纯呈现。
  */
 import { computed, ref } from "vue";
 
 import { formatPlayerClock } from "@/shared/time";
+import type { RhythmBand } from "@/player/cutRhythm";
 
 const props = withDefaults(
   defineProps<{
@@ -36,13 +41,33 @@ const props = withDefaults(
       introEndSec: number | null;
       creditsStartSec: number | null;
     } | null;
+    /**
+     * G-A03：磁吸强度 0~100。**0 = 一切新行为不启用**（不画刻度、不吸附、不发事件），
+     * 与升级前逐字节一致；组件默认取 0，是否跟随设置由宿主决定。
+     */
+    detent?: number;
+    /**
+     * G-A03：一格代表多少份时长（= 胶片格数）。0/1 表示没有可用分段，不画刻度。
+     * 刻度本身只是视觉与触觉提示，绝不参与 seek 取值。
+     */
+    cells?: number;
+    /**
+     * G-C05：镜头节奏带（每集一条，数据来自弹幕智能配色那张亮度场）。
+     * `null` = 还没有足够数据，轨面与升级前逐像素一致。
+     */
+    rhythm?: RhythmBand | null;
   }>(),
-  { buffered: 0, disabled: false, seekStep: 10, film: null, marks: null },
+  { buffered: 0, disabled: false, seekStep: 10, film: null, marks: null, detent: 0, cells: 0, rhythm: null },
 );
 
 const emit = defineEmits<{
   (e: "seek", sec: number): void;
   (e: "seeking", sec: number): void;
+  /**
+   * G-A03：吸附/跨界反馈。触觉交给宿主做（本组件不碰 Pinia，现有几何单测因此不受影响）。
+   * `tick` = 拖过一格刻度（位置不变）；`boundary` = 被吸到片头/片尾边界（位置已改）。
+   */
+  (e: "detent", kind: "tick" | "boundary", label: string): void;
 }>();
 
 const trackRef = ref<HTMLElement | null>(null);
@@ -203,6 +228,139 @@ const filmStripStyle = computed(() => {
   };
 });
 
+/* ---------- G-A03 刻度与磁吸 ---------- */
+
+/** 吸附半径上限（px，强度 100% 时）：再大就成了"抢指针"，看起来像进度条坏了 */
+const DETENT_RADIUS_PX = 16;
+
+const detentLevel = computed(() => clamp(props.detent, 0, 100) / 100);
+/** 磁吸是否生效：0 档时下面所有分支都短路，进度条回到升级前的行为 */
+const detentActive = computed(
+  () => detentLevel.value > 0 && !props.disabled && safeDuration.value > 0,
+);
+
+/** 一格代表多少秒（0 = 没有可用分段，不画刻度） */
+const cellSec = computed(() =>
+  detentActive.value && props.cells > 1
+    ? safeDuration.value / props.cells
+    : 0,
+);
+
+/** 刻度线位置（百分比）：两端不画，区间端点已由 zone-edge 表达 */
+const tickPercents = computed(() => {
+  const count = detentActive.value ? props.cells : 0;
+  if (count <= 1) return [] as number[];
+  return Array.from(
+    { length: count - 1 },
+    (_, index) => ((index + 1) / count) * 100,
+  );
+});
+
+/** 可吸附的边界：与 zones 共用同一套越界过滤，绝不吸到没画出来的位置上 */
+const boundaryTargets = computed(() => {
+  const out: { label: string; sec: number }[] = [];
+  if (!detentActive.value) return out;
+  const { intro, credits } = validMarks.value;
+  if (intro !== null) out.push({ label: "片头结束", sec: intro });
+  if (credits !== null) out.push({ label: "片尾开始", sec: credits });
+  return out;
+});
+
+/** 当前吸附到的边界名（空串 = 没吸附），同时驱动气泡旁的标签与一次中等触觉 */
+const snappedLabel = ref("");
+
+/* ---------- G-C05 镜头节奏带 ---------- */
+
+const rhythmBars = computed(() => props.rhythm?.values ?? []);
+const peakBins = computed(() => new Set(props.rhythm?.peaks ?? []));
+/**
+ * 带子只在有数据、能算比例、且没禁用时出现。
+ *
+ * 判"能不能画"用的是父级给没给 `rhythm`（它已经替我把"格数够不够"这一步做掉了），
+ * 这里不再重复一套阈值——两处阈值迟早会算出两个答案。
+ */
+const showRhythm = computed(
+  () =>
+    !props.disabled &&
+    safeDuration.value > 0 &&
+    props.rhythm !== null &&
+    rhythmBars.value.length > 0,
+);
+
+/**
+ * 一格的高度。
+ *
+ * 没有数据的格留 100% 高但透明，让容器那道斜纹透出来——"没看过"必须和"很平"长得不一样。
+ * 有数据的格最低 8%，纯 0 会消失成一道缝，看起来像漏画。
+ */
+function barHeight(value: number): string {
+  if (!Number.isFinite(value)) return "100%";
+  return `${Math.round(clamp(value, 0.08, 1) * 100)}%`;
+}
+
+/** 指针（拖动优先，其次 hover）落在第几格 */
+const pointerBin = computed(() => {
+  const count = rhythmBars.value.length;
+  if (!showRhythm.value || count === 0) return -1;
+  const ratio =
+    dragging.value
+      ? percent.value / 100
+      : clamp((hoverPercent.value ?? 0) / 100, 0, 1);
+  return Math.min(count - 1, Math.max(0, Math.floor(ratio * count)));
+});
+
+/** 指针压住换镜点时说一句——点击本身走原来的命中层，不再加一套手势 */
+const peakLabel = computed(() =>
+  pointerBin.value >= 0 && peakBins.value.has(pointerBin.value)
+    ? "换镜密集点"
+    : "",
+);
+
+/** 上一次落在第几格：跨界只认"变了没有"，起步那一格不算跨界 */
+let lastCellIndex = -1;
+
+function resetDetentState(): void {
+  lastCellIndex = -1;
+  snappedLabel.value = "";
+}
+
+/**
+ * 把指针位置换算成最终预览值。
+ *
+ * 边界吸附会改值（"拖到片头附近"的意图就是"到片头结束"），刻度**只发事件不改值**：
+ * 一格约 5% 时长，按格取整会直接把 AC-43 的 ≤2s 精度要求打穿。
+ */
+function applyDetent(rawSec: number): number {
+  if (!detentActive.value || trackWidth.value <= 0) return rawSec;
+  const total = safeDuration.value;
+  const radiusSec =
+    ((DETENT_RADIUS_PX * detentLevel.value) / trackWidth.value) * total;
+  const hit = boundaryTargets.value.find(
+    (item) => Math.abs(rawSec - item.sec) <= radiusSec,
+  );
+  if (hit) {
+    if (snappedLabel.value !== hit.label) emit("detent", "boundary", hit.label);
+    snappedLabel.value = hit.label;
+    return hit.sec;
+  }
+  snappedLabel.value = "";
+  const step = cellSec.value;
+  if (step > 0) {
+    const index = Math.min(
+      props.cells - 1,
+      Math.max(0, Math.floor(rawSec / step)),
+    );
+    if (lastCellIndex >= 0 && index !== lastCellIndex) emit("detent", "tick", "");
+    lastCellIndex = index;
+  }
+  return rawSec;
+}
+
+/** 指针像素 → 秒（含磁吸）：按下 / 移动 / 松手三条路径必须同源，否则"看到的不是得到的" */
+function seekSecAt(clientX: number): number {
+  return applyDetent(positionToSec(clientX));
+}
+
 function clamp(v: number, min: number, max: number): number {
   if (!Number.isFinite(v)) return min;
   return Math.min(max, Math.max(min, v));
@@ -231,7 +389,8 @@ function positionToPercent(clientX: number): number {
 function onPointerDown(ev: PointerEvent): void {
   if (props.disabled || safeDuration.value <= 0) return;
   dragging.value = true;
-  previewSec.value = positionToSec(ev.clientX);
+  resetDetentState();
+  previewSec.value = seekSecAt(ev.clientX);
   emit("seeking", previewSec.value);
   (ev.currentTarget as HTMLElement).setPointerCapture?.(ev.pointerId);
 }
@@ -240,16 +399,17 @@ function onPointerMove(ev: PointerEvent): void {
   // hover 预览（无论是否拖动都更新位置）
   hoverPercent.value = positionToPercent(ev.clientX);
   if (!dragging.value) return;
-  previewSec.value = positionToSec(ev.clientX);
+  previewSec.value = seekSecAt(ev.clientX);
   emit("seeking", previewSec.value);
 }
 
 function onPointerUp(ev: PointerEvent): void {
   if (!dragging.value) return;
   dragging.value = false;
-  const target = positionToSec(ev.clientX);
+  const target = seekSecAt(ev.clientX);
   previewSec.value = target;
   emit("seek", target);
+  resetDetentState();
 }
 
 function onPointerLeave(): void {
@@ -342,9 +502,41 @@ const ariaText = computed(
           <span class="seekbar__bubble-text">{{
             formatPlayerClock(bubbleSec)
           }}</span>
+          <!-- G-A03：吸附到的边界名，让"停在 01:30"读起来是落点而不是卡住 -->
+          <span v-if="snappedLabel" class="seekbar__snap">{{
+            snappedLabel
+          }}</span>
+          <!-- G-C05：指针压住换镜点时把"这一秒是剪得最碎的段落之一"说出来 -->
+          <span v-if="peakLabel && !snappedLabel" class="seekbar__snap seekbar__snap--peak">{{
+            peakLabel
+          }}</span>
           <span class="seekbar__bubble-arrow" aria-hidden="true" />
         </div>
       </Transition>
+
+      <!-- G-A03 刻度：纯装饰层，pointer-events 关掉，绝不影响命中区与 seek 取值 -->
+      <div v-if="tickPercents.length > 0" class="seekbar__ticks" aria-hidden="true">
+        <span
+          v-for="tick in tickPercents"
+          :key="tick"
+          class="seekbar__tick"
+          :style="{ left: `${tick}%` }"
+        />
+      </div>
+
+      <!-- G-C05 节奏带：铺在轨道上方的装饰层，pointer-events 关掉；点它等于点进度条同一秒 -->
+      <div v-if="showRhythm" class="seekbar__rhythm" aria-hidden="true">
+        <span
+          v-for="(value, index) in rhythmBars"
+          :key="index"
+          class="seekbar__rhythm-bar"
+          :class="{
+            'seekbar__rhythm-bar--peak': peakBins.has(index),
+            'seekbar__rhythm-bar--blank': !Number.isFinite(value),
+          }"
+          :style="{ height: barHeight(value) }"
+        />
+      </div>
 
       <div class="seekbar__track">
         <div class="seekbar__buffered" :style="{ '--p': bufferedScale }" />
@@ -548,6 +740,98 @@ const ariaText = computed(
   width: 1px;
   background: var(--ov-solid, #ffffff);
   opacity: 0.4;
+}
+
+/* ---------- G-A03 刻度与吸附 ---------- */
+
+/* 铺在命中带里但 pointer-events 关闭：只负责"看得出有几格"，不参与任何手势 */
+.seekbar__ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* 9px 齿 vs 4px 轨面：轨道再细也数得清格数 */
+.seekbar__tick {
+  position: absolute;
+  top: 50%;
+  width: 1px;
+  height: 9px;
+  background: var(--ov-solid, #ffffff);
+  opacity: 0.22;
+  transform: translateY(-50%);
+}
+
+.seekbar__snap {
+  font: var(--t-12, 400 12px / 16px var(--font-family-base));
+  color: var(--brand, #f0a82e);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  animation: seekbar-snap-pop var(--d-fast, 150ms)
+    var(--ease, cubic-bezier(0.2, 0, 0, 1));
+}
+
+/* 终态就是无动画态：减弱动效下全局把 duration 压到 0，元素照样完整可见 */
+@keyframes seekbar-snap-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-3px) scale(0.9);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---------- G-C05 镜头节奏带 ---------- */
+
+/* 轨道上方 9px 的一条：贴在命中带自身的留白里，既不压轨面也不越到时间行 */
+.seekbar__rhythm {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(50% + 4px);
+  height: 9px;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  pointer-events: none;
+}
+
+/* 斜纹垫底 = "这一段还没播过"；柱子盖在它上面 = "读过了" */
+.seekbar__rhythm::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+  opacity: 0.45;
+  background: repeating-linear-gradient(
+    115deg,
+    var(--ov-hatch, rgba(255, 255, 255, 0.22)) 0 1px,
+    transparent 1px 5px
+  );
+}
+
+.seekbar__rhythm-bar {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 1px;
+  background: var(--ov-track, rgba(255, 255, 255, 0.16));
+}
+
+/* 换镜点：全条最响的几格，用品牌色点出来，扫一眼就知道该往哪儿跳 */
+.seekbar__rhythm-bar--peak {
+  background: var(--brand, #f0a82e);
+}
+
+.seekbar__rhythm-bar--blank {
+  background: transparent;
+}
+
+.seekbar__snap--peak {
+  opacity: 0.85;
 }
 
 /* ---------- 滑块：视觉 12 → 拖动 16 / hover 14，只改 scale ---------- */

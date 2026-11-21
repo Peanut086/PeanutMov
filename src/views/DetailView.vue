@@ -38,6 +38,15 @@ import { useSourceStore } from '@/stores/sourceStore';
 import { useCacheStore } from '@/stores/cacheStore';
 import { useUiStore } from '@/stores/uiStore';
 import { castService } from '@/services/castService';
+import { finalFilePathOf } from '@/services/downloadService';
+// G-B07 选集胶片墙：本页只提供"可抽的集"，抽帧与缓存在服务里
+import {
+  episodeFilmOf,
+  episodeFilmSupported,
+  episodeFilmWaiting,
+  requestEpisodeFilms,
+  type EpisodeFilmTarget,
+} from '@/services/episodeFilmService';
 import { libraryService } from '@/services/libraryService';
 import { playabilityService } from '@/services/playabilityService';
 import { lineHealthService, lineKey } from '@/services/lineHealthService';
@@ -328,6 +337,85 @@ const downloadedIds = computed(() => {
     .filter((t) => t.mediaId === it.id && t.status === 'completed')
     .map((t) => t.episodeId);
 });
+
+/* ---------- 选集「胶片墙」（G-B07） ----------
+ * 排布开关在本页，抽帧在 `episodeFilmService`：本页只负责说"哪些集可以抽"，
+ * 不决定抽不抽、也不决定什么时候抽完。
+ */
+
+/** 只记这一个开关，不塞进 `AppSettings`（持久化结构改动牵连升级与设置页，代价不对等） */
+const FILM_MODE_KEY = 'detail.episodeFilm';
+
+function readFilmMode(): boolean {
+  try {
+    return localStorage.getItem(FILM_MODE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+const filmMode = ref(readFilmMode());
+
+/**
+ * 能上墙的集：下载完成 + 落盘成文件 + 时长已知，三者缺一不可。
+ *
+ * blob sink 没有可随机读的文件；时长不知道就不知道该取哪一帧；
+ * 而"抽一帧画面"只对本机文件成立（在线源要靠雪碧图，本批次不做）。
+ * 所以没下载的集在胶片墙里一定是空格子——这是事实，不是缺陷。
+ */
+const filmTargets = computed<EpisodeFilmTarget[]>(() => {
+  const it = item.value;
+  if (!it) return [];
+  // 时长从整部剧（所有线路）里查：下载任务可能属于另一条线路
+  const all = detail.value?.episodes ?? [];
+  const out: EpisodeFilmTarget[] = [];
+  for (const task of downloads.tasks) {
+    if (task.mediaId !== it.id || task.status !== 'completed' || task.sink !== 'filesystem') continue;
+    const seconds = all.find((ep) => ep.id === task.episodeId)?.durationSec ?? 0;
+    if (!(seconds > 0)) continue;
+    const path = finalFilePathOf(task);
+    if (path) out.push({ episodeId: task.episodeId, path, durationSec: seconds });
+  }
+  return out;
+});
+
+/** 至少两集才值得切换排布：单集切过去只有一格，比数字芯片更空 */
+const filmEligible = computed(() => filmTargets.value.length > 1 && episodeFilmSupported());
+
+/** 集 → 画面。缓存写入时 `strips` 自身会触发这里重算，不需要额外的版本信号 */
+const filmFrames = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {};
+  for (const target of filmTargets.value) {
+    const frame = episodeFilmOf(target.path)[0];
+    if (frame) map[target.episodeId] = frame;
+  }
+  return map;
+});
+
+const filmWaiting = computed<string[]>(() =>
+  filmTargets.value.filter((target) => episodeFilmWaiting(target.path)).map((target) => target.episodeId),
+);
+
+/**
+ * 开关打开、或下载状态变化时补排队（幂等：抽过的集直接跳过，一轮最多 24 格）。
+ * 关掉开关就不抽——没人在看的画面不该占解码闸门。
+ */
+watch(
+  () => `${filmMode.value}|${filmTargets.value.map((t) => `${t.episodeId}:${t.path}`).join('|')}`,
+  () => {
+    if (filmMode.value) requestEpisodeFilms(filmTargets.value);
+  },
+  { immediate: true },
+);
+
+function toggleFilmMode(): void {
+  filmMode.value = !filmMode.value;
+  try {
+    localStorage.setItem(FILM_MODE_KEY, filmMode.value ? '1' : '0');
+  } catch {
+    /* 写不进去（隐私模式等）只是记不住选择，不影响本页 */
+  }
+}
 
 const downloading = ref(false);
 /** 播放前置预检进行中（AC-33①）：阻止重复点击 */
@@ -1212,8 +1300,8 @@ function openCompliance(): void {
             />
           </div>
 
-          <!-- 常驻来源切换入口 -->
-          <div class="detail-source-row">
+          <!-- 常驻来源切换入口（右侧是选集排布开关，只在能出胶片时出现） -->
+          <div class="detail-source-row row row--between">
             <button class="detail-source-btn" type="button" @click="openSourceSheet(false)">
               <span class="detail-source-btn__name">
                 来源：{{ currentSourceName }}
@@ -1223,6 +1311,15 @@ function openCompliance(): void {
               </span>
               <span v-else class="detail-source-btn__hint">切换</span>
               <IconChevron :size="14" />
+            </button>
+            <button
+              v-if="filmEligible"
+              class="film-switch"
+              type="button"
+              :aria-pressed="filmMode"
+              @click="toggleFilmMode"
+            >
+              {{ filmMode ? '数字' : '胶片墙' }}
             </button>
           </div>
 
@@ -1239,6 +1336,9 @@ function openCompliance(): void {
               :unavailable-ids="unavailableIds"
               :playing-navigate="prechecking || playingNavigate"
               :resolving-id="resolvingEpisodeId"
+              :film="filmMode && filmEligible"
+              :film-frames="filmFrames"
+              :film-waiting="filmWaiting"
               @select="onEpisodeSelect"
               @unavailable="toast.error('该集暂无可播放地址')"
               @playing="onPlayingBlocked"
@@ -1993,6 +2093,38 @@ function openCompliance(): void {
 .detail-source-row {
   margin-top: var(--space-3);
   margin-bottom: var(--space-2);
+}
+
+/* 胶片墙开关（G-B07）：小药丸，靠右，不与来源按钮抢宽度 */
+.film-switch {
+  position: relative;
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-height: 34px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border-subtle);
+  background-color: transparent;
+  color: var(--color-text-secondary);
+  font: var(--text-label);
+  cursor: pointer;
+  transition: var(--transition-color);
+}
+
+/* 视觉 34，命中区补到 44（规范 §12.1） */
+.film-switch::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+}
+
+.film-switch:active {
+  background-color: var(--color-bg-pressed);
+}
+
+.film-switch[aria-pressed='true'] {
+  color: var(--color-brand);
+  border-color: var(--color-brand);
 }
 
 .detail-source-btn {

@@ -47,6 +47,7 @@ import PlayerSurface from "@/components/player/PlayerSurface.vue";
 import PlayerControls from "@/components/player/PlayerControls.vue";
 import PlayerDrawer from "@/components/player/PlayerDrawer.vue";
 import GestureLayer from "@/components/player/GestureLayer.vue";
+import PinchResizeHud from "@/components/player/PinchResizeHud.vue";
 import GestureGuide from "@/components/player/GestureGuide.vue";
 import GestureHelpOverlay from "@/components/player/GestureHelpOverlay.vue";
 import PlayerHud from "@/components/player/PlayerHud.vue";
@@ -57,6 +58,8 @@ import AudioTrackMenu from "@/components/player/AudioTrackMenu.vue";
 import QualitySheet from "@/components/player/QualitySheet.vue";
 import DisplayModeSheet from "@/components/player/DisplayModeSheet.vue";
 import SkipMarkSheet from "@/components/player/SkipMarkSheet.vue";
+import PostcardSheet from "@/components/player/PostcardSheet.vue";
+import ShareCodeSheet from "@/components/player/ShareCodeSheet.vue";
 import SleepTimerSheet from "@/components/player/SleepTimerSheet.vue";
 import PlayerErrorPanel from "@/components/player/PlayerErrorPanel.vue";
 import PlayerScreenLock from "@/components/player/PlayerScreenLock.vue";
@@ -80,9 +83,12 @@ import { useBackButton } from "@/composables/useBackButton";
 import { useDebounce } from "@/composables/useDebounce";
 import { usePlayerController } from "@/composables/usePlayerController";
 import { useSeekThumbnails } from "@/composables/useSeekThumbnails";
+import { playEpisodeLeader } from "@/composables/useEpisodeLeader";
+import { usePinchResize } from "@/composables/usePinchResize";
 import { useSkipIntro } from "@/composables/useSkipIntro";
 import { useDanmakuPick } from "@/composables/useDanmakuPick";
 import { useDanmakuContrast } from "@/composables/useDanmakuContrast";
+import { useCutRhythm } from "@/composables/useCutRhythm";
 import { prefersReducedMotion } from "@/composables/useSpring";
 import type { AmbilightBlockReason } from "@/composables/useAmbilight";
 import {
@@ -139,7 +145,7 @@ import {
   peekBlackbox,
   type BlackboxSnapshot,
 } from "@/services/blackboxService";
-import { buildShareText } from "@/services/shareCodeService";
+import { buildShareText, type ShareCodePayload } from "@/services/shareCodeService";
 import { sourceService } from "@/services/sourceService";
 import {
   downloadService,
@@ -511,6 +517,7 @@ const PLAYER_FALLBACK: PlayerSettings = {
   lastVolume: 100,
   resizeMode: "contain",
   autoSkipIntro: true,
+  seekDetent: 60,
   ambilight: true,
   ambilightIntensity: 85,
 };
@@ -555,6 +562,8 @@ const ambilightEnabled = computed(
 const ambilightIntensity = computed(
   () => playerSettings.value.ambilightIntensity ?? 85,
 );
+/** G-A03：进度条磁吸强度（0 = 关闭，拖动行为与该功能上线前一致） */
+const seekDetent = computed(() => playerSettings.value.seekDetent ?? 60);
 
 const stageRef = ref<HTMLElement | null>(null);
 
@@ -819,6 +828,8 @@ const drawerOpen = ref(false);
 const drawerTab = ref<DrawerTab>("ep");
 /** 同一页签再点一次即收起（顶栏 chip、底栏按钮与 fold 磁贴都走这里） */
 function openDrawer(tab: DrawerTab): void {
+  // 错误层(37)压在抽屉(30)上面，此时打开等于摆一个点不动的面板（连它的关闭键都在遮罩下）
+  if (chromeState.value === "error") return;
   if (drawerOpen.value && drawerTab.value === tab) {
     drawerOpen.value = false;
     return;
@@ -908,6 +919,13 @@ const seekThumbs = useSeekThumbnails(
 const seekPreviewUrl = ref<string | null>(null);
 /** 进度条上的胶片（模板里直接用，顶层 ref 会自动解包） */
 const seekFilm = seekThumbs.slots;
+/**
+ * G-A03：刻度格数就用胶片格数——同一套分段，画出来的齿和胶片对得上。
+ * 在线源一帧都取不到，格数给 0 就是不画假刻度，只保留片头/片尾吸附。
+ */
+const seekCells = computed(() =>
+  seekThumbs.enabled.value ? seekThumbs.count : 0,
+);
 /** 松手后的收口锚点：null 表示当前还在拖，不做到位判断 */
 let previewHoldSec: number | null = null;
 let previewHoldTimer: ReturnType<typeof setTimeout> | null = null;
@@ -954,6 +972,31 @@ watch(
     if (Math.abs(sec - previewHoldSec) <= 2) clearSeekPreview();
   },
 );
+
+/* ---------- G-C04 一帧明信片 ---------- */
+
+const postcardOpen = ref(false);
+
+/** 元信息一行：年份 · 地区 · 首个类型；缺项跳过，不留「· · 」这种空档 */
+const postcardMeta = computed(() => {
+  const it = item.value;
+  if (!it) return null;
+  const parts = [it.year ? String(it.year) : null, it.area || null, it.genres?.[0] || null];
+  return parts.filter(Boolean).join(" · ") || null;
+});
+
+/** 只有一集（电影/正片）不写集号，票根上留空更干净 */
+const postcardEpisodeLabel = computed(() => {
+  if (episodes.value.length <= 1) return null;
+  const n = playingIdentity.value?.episodeNumber ?? null;
+  return n === null ? null : `第 ${n} 集`;
+});
+
+/** 抽帧只认本机成品文件，与 A-03 进度条胶片同一判断（blob sink 没有可随机读的容器） */
+const postcardLocalPath = computed(() => {
+  const source = currentPlayback.value;
+  return source?.isLocal && source.localPath ? source.localPath : null;
+});
 
 /* ---------- 跳过片头 / 片尾（B-06） ---------- */
 
@@ -2570,39 +2613,47 @@ async function copyError(): Promise<void> {
 }
 
 /**
- * SHARE-CODE：生成观影口令。
+ * SHARE-CODE：生成观影口令（G-C10 起带票根卡）。
  * 纯元数据（片名/年份/集号/时间点），不含任何播放地址、源或订阅——
  * 对方能否看到取决于其自有订阅，分享的是「坐标」，不是「资源」。
+ *
+ * 弹层里的「保存票根」取代了原来的纯文字系统分享：同一个分享面板，现在多带一张卡，
+ * 而复制与卡上印的那串文本同源于 `buildShareText`，协议没有为卡片改动过任何字节。
  */
-async function shareWatchCode(): Promise<void> {
+const shareCodeOpen = ref(false);
+/** 打开弹层那一刻拍下坐标：播放还在走，口令不该跟着漂 */
+const shareCodePayload = ref<ShareCodePayload | null>(null);
+const shareCodeText = computed(() =>
+  shareCodePayload.value ? buildShareText(shareCodePayload.value) : "",
+);
+
+function openShareCode(): void {
   const it = item.value;
   if (!it) return;
-  const identity = playingIdentity.value;
-  const payload = {
+  shareCodePayload.value = {
     title: it.title,
     year: it.year ?? null,
     // 单集内容（电影/正片）不带集号；多线路长剧才需要定位到集
     episodeNumber:
-      episodes.value.length <= 1 ? null : (identity?.episodeNumber ?? null),
+      episodes.value.length <= 1
+        ? null
+        : (playingIdentity.value?.episodeNumber ?? null),
     positionSec: Math.floor(player.currentTime || 0),
   };
-  const text = buildShareText(payload);
   drawerOpen.value = false;
+  shareCodeOpen.value = true;
+}
+
+async function copyShareCode(): Promise<void> {
+  const text = shareCodeText.value;
+  shareCodeOpen.value = false;
+  if (!text) return;
   try {
-    if (typeof navigator.share === "function") {
-      await navigator.share({ title: it.title, text });
-      return;
-    }
-    throw new Error("no-share-target");
-  } catch (e) {
-    // 系统分享面板取消不算失败；无分享面板/失败退回剪贴板
-    if (e instanceof DOMException && e.name === "AbortError") return;
-    try {
-      await navigator.clipboard.writeText(text);
-      toast.success("观影口令已复制，粘到对方的搜索框即可续上");
-    } catch {
-      toast.info(text, 8000);
-    }
+    await navigator.clipboard.writeText(text);
+    toast.success("观影口令已复制，粘到对方的搜索框即可续上");
+  } catch {
+    // 剪贴板被系统拒了（无焦点/无权限）：把文本原样摊出来，用户还能手选
+    toast.info(text, 8000);
   }
 }
 
@@ -2630,6 +2681,29 @@ function onDisplayModeSelect(mode: ResizeMode): void {
     player: { ...playerSettings.value, resizeMode: mode },
   });
 }
+
+/**
+ * G-A09：双指捏合切画幅。捏的过程中实时换档（只换档才发一次到引擎），
+ * 抬手后弹簧吸附到最近一档并落盘；中途被打断则还原档位且不落盘。
+ */
+const pinchResizeEnabled = computed(
+  () => playerSettings.value.pinchResizeEnabled !== false,
+);
+const {
+  visible: pinchHudVisible,
+  pos: pinchPos,
+  mode: pinchMode,
+  onSample: onPinchSample,
+  onEnd: onPinchEnd,
+} = usePinchResize({
+  currentMode: () => currentResizeMode.value,
+  apply: (mode) => setResizeMode(mode),
+  commit: (mode) =>
+    settings.updateNonBlocking({
+      player: { ...playerSettings.value, resizeMode: mode },
+    }),
+  onShift: () => haptic("light"),
+});
 
 function setAmbilight(on: boolean): void {
   settings.updateNonBlocking({
@@ -2667,6 +2741,15 @@ function onAmbilightBlocked(reason: AmbilightBlockReason): void {
 function chooseEpisode(ep: Episode): void {
   drawerOpen.value = false;
   if (ep.id === currentEpisode.value?.id) return;
+  /*
+   * G-A06：过片幕布在路由替换**前**触发。播放页整页重建，旧实例的 DOM 留不到新帧上，
+   * 所以状态交给模块级（见 useEpisodeLeader），渲染层在 App 壳里。
+   * 只演一次视觉：不换集音轨——连播时这声「啪」会盖住正在播的台词，代价大于惊喜。
+   */
+  if (settings.easterEggsEnabled) {
+    playEpisodeLeader(ep.number);
+    haptic("light");
+  }
   void router.replace({
     name: "player",
     params: { mediaId: mediaId.value, episodeId: ep.id },
@@ -3056,6 +3139,9 @@ const danmakuAutoContrast = computed(
   () => danmakuSettings.value.autoContrast !== false,
 );
 
+/** G-C05：节奏带的记账层（数据由下面 useDanmakuContrast 的 onField 递进来） */
+const cutRhythm = useCutRhythm();
+
 const { blocked: danmakuContrastBlocked } = useDanmakuContrast({
   overlay: danmakuOverlay,
   stage: stageRef,
@@ -3064,6 +3150,23 @@ const { blocked: danmakuContrastBlocked } = useDanmakuContrast({
   resizeMode: currentResizeMode,
   // 暂停时画面不会自己变，不必白取帧
   isPlaying: () => player.playing || player.waiting,
+  // G-C05：节奏带蹭这一条取样路（自己再开一条等于给播放加一份过桥抓帧的负担）
+  onField: (field) => cutRhythm.sample(field, player.currentTime, player.duration),
+});
+
+/**
+ * G-C05：镜头节奏带。
+ *
+ * 原料是智能配色那张亮度场，所以取样路一关就必须连数据一起收掉——留着上一段的格子
+ * 给这一集画一张"很平"的节奏，比不画更误导。
+ */
+const rhythmBandOn = computed(
+  () => danmakuAutoContrast.value && danmakuSettings.value.rhythmBand !== false,
+);
+const rhythmBandData = computed(() => (rhythmBandOn.value ? cutRhythm.band.value : null));
+
+watch(rhythmBandOn, (on) => {
+  if (!on) cutRhythm.reset();
 });
 
 // 播放进度驱动弹幕时间轴（store.currentTime 由 timeupdate 事件更新）
@@ -3083,7 +3186,11 @@ watch(
 // 切集重新匹配弹幕
 watch(
   () => currentEpisode.value?.id,
-  () => void loadDanmaku(),
+  () => {
+    // 节奏属于这一集：不换集会拿上一集的格子给这一集画一条假曲线
+    cutRhythm.reset();
+    void loadDanmaku();
+  },
 );
 
 /* ---------- B-04：点中弹幕 → 冻结它 + 头顶出操作条 ---------- */
@@ -3188,6 +3295,15 @@ const chromeState = computed<
   if (player.playing) return "playing";
   return "paused";
 });
+
+/* 进错误态先收掉抽屉：错误层挂在壳层且压在抽屉上面（37 > 30），留着抽屉就等于留一块
+   看得见、点不动的死面板。与 toggleScreenLock 里那句「锁屏必须关抽屉」同理。 */
+watch(
+  () => chromeState.value === "error",
+  (showing) => {
+    if (showing) drawerOpen.value = false;
+  },
+);
 
 /* ---------- B4：横屏屏幕锁（防误触） ---------- */
 const screenLocked = ref(false);
@@ -3678,8 +3794,19 @@ onBeforeUnmount(() => {
               :seek-max-sec="gestureSettings.seekMaxSec"
               :sensitivity="gestureSettings.sensitivity"
               :long-press-help-enabled="gestureHelpEnabled"
+              :pinch="pinchResizeEnabled"
+              :pinch-start-mode="currentResizeMode"
               @intent="onStageIntent"
               @pointer-down="onGesturePointerDown"
+              @pinch-sample="onPinchSample"
+              @pinch-end="onPinchEnd"
+            />
+
+            <!-- G-A09：捏合时的画幅尺（纯呈现，不吃指针） -->
+            <PinchResizeHud
+              v-if="pinchHudVisible"
+              :pos="pinchPos"
+              :mode="pinchMode"
             />
 
             <!-- P1-1：手势引导（首次进入自动显示） -->
@@ -3687,6 +3814,7 @@ onBeforeUnmount(() => {
               v-if="
                 !pageLoading && !loadError && !player.error && !screenLocked
               "
+              :pinch-enabled="pinchResizeEnabled"
             />
 
             <PlayerHud
@@ -3724,6 +3852,9 @@ onBeforeUnmount(() => {
               :skip-target-sec="skipTargetSec"
               :film="seekFilm"
               :marks="skipMarks"
+              :seek-detent="seekDetent"
+              :seek-cells="seekCells"
+              :rhythm="rhythmBandData"
               @back="goBack"
               @toggle-play="togglePlay"
               @prev="goToPrevEpisode"
@@ -3792,102 +3923,6 @@ onBeforeUnmount(() => {
                 >
                   取消
                 </button>
-              </div>
-            </div>
-
-            <!-- 错误面板 -->
-            <PlayerErrorPanel
-              v-if="player.error && !pageLoading"
-              :error="player.error"
-              :can-switch-line="
-                lines.length > 1 && currentPlayback?.isLocal !== true
-              "
-              :can-switch-source="canSwitchSourceManual"
-              :can-health-check="canHealthCheck"
-              :can-redownload="localStallTaskId !== null"
-              @retry="retryPanel"
-              @switch-line="onSwitchLine"
-              @switch-source="onSwitchSource"
-              @health-check="goHealthCheck"
-              @redownload="onRedownload"
-              @back="openDetail"
-              @copy="copyError"
-              @open-external="openExternalUrl"
-            />
-
-            <!-- ⑦ 页面级错误（详情/解析失败）：与 PlayerErrorPanel 同一个 pl-err 壳，只换内容 -->
-            <div v-if="loadError && !player.error" class="pl-err" role="alert">
-              <div class="pl-err__card">
-                <!-- REV-24：详情失败时用上下文文案，否则用原始 loadError -->
-                <h2 class="pl-err__title">
-                  {{ detailErrorMessage ?? loadError }}
-                </h2>
-                <!-- P0-1：给出可行动原因（源站死 / 超时 / 磁力 / 规则脚本异常） -->
-                <p v-if="loadErrorGuidance" class="pl-err__desc">
-                  {{ loadErrorGuidance.hint }}
-                </p>
-                <!-- P1-1：目标集定位失败时说明原因，不假装"重试"能解决 -->
-                <p
-                  v-if="targetEpisodeMissing"
-                  class="pl-err__desc"
-                  data-test="episode-missing-hint"
-                >
-                  源可能更新过选集，这一集已经不在当前线路里了；可在下方选集或换线路
-                </p>
-                <div class="pl-err__acts">
-                  <!-- REV-24：源已移除时提供删除记录入口 -->
-                  <button
-                    v-if="detailErrorKind === 'source-removed'"
-                    class="pl-cta"
-                    type="button"
-                    @click="removeHistoryAndGoBack"
-                  >
-                    删除记录并返回
-                  </button>
-                  <!-- P1-4：磁力链接只能外部打开，重试无意义 -->
-                  <button
-                    v-else-if="loadErrorMagnet"
-                    class="pl-cta"
-                    type="button"
-                    @click="openExternalUrl(loadErrorMagnet)"
-                  >
-                    用外部应用打开
-                  </button>
-                  <!-- P1-1：定位不到目标集时，"从头开始"必须是用户明确选的，不是静默兜底 -->
-                  <button
-                    v-else-if="targetEpisodeMissing"
-                    class="pl-cta"
-                    type="button"
-                    data-test="play-first-episode"
-                    @click="playFromFirstEpisode"
-                  >
-                    从第 1 集播放
-                  </button>
-                  <button
-                    v-else-if="!loadErrorMagnet"
-                    class="pl-cta"
-                    type="button"
-                    @click="resolveAndLoad"
-                  >
-                    重试
-                  </button>
-                  <!-- v1.8/CHG-26：解析失败常是源坏了，直接给换源路径 -->
-                  <button
-                    v-if="canSwitchSourceManual"
-                    class="pl-cta pl-cta--ghost"
-                    type="button"
-                    @click="onSwitchSource"
-                  >
-                    换源重播
-                  </button>
-                  <button
-                    class="pl-cta pl-cta--ghost"
-                    type="button"
-                    @click="openDetail"
-                  >
-                    返回详情
-                  </button>
-                </div>
               </div>
             </div>
 
@@ -4249,9 +4284,21 @@ onBeforeUnmount(() => {
               <button
                 class="sheet-list__item"
                 type="button"
-                @click="shareWatchCode"
+                @click="openShareCode"
               >
                 生成观影口令
+              </button>
+            </li>
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                @click="
+                  drawerOpen = false;
+                  postcardOpen = true;
+                "
+              >
+                一帧明信片
               </button>
             </li>
             <li>
@@ -4516,6 +4563,104 @@ onBeforeUnmount(() => {
         :visible="gestureHelpVisible"
         @close="closeGestureHelp"
       />
+      <!-- ⑦ 错误层（播放错误 + 页面级错误）：挂在壳层而不是画面矩形内，同帮助浮层的理由——
+           稿的竖屏没有信息区，picture 就是整屏；真实页 390 宽的 16:9 画面带只有 ~219px，
+           而卡片含标题/原因/失败步骤/三出口约 257px，留在岛内会被 .pl-picture 的
+           overflow:hidden 上下各裁掉 19px（圆角丢失、标题贴上沿）。横屏/全屏/PiP 下
+           picture 与壳等尺寸，观感不变。 -->
+      <!-- 错误面板 -->
+      <PlayerErrorPanel
+        v-if="player.error && !pageLoading"
+        :error="player.error"
+        :can-switch-line="lines.length > 1 && currentPlayback?.isLocal !== true"
+        :can-switch-source="canSwitchSourceManual"
+        :can-health-check="canHealthCheck"
+        :can-redownload="localStallTaskId !== null"
+        @retry="retryPanel"
+        @switch-line="onSwitchLine"
+        @switch-source="onSwitchSource"
+        @health-check="goHealthCheck"
+        @redownload="onRedownload"
+        @back="openDetail"
+        @copy="copyError"
+        @open-external="openExternalUrl"
+      />
+
+      <!-- ⑦ 页面级错误（详情/解析失败）：与 PlayerErrorPanel 同一个 pl-err 壳，只换内容 -->
+      <div v-if="loadError && !player.error" class="pl-err" role="alert">
+        <div class="pl-err__card">
+          <!-- REV-24：详情失败时用上下文文案，否则用原始 loadError -->
+          <h2 class="pl-err__title">
+            {{ detailErrorMessage ?? loadError }}
+          </h2>
+          <!-- P0-1：给出可行动原因（源站死 / 超时 / 磁力 / 规则脚本异常） -->
+          <p v-if="loadErrorGuidance" class="pl-err__desc">
+            {{ loadErrorGuidance.hint }}
+          </p>
+          <!-- P1-1：目标集定位失败时说明原因，不假装"重试"能解决 -->
+          <p
+            v-if="targetEpisodeMissing"
+            class="pl-err__desc"
+            data-test="episode-missing-hint"
+          >
+            源可能更新过选集，这一集已经不在当前线路里了；可在下方选集或换线路
+          </p>
+          <div class="pl-err__acts">
+            <!-- REV-24：源已移除时提供删除记录入口 -->
+            <button
+              v-if="detailErrorKind === 'source-removed'"
+              class="pl-cta"
+              type="button"
+              @click="removeHistoryAndGoBack"
+            >
+              删除记录并返回
+            </button>
+            <!-- P1-4：磁力链接只能外部打开，重试无意义 -->
+            <button
+              v-else-if="loadErrorMagnet"
+              class="pl-cta"
+              type="button"
+              @click="openExternalUrl(loadErrorMagnet)"
+            >
+              用外部应用打开
+            </button>
+            <!-- P1-1：定位不到目标集时，"从头开始"必须是用户明确选的，不是静默兜底 -->
+            <button
+              v-else-if="targetEpisodeMissing"
+              class="pl-cta"
+              type="button"
+              data-test="play-first-episode"
+              @click="playFromFirstEpisode"
+            >
+              从第 1 集播放
+            </button>
+            <button
+              v-else-if="!loadErrorMagnet"
+              class="pl-cta"
+              type="button"
+              @click="resolveAndLoad"
+            >
+              重试
+            </button>
+            <!-- v1.8/CHG-26：解析失败常是源坏了，直接给换源路径 -->
+            <button
+              v-if="canSwitchSourceManual"
+              class="pl-cta pl-cta--ghost"
+              type="button"
+              @click="onSwitchSource"
+            >
+              换源重播
+            </button>
+            <button
+              class="pl-cta pl-cta--ghost"
+              type="button"
+              @click="openDetail"
+            >
+              返回详情
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 面板 -->
@@ -4533,6 +4678,26 @@ onBeforeUnmount(() => {
       @mark="onSkipMark"
       @clear="onSkipClear"
       @update:auto-skip="onAutoSkipChange"
+    />
+    <PostcardSheet
+      v-model="postcardOpen"
+      :title="titleText"
+      :meta="postcardMeta"
+      :episode-label="postcardEpisodeLabel"
+      :poster-url="item?.posterUrl ?? null"
+      :position-sec="player.currentTime"
+      :duration-sec="player.duration"
+      :line="player.subtitleText"
+      :local-path="postcardLocalPath"
+    />
+    <ShareCodeSheet
+      v-model="shareCodeOpen"
+      :payload="shareCodePayload"
+      :meta="postcardMeta"
+      :episode-label="postcardEpisodeLabel"
+      :poster-url="item?.posterUrl ?? null"
+      :duration-sec="player.duration"
+      @copy="copyShareCode"
     />
     <SubtitleSheet
       v-model="subtitleOpen"

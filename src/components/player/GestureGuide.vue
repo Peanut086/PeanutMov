@@ -2,11 +2,19 @@
 /**
  * 手势引导浮层（P1-1）
  *
- * 首次进入播放页时显示 5 个手势图标 + 说明，帮助用户快速上手。
+ * 首次进入播放页时显示手势图标 + 说明（双列网格），帮助用户快速上手。
  * 显示后写入 localStorage 标记，不再自动弹出。
  * 设置页可手动触发再次显示。
  */
 import { onMounted, onBeforeUnmount, ref } from 'vue';
+
+withDefaults(
+  defineProps<{
+    /** G-A09：捏合开关关闭时不再教这个手势 */
+    pinchEnabled?: boolean;
+  }>(),
+  { pinchEnabled: true },
+);
 
 const STORAGE_KEY = 'player-gesture-guide-shown';
 const AUTO_DISMISS_MS = 5000;
@@ -128,6 +136,17 @@ defineExpose({ show });
             </div>
             <span class="gesture-guide__label">长按</span>
             <span class="gesture-guide__desc">快速倍速播放</span>
+          </div>
+
+          <!-- G-A09：双指捏合 -->
+          <div v-if="pinchEnabled" class="gesture-guide__item">
+            <div class="gesture-guide__icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M9 7l-5 5 5 5M15 7l5 5-5 5M12 3v18" />
+              </svg>
+            </div>
+            <span class="gesture-guide__label">双指张合</span>
+            <span class="gesture-guide__desc">切换画幅</span>
           </div>
         </div>
         <!-- OPT-10：长按帮助提示 -->

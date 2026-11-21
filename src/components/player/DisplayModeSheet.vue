@@ -3,9 +3,11 @@
  * 画面设置（P1 画面比例配置 + C-09 氛围光）
  *
  * 氛围光的开关与强度写回 `player` 设置；关闭后播放层不再挂光晕 canvas，取样定时器一并停止。
+ * 档位标签与说明取自 `player/displayModes`，与捏合 HUD（G-A09）同一口径。
  */
 import BottomSheet from '@/components/common/BottomSheet.vue';
 import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
+import { DISPLAY_MODE_OPTIONS as MODES } from '@/player/displayModes';
 import type { ResizeMode } from '@/types';
 
 const props = defineProps<{
@@ -21,12 +23,6 @@ const emit = defineEmits<{
   (e: 'set-ambilight', value: boolean): void;
   (e: 'set-ambilight-intensity', value: number): void;
 }>();
-
-const MODES: Array<{ value: ResizeMode; label: string; hint: string }> = [
-  { value: 'contain', label: '适应', hint: '完整显示，留黑边' },
-  { value: 'cover', label: '铺满', hint: '裁剪边缘，不变形' },
-  { value: 'fill', label: '拉伸', hint: '填满屏幕，会变形' },
-];
 
 function choose(mode: ResizeMode): void {
   emit('select', mode);

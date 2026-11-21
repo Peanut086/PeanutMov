@@ -264,12 +264,10 @@ describe('P0-5 恢复落点判定', () => {
     expect(plan).toMatchObject({ name: 'player', restoreReason: 'system_reclaim_resume', sourceSkipped: null });
   });
 
-  it('非播放页快照原样恢复（详情页/回看不做源归因）', async () => {
+  /** 非播放页快照原样恢复（回看不做源归因）；详情页已不入白名单，见 sessionRestore.spec */
+  it('非播放页快照原样恢复（回看不做源归因）', async () => {
     h.exits.push({ ts: 1, pid: 1, exitReason: 'java:java.lang.LinkageError' });
     noteSourceBlocked(SOURCE_ID, 'quarantined');
-
-    const detail = await planRestore(snapshot({ name: 'detail', params: { mediaId: MEDIA_ID }, query: { ep: '3' } }));
-    expect(detail).toMatchObject({ name: 'detail', matchedBy: 'ep-query', resumeEpisode: 3, sourceSkipped: null });
 
     const replay = await planRestore(
       snapshot({ name: 'replay', params: { sourceId: SOURCE_ID, programId: 'p1' }, query: {} }),

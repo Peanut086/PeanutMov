@@ -78,7 +78,7 @@ describe('sessionSnapshotOf', () => {
 
   it('数组值取首个，空值与 null 直接丢掉', () => {
     const snapshot = sessionSnapshotOf(
-      routeLike('detail', { mediaId: ['m9', 'm8'], blank: '' }, { sourceId: ['s1'], empty: null, ep: '3' }),
+      routeLike('player', { mediaId: ['m9', 'm8'], blank: '' }, { sourceId: ['s1'], empty: null, ep: '3' }),
     );
     expect(snapshot!.params).toEqual({ mediaId: 'm9' });
     expect(snapshot!.query).toEqual({ sourceId: 's1', ep: '3' });
@@ -90,10 +90,17 @@ describe('sessionSnapshotOf', () => {
     }
   });
 
+  /**
+   * 详情页不在恢复白名单里：它没有可续的进度，记下来只会让"主动杀掉后重开"落在详情页，
+   * 而不是用户预期的主界面。"接着看"由首页「继续观看」承担。
+   */
+  it('详情页不产生快照（参数齐也不恢复）', () => {
+    expect(sessionSnapshotOf(routeLike('detail', { mediaId: 'm1' }, { sourceId: 's1' }))).toBeNull();
+  });
+
   it('缺必填路径参数时不产生快照（拼不出 URL）', () => {
     expect(sessionSnapshotOf(routeLike('player', {}))).toBeNull();
     expect(sessionSnapshotOf(routeLike('player', { mediaId: '' }))).toBeNull();
-    expect(sessionSnapshotOf(routeLike('detail', { mediaId: 'm1' }))).not.toBeNull();
     // 回看页两个参数缺一不可
     expect(sessionSnapshotOf(routeLike('replay', { sourceId: 's1' }))).toBeNull();
     expect(sessionSnapshotOf(routeLike('replay', { sourceId: 's1', programId: '1700:t' }))).not.toBeNull();
@@ -116,12 +123,12 @@ describe('normalizeSessionSnapshot', () => {
   it('过期 / 未来时间 / 缺时间戳都按没有快照处理', () => {
     const now = Date.now();
     expect(
-      normalizeSessionSnapshot({ name: 'detail', params: { mediaId: 'm' }, query: {}, at: now - 13 * 60 * 60 * 1000 }),
+      normalizeSessionSnapshot({ name: 'player', params: { mediaId: 'm' }, query: {}, at: now - 13 * 60 * 60 * 1000 }),
     ).toBeNull();
     expect(
-      normalizeSessionSnapshot({ name: 'detail', params: { mediaId: 'm' }, query: {}, at: now + 60 * 60 * 1000 }),
+      normalizeSessionSnapshot({ name: 'player', params: { mediaId: 'm' }, query: {}, at: now + 60 * 60 * 1000 }),
     ).toBeNull();
-    expect(normalizeSessionSnapshot({ name: 'detail', params: { mediaId: 'm' }, query: {} })).toBeNull();
+    expect(normalizeSessionSnapshot({ name: 'player', params: { mediaId: 'm' }, query: {} })).toBeNull();
   });
 
   it('脏数据（非对象 / 不可恢复页 / 缺参数 / 参数非字符串）降级为 null', () => {
@@ -131,6 +138,8 @@ describe('normalizeSessionSnapshot', () => {
     const at = Date.now();
     expect(normalizeSessionSnapshot({ name: 'home', params: {}, query: {}, at })).toBeNull();
     expect(normalizeSessionSnapshot({ name: 'player', params: {}, query: {}, at })).toBeNull();
+    // 旧版本（详情也入白名单）留在库里的快照：升级后同样按没有快照处理
+    expect(normalizeSessionSnapshot({ name: 'detail', params: { mediaId: 'm' }, query: {}, at })).toBeNull();
     expect(
       normalizeSessionSnapshot({ name: 'player', params: { mediaId: { odd: true } }, query: {}, at }),
     ).toBeNull();
@@ -163,7 +172,7 @@ describe('takeSessionSnapshot（一次性消费）', () => {
   });
 
   it('clearSessionSnapshot 抹掉存储', async () => {
-    await kvRepo.set(KV_KEY_LAST_SESSION, { name: 'detail', params: { mediaId: 'm' }, query: {}, at: Date.now() });
+    await kvRepo.set(KV_KEY_LAST_SESSION, { name: 'player', params: { mediaId: 'm' }, query: {}, at: Date.now() });
     await clearSessionSnapshot();
     expect(await readKv(KV_KEY_LAST_SESSION)).toBeNull();
   });
@@ -216,7 +225,7 @@ describe('bindSessionRestore', () => {
 
   it('深链/提醒跳转等明确目标不动它', async () => {
     await kvRepo.set(KV_KEY_LAST_SESSION, {
-      name: 'detail',
+      name: 'player',
       params: { mediaId: 'm1' },
       query: {},
       at: Date.now(),

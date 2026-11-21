@@ -111,10 +111,16 @@ export const mediaRepo = {
   },
 
   /**
-   * 标题搜索：前缀优先（走 by-title 索引），不足再补子串匹配。
+   * 本地搜索：标题前缀优先（走 by-title 索引），不足再补子串匹配。
+   * `matchActors`（搜索页开启，换源候选不开启）让子串那一趟顺带比主演——演员没有索引
+   * （存量数据也没这列），共用同一次扫描，不另开游标。
    * `keyword` 会转为小写；空关键词返回空数组。
    */
-  async searchByTitle(keyword: string, limit = SEARCH_LOCAL_LIMIT): Promise<MediaItem[]> {
+  async searchByTitle(
+    keyword: string,
+    limit = SEARCH_LOCAL_LIMIT,
+    opts?: { matchActors?: boolean },
+  ): Promise<MediaItem[]> {
     const kw = keyword.trim().toLowerCase();
     if (kw.length === 0) return [];
     return withTx(['media'], 'readonly', async (tx) => {
@@ -133,10 +139,15 @@ export const mediaRepo = {
       }
 
       if (out.length < limit) {
+        // 单字查询不比主演：与 `matchesActor` 的 2 字门槛同口径，否则「王」会淹掉标题命中
+        const actorKw = opts?.matchActors && kw.length >= 2 ? kw : null;
         let allCursor = await store.openCursor();
         while (allCursor && out.length < limit) {
           const value = allCursor.value;
-          if (!seen.has(value.id) && value.titleLower.includes(kw)) {
+          const matched =
+            value.titleLower.includes(kw) ||
+            (actorKw !== null && (value.actors ?? []).some((name) => name.toLowerCase().includes(actorKw)));
+          if (!seen.has(value.id) && matched) {
             seen.add(value.id);
             out.push(value);
           }

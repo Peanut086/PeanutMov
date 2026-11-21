@@ -45,6 +45,7 @@ export interface ItemFactory {
     area?: string | null;
     genres?: string[];
     tags?: string[];
+    actors?: string[];
     rating?: number | null;
     posterUrl?: string | null;
     backdropUrl?: string | null;
@@ -136,6 +137,7 @@ export function toItemFromVod(source: Source, vod: TvboxVod, makeItem: ItemFacto
     area: vod.vod_area ? normalizeTitle(vod.vod_area) : null,
     genres: normalizeStringList(vod.type_name),
     tags: normalizeTags(vod.vod_remarks).slice(0, 3),
+    actors: normalizeStringList(vod.vod_actor),
     rating: normalizeRating(vod.vod_score),
     posterUrl: toAbsoluteUrl(source.baseUrl, vod.vod_pic) ?? fallbackPoster(title),
     description: stripHtml(vod.vod_content),

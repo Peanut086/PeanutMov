@@ -209,6 +209,34 @@ describe('AppTabBar 滑动胶囊', () => {
   });
 });
 
+/**
+ * 切 Tab 的入栈口径（Q1 方案 A）
+ *
+ * 一级导航必须 replace 顶掉当前条目：用 push 的话「首页→下载→我的」之后按返回，
+ * 会把 我的→下载→首页 逐层翻回去，而不是平级 Tab 之间不互相返回。
+ */
+describe('AppTabBar 切 Tab 不入历史', () => {
+  it('点击其它 Tab 走 replace，不产生历史记录', async () => {
+    await mountAt('/');
+    const replace = vi.spyOn(router!, 'replace');
+    const push = vi.spyOn(router!, 'push');
+
+    await wrapper?.findAll('.tabbar__item')[3]?.trigger('click');
+
+    expect(replace).toHaveBeenCalledWith('/downloads');
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it('点击当前 Tab 不导航（只回顶）', async () => {
+    await mountAt('/');
+    const replace = vi.spyOn(router!, 'replace');
+
+    await wrapper?.findAll('.tabbar__item')[0]?.trigger('click');
+
+    expect(replace).not.toHaveBeenCalled();
+  });
+});
+
 /** 选中态的唯一来源是路由元数据，这里把「TabKey ↔ 路由」的对应关系钉死。 */
 describe('路由 meta.tab 契约', () => {
   const expectedByPath: Record<string, TabKey> = {

@@ -626,7 +626,7 @@ async function localSubtitlesOf(task: DownloadTask): Promise<SubtitleTrack[]> {
 }
 
 /** 任务最终产物路径（优先实际 filePath，转封装后 basename 才是 .mp4） */
-function finalFilePathOf(task: DownloadTask): string {
+export function finalFilePathOf(task: DownloadTask): string {
   return task.filePath ?? nativeFilePathOf(task);
 }
 

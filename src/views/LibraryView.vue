@@ -20,17 +20,22 @@ import ErrorState from '@/components/common/ErrorState.vue';
 import LoadMoreFooter from '@/components/common/LoadMoreFooter.vue';
 import PullToRefresh from '@/components/common/PullToRefresh.vue';
 import PosterGrid from '@/components/media/PosterGrid.vue';
+import PosterPeek from '@/components/media/PosterPeek.vue';
 import CategoryTabs from '@/components/media/CategoryTabs.vue';
 import FilterSheet from '@/components/media/FilterSheet.vue';
+import HueSpectrumBar from '@/components/media/HueSpectrumBar.vue';
+import SegmentedControl from '@/components/common/SegmentedControl.vue';
 import IconRefresh from '@/components/icons/IconRefresh.vue';
 import IconChevron from '@/components/icons/IconChevron.vue';
 import IconClose from '@/components/icons/IconClose.vue';
+import type { PeekActive, PeekClip, PeekDismissReason, PeekRequest } from '@/services/peekPreviewService';
 import { useDownloadStore } from '@/stores/downloadStore';
 import { useFavoriteStore } from '@/stores/favoriteStore';
 import { useLibraryStore } from '@/stores/libraryStore';
 import { useSourceStore } from '@/stores/sourceStore';
 import { useInfiniteScroll } from '@/composables/useInfiniteScroll';
 import { useDebounce } from '@/composables/useDebounce';
+import { HUE_WINDOW_DEFAULT, HUE_WINDOWS, useHueWall } from '@/composables/useHueWall';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { toErrorShape } from '@/shared/errors';
@@ -77,6 +82,33 @@ function resetSourceSearch(): void {
 const quickSheetOpen = ref(false);
 const quickItem = ref<MediaItem | null>(null);
 const refreshing = ref(false);
+/** G-B02：正在放映的那一份（一次只可能有一块舞台——它盖住整屏，长按不可能叠第二层） */
+const peekPayload = ref<PeekActive | null>(null);
+
+/**
+ * G-B01 色相墙：一个视图层的浏览模式。
+ *
+ * 排序只发生在传给孩子的那份数组上，`library.items` 本身一字未动——所以退出模式就回到
+ * 进入前的顺序，滚动位置也天然是原来的（虚拟列表按序号取窗口，重排不改序号语义）。
+ * 色相模式下关掉卡片入场动画：重排会改 `--i`，入场动画的延迟跟着变会让已播完的卡片
+ * 被拉回「动画还没开始」的状态（整屏闪空）。位移交给 FLIP，观感也更对。
+ */
+const hueOn = ref(false);
+const hueCenter = ref(210);
+const hueWindow = ref<number>(HUE_WINDOW_DEFAULT);
+const hueWindowChoice = computed({
+  get: () => String(hueWindow.value),
+  set: (value: string) => {
+    hueWindow.value = Number(value);
+  },
+});
+const hueWall = useHueWall(() => library.items, {
+  enabled: () => hueOn.value,
+  center: hueCenter,
+  window: hueWindow,
+});
+const hueItems = hueWall.ordered;
+const hueStats = hueWall.stats;
 
 /**
  * 从详情页返回不能跳回顶部：`.library-body` 没有固定高度，内容把整页撑高，
@@ -96,6 +128,8 @@ const cellsEnter = ref(true);
 onBeforeRouteLeave(() => {
   savedScrollY = window.scrollY;
   cellsEnter.value = false;
+  // KeepAlive 会保住这块 DOM：不收起的话，从详情页返回时屏幕上还盖着一层上周的放映台
+  peekPayload.value = null;
 });
 
 watch(
@@ -379,6 +413,51 @@ function quickDetail(): void {
   if (item) openDetail(item);
 }
 
+/**
+ * G-B02：长按海报起幕。
+ * 量不到起点矩形（首帧前 / 无布局环境）就不凭空长一块舞台，直接给原来的长按菜单——
+ * 入口比动效重要，宁可少一个效果也不能让「长按能做事」这条退化。
+ */
+function onPeek(payload: PeekRequest): void {
+  if (!payload.rect) {
+    openLongPress(payload.item);
+    return;
+  }
+  peekPayload.value = { ...payload, rect: payload.rect };
+}
+
+function onPeekDismiss(reason: PeekDismissReason): void {
+  const item = peekPayload.value?.item ?? null;
+  peekPayload.value = null;
+  // 松手没滑动 = 「我就是想先看一眼」，看完还是原来那三件事：收藏 / 下载 / 详情
+  if (reason === 'release' && item) openLongPress(item);
+}
+
+/** 上滑播放：已下载直连本地文件（与下载页同一口径）；取不到帧则交给播放页自己找线路 */
+function peekPlay(clip: PeekClip | null): void {
+  const item = peekPayload.value?.item ?? null;
+  peekPayload.value = null;
+  if (!item) return;
+  if (!clip) {
+    void router.push({ name: 'player', params: { mediaId: item.id } });
+    return;
+  }
+  void router.push({
+    name: 'player',
+    params: { mediaId: item.id, episodeId: clip.episodeId },
+    query: { local: '1', ...(clip.lineId ? { lineId: clip.lineId } : {}) },
+  });
+}
+
+/** 下滑收藏：直接复用长按面板的那一条，写库失败照样出声 */
+function peekFavorite(): void {
+  const item = peekPayload.value?.item ?? null;
+  peekPayload.value = null;
+  if (!item) return;
+  quickItem.value = item;
+  void quickFavorite();
+}
+
 function goSources(): void {
   void router.push('/settings');
 }
@@ -429,6 +508,29 @@ function openSettings(): void {
           <IconRefresh :size="18" />
         </button>
       </div>
+
+      <!-- G-B01：色相墙入口 -->
+      <div class="library-hue">
+        <button class="library-hue__toggle" type="button" :aria-pressed="hueOn" @click="hueOn = !hueOn">
+          <span class="library-hue__rainbow" aria-hidden="true" />
+          <span>色相墙</span>
+        </button>
+        <p v-if="!hueOn" class="library-hue__hint">按海报主色重排整面墙</p>
+      </div>
+    </div>
+
+    <div v-if="hueOn" class="library-hue-panel">
+      <HueSpectrumBar v-model:hue="hueCenter" :window="hueWindow" />
+      <div class="library-hue-panel__row">
+        <SegmentedControl v-model="hueWindowChoice" :options="HUE_WINDOWS" label="色相窗宽" />
+        <p class="library-hue-panel__stats" role="status">
+          命中 {{ hueStats.hit }}
+          <template v-if="hueStats.outside > 0"> · 窗外 {{ hueStats.outside }}</template>
+          <template v-if="hueStats.unknown > 0"> · 未取色 {{ hueStats.unknown }}</template>
+          <template v-if="hueStats.probing > 0">（取色中 {{ hueStats.probing }}）</template>
+        </p>
+      </div>
+      <p class="library-hue-panel__note">主色读自已有取色缓存，只为新载入的少量海报补取色；未取色的排在末尾。</p>
     </div>
 
     <!-- 已选条件：点 × 即时清除（不必进筛选弹层） -->
@@ -516,11 +618,14 @@ function openSettings(): void {
         </div>
 
         <PosterGrid
-          :items="library.items"
+          :items="hueOn ? hueItems : library.items"
           :downloaded-ids="downloadedIds"
-          :enter-animation="cellsEnter"
+          :enter-animation="cellsEnter && !hueOn"
+          :flip="hueOn"
+          :peek="true"
           @select="openDetail"
           @longpress="openLongPress"
+          @peek="onPeek"
         />
 
         <div ref="sentinelRef" class="library-sentinel" aria-hidden="true" />
@@ -620,6 +725,18 @@ function openSettings(): void {
         </li>
       </ul>
     </BottomSheet>
+
+    <!-- 长按放映（G-B02）：起点是卡片海报区，收起后按原因决定要不要接上上面的面板 -->
+    <PosterPeek
+      v-if="peekPayload"
+      :key="peekPayload.item.id"
+      :item="peekPayload.item"
+      :anchor="peekPayload.rect"
+      :origin="peekPayload.origin"
+      @play="peekPlay"
+      @favorite="peekFavorite"
+      @dismiss="onPeekDismiss"
+    />
   </SafeArea>
 </template>
 
@@ -701,6 +818,84 @@ function openSettings(): void {
 
 .library-toolbar__icon:active {
   background-color: var(--color-overlay-press-strong);
+}
+
+/* G-B01：色相墙。入口常驻工具区（跟着 sticky 头部一起滚不丢），面板在头部下方展开。 */
+.library-hue {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--layout-page-padding-x) var(--space-3);
+}
+
+.library-hue__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-full);
+  background-color: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-14);
+}
+
+.library-hue__toggle[aria-pressed='true'] {
+  border-color: var(--color-brand);
+  background-color: var(--color-brand-soft);
+  color: var(--color-brand-text);
+}
+
+/* 色相环摊平的一条，关掉/打开都在——它是这个开关的「图标」，也提醒这里会动颜色 */
+.library-hue__rainbow {
+  width: 26px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background-image: linear-gradient(
+    90deg,
+    hsl(0deg 75% 55%),
+    hsl(60deg 75% 50%),
+    hsl(130deg 60% 42%),
+    hsl(190deg 70% 48%),
+    hsl(240deg 75% 60%),
+    hsl(300deg 65% 55%),
+    hsl(360deg 75% 55%)
+  );
+}
+
+.library-hue__hint {
+  min-width: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-12);
+}
+
+.library-hue-panel {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--layout-page-padding-x);
+  border-bottom: var(--border-default);
+}
+
+.library-hue-panel__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.library-hue-panel__stats {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-12);
+}
+
+.library-hue-panel__note {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-12);
 }
 
 .library-body {

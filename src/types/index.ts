@@ -174,6 +174,11 @@ export interface MediaItem {
   episodeCount: number | null;
   /** 搜索/筛选用小写标题 */
   titleLower: string;
+  /**
+   * 主演名（TVBox `vod_actor` 逗号串拆出），搜索可按演员命中。
+   * 可选是为了兼容存量缓存：老数据没这个字段，读取方必须按「可能没有」处理。
+   */
+  actors?: string[];
   isDemo: boolean;
   cachedAt: Timestamp;
   updatedAt: Timestamp;
@@ -681,6 +686,16 @@ export interface PlayerSettings {
   /** 片头/片尾胶囊是否倒计时结束自动跳；关掉则只提示，点了才跳 */
   autoSkipIntro: boolean;
   /**
+   * G-A03：进度条拖动磁吸强度 0~100（默认 60）。
+   * 0 = 关闭：不画刻度、不吸附、无触觉，行为与该功能上线前一致。
+   */
+  seekDetent?: number;
+  /**
+   * G-A09：双指捏合切画幅开关（默认开）。
+   * 关掉后播放画面上的第二指回到「什么都不做」——与功能上线前一致。
+   */
+  pinchResizeEnabled?: boolean;
+  /**
    * C-09 画面氛围光开关（默认开）。
    * 原生 ExoPlayer 引擎拿不到画面像素时会被播放器自动关掉并写回，不是用户手动关的。
    */
@@ -923,6 +938,11 @@ export interface DanmakuSettings {
    * 取不到帧（源站未开放跨域 / 老安装包原生无取样）时逐条退回原色 + 深色描边。
    */
   autoContrast?: boolean;
+  /**
+   * 进度条「镜头节奏」带（G-C05，默认开）：把取样到的相邻帧差铺成 60 格换镜密度，
+   * 换镜点可当作跳转落点。它没有第二条取样路——关掉智能配色就没有数据，带子跟着空。
+   */
+  rhythmBand?: boolean;
 }
 
 /**

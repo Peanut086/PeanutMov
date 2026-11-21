@@ -33,7 +33,15 @@ import { useToast } from '@/composables/useToast';
 import { mediaSubtitle } from '@/components/common/format';
 import { toErrorShape } from '@/shared/errors';
 import { playabilityService } from '@/services/playabilityService';
-import { buildTailSuggestions, countDirectMatches, scoreRelevance } from '@/services/searchAggregate';
+import {
+  buildTailSuggestions,
+  countDirectGroupMatches,
+  countDirectItemMatches,
+  groupRelevanceScore,
+  matchesActor,
+  relevanceScoreOf,
+  scoreRelevance,
+} from '@/services/searchAggregate';
 // P3-2：进度行里的「约 N 秒内收口」必须和设置页/服务层是同一个数
 import { SEARCH_BUDGET_DEFAULT, resolveGlobalDeadlineMs } from '@/shared/searchBudget';
 // SHARE-CODE / SO-ALIAS：口令解析与别名学习
@@ -335,10 +343,21 @@ function searchWithTail(tail: string): void {
 /**
  * C-12：相关度徽章。分数口径与组间排序同一个函数（4 精确 > 3 前缀 > 2 包含 > 1 分词），
  * 所以徽章序列必然与列表顺序一致。
+ *
+ * 标题完全不沾但主演命中时标「主演」——这类结果是按演员搜回来的，不是拆词凑数，
+ * 让它们顶着空白徽章混在结果里，用户没法判断为什么出现在这儿。
  */
 const RELEVANCE_LABELS: Record<number, string> = { 4: '精确', 3: '前缀', 2: '包含', 1: '分词' };
-function relevanceScore(title: string): number {
-  return scoreRelevance(title, library.searchKeyword);
+function badgeOf(titleScore: number, actorHit: boolean): { score: number; label: string } {
+  if (titleScore === 0 && actorHit) return { score: 2, label: '主演' };
+  return { score: titleScore, label: RELEVANCE_LABELS[titleScore] ?? '' };
+}
+function groupBadge(group: SearchResultGroup): { score: number; label: string } {
+  const actorHit = group.items.some((item) => matchesActor(item.actors, library.searchKeyword));
+  return badgeOf(scoreRelevance(group.title, library.searchKeyword), actorHit);
+}
+function itemBadge(item: MediaItem): { score: number; label: string } {
+  return badgeOf(scoreRelevance(item.title, library.searchKeyword), matchesActor(item.actors, library.searchKeyword));
 }
 
 /** C-12：空态标题带上用户原词，让"没找到什么"没有歧义 */
@@ -422,34 +441,25 @@ function playabilityLabel(status: PlayabilityStatus): string {
   }
 }
 
-/** P0-4：相关度 > 0 的组（精确/前缀/包含/分词） */
+/** P0-4：相关度 > 0 的组（精确/前缀/包含/分词，主演命中算包含档） */
 const relevantGroups = computed(() =>
-  library.searchGroups.filter((g) => scoreRelevance(g.title, library.searchKeyword) > 0),
+  library.searchGroups.filter((g) => groupRelevanceScore(g, library.searchKeyword) > 0),
 );
 
 /** P0-4：相关度 = 0 的组（折叠到"其它匹配"） */
 const otherGroups = computed(() =>
-  library.searchGroups.filter((g) => scoreRelevance(g.title, library.searchKeyword) === 0),
+  library.searchGroups.filter((g) => groupRelevanceScore(g, library.searchKeyword) === 0),
 );
 
 /**
  * P2-8：整屏没有一条「精确/前缀/包含」命中时，这些结果全是拆词沾边的噪声，不能当有效命中摆出来。
  *
  * 查询扩展救回的那一批不适用（原词本就 0 结果，屏上已有「已按××扩展查找」说明）。
+ * 主演命中计入直接命中：按演员搜时标题必然不含关键词，纯标题口径会误报「没有直接匹配」。
  */
-const directGroupCount = computed(() =>
-  countDirectMatches(
-    library.searchGroups.map((group) => group.title),
-    library.searchKeyword,
-  ),
-);
+const directGroupCount = computed(() => countDirectGroupMatches(library.searchGroups, library.searchKeyword));
 const weakGroupCount = computed(() => library.searchGroups.length - directGroupCount.value);
-const directItemCount = computed(() =>
-  countDirectMatches(
-    library.searchResults.map((item) => item.title),
-    library.searchKeyword,
-  ),
-);
+const directItemCount = computed(() => countDirectItemMatches(library.searchResults, library.searchKeyword));
 const noDirectMatch = computed(
   () =>
     hasResults.value &&
@@ -468,12 +478,12 @@ function toggleOtherGroups(): void {
   otherGroupsExpanded.value = !otherGroupsExpanded.value;
 }
 
-/** P0-1：平铺视图也按相关度分流 */
+/** P0-1：平铺视图也按相关度分流（主演命中不折叠，与分组视图同口径） */
 const relevantFlat = computed(() =>
-  library.searchResults.filter((item) => scoreRelevance(item.title, library.searchKeyword) > 0),
+  library.searchResults.filter((item) => relevanceScoreOf(item, library.searchKeyword) > 0),
 );
 const otherFlat = computed(() =>
-  library.searchResults.filter((item) => scoreRelevance(item.title, library.searchKeyword) === 0),
+  library.searchResults.filter((item) => relevanceScoreOf(item, library.searchKeyword) === 0),
 );
 const otherFlatExpanded = ref(false);
 function toggleOtherFlat(): void {
@@ -809,7 +819,7 @@ function openSourceManage(): void {
                       />
                     </span>
                     <span class="result-row__meta">
-                      <span class="relevance-tag" :data-score="relevanceScore(group.title)" aria-hidden="true">{{ RELEVANCE_LABELS[relevanceScore(group.title)] }}</span>
+                      <span class="relevance-tag" :data-score="groupBadge(group).score" aria-hidden="true">{{ groupBadge(group).label }}</span>
                       {{ groupMeta(group) }}
                       <span v-if="group.items[0]!.tags.length > 0" class="item-tags">
                         <span v-for="tag in group.items[0]!.tags.slice(0, 3)" :key="tag" class="item-tag">{{ tag }}</span>
@@ -913,7 +923,7 @@ function openSourceManage(): void {
                       />
                     </span>
                     <span class="result-row__meta">
-                      <span class="relevance-tag" :data-score="relevanceScore(item.title)" aria-hidden="true">{{ RELEVANCE_LABELS[relevanceScore(item.title)] }}</span>
+                      <span class="relevance-tag" :data-score="itemBadge(item).score" aria-hidden="true">{{ itemBadge(item).label }}</span>
                       {{ itemMeta(item) }}
                       <span v-if="item.tags.length > 0" class="item-tags">
                         <span v-for="tag in item.tags.slice(0, 3)" :key="tag" class="item-tag">{{ tag }}</span>

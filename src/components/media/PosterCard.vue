@@ -20,6 +20,7 @@ import { mediaTypeLabel } from '@/components/common/format';
 import { useHaptic } from '@/composables/useHaptic';
 import { prefersReducedMotion } from '@/composables/useSpring';
 import { beginSharedCover } from '@/composables/useSharedElement';
+import type { PeekAnchorRect, PeekRequest } from '@/services/peekPreviewService';
 import { isLowEndDevice } from '@/shared/deviceTier';
 import { IMG_W_CARD } from '@/shared/imageSize';
 import { liftPose, restPose, tiltPose } from '@/shared/posterTilt';
@@ -39,13 +40,20 @@ const props = withDefaults(
     showMeta?: boolean;
     /** M4：长按弹出扇形快捷盘（收藏/下载/分享），关闭时沿用 longpress 事件 */
     quickActions?: boolean;
+    /**
+     * G-B02：长按先就地放映，**不发 longpress**。放映台收起且没滑动时，由页面自己
+     * 调起原来的快捷面板——所以扇形盘、BottomSheet 这些既有入口一个都没少。
+     * 默认关闭：不传这个 prop 的调用方行为逐字节不变。
+     */
+    peek?: boolean;
   }>(),
-  { progress: 0, badge: '', demo: false, downloaded: false, showMeta: true, quickActions: false },
+  { progress: 0, badge: '', demo: false, downloaded: false, showMeta: true, quickActions: false, peek: false },
 );
 
 const emit = defineEmits<{
   (e: 'select', item: MediaItem): void;
   (e: 'longpress', item: MediaItem): void;
+  (e: 'peek', payload: PeekRequest): void;
   (e: 'quick-favorite', item: MediaItem): void;
   (e: 'quick-download', item: MediaItem): void;
   (e: 'quick-share', item: MediaItem): void;
@@ -134,6 +142,20 @@ function onCardKeydown(ev: KeyboardEvent): void {
 
 const cardEl = useTemplateRef<HTMLElement>('card');
 const sheenEl = useTemplateRef<HTMLElement>('sheen');
+const frameEl = useTemplateRef<HTMLElement>('frame');
+
+/**
+ * G-B02 形变起点：只取海报框那一块（标题两行不该跟着长大）。
+ * 量不到（未挂载 / 零尺寸 / happy-dom 没有布局）就返回 null，由页面退回原来的长按入口，
+ * 而不是让放映台从一个凭空的矩形里长出来。
+ */
+function anchorRect(): PeekAnchorRect | null {
+  const frame = frameEl.value;
+  if (!frame) return null;
+  const box = frame.getBoundingClientRect();
+  if (box.width <= 0 || box.height <= 0) return null;
+  return { top: box.top, left: box.left, width: box.width, height: box.height };
+}
 
 /** 档位只在首次交互时现读一次，不在每次 pointermove 里查 matchMedia */
 let tiltOk: boolean | null = null;
@@ -251,6 +273,12 @@ function onPointerDown(ev: PointerEvent): void {
       openRadial();
       return;
     }
+    if (props.peek) {
+      // 放映台接管这一按：不做抬升姿势（海报正要原地长大，先浮起来会看成两下），
+      // 也不发 longpress——原菜单由页面在 dismiss('release') 时补调。
+      emit('peek', { item: props.item, rect: anchorRect(), origin: { x: pressX, y: pressY } });
+      return;
+    }
     if (canLift()) {
       resetPose();
       lifted = true;
@@ -308,7 +336,7 @@ onBeforeUnmount(() => {
     @click="onClick"
     @keydown="onCardKeydown"
   >
-    <div class="poster-card__frame">
+    <div ref="frame" class="poster-card__frame">
       <PosterImage
         :src="item.posterUrl"
         :alt="item.title"

@@ -71,6 +71,31 @@
   overflow: hidden;
 }
 
+/* ---------- 齿孔带（过片语言公共件） ----------
+ * 与「过片幕布 / 胶片进度条 / 原位放映」同一套孔距语义。
+ * 父级需 `position: relative`，靠 `--top/--bottom` 贴上下沿；纯装饰，不吃事件。 */
+.film-perf {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 6px;
+  background-image: repeating-linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.5) 0 2px,
+    transparent 2px 6px
+  );
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.film-perf--top {
+  top: 1px;
+}
+
+.film-perf--bottom {
+  bottom: 1px;
+}
+
 .tap-target {
   min-width: 44px;
   min-height: 44px;

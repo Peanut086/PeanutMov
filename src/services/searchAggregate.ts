@@ -333,7 +333,7 @@ export function groupSearchResults(
     // F6：非正片（解说/reaction/ASMR/网盘垃圾命名）整组沉到正片之后，但不删除
     const nonFeature = isNonFeatureContent(group.title, keyword) ? 1 : 0;
     return [
-      -scoreRelevance(group.title, keyword),
+      -groupRelevanceScore(group, keyword),
       queryAffinity(keyword, group.year, group.season),
       nonFeature,
       pRank,
@@ -424,6 +424,58 @@ export function scoreRelevance(title: string, keyword: string): number {
   return 0;
 }
 
+/** 演员比对的最短长度：单字（「王」「李」）能沾上一片人名，不算命中 */
+const MIN_ACTOR_MATCH_LEN = 2;
+
+/**
+ * 查询词里可用于比对演员的形态：整体 + 去掉季号/年份标注后的分词。
+ * 归一化复用 `normalizeTitleForMatch`，所以「凯莉·库恩」与「凯莉库恩」同形。
+ */
+function actorQueryForms(keyword: string): string[] {
+  const tokens = keyword
+    .trim()
+    .split(/\s+/)
+    .filter((token) => !isQueryMarkerToken(token))
+    .map((token) => normalizeTitleForMatch(token));
+  const whole = normalizeTitleForMatch(keyword);
+  return [...new Set([whole, ...tokens])].filter((form) => form.length >= MIN_ACTOR_MATCH_LEN);
+}
+
+/**
+ * 主演命中：查询形态与某位主演互为包含（双向，为了「沈腾 飞驰人生」这类混合查询和
+ * 带空格/间隔号的译名都能对上）。
+ *
+ * 只给标题完全不沾的结果兜底，不参与标题档的排序竞争——用户搜演员时，源站返回的标题
+ * 天然不含关键词，此前会被 `isKeywordIgnored` 整批判成「源忽略关键词」丢掉。
+ */
+export function matchesActor(actors: readonly string[] | undefined, keyword: string): boolean {
+  if (!actors || actors.length === 0) return false;
+  const forms = actorQueryForms(keyword);
+  if (forms.length === 0) return false;
+  return actors.some((raw) => {
+    const name = normalizeTitleForMatch(raw);
+    if (name.length < MIN_ACTOR_MATCH_LEN) return false;
+    return forms.some((form) => form.includes(name) || name.includes(form));
+  });
+}
+
+/** 条目的相关度档：标题档优先；标题完全不沾但主演命中，按「包含」档计入 */
+export function relevanceScoreOf(item: Pick<MediaItem, 'title' | 'actors'>, keyword: string): number {
+  const titleScore = scoreRelevance(item.title, keyword);
+  if (titleScore > 0) return titleScore;
+  return matchesActor(item.actors, keyword) ? 2 : 0;
+}
+
+/**
+ * 分组的相关度档：组名（片名）的标题档，与「组内主演命中」取高者。
+ * 组名不会带演员，所以主演命中只能从组内条目抬上来。
+ */
+export function groupRelevanceScore(group: Pick<SearchResultGroup, 'title' | 'items'>, keyword: string): number {
+  const titleScore = scoreRelevance(group.title, keyword);
+  if (titleScore > 0) return titleScore;
+  return group.items.some((item) => matchesActor(item.actors, keyword)) ? 2 : 0;
+}
+
 /**
  * P2-8：直接命中（精确/前缀/包含）的条数。
  *
@@ -439,32 +491,47 @@ export function countDirectMatches(titles: Iterable<string>, keyword: string): n
   return hits;
 }
 
+/** 同上口径，但主演命中也算直接命中（搜演员时标题必然不含关键词，按纯标题口径会误报「没有直接匹配」） */
+export function countDirectItemMatches(items: readonly MediaItem[], keyword: string): number {
+  return items.filter((item) => relevanceScoreOf(item, keyword) >= 2).length;
+}
+
+/** 同上口径的分组版 */
+export function countDirectGroupMatches(groups: readonly SearchResultGroup[], keyword: string): number {
+  return groups.filter((group) => groupRelevanceScore(group, keyword) >= 2).length;
+}
+
 /**
  * P0-1：判定一批搜索结果是否属于"源忽略关键词"（典型：采集站关闭搜索，返回最新目录）。
  *
  * 判定条件（保守，避免误杀演员搜索）：
  * - 返回条数 ≥ `minCount`（默认 15，量子资源等采集站固定返回 20）；
- * - 所有条目标题对关键词的相关度均为 0（既不包含、也不分词命中）。
+ * - 所有条目标题对关键词的相关度均为 0（既不包含、也不分词命中），且没有任一条目主演命中。
+ *
+ * 主演那一刀是为了真演员搜索：源站按演员匹配时返回的标题必然不含关键词，
+ * 只看标题会把整批真结果当成"源忽略关键词"丢掉。目录页冒充结果的演员也不含关键词，
+ * 所以豁免不会把噪声放回来。
  *
  * 命中即视为"源忽略关键词"，调用方应过滤这批结果（不上屏、不落库、不判活）。
  */
 export function isKeywordIgnored(
-  items: ReadonlyArray<{ title: string }>,
+  items: ReadonlyArray<{ title: string; actors?: string[] }>,
   keyword: string,
   minCount = 15,
 ): boolean {
   if (items.length < minCount) return false;
   for (const item of items) {
     if (scoreRelevance(item.title, keyword) > 0) return false;
+    if (matchesActor(item.actors, keyword)) return false;
   }
   return true;
 }
 
-/** 按相关度降序稳定排序（同分保持到达顺序） */
+/** 按相关度降序稳定排序（同分保持到达顺序；主演命中计入包含档） */
 export function sortByRelevance(items: MediaItem[], keyword: string): MediaItem[] {
   if (items.length <= 1) return [...items];
   return [...items]
-    .map((item, index) => ({ item, index, score: scoreRelevance(item.title, keyword) }))
+    .map((item, index) => ({ item, index, score: relevanceScoreOf(item, keyword) }))
     .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.index - b.index))
     .map((entry) => entry.item);
 }

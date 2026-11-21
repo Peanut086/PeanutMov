@@ -6,7 +6,7 @@ import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { AppError } from '@/shared/errors';
 import { COMPLIANCE_VERSION } from '@/shared/constants';
-import type { Source } from '@/types';
+import type { MediaItem, Source } from '@/types';
 
 import { resetAll } from './helpers';
 
@@ -182,5 +182,41 @@ describe('DB 表结构与事务（AC-14）', () => {
     const searched = await mediaRepo.searchByTitle('影片 3');
     expect(searched.length).toBeGreaterThan(0);
     expect(searched.every((item) => item.titleLower.includes('影片 3'))).toBe(true);
+  });
+
+  it('mediaRepo 本地搜索按主演命中要显式开启（搜索页开、换源候选不开）', async () => {
+    const now = Date.now();
+    const mk = (n: number, title: string, actors: string[]): MediaItem => ({
+      id: `demo:a${n}`,
+      sourceId: 'demo',
+      sourceItemId: `a${n}`,
+      title,
+      originalTitle: null,
+      type: 'movie',
+      year: 2020,
+      area: '中国',
+      genres: [],
+      tags: [],
+      rating: null,
+      posterUrl: null,
+      backdropUrl: null,
+      description: null,
+      durationSec: null,
+      episodeCount: null,
+      titleLower: title.toLowerCase(),
+      actors,
+      isDemo: false,
+      cachedAt: now,
+      updatedAt: now,
+    });
+    await mediaRepo.upsertMany([mk(1, '飞驰人生', ['沈腾', '尹正']), mk(2, '独行月球', ['沈腾'])]);
+
+    const byActor = await mediaRepo.searchByTitle('沈腾', 10, { matchActors: true });
+    expect(byActor.map((item) => item.id).sort()).toEqual(['demo:a1', 'demo:a2']);
+
+    // 默认口径不变：换源候选那条路径仍只认片名
+    expect(await mediaRepo.searchByTitle('沈腾')).toEqual([]);
+    // 单字查询不放开演员比对
+    expect(await mediaRepo.searchByTitle('腾', 10, { matchActors: true })).toEqual([]);
   });
 });

@@ -7,6 +7,8 @@
  * - 骨架数量 = 首屏可见数量（默认 6）
  * - REV-11：条目超过 `VIRTUALIZE_MIN_ROWS` 行时启用窗口化渲染（见
  *   `useVirtualGrid`），把 DOM 节点数限制在视口附近；小列表仍全量渲染
+ * - G-B01：`flip` 打开后，同一批卡片换顺序会以 transform 位移过去（色相墙重排）。
+ *   默认关闭——不传这个 prop 的调用方行为与之前逐字节一致。
  */
 import { useTemplateRef } from 'vue';
 
@@ -15,6 +17,8 @@ import type { MediaItem } from '@/types';
 import PosterCard from '@/components/media/PosterCard.vue';
 import SkeletonPoster from '@/components/media/SkeletonPoster.vue';
 import { useVirtualGrid } from '@/components/media/useVirtualGrid';
+import { useFlipReorder } from '@/composables/useFlipReorder';
+import type { PeekRequest } from '@/services/peekPreviewService';
 
 const props = withDefaults(
   defineProps<{
@@ -35,6 +39,10 @@ const props = withDefaults(
      * CSS 动画会整批从头重播，转场里看起来就是「先空一屏再逐张弹出来」。
      */
     enterAnimation?: boolean;
+    /** G-B01：顺序变化时做 FLIP 位移（只在同一批卡片重排时开启） */
+    flip?: boolean;
+    /** G-B02：长按走「原位放映」而不是长按菜单（透传给 PosterCard） */
+    peek?: boolean;
   }>(),
   {
     loading: false,
@@ -44,12 +52,15 @@ const props = withDefaults(
     showMeta: true,
     virtual: true,
     enterAnimation: true,
+    flip: false,
+    peek: false,
   },
 );
 
 const emit = defineEmits<{
   (e: 'select', item: MediaItem): void;
   (e: 'longpress', item: MediaItem): void;
+  (e: 'peek', payload: PeekRequest): void;
 }>();
 
 const gridEl = useTemplateRef<HTMLElement>('grid');
@@ -60,6 +71,12 @@ const { visibleItems, active, padTop, padBottom } = useVirtualGrid(() => gridEl.
   paddingX: () => 0,
   showMeta: () => props.showMeta,
   enabled: () => props.virtual,
+});
+
+useFlipReorder({
+  root: () => gridEl.value ?? null,
+  source: () => props.items,
+  enabled: () => props.flip,
 });
 
 function isDownloaded(id: string, list: string[]): boolean {
@@ -84,6 +101,7 @@ function isDownloaded(id: string, list: string[]): boolean {
             v-for="(item, idx) in visibleItems"
             :key="item.id"
             class="poster-grid__cell"
+            :data-flip-key="item.id"
             :style="{ '--i': idx }"
             role="listitem"
           >
@@ -93,8 +111,10 @@ function isDownloaded(id: string, list: string[]): boolean {
               :downloaded="item.isDemo ? false : isDownloaded(item.id, downloadedIds)"
               :demo="item.isDemo"
               :show-meta="showMeta"
+              :peek="peek"
               @select="emit('select', $event)"
               @longpress="emit('longpress', $event)"
+              @peek="emit('peek', $event)"
             />
           </div>
         </div>
@@ -106,6 +126,7 @@ function isDownloaded(id: string, list: string[]): boolean {
         v-for="(item, idx) in items"
         :key="item.id"
         class="poster-grid__cell"
+        :data-flip-key="item.id"
         :style="{ '--i': idx }"
         role="listitem"
       >
@@ -115,8 +136,10 @@ function isDownloaded(id: string, list: string[]): boolean {
           :downloaded="item.isDemo ? false : isDownloaded(item.id, downloadedIds)"
           :demo="item.isDemo"
           :show-meta="showMeta"
+          :peek="peek"
           @select="emit('select', $event)"
           @longpress="emit('longpress', $event)"
+          @peek="emit('peek', $event)"
         />
       </div>
     </template>

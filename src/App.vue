@@ -6,10 +6,12 @@ import AppTabBar from '@/components/layout/AppTabBar.vue';
 import ToastHost from '@/components/common/ToastHost.vue';
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue';
 import SafeModeBanner from '@/components/common/SafeModeBanner.vue';
+import EpisodeLeader from '@/components/player/EpisodeLeader.vue';
 import { useTheme } from '@/composables/useTheme';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 import { useEdgeBackSwipe } from '@/composables/useEdgeBackSwipe';
+import { canGoBack } from '@/composables/useBackButton';
 import { finishSharedCoverRewind, sharedCoverActive } from '@/composables/useSharedElement';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useAchievementStore } from '@/stores/achievementStore';
@@ -72,17 +74,17 @@ function onRouteEnter(): void {
 }
 
 /*
- * B-07：左边缘右滑返回。可拖的条件是「有上一页可回」——和返回键兜底用的是
- * 同一个判断（history.state.back），两者不会出现一个能回一个不能回的分歧。
+ * B-07：左边缘右滑返回。可拖的条件是「有上一页可回」——和返回键兜底共用 `canGoBack()`，
+ * 两者不会出现一个能回一个不能回的分歧；Tab 之间是平级切换，所以在 Tab 上侧滑不跟手（回弹）。
  * 播放器等沉浸式页面（meta.immersive）关掉：那里的手势属于播放控制，且全屏态
  * 下横向拖动另有含义。
  */
 const contentRef = ref<HTMLElement | null>(null);
 
 const edgeBackEnabled = computed(() => {
+  // `history.state.back` 不是响应式的，先读 route 建依赖，路由变化时才会重算
   if (route.meta.immersive === true) return false;
-  const back = router.options.history.state.back;
-  return typeof back === 'string' && back.length > 0;
+  return canGoBack(router);
 });
 
 useEdgeBackSwipe({ surface: contentRef, enabled: edgeBackEnabled });
@@ -125,21 +127,16 @@ function showReminderToasts(reminders: Reminder[]): void {
 
 onMounted(async () => {
   /*
-   * 返回键全局兜底（v1.9/RET-01 修正）：
-   * 页面监听器（播放器全屏、弹层）都没消费时，先判断能否回退路由——
-   * 详情/设置等二级页按返回应回到上一页，只有栈底（首页等）才退出 App。
-   * 历史栈的上一项由 vue-router 存在 history.state.back（无历史时为 ''）。
+   * 返回键全局兜底（v1.9/RET-01 修正 + Q1 方案 A 的栈底口径）：
+   * 页面监听器（播放器全屏、弹层）都没消费时，按 `canGoBack()` 决定去留——
+   * 有来时页就回退到来时页；无历史却停在二级页（冷启动恢复）回首页；
+   * 一级 Tab 页之间不回退，返回 false 让原生层退出 App。
    */
   setBackFallback(() => {
-    const back = router.options.history.state.back;
-    if (typeof back === 'string' && back.length > 0) {
+    if (canGoBack(router)) {
       router.back();
       return true;
     }
-    /*
-     * 无历史但停在二级页（如冷启动恢复到详情/订阅页）：回首页而不是退出。
-     * 只有一级 Tab 页（requiresLayout）在栈底时才退出 App。
-     */
     if (router.currentRoute.value.meta.requiresLayout !== true) {
       void router.replace('/');
       return true;
@@ -251,6 +248,9 @@ function recover(): void {
       </div>
 
       <AppTabBar v-if="showTabBar" />
+
+      <!-- G-A06：换集过片幕布（装饰层，状态在模块级，触发端是 PlayerView 的选集入口） -->
+      <EpisodeLeader />
 
       <ToastHost />
       <ConfirmDialog />

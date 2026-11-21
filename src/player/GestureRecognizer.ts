@@ -97,7 +97,8 @@ export class GestureRecognizer {
   /* ---------- 事件入口 ---------- */
 
   pointerDown(ev: { pointerId: number; clientX: number; clientY: number }, ctx: GestureContext): void {
-    // 多指：忽略新增手指，避免缩放/误触；
+    // 多指：忽略新增手指——本类始终只跟踪一根手指，双指捏合由上层的
+    // PinchResizeRecognizer 接管（G-A09）；
     // 同一指针重复 down（上一次 up/cancel 丢失）则丢弃陈旧样本，避免手势永久卡死
     if (this.sample !== null) {
       if (this.sample.id !== ev.pointerId) return;
@@ -265,6 +266,18 @@ export class GestureRecognizer {
       this.longPressActive = false;
       this.callbacks.onIntent({ type: 'long-press-end' });
     }
+  }
+
+  /**
+   * G-A09：不做 id 校验地抹掉当前样本，供上层把整只手势移交给别的识别器（双指捏合）。
+   *
+   * 走 `pointerCancel` 而不是只清字段：在飞的倍速要收尾、在飞的 seek 要派发 cancel，
+   * 否则第二指落下后倍速会一直挂着，或抬手时补一次莫名其妙的跳转。
+   */
+  cancelAll(): void {
+    const sample = this.sample;
+    if (sample === null) return;
+    this.pointerCancel({ pointerId: sample.id });
   }
 
   /** 组件卸载时清理定时器，防止回调打到已卸载实例 */

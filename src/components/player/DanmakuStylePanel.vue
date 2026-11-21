@@ -49,6 +49,7 @@ const danmaku = computed<DanmakuSettings>(
       filterBottom: false,
       interactive: true,
       autoContrast: true,
+      rhythmBand: true,
     },
 );
 
@@ -154,6 +155,20 @@ function updateField<K extends keyof DanmakuSettings>(key: K, value: DanmakuSett
         <p v-if="contrastHint && local.autoContrast !== false" class="panel-hint">
           {{ contrastHint }}，本轮仍按原色显示
         </p>
+
+        <!-- G-C05：节奏带的原料就是智能配色那张亮度场，取样一关就没有数据可画，所以只在取样开着时给这一行 -->
+        <template v-if="local.autoContrast !== false">
+          <div class="panel-row">
+            <span>镜头节奏带</span>
+            <ToggleSwitch
+              :model-value="local.rhythmBand !== false"
+              @update:model-value="updateField('rhythmBand', $event)"
+            />
+          </div>
+          <p class="panel-hint">
+            进度条上铺一格一格的换镜密度，亮起的尖峰是这一集剪得最碎的段落，落在它上面的点击就是跳到那一秒
+          </p>
+        </template>
 
         <div class="panel-row">
           <span>密度</span>

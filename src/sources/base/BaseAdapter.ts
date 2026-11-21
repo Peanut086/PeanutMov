@@ -170,6 +170,7 @@ export abstract class BaseAdapter implements SourceAdapter {
       area?: string | null;
       genres?: string[];
       tags?: string[];
+      actors?: string[];
       rating?: number | null;
       posterUrl?: string | null;
       backdropUrl?: string | null;
@@ -193,6 +194,7 @@ export abstract class BaseAdapter implements SourceAdapter {
       area: input.area ?? null,
       genres: input.genres ?? [],
       tags: input.tags ?? [],
+      actors: input.actors ?? [],
       rating: input.rating ?? null,
       posterUrl: input.posterUrl ?? null,
       backdropUrl: input.backdropUrl ?? null,

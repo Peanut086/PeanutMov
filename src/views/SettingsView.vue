@@ -59,6 +59,7 @@ const themeOpen = ref(false);
 const sensitivityOpen = ref(false);
 const displayModeOpen = ref(false);
 const seekStepOpen = ref(false);
+const seekDetentOpen = ref(false);
 const longPressRateOpen = ref(false);
 const clearDataOpen = ref(false);
 const keepDemo = ref(true);
@@ -139,6 +140,13 @@ const rateLabel = computed(() => `${(settings.settings?.player.defaultRate ?? 1)
 const autoPlayNext = computed(() => settings.settings?.player.autoPlayNext ?? true);
 const backgroundPlayback = computed(() => playerSettings.value.backgroundPlayback === true);
 const autoSkipIntro = computed(() => playerSettings.value.autoSkipIntro);
+/** G-A03：进度条磁吸强度 0~100（0 = 关闭，拖动行为与该功能上线前一致） */
+const seekDetent = computed(() => playerSettings.value.seekDetent ?? 60);
+const seekDetentLabel = computed(() =>
+  seekDetent.value === 0 ? '关闭' : `${seekDetent.value}%`,
+);
+/** G-A09：双指捏合切画幅开关（默认开） */
+const pinchResizeEnabled = computed(() => playerSettings.value.pinchResizeEnabled !== false);
 const displayModeLabel = computed(() => {
   const mode = settings.settings?.player.resizeMode ?? 'contain';
   switch (mode) {
@@ -274,9 +282,22 @@ async function setAutoSkipIntro(value: boolean): Promise<void> {
   await update({ player: { ...playerSettings.value, autoSkipIntro: value } });
 }
 
+/** G-A09：捏合切画幅的开关（关掉后播放画面上的第二指回到什么都不做） */
+async function setPinchResize(value: boolean): Promise<void> {
+  await update({ player: { ...playerSettings.value, pinchResizeEnabled: value } });
+}
+
 async function setSeekStepSec(value: number): Promise<void> {
   seekStepOpen.value = false;
   await update({ player: { ...playerSettings.value, seekStepSec: value } }, `快进退步长已设为 ${value} 秒`);
+}
+
+/**
+ * G-A03：磁吸强度是滑杆，落点即松手（`@change`），一次拖动只写一条。
+ * 不关面板也不弹 toast——用户要连着试几档手感，每次都打断反而测不出来。
+ */
+async function setSeekDetent(value: number): Promise<void> {
+  await update({ player: { ...playerSettings.value, seekDetent: value } });
 }
 
 async function setLongPressRate(value: number): Promise<void> {
@@ -640,6 +661,12 @@ async function exportLogs(): Promise<void> {
           <SettingsRow label="默认倍速" :value="rateLabel" chevron @click="speedOpen = true" />
           <SettingsRow label="画面比例" :value="displayModeLabel" chevron @click="displayModeOpen = true" />
           <SettingsRow
+            label="双指捏合切画幅"
+            description="播放画面上两指张合，松手吸附到最近一档"
+            :switch-value="pinchResizeEnabled"
+            @update:switch-value="setPinchResize"
+          />
+          <SettingsRow
             label="自动连播下一集"
             :switch-value="autoPlayNext"
             @update:switch-value="setAutoPlayNext"
@@ -653,6 +680,13 @@ async function exportLogs(): Promise<void> {
           <SettingsRow label="手势灵敏度" :value="sensitivityLabel" chevron @click="sensitivityOpen = true" />
           <SettingsRow label="手势说明" description="查看播放页手势操作指引" chevron @click="showGestureGuide" />
           <SettingsRow label="快进退秒数" :value="`${seekStepSecLabel}s`" chevron @click="seekStepOpen = true" />
+          <SettingsRow
+            label="进度条磁吸"
+            description="拖动时吸向片头/片尾边界，一格一齿给手感"
+            :value="seekDetentLabel"
+            chevron
+            @click="seekDetentOpen = true"
+          />
           <SettingsRow label="长按倍速" :value="`${longPressRateLabel}x`" chevron @click="longPressRateOpen = true" />
           <SettingsRow
             label="触觉反馈"
@@ -930,6 +964,31 @@ async function exportLogs(): Promise<void> {
           </button>
         </li>
       </ul>
+    </BottomSheet>
+
+    <!-- G-A03：进度条磁吸强度 -->
+    <BottomSheet v-model="seekDetentOpen" title="进度条磁吸">
+      <div class="detent-field">
+        <span class="detent-field__value">{{ seekDetentLabel }}</span>
+        <input
+          class="detent-slider"
+          type="range"
+          min="0"
+          max="100"
+          step="5"
+          :value="seekDetent"
+          aria-label="磁吸强度"
+          @change="setSeekDetent(Number(($event.target as HTMLInputElement).value))"
+        />
+        <div class="detent-field__scale">
+          <span>关闭</span>
+          <span>强</span>
+        </div>
+      </div>
+      <p class="sheet-hint">
+        拖动进度条时，指针靠近片头/片尾边界会被吸到边界上；每跨过一格刻度给一次轻振动，
+        格数就是胶片预览的格数。选「关闭」时不画刻度、不吸附、无振动，与从前完全一致。
+      </p>
     </BottomSheet>
 
     <!-- P1-4：长按倍速 -->
@@ -1268,6 +1327,34 @@ async function exportLogs(): Promise<void> {
 
 .sheet-hint {
   padding-top: var(--space-3);
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+/* G-A03：磁吸强度滑杆 */
+
+.detent-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+}
+
+.detent-field__value {
+  font: var(--text-body-strong);
+  color: var(--color-brand-text);
+}
+
+.detent-slider {
+  width: 100%;
+  /* 系统滑杆样式够用，这里只保证命中高度达到 44px 且跟随品牌色 */
+  min-height: 44px;
+  accent-color: var(--color-brand);
+}
+
+.detent-field__scale {
+  display: flex;
+  justify-content: space-between;
   font: var(--text-caption);
   color: var(--color-text-tertiary);
 }

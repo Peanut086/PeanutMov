@@ -1559,7 +1559,10 @@ input[type="range"].pl-rng::-moz-range-thumb {
 .pl-err {
   position: absolute;
   inset: 0;
-  z-index: var(--z-lock);
+  /* 稿里 err 在 picture 内，--z-lock(20) 足够；真实页把卡挂到壳层后，
+     它必须压住抽屉(30)与弹层(34)，否则选集页签会盖住报错卡；
+     仍低于帮助(38)与 toast(40)，取 37 不与任何档并列、由档位本身定序。 */
+  z-index: calc(var(--z-help) - 1);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1935,6 +1938,7 @@ input[type="range"].pl-rng::-moz-range-thumb {
 .player-root--pip .pl-top,
 .player-root--pip .pl-bottom,
 .player-root--pip .pl-hud,
+.player-root--pip .pinch-hud,
 .player-root--pip .pl-lock {
   display: none;
 }

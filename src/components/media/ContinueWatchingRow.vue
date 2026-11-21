@@ -7,6 +7,10 @@
  * - compact：水平条 72px 高，缩略图 + 标题 + 进度条，更紧凑
  *
  * 右上角移除按钮（命中区 ≥44）；整卡点击进播放页续播。
+ *
+ * `frames`（G-B08，仅 compact 生效）：`rec.id → 停在哪儿的那一帧`。
+ * 有帧就把它当缩略图（16:9，看得出没看完），没有就还是竖排海报——
+ * 竖排卡片模式没有 16:9 的位置，所以不接这个入口。
  */
 import type { HistoryRecord } from '@/types';
 import { formatRemaining } from '@/shared/time';
@@ -14,9 +18,10 @@ import { formatRemaining } from '@/shared/time';
 import PosterImage from '@/components/common/PosterImage.vue';
 import { IMG_W_COMPACT } from '@/shared/imageSize';
 
-withDefaults(defineProps<{ items: HistoryRecord[]; compact?: boolean }>(), {
-  compact: false,
-});
+withDefaults(
+  defineProps<{ items: HistoryRecord[]; compact?: boolean; frames?: Record<string, string> }>(),
+  { compact: false, frames: () => ({}) },
+);
 
 const emit = defineEmits<{
   /** `origin` 供父级做封面共享元素转场（点击的整卡按钮） */
@@ -41,8 +46,11 @@ const emit = defineEmits<{
         :aria-label="`继续观看 ${rec.title}${rec.episodeNumber ? ` 第 ${rec.episodeNumber} 集` : ''}`"
         @click="emit('select', rec, $event.currentTarget as HTMLElement)"
       >
-        <div class="continue-compact__thumb">
+        <div class="continue-compact__thumb" :class="{ 'continue-compact__thumb--frame': !!frames[rec.id] }">
+          <!-- 有"停在哪儿"的那一帧就画那一帧；没有（在线源/没下载/抽不出）退回海报，不冒充 -->
+          <img v-if="frames[rec.id]" class="continue-compact__frame" :src="frames[rec.id]" alt="" decoding="async" />
           <PosterImage
+            v-else
             :src="rec.posterUrl"
             :alt="rec.title"
             :fallback-title="rec.title"
@@ -316,6 +324,33 @@ const emit = defineEmits<{
   object-fit: cover;
 }
 
+/* 停在哪儿的那一帧（G-B08）：竖海报换成 16:9 画面，条目高度不变 */
+.continue-compact__thumb--frame {
+  width: 96px;
+  height: 54px;
+}
+
+.continue-compact__frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 海报 → 画面的替换发生在一次重渲染里；画面先淡入 120ms，避免逐条"啪"地跳 */
+.continue-compact__thumb--frame .continue-compact__frame {
+  animation: cw-frame-in 140ms var(--ease-decelerate);
+}
+
+@keyframes cw-frame-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 .continue-compact__info {
   display: flex;
   flex-direction: column;
@@ -380,6 +415,11 @@ const emit = defineEmits<{
 @media (prefers-reduced-motion: reduce) {
   .continue-card,
   .continue-compact__item {
+    animation: none;
+  }
+
+  /* 帧替换海报的淡入同样收掉：直接换成画面，不演 */
+  .continue-compact__thumb--frame .continue-compact__frame {
     animation: none;
   }
 }

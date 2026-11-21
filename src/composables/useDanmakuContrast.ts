@@ -31,6 +31,7 @@ import {
 } from '@/player/frameLuma';
 import { ExoPlayer } from '@/native/exoPlayerPlugin';
 import type { DanmakuOverlay } from '@/player/DanmakuOverlay';
+import type { LumaField } from '@/player/danmakuContrast';
 import { isLowEndDevice } from '@/shared/deviceTier';
 import { logger } from '@/shared/logger';
 import type { ResizeMode } from '@/types';
@@ -55,6 +56,13 @@ export interface DanmakuContrastOptions {
   resizeMode: Readonly<Ref<ResizeMode>>;
   /** 暂停时不必取样：画面不会自己变 */
   isPlaying: () => boolean;
+  /**
+   * 每取到一帧亮度场回调一次（只给非空帧，代次过期/已挂起的帧不会到这里）。
+   *
+   * 节奏带（G-C05）搭这条路取数，而不是自己再开一条：原生取样每次要过桥抓一帧 surface，
+   * 多一路就是给播放加负担，而它要的"相邻两帧差多少"这一路本来就已经拿到了。
+   */
+  onField?: (field: LumaField) => void;
 }
 
 export interface DanmakuContrastApi {
@@ -210,6 +218,7 @@ export function useDanmakuContrast(options: DanmakuContrastOptions): DanmakuCont
       if (suspended || !surfaceValid) return;
       missing = 0;
       target.setLumaField(field);
+      if (field) options.onField?.(field);
     } catch (e) {
       if (e instanceof FrameLumaUnavailableError) {
         // DOM 里没有视频元素是换集/换线重建途中的常态，不是永久不通

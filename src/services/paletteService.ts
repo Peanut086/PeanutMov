@@ -5,7 +5,11 @@
  * 所以统一走 `requestBytes` 拿字节流，再用 blob URL 解码后取样。
  *
  * 只缓存「海报主色」这一事实（HSL），角色色（填充 / 文字 / 描边阴影）在应用时按当前主题
- * 与页面底色现算——同一份缓存深浅色两套主题都能用。
+ * 与页面底色现算——同一份缓存深浅色两套主题都能用。「看过这张、判定它没有主色」同样落库
+ * （负记录），灰调海报不会被反复重新解码。
+ *
+ * 消费方分两条路：`paletteForPoster` 会补齐缓存（可能要拉海报字节），`peekPalette` 只读缓存
+ * ——整墙浏览要用后者，否则首屏会变成几十张大图请求。
  */
 import { kvRepo } from '@/db/repositories/kvRepo';
 import { requestBytes } from '@/services/danmaku/nativeHttp';
@@ -268,27 +272,42 @@ async function decodeRemote(url: string): Promise<ImageBitmap | null> {
   return decode(bytes, url);
 }
 
+/** 落库形态：主色本身，或「判定过无主色」的负记录 */
+type CachedSeed = PaletteSeed | { none: true };
+
+/**
+ * 读缓存，并把「查过但是灰调」与「根本没查过」分开——`kvRepo.get` 对两者都返回 null，
+ * 所以负结论要落成 `{none:true}`。色相墙靠这个区分决定要不要补取色，
+ * 详情页靠它决定要不要重新解码。
+ */
+async function readCached(key: string): Promise<{ state: 'cold' } | { state: 'known'; seed: PaletteSeed | null }> {
+  try {
+    const stored = await kvRepo.get<CachedSeed>(key);
+    if (!stored) return { state: 'cold' };
+    if ('none' in stored) return { state: 'known', seed: null };
+    if (typeof stored.h !== 'number') return { state: 'cold' };
+    const seed: PaletteSeed = { h: stored.h, s: stored.s, l: stored.l };
+    memoize(key, seed);
+    return { state: 'known', seed };
+  } catch (e) {
+    logger.warn('读取取色缓存失败', e);
+    return { state: 'cold' };
+  }
+}
+
 async function extract(url: string): Promise<PaletteSeed | null> {
   const key = cacheKey(url);
   const remote = REMOTE_URL.test(url);
   if (remote) {
-    try {
-      const stored = await kvRepo.get<PaletteSeed>(key);
-      if (stored && typeof stored.h === 'number') {
-        const seed: PaletteSeed = { h: stored.h, s: stored.s, l: stored.l };
-        memoize(key, seed);
-        return seed;
-      }
-    } catch (e) {
-      logger.warn('读取取色缓存失败', e);
-    }
+    const cached = await readCached(key);
+    if (cached.state === 'known') return cached.seed;
   }
 
   const source = remote ? await decodeRemote(url) : await decodeInline(url);
   if (!source) return null;
   const seed = dominantOf(source);
   memoize(key, seed);
-  if (seed && remote) void kvRepo.set(key, seed).catch(() => undefined);
+  if (remote) void kvRepo.set(key, seed ?? { none: true }).catch(() => undefined);
   return seed;
 }
 
@@ -315,6 +334,46 @@ export function paletteForPoster(url: string | null | undefined): Promise<Palett
     });
   inflight.set(key, task);
   return task;
+}
+
+/** `peekPalette` 的结果：`known=false` 表示缓存里还没有这条海报的任何结论 */
+export interface PalettePeek {
+  known: boolean;
+  seed: PaletteSeed | null;
+}
+
+/**
+ * 只读缓存的取色（色相墙用）：内存 → IndexedDB，**绝不解码、绝不联网**。
+ *
+ * 与 `paletteForPoster` 的唯一区别就是这条边界——整墙浏览时不该为了排版去拉几十张海报字节。
+ * `known: false` 时才值得回头调 `paletteForPoster` 补取；`known: true, seed: null` 是
+ * 「已经判定过这是灰调海报」，再取也不会有结果。
+ */
+export async function peekPalette(url: string | null | undefined): Promise<PalettePeek> {
+  if (!url || !REMOTE_URL.test(url)) return { known: false, seed: null };
+  const key = cacheKey(url);
+  if (memCache.has(key)) return { known: true, seed: memCache.get(key) ?? null };
+  const cached = await readCached(key);
+  return cached.state === 'known' ? { known: true, seed: cached.seed } : { known: false, seed: null };
+}
+
+/**
+ * 取海报的可绘制图：与 `paletteForPoster` 共用同一条解码通路（那边只要主色，这边要整张图）。
+ *
+ * 跨源海报仍然走字节流——直接把远程 URL 挂到 `img` 上再画进画布会污染画布，
+ * 之后连 `toBlob` 都调不动（明信片正是要导出，所以必须复用这条通路）。
+ * 任何一步失败都返回 null：调用方自己留空位并说明原因，不画假图。
+ */
+export async function loadPosterImage(
+  url: string | null | undefined,
+): Promise<ImageBitmap | HTMLImageElement | null> {
+  if (!url || !(REMOTE_URL.test(url) || INLINE_URL.test(url))) return null;
+  try {
+    return REMOTE_URL.test(url) ? await decodeRemote(url) : await decodeInline(url);
+  } catch (e) {
+    logger.debug('海报解码失败', { error: (e as Error)?.message ?? String(e) });
+    return null;
+  }
 }
 
 /* ---------- 角色色派生 ---------- */

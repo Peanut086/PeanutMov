@@ -930,7 +930,8 @@ export const libraryService: LibraryService = {
 
     const online = isOnline();
 
-    const localRaw = await mediaRepo.searchByTitle(keyword, SEARCH_LOCAL_LIMIT);
+    // 本地缓存也认主演：搜演员时能捞回已缓存/已看过的同名作品（换源候选那条路径不开，见 mediaRepo）
+    const localRaw = await mediaRepo.searchByTitle(keyword, SEARCH_LOCAL_LIMIT, { matchActors: true });
     const local = hideDemo ? localRaw.filter((item) => !item.isDemo) : localRaw;
 
     const allSources = await sourceRepo.list();

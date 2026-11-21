@@ -367,3 +367,115 @@ describe('PosterCard 倾斜与抬升（C-08）', () => {
     expect(card.style.willChange).toBe('');
   });
 });
+
+/**
+ * G-B02 · 长按就地放映的入口
+ *
+ * 这条 prop 默认关闭，所以第一优先级是「不传就跟以前一模一样」；
+ * 传了之后卡片只做一件事：把条目 + 海报框矩形 + 触点交出去，剩下的都归放映台。
+ * 抬升姿势在这一步必须让位——海报正要原地长大，先浮起来会看成两下。
+ */
+describe('PosterCard · 长按放映入口（peek）', () => {
+  const FRAME_RECT = { x: 24, y: 120, top: 120, left: 24, right: 144, bottom: 300, width: 120, height: 180 };
+
+  beforeEach(() => {
+    config.global.plugins = [createPinia()];
+    Object.defineProperty(navigator, 'hardwareConcurrency', { configurable: true, value: 8 });
+  });
+  afterEach(() => {
+    config.global.plugins = [];
+    vi.restoreAllMocks();
+  });
+
+  function mountPeekCard(props: Record<string, unknown> = {}, measurable = true) {
+    const wrapper = mount(PosterCard, { props: { item: makeItem(), ...props }, attachTo: document.body });
+    const card = wrapper.find('button.poster-card').element as HTMLElement;
+    const frame = wrapper.find('.poster-card__frame').element as HTMLElement;
+    if (measurable) {
+      vi.spyOn(frame, 'getBoundingClientRect').mockReturnValue({ ...FRAME_RECT, toJSON: () => FRAME_RECT } as DOMRect);
+    }
+    return { wrapper, card, frame };
+  }
+
+  function hold(wrapper: ReturnType<typeof mountPeekCard>, clientX = 60, clientY = 200): void {
+    const ev = new Event('pointerdown');
+    Object.assign(ev, { pointerId: 1, pointerType: 'touch', isPrimary: true, clientX, clientY });
+    wrapper.card.dispatchEvent(ev);
+  }
+
+  it('开了 peek：长按交出的正是海报框矩形与触点，且不再发 longpress', async () => {
+    const held = mountPeekCard({ peek: true });
+
+    hold(held, 60, 200);
+    await new Promise((resolve) => setTimeout(resolve, 470));
+
+    const peek = held.wrapper.emitted('peek');
+    expect(peek).toHaveLength(1);
+    expect(peek?.[0]?.[0]).toMatchObject({
+      item: { id: 'mock:demo-001~a1' },
+      rect: { top: 120, left: 24, width: 120, height: 180 },
+      origin: { x: 60, y: 200 },
+    });
+    expect(held.wrapper.emitted('longpress')).toBeUndefined();
+    held.wrapper.unmount();
+  });
+
+  it('放映让位给长按照本：卡片不抬升，避免「先浮起再长大」看成两下', async () => {
+    const held = mountPeekCard({ peek: true });
+
+    hold(held);
+    await new Promise((resolve) => setTimeout(resolve, 470));
+
+    expect(held.card.style.transform).toBe('');
+    expect(held.card.classList.contains('is-lifted')).toBe(false);
+    held.wrapper.unmount();
+  });
+
+  it('量不到矩形时把 null 交出去，由页面退回原来的长按入口', async () => {
+    const held = mountPeekCard({ peek: true }, false);
+
+    hold(held);
+    await new Promise((resolve) => setTimeout(resolve, 470));
+
+    expect(held.wrapper.emitted('peek')?.[0]?.[0]).toMatchObject({ rect: null });
+    expect(held.wrapper.emitted('longpress')).toBeUndefined();
+    held.wrapper.unmount();
+  });
+
+  it('扇形盘优先：quickActions 开着就轮不到放映台', async () => {
+    const held = mountPeekCard({ peek: true, quickActions: true });
+
+    hold(held);
+    await new Promise((resolve) => setTimeout(resolve, 470));
+
+    expect(held.wrapper.emitted('peek')).toBeUndefined();
+    // 扇形盘 Teleport 到 body，wrapper 里查不到，只能摸 document
+    expect(document.querySelector('.qc-radial')).not.toBeNull();
+    held.wrapper.unmount();
+  });
+
+  it('不开 peek 时逐字节照旧：发 longpress、不发 peek', async () => {
+    const held = mountPeekCard();
+
+    hold(held);
+    await new Promise((resolve) => setTimeout(resolve, 470));
+
+    expect(held.wrapper.emitted('longpress')).toHaveLength(1);
+    expect(held.wrapper.emitted('peek')).toBeUndefined();
+    held.wrapper.unmount();
+  });
+
+  it('放映起幕后松手再点一下，不该顺带触发进入详情', async () => {
+    const held = mountPeekCard({ peek: true });
+
+    hold(held);
+    await new Promise((resolve) => setTimeout(resolve, 470));
+    const up = new Event('pointerup');
+    Object.assign(up, { pointerId: 1, pointerType: 'touch', isPrimary: true, clientX: 60, clientY: 200 });
+    held.card.dispatchEvent(up);
+    await held.wrapper.find('button.poster-card').trigger('click');
+
+    expect(held.wrapper.emitted('select')).toBeUndefined();
+    held.wrapper.unmount();
+  });
+});

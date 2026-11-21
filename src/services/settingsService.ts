@@ -114,6 +114,10 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       lastVolume: 100,
       resizeMode: 'contain',
       autoSkipIntro: true,
+      /* G-A03：磁吸默认开一档（60）；0 = 完全关闭，与功能上线前一致 */
+      seekDetent: 60,
+      /* G-A09：捏合切画幅默认开；关掉后第二指回到不做任何事 */
+      pinchResizeEnabled: true,
       ambilight: true,
       ambilightIntensity: 85,
       /* B2：后台播放默认关，保持既有「切后台即暂停」行为 */
@@ -151,6 +155,7 @@ export function defaultSettings(now: number = Date.now()): AppSettings {
       filterBottom: false,
       interactive: true,
       autoContrast: true,
+      rhythmBand: true,
     },
     /* v1.8/P4：网盘画质与线程配置 */
     netdisk: {
@@ -247,6 +252,13 @@ function sanitize(input: AppSettings): AppSettings {
   player.ambilightIntensity = Number.isFinite(ambilightLevel)
     ? Math.max(0, Math.min(100, ambilightLevel))
     : 85;
+  // G-A03：越界/脏值回落默认档；显式的 0 是"用户主动关掉"，必须原样保留
+  const detentLevel = Number(player.seekDetent);
+  player.seekDetent = Number.isFinite(detentLevel)
+    ? Math.max(0, Math.min(100, Math.round(detentLevel)))
+    : 60;
+  // G-A09：只有显式 false 才算关掉（旧设置库里没有这个字段，回落默认「开」）
+  player.pinchResizeEnabled = player.pinchResizeEnabled !== false;
   // 只有显式 true 才算开启：旧设置库里没有这个字段
   player.backgroundPlayback = player.backgroundPlayback === true;
   pruneDropped(player.subtitle, DROPPED_KEYS.subtitle);
@@ -301,6 +313,8 @@ function sanitize(input: AppSettings): AppSettings {
   danmaku.interactive = danmaku.interactive !== false;
   // 缺省即开：老设置里没有这个键，第一次读到也要带上（关掉它才会退回旧行为）
   danmaku.autoContrast = danmaku.autoContrast !== false;
+  // 节奏带同样缺省即开；它没有独立取样路，取样关掉时 PlayerView 会把带子一起收掉
+  danmaku.rhythmBand = danmaku.rhythmBand !== false;
 
   const merged: AppSettings = {
     ...defaults,

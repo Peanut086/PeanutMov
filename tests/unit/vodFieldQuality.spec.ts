@@ -206,4 +206,18 @@ describe('toItemFromVod：派生字段落到条目上', () => {
     );
     expect(item.tags).toHaveLength(3);
   });
+
+  it('vod_actor 拆成主演数组（演员搜索的数据源）', () => {
+    const item = toItemFromVod(
+      source,
+      { vod_id: 18, vod_name: '飞驰人生', vod_actor: '沈腾, 尹正， 黄景瑜' },
+      makeItem,
+    );
+    expect(item.actors).toEqual(['沈腾', '尹正', '黄景瑜']);
+  });
+
+  it('没有 vod_actor 时不编主演', () => {
+    const item = toItemFromVod(source, { vod_id: 19, vod_name: '某纪录片' }, makeItem);
+    expect(item.actors).toEqual([]);
+  });
 });
