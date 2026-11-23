@@ -621,6 +621,17 @@ async function load(refresh = false): Promise<void> {
 }
 
 /** 批次2：后台探测线路并自动切换到最优线路 */
+let probeAbort: AbortController | null = null;
+
+/**
+ * P0-1：中止后台探测。用户点播放 / 换片 / 离开详情页时调用——
+ * 后台探测与点播抢同一个爬虫串行闸门，不掐断就会把用户那一次点成「该源正忙」。
+ */
+function cancelLineProbe(): void {
+  probeAbort?.abort();
+  probeAbort = null;
+}
+
 async function backgroundProbeAndSwitch(): Promise<void> {
   const it = item.value;
   if (!it || lines.value.length === 0) return;
@@ -631,15 +642,25 @@ async function backgroundProbeAndSwitch(): Promise<void> {
   const targetEp = targetEpisode.value ?? episodes.value[0];
   if (!targetEp) return;
 
+  // 单飞：新一发起就先掐掉上一轮（换片 / 重复挂载不留并发探测）
+  cancelLineProbe();
+  const controller = new AbortController();
+  probeAbort = controller;
+
   const result = await probeLines({
     item: it,
     lines: lines.value,
     targetEpisode: targetEp,
     historyEpisodeId: progressRecord.value?.episodeId ?? null,
+    signal: controller.signal,
   });
 
-  // 探测结果只服务于「发起时那部片子」：换了媒体/离开页面就作废
-  if (isStaleChain(token)) return;
+  // 探测结果只服务于「发起时那部片子」：换了媒体/离开页面就作废；被主动中止同样作废
+  if (isStaleChain(token) || controller.signal.aborted) {
+    if (probeAbort === controller) probeAbort = null;
+    return;
+  }
+  if (probeAbort === controller) probeAbort = null;
 
   // 探测完成后，如果用户已手动选择线路，不再自动切换
   if (manualLineId.value) return;
@@ -722,6 +743,8 @@ onBeforeRouteLeave((to) => {
 watch(mediaId, () => {
   // 让上一部片子仍在飞的探测/换源链集体失效（含 A→B→返回 A 的同 ID 复发）
   detailToken += 1;
+  // P0-1：换片同样掐掉上一轮的后台探测（令牌只作废结果，掐不断在途解析）
+  cancelLineProbe();
   lineId.value = null;
   manualLineId.value = null;
   descExpanded.value = false;
@@ -733,6 +756,8 @@ watch(mediaId, () => {
 
 onBeforeUnmount(() => {
   detailToken += 1;
+  // P0-1：离开详情页（含去播放页）先掐掉后台探测
+  cancelLineProbe();
   stopFavSpring?.();
   stopFavSpring = null;
 });
@@ -909,6 +934,8 @@ async function selectSource(candidate: import('@/components/media/sourceCandidat
 async function playEpisode(ep: Episode | null, restart = false): Promise<void> {
   const it = item.value;
   if (!it || !ep) return;
+  // P0-1：用户已决定点播——先掐掉后台探测，别让它和这一次解析抢爬虫闸门
+  cancelLineProbe();
   if (isOffline.value && !downloadedIds.value.includes(ep.id)) {
     toast.error('离线不可播放，该集尚未下载');
     return;

@@ -136,6 +136,10 @@ export interface LibraryService {
     episodeId: string;
     lineId?: string | null;
     prefer?: 'local' | 'network';
+    /** P0-1：取消口径——用户开始点播时，后台探测必须能真正掐断在途解析 */
+    signal?: AbortSignal;
+    /** P0-1：`false` = 后台探测调用，不计入「点播在途」（否则探测自己顶开预热的让路闸门） */
+    demand?: boolean;
   }): Promise<PlaybackSource>;
   ensureEpisodes(mediaId: string, lineId?: string | null): Promise<Episode[]>;
   toDownloadInputs(params: {
@@ -190,6 +194,16 @@ interface ResolvedPlayCacheEntry {
 }
 const RESOLVED_PLAY_TTL_MS = 30 * 60 * 1000;
 const resolvedPlayCache = new Map<string, ResolvedPlayCacheEntry>();
+
+/**
+ * P0-2：后台详情刷新的最小间隔。
+ *
+ * `getDetail(refresh:false)` 每次命中缓存都会 fire-and-forget 一次 `refreshDetail`——没有下限，
+ * 哪怕这条详情 10 秒前刚被用来起播。退出播放页秒回详情页，这一次后台刷新既抢爬虫实例，
+ * 又（旧口径）清掉播放地址缓存，用户紧接着点同一集就必然撞上「该源正忙」。
+ * 加下限后，这段时间内的重复进入详情不再触发后台刷新；真实需要的刷新仍走显式 refresh 与冷启动。
+ */
+const DETAIL_BACKGROUND_REFRESH_MIN_MS = 120 * 1000;
 
 function resolvedPlayCacheKey(mediaId: string, lineId: string, episodeId: string | null | undefined): string {
   return `${mediaId}|${lineId}|${episodeId ?? ''}`;
@@ -1076,10 +1090,13 @@ export const libraryService: LibraryService = {
     if (cachedItem && !opts?.refresh) {
       const cached = await loadCachedDetail(cachedItem);
       if (cached) {
-        // 后台刷新（不阻塞返回）
-        void refreshDetail(cachedItem).catch((e: unknown) => {
-          logger.debug('详情后台刷新失败', { mediaId, error: toErrorShape(e) });
-        });
+        // P0-2：详情刚刷过就不再后台刷新——否则「退出播放页 → 秒回详情 → 点同一集」会撞上
+        // 一次后台详情刷新抢爬虫实例（表现为「该源正忙」），并（旧口径）清掉可播结论。
+        if (Date.now() - cachedItem.updatedAt > DETAIL_BACKGROUND_REFRESH_MIN_MS) {
+          void refreshDetail(cachedItem).catch((e: unknown) => {
+            logger.debug('详情后台刷新失败', { mediaId, error: toErrorShape(e) });
+          });
+        }
         return cached;
       }
     }
@@ -1287,7 +1304,10 @@ export const libraryService: LibraryService = {
       return cached;
     }
 
-    beginPlaybackDemand();
+    // P0-1：后台探测（`demand:false`）不算「点播在途」——探测自己把预热的让路闸门顶开，
+    // 用户真点击时反而没人收手；播放/投屏/下载入口保持默认计入。
+    const countsAsDemand = params.demand !== false;
+    if (countsAsDemand) beginPlaybackDemand();
     try {
       prewarm(adapter, source);
       const playback = await adapter.resolvePlayUrl({
@@ -1297,6 +1317,7 @@ export const libraryService: LibraryService = {
         episodeId: params.episodeId,
         episodeNumber,
         lineId,
+        signal: params.signal,
       });
       calibrateAlive(source.id);
       setResolvedPlayCache(cacheKey, playback);
@@ -1341,6 +1362,7 @@ export const libraryService: LibraryService = {
             episodeId: params.episodeId,
             episodeNumber,
             lineId,
+            signal: params.signal,
           });
           calibrateAlive(source.id);
           setResolvedPlayCache(cacheKey, playback);
@@ -1363,7 +1385,8 @@ export const libraryService: LibraryService = {
       }
       throw error;
     } finally {
-      endPlaybackDemand();
+      // 与上面的 begin 严格配对：后台探测没加计数，结束也不能减计数
+      if (countsAsDemand) endPlaybackDemand();
     }
   },
 
@@ -1609,6 +1632,11 @@ async function loadCachedDetail(item: MediaItem): Promise<MediaDetail | null> {
   return { item, lines, episodes };
 }
 
+/** 线路/剧集没变时不失效播放缓存（详见 refreshDetail 处 P0-2 说明） */
+function playSignatureOf(episodes: Episode[]): string {
+  return episodes.map((ep) => `${ep.id}#${ep.rawUrl ?? ''}`).join('\n');
+}
+
 /** 回源刷新详情并写入 media/lines/episodes */
 async function refreshDetail(item: MediaItem): Promise<MediaDetail> {
   const source = await sourceRepo.get(item.sourceId);
@@ -1645,8 +1673,14 @@ async function refreshDetail(item: MediaItem): Promise<MediaDetail> {
     isDemo: item.isDemo,
   };
 
-  // P0-1: 详情刷新时失效播放地址缓存
-  invalidateResolvedPlayCache(item.id);
+  // P0-2：内容签名——线路/剧集没变时不失效播放地址缓存。
+  // 旧口径每次详情刷新都无条件 invalidateResolvedPlayCache，于是「退出详情页 → 重选刚播过的一集」
+  // 必然缓存 miss：重跑的那次爬虫调用撞上后台探测/刷新抢同一实例就是「该源正忙」，
+  // 撞上磁力线路就是「不提供种子下载」。集合没变，就不该把刚用过的可播结论抹掉。
+  const priorEpisodes = await episodeRepo.listByMedia(item.id);
+  if (playSignatureOf(priorEpisodes) !== playSignatureOf(mergedDetail.episodes)) {
+    invalidateResolvedPlayCache(item.id);
+  }
 
   // 删除旧线路/剧集后写入新的（避免线路数变化留下脏数据）
   await lineRepo.removeByMedia(item.id);

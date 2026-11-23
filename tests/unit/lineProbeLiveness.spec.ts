@@ -6,6 +6,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * 旧口径「resolvePlay 有答 = 线路可播」在真机上永远停在第一条死线路（那个域名连 DNS
  * 都解析不了）。现在补第二种证据：地址空读。判死要换下一条继续探，判不出来则维持原样，
  * 免得把「探测方式受限」写成「线路挂了」。
+ *
+ * P0-1：探测是后台活动，必须给真实点播让路、且可被取消——
+ * 否则它与用户那次点播抢同一个爬虫串行闸门，用户看到的就是「该源正忙」。
  */
 
 const h = vi.hoisted(() => {
@@ -56,6 +59,7 @@ vi.mock('@/services/lineHealthService', async (importOriginal) => {
 vi.mock('@/services/libraryService', () => ({ libraryService: { resolvePlay: h.resolvePlay } }));
 
 const { probeLines } = await import('@/services/lineProbeService');
+const { beginPlaybackDemand, endPlaybackDemand } = await import('@/services/prewarmState');
 
 function makeCtx(episodeId = 'demo:m1:e1') {
   const lines = [
@@ -116,3 +120,71 @@ describe('probeLines 的地址级证据', () => {
     expect(h.healthLog).toEqual([{ kind: 'ok', key: 'src-a|m1|线路 1' }]);
   });
 });
+
+describe('probeLines 给点播让路 + 可取消（P0-1）', () => {
+  beforeEach(() => {
+    h.verdicts.length = 0;
+    h.healthLog.length = 0;
+    h.probe.mockClear();
+    h.resolvePlay.mockClear();
+  });
+
+  it('探测自身不计入点播计数：以 demand:false 调 resolvePlay，并透传取消信号', async () => {
+    const controller = new AbortController();
+    await probeLines({ ...makeCtx(), signal: controller.signal });
+
+    // 每条探测都应带上 demand:false（否则探测自己把预热的让路闸门顶开）与本轮 signal
+    expect(h.resolvePlay).toHaveBeenCalled();
+    for (const [args] of h.resolvePlay.mock.calls) {
+      expect(args).toMatchObject({ demand: false, signal: controller.signal });
+    }
+  });
+
+  it('有真实点播在途 → 整轮探测收手，一条都不探（不再抢爬虫串行闸门）', async () => {
+    beginPlaybackDemand();
+    try {
+      const result = await probeLines(makeCtx());
+      expect(result).toEqual({ probedCount: 0, successLineId: null, allFailed: false });
+      expect(h.resolvePlay).not.toHaveBeenCalled();
+    } finally {
+      endPlaybackDemand();
+    }
+  });
+
+  it('取消信号已置位 → 不再投任何一条，allFailed 保持 false（不误触兜底换源）', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await probeLines({ ...makeCtx(), signal: controller.signal });
+
+    expect(result).toEqual({ probedCount: 0, successLineId: null, allFailed: false });
+    expect(h.resolvePlay).not.toHaveBeenCalled();
+  });
+
+  it('探测中途被取消 → 停止探下一条，已探结果不覆盖', async () => {
+    const controller = new AbortController();
+    // 第一条探活判死，会继续；在第二条前由 signal 掐断
+    h.verdicts.push('dead');
+    h.resolvePlay.mockImplementationOnce(async (args: { episodeId: string; lineId: string }) => {
+      controller.abort();
+      return {
+        url: 'https://cdn.example.com/a.m3u8',
+        isLocal: false,
+        headers: {},
+        format: 'hls',
+        subtitles: [],
+        lineId: args.lineId,
+        quality: null,
+        expiresAt: null,
+      };
+    });
+
+    const result = await probeLines({ ...makeCtx(), signal: controller.signal });
+
+    // 第一条照常探（判死沉底），第二条因 signal.aborted 不再投
+    expect(result.probedCount).toBe(1);
+    expect(result.successLineId).toBeNull();
+    expect(h.resolvePlay).toHaveBeenCalledTimes(1);
+  });
+});
+

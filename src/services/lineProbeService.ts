@@ -11,13 +11,19 @@
  * - 成功口径 = `resolvePlay` 返回 **且** 该地址空读拿到字节（P1-4：爬虫答了不等于能播）；
  *   判死单次即沉底，判不出（超时/被 CORS 挡住）不记失败，探活结论按 URL 缓存 5 分钟；
  * - 离线跳过；
- * - 探测成功的地址进 resolvePlay 内存缓存（复用现有机制），点播放时零成本命中。
+ * - 探测成功的地址进 resolvePlay 内存缓存（复用现有机制），点播放时零成本命中；
+ * - **P0-1**：探测是后台活动，必须给真实点播让路——
+ *   ① 逐条开探前查 `isPlaybackDemandInFlight()`，有用户在等播放就立即收手
+ *   （否则探测与点播抢同一个爬虫串行闸门，用户看到的就是「该源正忙」）；
+ *   ② 接受 `signal`，透传进 `resolvePlay`，让"用户点播放 / 离开页面 / 换片"能真正掐断在途解析，
+ *   而不是靠 15s 预算干等；探测自身 `demand:false`，不冒充点播计数。
  */
 import type { Episode, MediaItem, PlayLine } from '@/types';
 import { libraryService } from '@/services/libraryService';
 import { lineHealthService, lineKey } from '@/services/lineHealthService';
 import { rankLines } from '@/services/lineRanking';
 import { probeUrlLiveness, type LivenessResult } from '@/services/urlLivenessProbe';
+import { isPlaybackDemandInFlight } from '@/services/prewarmState';
 import { isOnline } from '@/native/network';
 import { logger } from '@/shared/logger';
 
@@ -29,6 +35,8 @@ export interface ProbeContext {
   lines: PlayLine[];
   targetEpisode: Episode;
   historyEpisodeId?: string | null;
+  /** P0-1：取消信号——用户点播放/离开详情页/换片时中止整轮探测 */
+  signal?: AbortSignal;
 }
 
 export interface ProbeResult {
@@ -69,16 +77,29 @@ export async function probeLines(ctx: ProbeContext): Promise<ProbeResult> {
       break;
     }
 
+    // P0-1：被取消（用户点播放/离开详情页/换片）就整轮收手，不再投下一条
+    if (ctx.signal?.aborted) {
+      logger.debug('线路探测被取消', { probedCount });
+      break;
+    }
+    // P0-1：有真实点播在等爬虫实例，探测让路——它抢的正是同一批串行闸门
+    if (isPlaybackDemandInFlight()) {
+      logger.debug('点播在途，线路探测让路', { probedCount });
+      break;
+    }
+
     probedCount++;
     const key = lineKey(item.sourceId, item.sourceItemId, line.name);
     const startTime = Date.now();
 
     try {
-      // 单条探测：调 resolvePlay（会进内存缓存）
+      // 单条探测：调 resolvePlay（会进内存缓存）。P0-1：透传取消信号，且不计入点播计数
       const probePromise = libraryService.resolvePlay({
         mediaId: item.id,
         episodeId: targetEpisode.id,
         lineId: line.id,
+        signal: ctx.signal,
+        demand: false,
       });
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('E_TIMEOUT')), PROBE_TIMEOUT_MS),

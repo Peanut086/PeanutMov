@@ -23,6 +23,8 @@ const routeState = reactive<{ params: Record<string, string>; query: Record<stri
 
 const routerReplace = vi.fn();
 const probeQueue: Array<(result: ProbeResult) => void> = [];
+/** 每轮 `probeLines` 收到的取消信号（P0-1：离开/换片/点播放必须把它置位） */
+const probeSignals: Array<AbortSignal | undefined> = [];
 const alternateQueue: Array<(alternate: unknown) => void> = [];
 const mounted: Array<() => void> = [];
 const loadQueue: Array<() => void> = [];
@@ -51,8 +53,10 @@ vi.mock('@/services/lineProbeService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/services/lineProbeService')>();
   return {
     ...actual,
-    probeLines: () =>
+    probeLines: (ctx: { signal?: AbortSignal }): Promise<ProbeResult> =>
       new Promise<ProbeResult>((resolve) => {
+        // P0-1：记下这一轮探测拿到的取消信号，用例据此断言"离开/换片/点播放"确实掐断了它
+        probeSignals.push(ctx.signal);
         probeQueue.push(resolve);
       }),
   };
@@ -199,6 +203,7 @@ function toastTexts(ui: ReturnType<typeof useUiStore>): string {
 describe('DetailView 自动链路晚到结果', () => {
   beforeEach(() => {
     probeQueue.length = 0;
+    probeSignals.length = 0;
     alternateQueue.length = 0;
     loadQueue.length = 0;
     recordCalls.length = 0;
@@ -323,5 +328,30 @@ describe('DetailView 自动链路晚到结果', () => {
 
     expect(recordCalls).toEqual(['src-a:m2']);
     expect(alternateQueue.length).toBe(1);
+  });
+
+  it('离开详情页时中止在途的后台探测（P0-1）', async () => {
+    const { wrapper } = await mountDetail('src-a:m1', makePlayableDetail('src-a:m1'));
+    expect(probeSignals.length).toBe(1);
+    expect(probeSignals[0]?.aborted).toBe(false);
+
+    wrapper.unmount();
+    await settle(2);
+
+    // 令牌只作废结果，掐不断在途解析；P0-1 必须真正 abort，探测线程才不会继续抢爬虫闸门
+    expect(probeSignals[0]?.aborted).toBe(true);
+  });
+
+  it('换到别的影片时，上一部仍在飞的探测被中止（P0-1）', async () => {
+    const { library } = await mountDetail('src-a:m1', makePlayableDetail('src-a:m1'));
+    expect(probeSignals.length).toBe(1);
+
+    library.detail = makePlayableDetail('src-a:m2');
+    routeState.params.mediaId = 'src-a:m2';
+    await settle();
+
+    expect(probeSignals.length).toBe(2);
+    expect(probeSignals[0]?.aborted).toBe(true);
+    expect(probeSignals[1]?.aborted).toBe(false);
   });
 });

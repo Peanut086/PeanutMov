@@ -537,10 +537,11 @@ describe('源忙分档、详情预算与预热让路（P1-3）', () => {
    * 落一份「源 + 条目」（可选线路与剧集）。
    * `withLines: false` 时缓存详情视为不存在——`getDetail` 的刷新失败兜底会返回缓存，
    * 要观察 `withDetailBudget` 抛出的错误就必须让缓存为空。
+   * P0-2：`updatedAtAgoMs` 控制条目新鲜度（驱动后台刷新节流），`episodeRawUrl` 控制剧集可播签名。
    */
   async function seedPlayable(
-    opts?: { withLines?: boolean },
-  ): Promise<{ source: Source; item: MediaItem; line: PlayLine; episodeId: string }> {
+    opts?: { withLines?: boolean; updatedAtAgoMs?: number; episodeRawUrl?: string },
+  ): Promise<{ source: Source; item: MediaItem; line: PlayLine; episode: Episode; episodeId: string }> {
     const source = await sourceService.create({
       name: '分档源',
       type: 'site',
@@ -568,7 +569,7 @@ describe('源忙分档、详情预算与预热让路（P1-3）', () => {
       titleLower: '分档验证片',
       isDemo: false,
       cachedAt: now,
-      updatedAt: now,
+      updatedAt: now - (opts?.updatedAtAgoMs ?? 0),
     };
     const line: PlayLine = {
       id: `${mediaId}~l0`,
@@ -588,6 +589,7 @@ describe('源忙分档、详情预算与预热让路（P1-3）', () => {
       title: '第 1 集',
       durationSec: null,
       subtitles: [],
+      ...(opts?.episodeRawUrl !== undefined ? { rawUrl: opts.episodeRawUrl } : {}),
       updatedAt: now,
     };
     await mediaRepo.save(item);
@@ -595,7 +597,7 @@ describe('源忙分档、详情预算与预热让路（P1-3）', () => {
       await lineRepo.saveMany([line]);
       await episodeRepo.saveMany([episode]);
     }
-    return { source, item, line, episodeId: episode.id };
+    return { source, item, line, episode, episodeId: episode.id };
   }
 
   function playbackOf(lineId: string): PlaybackSource {
@@ -749,5 +751,63 @@ describe('源忙分档、详情预算与预热让路（P1-3）', () => {
     endPlaybackDemand();
     await libraryService.getDetail(item.id, { refresh: true });
     expect(warmupSpy).toHaveBeenCalledTimes(1);
+  });
+
+  // P0-2：退会详情页 → 重选刚播过的一集，不该被「后台详情刷新 + 每次刷新清播放缓存」拖回爬虫实例
+  it('后台详情刷新有最小间隔：刚刷过不再 fire-and-forget，过隔后才刷（P0-2）', async () => {
+    const flush = () => new Promise((r) => setTimeout(r, 10));
+    const { item, line, episode } = await seedPlayable();
+
+    // ① 新鲜（updatedAt≈now）：命中缓存直接返回，不再触发后台 detailContent
+    const detailSpyFresh = vi
+      .spyOn(siteAdapter(), 'getDetail')
+      .mockResolvedValue({ item, lines: [line], episodes: [episode] });
+    const cached = await libraryService.getDetail(item.id, {});
+    await flush();
+    expect(cached.episodes).toHaveLength(1);
+    expect(detailSpyFresh).not.toHaveBeenCalled();
+    detailSpyFresh.mockRestore();
+
+    // ② 隔了 > 2 分钟：后台刷新照常 fire（不阻塞返回）
+    const stale = await seedPlayable({ updatedAtAgoMs: 130_000 });
+    const detailSpyStale = vi
+      .spyOn(siteAdapter(), 'getDetail')
+      .mockResolvedValue({ item: stale.item, lines: [stale.line], episodes: [stale.episode] });
+    await libraryService.getDetail(stale.item.id, {});
+    await flush();
+    expect(detailSpyStale).toHaveBeenCalledTimes(1);
+  });
+
+  it('详情刷新内容未变 → 不清播放缓存，重播同一集零爬虫调用（P0-2）', async () => {
+    const { item, line, episode, episodeId } = await seedPlayable({ episodeRawUrl: 'main#第1集' });
+    const resolveSpy = vi.spyOn(siteAdapter(), 'resolvePlayUrl').mockResolvedValue(playbackOf(line.id));
+
+    // 第一次点播：回源并写进内存缓存
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+
+    // 详情刷新返回完全相同的线路/剧集（同集合同地址）
+    vi.spyOn(siteAdapter(), 'getDetail').mockResolvedValue({ item, lines: [line], episodes: [episode] });
+    await libraryService.getDetail(item.id, { refresh: true });
+
+    // 重播同一集：内容没变 → 缓存没被抹掉 → 不再调用爬虫（也就不会撞上「该源正忙」）
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('详情刷新换了地址 → 照旧清播放缓存，重播重新回源（P0-2 不误留坏地址）', async () => {
+    const { item, line, episode, episodeId } = await seedPlayable({ episodeRawUrl: 'old-link' });
+    const resolveSpy = vi.spyOn(siteAdapter(), 'resolvePlayUrl').mockResolvedValue(playbackOf(line.id));
+
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+
+    const changed = { ...episode, rawUrl: 'new-link' };
+    vi.spyOn(siteAdapter(), 'getDetail').mockResolvedValue({ item, lines: [line], episodes: [changed] });
+    await libraryService.getDetail(item.id, { refresh: true });
+
+    // 地址变了：缓存必须作废，重播重新回源取新地址
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
+    expect(resolveSpy).toHaveBeenCalledTimes(2);
   });
 });
