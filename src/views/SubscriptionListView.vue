@@ -267,8 +267,10 @@ async function retry(): Promise<void> {
         <li v-for="row in rows" :key="row.id" class="subs-row">
           <div class="subs-row__main">
             <p class="subs-row__id truncate-1">{{ rowLabel(row) }}</p>
-            <!-- P1-2：有名称时来源标识降到次级一行——地址仍是判定「删的/刷的是哪条」的依据，不能省掉 -->
-            <p v-if="row.name" class="subs-row__url truncate-1">{{ row.id }}</p>
+            <!-- P1-2：地址仍是判定「删的/刷的是哪条」的依据。副行的口径是"比标题多信息才显示"：
+                 有名称、或标题只是主机名/文件名末段时都多一行；标题已等于整条标识时不重复。
+                 同域名多条订阅（如 qist.wyfc.qzz.io 挂两份）全靠这一行区分，缺了就是两行一样的卡片。 -->
+            <p v-if="row.id !== rowLabel(row)" class="subs-row__url truncate-1">{{ row.id }}</p>
             <p class="subs-row__meta">
               {{ row.sourceCount }} 个源 · 启用 {{ row.enabledCount }}
               <template v-if="row.unhealthyCount > 0"> · 失效 {{ row.unhealthyCount }}</template>

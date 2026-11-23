@@ -2,8 +2,8 @@
  * P1-2：订阅管理页的「名字」口径
  *
  * 订阅页以前只有来源标识（整条 URL 或文件名），读不出"哪一份订阅"。现在标题用订阅名称，
- * 名称缺失时退回短标签（主机名 / 文件名末段），有名称时完整地址降到次级一行——
- * 删与刷的判定依据不能丢，所以两行都要在。
+ * 名称缺失时退回短标签（主机名 / 文件名末段）；副行只在"比标题多信息"时出现——
+ * 删与刷的判定依据不能丢，同域名挂两份订阅时全靠它区分（真机上 qist.wyfc.qzz.io 就撞了两次）。
  *
  * 这里不 mock 服务层：链路 UI → `summarize()` → `subscriptions` 表全部是真的，
  * 断言过的显示口径与后台自动刷新读的是同一份数据。
@@ -80,14 +80,27 @@ describe('订阅行的显示名', () => {
     expect(row.url).toBe(URL_A);
   });
 
-  it('没有名称：标题退回主机名，不凭空多出地址行', async () => {
+  it('没有名称：标题退回主机名，完整地址降到次级一行', async () => {
     await sourceRepo.save(makeSource(URL_A));
 
     const row = firstRow(await mountView());
     expect(row.title).toBe('sub.example.com');
-    expect(row.url).toBeNull();
+    expect(row.url).toBe(URL_A);
     // 补建出来的实体不带名称（没有可依据的信息），显示口径才会继续走短标签
     expect((await subscriptionRepo.findByKey(URL_A))?.name).toBeNull();
+  });
+
+  it('同域名挂两份订阅：标题可以撞名，副行必须把两者分开', async () => {
+    await sourceRepo.save(makeSource('https://qist.wyfc.qzz.io/fty.json'));
+    await sourceRepo.save(makeSource('https://qist.wyfc.qzz.io/xiaosa/api.json'));
+
+    const wrapper = await mountView();
+    const titles = wrapper.findAll('.subs-row__id').map((node) => node.text());
+    const urls = wrapper.findAll('.subs-row__url').map((node) => node.text());
+    expect(titles).toEqual(['qist.wyfc.qzz.io', 'qist.wyfc.qzz.io']);
+    expect(new Set(urls).size).toBe(2);
+    expect(urls).toContain('https://qist.wyfc.qzz.io/fty.json');
+    expect(urls).toContain('https://qist.wyfc.qzz.io/xiaosa/api.json');
   });
 
   it('老库升级后：名称只存在于导入记录里，进页面即补建实体并显示名称', async () => {
@@ -102,8 +115,16 @@ describe('订阅行的显示名', () => {
     expect((await subscriptionRepo.findByKey(URL_A))?.name).toBe('去年导入的订阅');
   });
 
-  it('文件导入的订阅：标题用文件名末段，完整标识不显示', async () => {
+  it('文件导入的订阅：标题用文件名末段，路径比末段多信息时仍给整条标识', async () => {
     await sourceRepo.save(makeSource('/sdcard/TVBox/my-sub.json'));
+
+    const row = firstRow(await mountView());
+    expect(row.title).toBe('my-sub.json');
+    expect(row.url).toBe('/sdcard/TVBox/my-sub.json');
+  });
+
+  it('标识本身就等于标题：不重复渲染一行同样的字', async () => {
+    await sourceRepo.save(makeSource('my-sub.json'));
 
     const row = firstRow(await mountView());
     expect(row.title).toBe('my-sub.json');
