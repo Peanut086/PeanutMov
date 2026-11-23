@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 主题图标（Android 13+）单色层。
+     几何取自 design/brand/svg/icon-foreground.svg 的同一光圈轮廓，
+     但按 66dp 安全区做减法：六片快门叶在桌面尺寸下会糊成一团，只保留光圈与中心放映三角。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:translateX="54"
+        android:translateY="54"
+        android:scaleX="0.0896"
+        android:scaleY="0.0896">
+        <path
+            android:pathData="M -45,-324 Q 0,-350 45,-324 L 258.1,-201 Q 303.1,-175 303.1,-123 L 303.1,123 Q 303.1,175 258.1,201 L 45,324 Q 0,350 -45,324 L -258.1,201 Q -303.1,175 -303.1,123 L -303.1,-123 Q -303.1,-175 -258.1,-201 L -45,-324 Z"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="30"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M -78,-92 L -78,92 L 82,0 Z"
+            android:fillColor="#FFFFFFFF" />
+    </group>
+</vector>

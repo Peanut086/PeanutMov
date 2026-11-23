@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 通知栏小图标：品牌光圈 + 放映三角，纯白 alpha（系统按状态栏配色单色化）。
+     几何与 ic_launcher_monochrome 同源，仅按 24dp 重新缩放与加粗描边。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+    <group
+        android:translateX="12"
+        android:translateY="12"
+        android:scaleX="0.0274"
+        android:scaleY="0.0274">
+        <path
+            android:pathData="M -45,-324 Q 0,-350 45,-324 L 258.1,-201 Q 303.1,-175 303.1,-123 L 303.1,123 Q 303.1,175 258.1,201 L 45,324 Q 0,350 -45,324 L -258.1,201 Q -303.1,175 -303.1,123 L -303.1,-123 Q -303.1,-175 -258.1,-201 L -45,-324 Z"
+            android:strokeColor="#FFFFFFFF"
+            android:strokeWidth="47"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M -78,-92 L -78,92 L 82,0 Z"
+            android:fillColor="#FFFFFFFF" />
+    </group>
+</vector>
