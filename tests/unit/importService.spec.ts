@@ -2,8 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { attachSuggestions, importService } from '@/services/importService';
 import { sourceService } from '@/services/sourceService';
+import { categoryRepo } from '@/db/repositories/categoryRepo';
+import { episodeRepo } from '@/db/repositories/episodeRepo';
+import { lineRepo } from '@/db/repositories/lineRepo';
+import { mediaRepo } from '@/db/repositories/mediaRepo';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { resetAll } from './helpers';
+import type { MediaItem } from '@/types';
 
 /** 爬虫 jar 预检的 HEAD mock（CHG-10）；仅预检使用 httpClient，commit 链路不受影响 */
 const { httpHead } = vi.hoisted(() => ({
@@ -305,5 +310,166 @@ describe('CHG-18 suggestions', () => {
     const preview = await importService.previewFromText(repos, 'dc.txt');
     expect(preview.repos).toHaveLength(2);
     expect(preview.suggestions ?? []).toEqual([]);
+  });
+});
+
+/**
+ * P1-3（D23）：「覆盖」时连带清空该源缓存（FR-04）改为可选项。
+ *
+ * 缺省 `true` = 现行为，旧调用方（自动刷新、诊断导入、评测）零改动；
+ * 设为 `false` 时覆盖只更新源配置，缓存留着——首页「最近添加」不缩水、详情不重新回源。
+ * 两种取值下清理范围都必须严格限于被覆盖的那个源。
+ */
+describe('importService.commit 的覆盖清缓存选项（P1-3 / FR-04）', () => {
+  const OVERRIDE_SUB = JSON.stringify({
+    name: '覆盖订阅',
+    sources: [{ key: 'alist-a', name: '家里 AList（新名）', type: 'alist', api: 'https://alist-new.example.com/' }],
+  });
+
+  function cachedMedia(id: string, sourceId: string): MediaItem {
+    return {
+      id,
+      sourceId,
+      sourceItemId: id,
+      title: `缓存影片 ${id}`,
+      titleLower: `缓存影片 ${id}`,
+      originalTitle: null,
+      type: 'movie',
+      year: 2024,
+      area: null,
+      genres: [],
+      tags: [],
+      rating: null,
+      description: '',
+      posterUrl: null,
+      backdropUrl: null,
+      durationSec: 600,
+      episodeCount: 1,
+      updatedAt: 1_700_000_000_000,
+      cachedAt: 1_700_000_000_000,
+      isDemo: false,
+    };
+  }
+
+  /** 给「将被覆盖的源」和「不该受影响的另一源」各铺一层缓存 */
+  async function seedCache(targetId: string, otherId: string): Promise<void> {
+    for (const [sourceId, prefix] of [
+      [targetId, 't'],
+      [otherId, 'o'],
+    ] as const) {
+      const mediaId = `${prefix}-media`;
+      const lineId = `${mediaId}:0`;
+      await mediaRepo.save(cachedMedia(mediaId, sourceId));
+      await lineRepo.saveMany([
+        { id: lineId, mediaId, sourceId, name: '线路 1', quality: null, format: 'mp4', index: 0 },
+      ]);
+      await episodeRepo.saveMany([
+        {
+          id: `${mediaId}:${lineId}:1`,
+          mediaId,
+          sourceId,
+          lineId,
+          number: 1,
+          title: '第 1 集',
+          durationSec: 600,
+          subtitles: [],
+          updatedAt: 1_700_000_000_000,
+        },
+      ]);
+      await categoryRepo.replaceForSource(sourceId, [
+        { id: `${sourceId}:movie`, sourceId, name: '电影', value: 'movie', order: 0 },
+      ]);
+    }
+  }
+
+  async function cacheOf(sourceId: string): Promise<{ media: number; categories: number }> {
+    return {
+      media: await mediaRepo.countBySource(sourceId),
+      categories: (await categoryRepo.listBySource(sourceId)).length,
+    };
+  }
+
+  async function commitOverride(clearCache?: boolean): Promise<void> {
+    const preview = await importService.previewFromText(OVERRIDE_SUB, 'override.json');
+    await importService.commit(preview, {
+      selectedKeys: preview.entries.map((e) => e.key),
+      onDuplicate: 'overwrite',
+      ...(clearCache === undefined ? {} : { clearCache }),
+    });
+  }
+
+  beforeEach(async () => {
+    await resetAll();
+  });
+
+  it('缺省（不传 clearCache）：覆盖清空该源的 media/lines/episodes/categories', async () => {
+    const targetId = await seedExisting('alist-a', '家里 AList', 'https://alist.example.com');
+    const otherId = await seedExisting('webdav-b', 'NAS', 'https://nas.example.com/dav');
+    await seedCache(targetId, otherId);
+    expect(await lineRepo.count()).toBe(2);
+    expect(await episodeRepo.count()).toBe(2);
+
+    await commitOverride();
+
+    expect(await cacheOf(targetId)).toEqual({ media: 0, categories: 0 });
+    expect(await lineRepo.count()).toBe(1);
+    expect(await episodeRepo.count()).toBe(1);
+  });
+
+  it('clearCache: true 与缺省逐项目一致', async () => {
+    const targetId = await seedExisting('alist-a', '家里 AList', 'https://alist.example.com');
+    const otherId = await seedExisting('webdav-b', 'NAS', 'https://nas.example.com/dav');
+    await seedCache(targetId, otherId);
+
+    await commitOverride(true);
+
+    expect(await cacheOf(targetId)).toEqual({ media: 0, categories: 0 });
+    expect(await lineRepo.count()).toBe(1);
+    expect(await episodeRepo.count()).toBe(1);
+  });
+
+  it('clearCache: false：缓存原样保留，仅更新源配置', async () => {
+    const targetId = await seedExisting('alist-a', '家里 AList', 'https://alist.example.com');
+    const otherId = await seedExisting('webdav-b', 'NAS', 'https://nas.example.com/dav');
+    await seedCache(targetId, otherId);
+
+    await commitOverride(false);
+
+    expect(await cacheOf(targetId)).toEqual({ media: 1, categories: 1 });
+    expect(await cacheOf(otherId)).toEqual({ media: 1, categories: 1 });
+    expect(await lineRepo.count()).toBe(2);
+    expect(await episodeRepo.count()).toBe(2);
+
+    const updated = await sourceRepo.get(targetId);
+    expect(updated?.name).toBe('家里 AList（新名）');
+    expect(updated?.baseUrl).toBe('https://alist-new.example.com');
+    expect(updated?.id).toBe(targetId); // 覆盖沿用原 id，不新建源
+  });
+
+  it('清理范围只到被覆盖的源：另一源的缓存不受 clearCache 取值影响', async () => {
+    const targetId = await seedExisting('alist-a', '家里 AList', 'https://alist.example.com');
+    const otherId = await seedExisting('webdav-b', 'NAS', 'https://nas.example.com/dav');
+    await seedCache(targetId, otherId);
+
+    await commitOverride();
+
+    expect(await cacheOf(otherId)).toEqual({ media: 1, categories: 1 });
+  });
+
+  it('非覆盖策略不受该选项影响：skip / keep-both 都不动任何缓存', async () => {
+    const targetId = await seedExisting('alist-a', '家里 AList', 'https://alist.example.com');
+    const otherId = await seedExisting('webdav-b', 'NAS', 'https://nas.example.com/dav');
+    await seedCache(targetId, otherId);
+    const preview = await importService.previewFromText(OVERRIDE_SUB, 'override.json');
+
+    for (const onDuplicate of ['skip', 'keep-both'] as const) {
+      await importService.commit(preview, { selectedKeys: preview.entries.map((e) => e.key), onDuplicate, clearCache: true });
+    }
+
+    expect(await cacheOf(targetId)).toEqual({ media: 1, categories: 1 });
+    expect(await cacheOf(otherId)).toEqual({ media: 1, categories: 1 });
+    // skip 不新增源；keep-both 生成新 key 的新源（其缓存本就为空）
+    expect((await sourceRepo.get(targetId))?.name).toBe('家里 AList');
+    expect(await sourceRepo.list()).toHaveLength(3);
   });
 });

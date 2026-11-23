@@ -21,6 +21,12 @@ import { COMPLIANCE_VERSION } from '@/shared/constants';
  * （`epg` / `netdisk-settings` / `douban`）。断言本身仍然有效，**不做删除或放宽**。
  * 回补条件：FIX-01 落地（恢复上述路由或其等价可达入口）后，这两条会因"预期失败却通过"
  * 而报警，届时把 `it.fails` 改回 `it` 并更新期望的路由名清单即可。
+ *
+ * 【P0-1 进度（2026-11-22）】`/settings/subscriptions` 已恢复注册，`subscriptions`
+ * 因此不再是失败原因；这两条现在只卡在 `sources` / `source-new` / `source-edit`
+ * 三条独立路由上——它们要不要回来属于 P2-1 的取舍（源新增/编辑/导入现由
+ * `SourceManageSection` 的 BottomSheet 与 `/settings/sources/import` 承载），
+ * 未定案前 `it.fails` 保持原样。新增的 `P0-1 订阅管理页可达性` 只锁已恢复的那一条。
  */
 describe('SCF 脚手架自检', () => {
   beforeEach(() => {
@@ -159,6 +165,41 @@ describe('REV-27 回看路由契约', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(router.currentRoute.value.name).toBe('replay');
     expect(wrapper.find('[data-route="replay"]').exists()).toBe(true);
+    expect(wrapper.find('nav[aria-label="主导航"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+});
+
+/**
+ * P0-1：订阅管理页可达性。
+ *
+ * CHG-12 的页面与刷新台账一直就在仓库里，OPT-09 内联化时把路由摘掉导致整页不可达；
+ * 这里锁"路由契约 + 真的能导航到并挂载"，屏幕上的入口由
+ * `tests/views/subscriptionManageEntry.spec.ts` 锁（两处缺一，闭环仍断在导入页）。
+ */
+describe('P0-1 订阅管理页可达性', () => {
+  beforeEach(() => {
+    mockSettingsService.__reset();
+    setComplianceGate(mockSettingsService);
+  });
+
+  it('subscriptions 路由：name/path/depth/requiresLayout/title 契约', () => {
+    const route = routes.find((item) => item.name === 'subscriptions');
+    expect(route, '路由表中必须存在 subscriptions 路由').toBeTruthy();
+    expect(route!.path).toBe('/settings/subscriptions');
+    expect(route!.meta?.depth).toBe(1);
+    expect(route!.meta?.requiresLayout).toBe(false);
+    expect(route!.meta?.title).toBe('订阅管理');
+  });
+
+  it('已同意后 /settings/subscriptions 可导航，页面渲染 data-route="subscriptions" 且不渲染 TabBar', async () => {
+    await mockSettingsService.acceptCompliance(COMPLIANCE_VERSION);
+    const wrapper = mount(App, { global: { plugins: [createPinia(), router] } });
+    await router.push('/settings/subscriptions');
+    await router.isReady();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(router.currentRoute.value.name).toBe('subscriptions');
+    expect(wrapper.find('[data-route="subscriptions"]').exists()).toBe(true);
     expect(wrapper.find('nav[aria-label="主导航"]').exists()).toBe(false);
     wrapper.unmount();
   });

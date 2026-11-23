@@ -8,7 +8,7 @@ import { historyRepo } from '@/db/repositories/historyRepo';
 import { DB_NAME, DB_VERSION } from '@/shared/constants';
 import type { HistoryRecord } from '@/types';
 
-import { tick } from './helpers';
+import { dropNewerStores, tick } from './helpers';
 
 /**
  * DB v5（history.by-media）升级链路。
@@ -61,6 +61,7 @@ function upgradeToV4(
   tx.objectStore('history').deleteIndex('by-media');
   tx.objectStore('danmakuCache').deleteIndex('by-fetched');
   tx.objectStore('epgCache').deleteIndex('by-fetched');
+  dropNewerStores(db, 4);
 }
 
 describe('DB v5：history.by-media', () => {

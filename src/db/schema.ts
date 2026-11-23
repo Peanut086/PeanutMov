@@ -25,6 +25,7 @@ import type {
   ReminderState,
   Source,
   SourceType,
+  Subscription,
 } from '@/types';
 
 /* ---------- store 名常量 ---------- */
@@ -48,6 +49,8 @@ export const STORE_NAMES = {
   channelPrefs: 'channelPrefs',
   /** v4（EXT-06/FR-71）：节目提醒 */
   reminders: 'reminders',
+  /** v7（P1-2）：订阅实体（导入的那份订阅本身，区别于由它派生出的源） */
+  subscriptions: 'subscriptions',
 } as const;
 
 /** Web 端下载内容（技术方案 5.1） */
@@ -177,6 +180,16 @@ export interface CinemaDB extends DBSchema {
     key: string;
     value: ReminderRecord;
     indexes: { 'by-notifyAt': number; 'by-channel': string; 'by-state': string };
+  };
+  /**
+   * v7（P1-2）：订阅实体。主键由来源标识派生（`stableId('sub', key)`，见 subscriptionRepo），
+   * 同一地址重复导入自然落到同一条记录——不需要 `by-key` 索引，也不需要唯一约束
+   * （唯一索引会让并发导入同一地址时整批导入失败）。
+   * 条数量级是「导入过几份订阅」（几十条以内），列表排序在内存完成，不建索引。
+   */
+  subscriptions: {
+    key: string;
+    value: Subscription;
   };
 }
 

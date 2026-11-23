@@ -41,7 +41,13 @@ import { useSourceStore } from '@/stores/sourceStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useUiStore } from '@/stores/uiStore';
 import { restoreDemoSource } from '@/stores/bootstrap';
-import { refreshSummaryText } from '@/services/subscriptionLifecycleService';
+import {
+  describeRefreshOutcome,
+  listRefreshOutcomes,
+  refreshSummaryText,
+  subscriptionLabel,
+  type SubscriptionRefreshOutcome,
+} from '@/services/subscriptionLifecycleService';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useToast } from '@/composables/useToast';
 
@@ -448,19 +454,32 @@ async function restoreAllAutoDisabled(): Promise<void> {
   }
 }
 
-/** 订阅摘要标签：URL 取主机名，文件名取末段，避免直接展示超长 ID */
-function subscriptionLabel(id: string): string {
+const refreshingSubscriptions = computed(() => sources.refreshingSubscriptions);
+
+/**
+ * P0-1：逐订阅刷新台账（最近尝试 / 最近成功 / 失败原因 / 退避剩余）。
+ *
+ * 摘要行原来只说「失效 N」，用户看不出是"今天刚刷失败"还是"三天没刷过"；
+ * 文案与订阅管理页共用 `describeRefreshOutcome`，重启后仍是同一句话。
+ */
+const refreshOutcomes = ref<Record<string, SubscriptionRefreshOutcome>>({});
+
+async function loadOutcomes(): Promise<void> {
   try {
-    const url = new URL(id);
-    return url.hostname;
+    refreshOutcomes.value = await listRefreshOutcomes();
   } catch {
-    const clean = id.split('?')[0] ?? id;
-    const parts = clean.split('/');
-    return parts[parts.length - 1] || clean;
+    /* 台账读不到只是少一行说明，不影响摘要本身 */
   }
 }
 
-const refreshingSubscriptions = computed(() => sources.refreshingSubscriptions);
+function outcomeNote(subscriptionId: string): { text: string; tone: 'ok' | 'warn' | 'bad' } | null {
+  const outcome = refreshOutcomes.value[subscriptionId];
+  return outcome ? describeRefreshOutcome(outcome) : null;
+}
+
+function openSubscriptionManage(): void {
+  void router.push({ name: 'subscriptions' });
+}
 
 async function refreshSubscriptions(): Promise<void> {
   if (isOffline.value) {
@@ -470,6 +489,7 @@ async function refreshSubscriptions(): Promise<void> {
   try {
     // 文案与订阅管理页共用 `refreshSummaryText`：跳过条数不是失败，也不能不说
     const summary = refreshSummaryText(await sources.refreshAllSubscriptions());
+    await loadOutcomes();
     toast[summary.tone](summary.text);
   } catch (e) {
     toast.error(toErrorShape(e).message);
@@ -478,6 +498,7 @@ async function refreshSubscriptions(): Promise<void> {
 
 onMounted(() => {
   void sources.loadSummaries();
+  void loadOutcomes();
 });
 </script>
 
@@ -627,14 +648,18 @@ onMounted(() => {
     <section v-if="sources.subscriptionSummaries.length > 0" class="source-manage__panel">
       <div class="source-manage__panel-head">
         <span class="source-manage__panel-title">订阅健康摘要</span>
+        <button class="source-manage__panel-link" type="button" @click="openSubscriptionManage">
+          管理
+        </button>
         <button
           class="btn btn--secondary btn--sm"
           type="button"
           :disabled="refreshingSubscriptions"
+          title="距上次成功刷新不到 24 小时的订阅会自动跳过；要立刻重拉某一条，去「管理」里单条刷新"
           @click="refreshSubscriptions"
         >
           <LoadingSpinner v-if="refreshingSubscriptions" :size="14" />
-          {{ refreshingSubscriptions ? '刷新中…' : '全部刷新' }}
+          {{ refreshingSubscriptions ? '刷新中…' : '刷新（跳过 24h 内已刷）' }}
         </button>
       </div>
       <ul class="source-manage__panel-list">
@@ -645,11 +670,18 @@ onMounted(() => {
         >
           <span class="source-manage__summary">
             <span class="source-manage__summary-id truncate-1" :title="summary.subscriptionId">
-              {{ subscriptionLabel(summary.subscriptionId) }}
+              {{ summary.name ?? subscriptionLabel(summary.subscriptionId) }}
             </span>
             <span class="source-manage__summary-meta">
               {{ summary.sourceCount }} 源 · 存活 {{ summary.alive }} · 失效 {{ summary.dead }}
               <template v-if="summary.jarDead > 0"> · jar 失效 {{ summary.jarDead }}</template>
+            </span>
+            <span
+              v-if="outcomeNote(summary.subscriptionId)"
+              class="source-manage__summary-note"
+              :class="`source-manage__summary-note--${outcomeNote(summary.subscriptionId)?.tone}`"
+            >
+              {{ outcomeNote(summary.subscriptionId)?.text }}
             </span>
           </span>
         </li>
@@ -852,6 +884,16 @@ onMounted(() => {
   color: var(--color-text-secondary);
 }
 
+.source-manage__panel-link {
+  flex: 0 0 auto;
+  padding: 2px 4px;
+  border: none;
+  background: none;
+  font: var(--text-label-strong);
+  color: var(--color-brand-text);
+  cursor: pointer;
+}
+
 .source-manage__panel-list {
   display: flex;
   flex-direction: column;
@@ -886,6 +928,24 @@ onMounted(() => {
 .source-manage__summary-meta {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+.source-manage__summary-note {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  overflow-wrap: anywhere;
+}
+
+.source-manage__summary-note--ok {
+  color: var(--color-success);
+}
+
+.source-manage__summary-note--warn {
+  color: var(--color-warning);
+}
+
+.source-manage__summary-note--bad {
+  color: var(--color-danger);
 }
 
 .source-manage__list {

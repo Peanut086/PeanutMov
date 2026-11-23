@@ -492,17 +492,9 @@ export class SpiderAdapter extends BaseAdapter {
   /* ---------------- 探活与加载 ---------------- */
 
   /**
-   * 首次探活包含 jar 下载（原生侧连接超时 20s、读取超时 30s），
-   * 基类的 3s 窗口会把慢网络下的正常加载误判成 timeout，故放宽到 35s。
-   * 句柄缓存后，后续探活只走一次 homeContent，远快于窗口上限。
-   */
-  protected override get probeTimeoutMs(): number {
-    return TIMEOUT_PROBE_SPIDER_MS;
-  }
-
-  /**
    * P0-3：冷/热分级窗口。句柄已在内存时（复检、体检第二轮）只走 homeContent +
-   * 一次列表，按热窗口收紧；冷启动才给 jar 下载 + dex + 防护初始化的余量。
+   * 一次列表，按热窗口收紧；冷启动才给 jar 下载（原生侧连接 20s、读取 30s）+ dex +
+   * 防护初始化的余量，故首次给 35s——基类的类型分级在句柄状态这里帮不上忙。
    */
   protected override probeWindowMs(source: Source): number {
     return this.handles.has(source.id) ? TIMEOUT_PROBE_SPIDER_WARM_MS : TIMEOUT_PROBE_SPIDER_MS;

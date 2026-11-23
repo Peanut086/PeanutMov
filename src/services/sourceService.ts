@@ -18,13 +18,12 @@ import {
   HEALTH_CHECK_CONCURRENCY,
   SOURCE_NAME_MAX_LENGTH,
   SOURCE_NAME_MIN_LENGTH,
-  TIMEOUT_PROBE_SPIDER_MS,
-  TIMEOUT_TEST_CONNECTION_MS,
 } from '@/shared/constants';
 import { AppError, toAppError } from '@/shared/errors';
 import { newId } from '@/shared/id';
 import { isValidHttpUrl, normalizeBaseUrl } from '@/shared/url';
 import { httpClient } from '@/sources/base/httpClient';
+import { probeWindowMsFor } from '@/sources/probeWindow';
 import { sourceRegistry } from '@/sources/registry';
 import type {
   AppErrorShape,
@@ -171,18 +170,21 @@ async function runWithConcurrency<T, R>(
 }
 
 /**
- * AC-15 / FR-07：探测（健康检查 + 测试连接）统一 3s 超时。
+ * AC-15 / FR-07：探测（健康检查 + 测试连接）的窗口按源类型分级。
  *
  * 适配器 `probe` 内部的 `httpClient` 调用不传 `timeoutMs`（默认 10s），且多数不透传 AbortSignal，
- * 所以由 `httpClient.withProbeTimeout` 在该源的探测窗口内把默认超时收到 `TIMEOUT_TEST_CONNECTION_MS`
- * 并关闭重试；超时抛 `E_TIMEOUT` → `healthOfError` → `'timeout'` → `HealthBadge` 显示「连接超时」。
+ * 所以由 `httpClient.withProbeTimeout` 在该源的探测窗口内把默认超时收到分级值并关闭重试；
+ * 超时抛 `E_TIMEOUT` → `healthOfError` → `'timeout'` → `HealthBadge` 显示「连接超时」。
  *
- * P0-3：爬虫源探活不止 HTTP（还要下载 jar、加载 dex、初始化防护），3s 窗口会把
- * 「慢网络下的活源」判成不可用；真机实测 92 个源被误标 unreachable 并面临自动禁用。
- * 故按源类型分级：spider 15s，其余保持 3s（AC-15 口径不变）。
+ * - P0-3：爬虫源探活不止 HTTP（还要下载 jar、加载 dex、初始化防护），3s 窗口会把
+ *   「慢网络下的活源」判成不可用；真机实测 92 个源被误标 unreachable 并面临自动禁用。
+ * - P1-7：alist / webdav / jellyfin 这类自建媒体服务同理（认证 + 列目录，内网首目录大 /
+ *   NAS 唤醒慢），给 8s；`site` / `douban` 保持 AC-15 的 3s 口径不变。
+ *
+ * 口径集中在 `@/sources/probeWindow`，与 `BaseAdapter.probeWindowMs` 共用，避免两层窗口分叉。
  */
 export function probeTimeoutOf(source: Source): number {
-  return source.type === 'spider' ? TIMEOUT_PROBE_SPIDER_MS : TIMEOUT_TEST_CONNECTION_MS;
+  return probeWindowMsFor(source);
 }
 
 function probeWithinTimeout<T>(source: Source, run: () => Promise<T>): Promise<T> {

@@ -20,7 +20,6 @@ import { bindSessionRestore } from '@/services/sessionRestoreService';
 import { seedService } from '@/services/seedService';
 import { downloadService } from '@/services/downloadService';
 import { runOfflineRemuxMigration } from '@/services/offlineRemuxMigration';
-import { subscriptionLifecycleService } from '@/services/subscriptionLifecycleService';
 import { appEvents } from '@/services/events';
 import { lineHealthService } from '@/services/lineHealthService';
 import { libraryService } from '@/services/libraryService';
@@ -153,8 +152,13 @@ export function initDoubanRuntime(): void {
  * - 全部 fire-and-forget（服务层不抛异常），不阻塞启动。
  */
 export function initSubscriptionAutoRefresh(): void {
-  void subscriptionLifecycleService.autoRefreshIfDue('startup');
-  subscriptionLifecycleService.bindAutoRefresh();
+  // P1-6：本模块静态 import 会把整条订阅生命周期链（→ importService → 各类解析器 + 刷新台账）
+  // 压进首屏 chunk。改成动态导入后，首屏只需装配层本身，刷新语义不变：
+  // 仍是「启动即发起一次 + 接线回前台」，只是延后到模块取到之后，TTL 去重与在途合并照旧。
+  void import('@/services/subscriptionLifecycleService').then(({ subscriptionLifecycleService }) => {
+    void subscriptionLifecycleService.autoRefreshIfDue('startup');
+    subscriptionLifecycleService.bindAutoRefresh();
+  });
 }
 
 /**

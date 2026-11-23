@@ -868,9 +868,35 @@ export interface BackupRecord {
 
 /* ---------- v1.7 增量（CHG-19 / CHG-22） ---------- */
 
+/**
+ * 订阅实体（P1-2 / D10、D22）。
+ *
+ * 一份「导入的订阅」本身：过去它只以 `Source.subscriptionId`（URL 原文或文件名）的形式散落在每个源上，
+ * 于是订阅既没有名称存放处（解析器其实给了 `preview.name`，只能丢弃并用 `subscriptionLabel()` 抠主机名顶上），
+ * 也没有一个地方能整体地看/删/改名。
+ *
+ * `id` 由 `key` 派生（`stableId('sub', key)`，见 subscriptionRepo），所以重复导入同一地址落在同一条上。
+ * `key` 与 `Source.subscriptionId` 同值（URL 或文件名）；非 URL 形态时 `url` 为 null。
+ */
+export interface Subscription {
+  id: string;
+  /** 订阅来源标识 = `Source.subscriptionId` 口径（URL 或文件名） */
+  key: string;
+  /** 拉取地址；文件导入的订阅没有地址，为 null */
+  url: string | null;
+  /** 导入时用的文件名（URL 形态下为 null） */
+  fileName: string | null;
+  /** 订阅自带名称（解析器给出）；null = 该订阅没有名称，界面回退 `subscriptionLabel` */
+  name: string | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
 /** 订阅健康摘要（CHG-19，按 subscriptionId 聚合） */
 export interface SubscriptionSummary {
   subscriptionId: string;
+  /** 订阅实体给的名称；null = 无名称（界面用主机名兜底） */
+  name: string | null;
   sourceCount: number;
   alive: number;
   dead: number;
@@ -1008,6 +1034,14 @@ export type ImportSuggestion =
 export interface ImportCommitOptions {
   selectedKeys: string[];
   onDuplicate: 'skip' | 'overwrite' | 'keep-both';
+  /**
+   * P1-3：「覆盖」时是否清空该源已缓存的 media/lines/episodes/categories（FR-04 既有行为）。
+   *
+   * 缺省 `true` = 现行为，旧调用方零改动。设为 `false` 时覆盖只更新源配置：
+   * 首页「最近添加」不缩水、详情打开不重新回源，代价是新条目要等下次浏览/搜索才入库。
+   * 只对 `onDuplicate: 'overwrite'` 有意义；无论取值如何，清理范围都严格限于被覆盖的那个源。
+   */
+  clearCache?: boolean;
 }
 
 export interface ImportResult {

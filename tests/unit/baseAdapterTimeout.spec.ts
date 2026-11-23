@@ -8,12 +8,12 @@ import type { PlaybackSource, ResolvePlayParams } from '@/types';
  *
  * 不响应 AbortSignal 的 probe（如 spider 的原生调用）可能在超时后才 resolve，
  * testConnection 必须把它判成 E_TIMEOUT 而不是 ok:true；
- * probeTimeoutMs 允许子类放宽窗口（spider 的 jar 下载最长 30s）。
+ * `probeWindowMs` 允许子类（或 P1-7 的类型分级）放宽窗口（spider 的 jar 下载最长 30s）。
  */
 
 class SlowAdapter extends BaseAdapter {
   readonly type = 'site' as const;
-  protected override get probeTimeoutMs(): number {
+  protected override probeWindowMs(): number {
     return 50;
   }
   protected async probe(): Promise<ProbeResult> {
@@ -33,7 +33,7 @@ class SlowAdapter extends BaseAdapter {
 }
 
 class FastAdapter extends SlowAdapter {
-  protected override get probeTimeoutMs(): number {
+  protected override probeWindowMs(): number {
     return 3_000;
   }
   protected override async probe(): Promise<ProbeResult> {

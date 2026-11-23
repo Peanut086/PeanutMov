@@ -2,6 +2,7 @@
  * 数据层测试公共工具（非 spec 文件，不被 vitest 作为用例收集）
  */
 import { closeDb, deleteDatabase, resetDbConnection } from '@/db/index';
+import { STORE_NAMES } from '@/db/schema';
 import { kvRepo } from '@/db/repositories/kvRepo';
 import { settingsService } from '@/services/settingsService';
 import { downloadService } from '@/services/downloadService';
@@ -71,4 +72,31 @@ export function fmp4Segment(type = 'moof', payloadBytes = 96): Uint8Array {
   new DataView(data.buffer).setUint32(0, data.length);
   for (let i = 0; i < 4; i++) data[4 + i] = type.charCodeAt(i);
   return data;
+}
+
+/* ---------- 老库夹具（迁移链路测试共用） ---------- */
+
+/**
+ * 各版本新增的 store。造「老库」时比目标版本新的一律抹掉。
+ *
+ * 迁移用例的套路是「跑一遍当前 `upgrade()`，再删掉这次版本才加的东西」：索引逐个
+ * `deleteIndex`，store 同理。留着它，第二次真正升到 `DB_VERSION` 时
+ * `createObjectStore` 撞 ConstraintError，upgrade 回调抛错 = 整次打开 AbortError
+ * （现象是 v5/v6 迁移用例莫名全红，且和并行无关）。升版在这里加一行即可，各 spec 不动。
+ */
+const STORE_ADDED_AT_VERSION: Record<string, number> = {
+  [STORE_NAMES.subscriptions]: 7,
+};
+
+/** 只用到「查/删 store」两件事：`IDBDatabase` 与 idb 的 `IDBPDatabase` 都能传进来 */
+type StoreDroppable = {
+  objectStoreNames: { contains(name: string): boolean };
+  deleteObjectStore(name: string): void;
+};
+
+/** 删掉比 `targetVersion` 更新的 store，还原成真实老库形态 */
+export function dropNewerStores(db: StoreDroppable, targetVersion: number): void {
+  for (const [name, addedAt] of Object.entries(STORE_ADDED_AT_VERSION)) {
+    if (addedAt > targetVersion && db.objectStoreNames.contains(name)) db.deleteObjectStore(name);
+  }
 }

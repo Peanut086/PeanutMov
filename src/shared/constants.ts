@@ -29,7 +29,7 @@ export const DB_NAME = 'cinema-db';
  * v6（OPT-10）：danmakuCache / epgCache 各加 by-fetched 索引（缓存 LRU 淘汰与过期清扫按时间扫，
  *    此前只能 getAll 全表读进内存再排序——单条弹幕缓存可达数 MB）
  */
-export const DB_VERSION = 6;
+export const DB_VERSION = 7;
 
 /** kv 表中存放应用设置的 key */
 export const KV_KEY_SETTINGS = 'app-settings';
@@ -59,6 +59,12 @@ export const HISTORY_MAX = 500;
 export const CONTINUE_WATCHING_LIMIT = 10;
 /** 搜索结果条数上限 */
 export const SEARCH_LOCAL_LIMIT = 50;
+/**
+ * 聚合分组重算的合并窗口（P1-5）：渐进回调每到一个源就追加一次结果，
+ * 旧口径下每一次追加都重跑「去重 + 分组 + 三级排序」，96 源扇出时是主线程长任务的集中来源。
+ * 追加只按本窗口合并（窗口内后续追加并入同一次重算，不会因源源不断而饿死）。
+ */
+export const SEARCH_AGGREGATE_MERGE_MS = 100;
 /** 搜索历史保留条数 */
 export const SEARCH_HISTORY_MAX = 10;
 /** 滚动距底部多少 px 触发加载下一页（FR-11） */
@@ -75,6 +81,13 @@ export const TIMEOUT_TEST_CONNECTION_MS = 3000;
  */
 export const TIMEOUT_PROBE_SPIDER_MS = 35000;
 export const TIMEOUT_PROBE_SPIDER_WARM_MS = 15000;
+/**
+ * 自建媒体服务探活窗口（P1-7）：alist / webdav / jellyfin 的探活要「认证 + 列首层目录」，
+ * 内网磁盘慢、首目录条目多、NAS 休眠唤醒时 3s 必然判 timeout，再叠加连续 3 次坏即自动禁用，
+ * 结果是「最慢但最稳」的那一类被静默禁掉。放宽到 8s（远小于爬虫冷窗口，体检总耗时仍可控）。
+ * `site` / `douban` 一次 HTTP 即业务，保持 AC-15 的 3s 口径不变。
+ */
+export const TIMEOUT_PROBE_NETSTORE_MS = 8000;
 /**
  * 健康检查并发上限（AC-16；CHG-05 由 3 提升为 6）
  *

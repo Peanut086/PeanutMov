@@ -14,11 +14,11 @@ import { appEvents } from '@/services/events';
 import { DEMO_SOURCE_ID, DEMO_SOURCE_SORT } from '@/data/demo/demoSeed';
 import { DEMO_ITEMS } from '@/data/demo/demoCatalog';
 import { AppError, ERROR_MESSAGES } from '@/shared/errors';
-import { TIMEOUT_TEST_CONNECTION_MS } from '@/shared/constants';
+import { TIMEOUT_PROBE_NETSTORE_MS, TIMEOUT_PROBE_SPIDER_MS, TIMEOUT_TEST_CONNECTION_MS } from '@/shared/constants';
 import { categoryIdFor } from '@/sources/base/normalize';
 import { DEFAULT_HTTP_TIMEOUT_MS, httpClient, httpRequest, probeTimeoutFor } from '@/sources/base/httpClient';
 import { mediaIdOf, lineIdOf, episodeIdOf, historyIdOf } from '@/shared/id';
-import type { FavoriteRecord, HistoryRecord, MediaItem, Source } from '@/types';
+import type { ConnectionResult, FavoriteRecord, HistoryRecord, MediaItem, Source } from '@/types';
 
 import { resetAll } from './helpers';
 
@@ -410,12 +410,14 @@ describe('源服务（AC-03 ~ AC-07）', () => {
   });
 
   /**
-   * AC-15 / FR-07：断网后 3s 内状态变「连接超时」
+   * AC-15 / FR-07：断网后状态变「连接超时」，窗口按源类型分级（P0-3 spider、P1-7 自建媒体服务）
    *
    * 适配器探活内部的 `httpClient` 请求不传 `timeoutMs`（默认 10s），且多数 `probe` 拿不到
    * AbortSignal，因此断网最长要等 10s。现由 `httpClient.withProbeTimeout` 在探活窗口内把
-   * 有效超时收到 `TIMEOUT_TEST_CONNECTION_MS` 并关闭重试；`E_TIMEOUT` → `'timeout'` →
+   * 有效超时收到分级值（`@/sources/probeWindow`）并关闭重试；`E_TIMEOUT` → `'timeout'` →
    * `HealthBadge` 显示「连接超时」（UI 无需改动）。
+   *
+   * 3s 口径只对 `site` / `douban` 保持：它们一次 HTTP 即业务。
    */
   describe('检查超时口径（AC-15）', () => {
     const realWithProbeTimeout = httpClient.withProbeTimeout.bind(httpClient);
@@ -471,16 +473,16 @@ describe('源服务（AC-03 ~ AC-07）', () => {
       vi.unstubAllGlobals();
     });
 
-    it('testConnection 以 3000ms 开窗；断网返回 timeout/E_TIMEOUT、只请求一次', async () => {
+    it('site 仍按 AC-15 的 3000ms 开窗；断网返回 timeout/E_TIMEOUT、只请求一次', async () => {
       expect(TIMEOUT_TEST_CONNECTION_MS).toBe(3000);
       expect(DEFAULT_HTTP_TIMEOUT_MS).toBe(10_000); // 默认值保持不动
       const timeouts = shrinkProbeWindow();
       const fetchCalls = installHangingFetch();
 
       const result = await sourceService.testConnection({
-        type: 'alist',
+        type: 'site',
         baseUrl: 'https://offline.example.com',
-        auth: { token: 'tok' },
+        auth: { token: null },
       });
 
       expect(timeouts).toEqual([TIMEOUT_TEST_CONNECTION_MS]);
@@ -490,6 +492,82 @@ describe('源服务（AC-03 ~ AC-07）', () => {
       // 超时语义取自 ErrorCode 表（非 E_NETWORK），与 HealthBadge「连接超时」一致
       expect(result.error?.message).toBe(ERROR_MESSAGES.E_TIMEOUT);
       expect(fetchCalls()).toBe(1); // 窗口内不重试，否则会被拉长到 2×3s
+    });
+
+    /**
+     * P1-7（D11）：自建媒体服务（alist / webdav / jellyfin）的探活要「认证 + 列首层目录」，
+     * 内网磁盘慢、首目录条目大、NAS 休眠唤醒时 3s 必然误判 timeout；这类源又往往是
+     * 「最慢但最稳」的一批，连续 3 次坏就被自动禁用。故窗口收到 8s。
+     */
+    it('P1-7 分级：alist / webdav / jellyfin 以 8000ms 开窗，spider 仍 35000ms', async () => {
+      expect(TIMEOUT_PROBE_NETSTORE_MS).toBe(8000);
+      const timeouts = shrinkProbeWindow();
+      installHangingFetch();
+
+      for (const type of ['alist', 'webdav', 'jellyfin'] as const) {
+        await sourceService.testConnection({
+          type,
+          baseUrl: 'https://offline.example.com',
+          auth: { token: 'tok' },
+        });
+      }
+      await sourceService.testConnection({
+        type: 'spider',
+        baseUrl: 'https://offline.example.com',
+        auth: { token: null },
+        ext: { jar: 'https://example.com/guard.jar' },
+      });
+
+      expect(timeouts).toEqual([
+        TIMEOUT_PROBE_NETSTORE_MS,
+        TIMEOUT_PROBE_NETSTORE_MS,
+        TIMEOUT_PROBE_NETSTORE_MS,
+        TIMEOUT_PROBE_SPIDER_MS,
+      ]);
+    });
+
+    /**
+     * 分级的实际效果：慢但活的源不再被判死。用真实窗口（不 shrink）+ 假定时器，
+     * 断言旧口径 3s 时还没settled、5s 响应到达后不再报 E_TIMEOUT。
+     */
+    it('P1-7 慢源不误判：alist 5s 响应在旧 3s 窗口下会判 timeout，分级后正常返回', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      vi.stubGlobal(
+        'fetch',
+        () =>
+          new Promise<Response>((resolve) => {
+            setTimeout(
+              () =>
+                resolve(
+                  new Response(JSON.stringify({ code: 200, data: { content: [] } }), {
+                    headers: { 'content-type': 'application/json' },
+                  }),
+                ),
+              5000,
+            );
+          }),
+      );
+
+      let settled: ConnectionResult | null = null;
+      const pending = sourceService
+        .testConnection({
+          type: 'alist',
+          baseUrl: 'https://nas.example.com',
+          auth: { token: 'tok' },
+        })
+        .then((r) => {
+          settled = r;
+          return r;
+        });
+
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(settled).toBeNull(); // 旧口径此刻已判「连接超时」
+
+      await vi.advanceTimersByTimeAsync(2000);
+      const result = await pending;
+      expect(settled).not.toBeNull();
+      expect(result.error?.code).not.toBe('E_TIMEOUT');
+      expect(result.health).not.toBe('timeout');
     });
 
     it('边界：窗口内请求 2999ms 仍挂起、3000ms 以 E_TIMEOUT 返回', async () => {
@@ -547,7 +625,7 @@ describe('源服务（AC-03 ~ AC-07）', () => {
 
       const results = await sourceService.checkHealth();
 
-      expect(timeouts).toEqual([TIMEOUT_TEST_CONNECTION_MS]);
+      expect(timeouts).toEqual([TIMEOUT_PROBE_NETSTORE_MS]); // P1-7：alist 走 8s 档
       expect(results[created.id]?.health).toBe('timeout');
       expect(results[created.id]?.error?.code).toBe('E_TIMEOUT');
       expect(fetchCalls()).toBe(1);

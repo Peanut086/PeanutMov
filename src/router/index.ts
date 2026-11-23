@@ -142,6 +142,14 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresLayout: false, depth: 1, title: '导入订阅' },
   },
   {
+    // P0-1：CHG-12 订阅管理页恢复可达。页面与刷新台账（`describeRefreshOutcome`）早已就位，
+    // 缺的只是入口——没有它，"导入 → 体检 → 刷新 → 清理"闭环在 UI 上断在导入这一步。
+    path: '/settings/subscriptions',
+    name: 'subscriptions',
+    component: () => import('@/views/SubscriptionListView.vue'),
+    meta: { requiresLayout: false, depth: 1, title: '订阅管理' },
+  },
+  {
     path: '/settings/subscriptions/eval',
     name: 'subscription-eval',
     component: () => import('@/views/EvalSubscriptionView.vue'),

@@ -28,33 +28,55 @@ export const useImportStore = defineStore('import', () => {
 
   /** 预览请求序号：并发/连续解析时只接受最后一次的结果 */
   let parseSeq = 0;
+  /**
+   * P0-2：在途解析的取消句柄。
+   *
+   * 序号只能丢弃结果、不能停止请求——慢订阅（跨境、2MB、镜像重试）连点三次「获取」
+   * 会把三份请求同时跑满 10s 预算，换镜像与展开仓库同理。这里把 signal 真正交下去
+   * （`importService.previewFromUrl/previewFromRepo` 早已支持），旧请求立即中止。
+   */
+  let previewController: AbortController | null = null;
 
-  async function runPreview(task: (seq: number) => Promise<ImportPreview>): Promise<void> {
+  async function runPreview(task: (signal: AbortSignal) => Promise<ImportPreview>): Promise<void> {
+    previewController?.abort();
+    const controller = new AbortController();
+    previewController = controller;
     parseSeq += 1;
     const seq = parseSeq;
     parsing.value = true;
     error.value = null;
     preview.value = null;
     try {
-      const result = await task(seq);
+      const result = await task(controller.signal);
       if (seq !== parseSeq) return; // 已有更新的解析请求，丢弃本次结果
       preview.value = result;
     } catch (e) {
+      // 被更新的解析或被 `abortPreview` 中止：静默——取消不是错误，不该留下错误面板
       if (seq !== parseSeq) return;
       error.value = toErrorShape(e, 'E_PARSE');
       preview.value = null;
     } finally {
       if (seq === parseSeq) parsing.value = false;
+      if (previewController === controller) previewController = null;
     }
   }
 
+  /** 取消在途解析（用户点「取消」或离开导入页）；未在解析时为空操作 */
+  function abortPreview(): void {
+    previewController?.abort();
+    previewController = null;
+    // 序号先行：中止后即使底层 promise 带着结果回来，也不再落地
+    parseSeq += 1;
+    parsing.value = false;
+  }
+
   async function previewFromUrl(url: string): Promise<void> {
-    await runPreview(() => importService.previewFromUrl(url));
+    await runPreview((signal) => importService.previewFromUrl(url, signal));
   }
 
   /** 多仓索引展开：选中一个仓库地址后重新预览 */
   async function previewFromRepo(repoUrl: string): Promise<void> {
-    await runPreview(() => importService.previewFromRepo(repoUrl));
+    await runPreview((signal) => importService.previewFromRepo(repoUrl, signal));
   }
 
   async function previewFromFile(file: File): Promise<void> {
@@ -95,7 +117,7 @@ export const useImportStore = defineStore('import', () => {
 
   /** 清空预览与错误，保留历史记录 */
   function reset(): void {
-    parseSeq += 1; // 使进行中的解析结果失效
+    abortPreview(); // 离开页面/提交完成时顺手停掉在途请求，别再占带宽
     preview.value = null;
     error.value = null;
     parsing.value = false;
@@ -120,6 +142,7 @@ export const useImportStore = defineStore('import', () => {
     previewFromRepo,
     previewFromFile,
     previewFromText,
+    abortPreview,
     commit,
     reset,
     loadRecords,

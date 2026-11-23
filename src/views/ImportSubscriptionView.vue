@@ -9,7 +9,7 @@
  * 契约字段为准（`entries[].valid/selected/duplicateOf/warning/issues/normalized`）。
  * 导入成功后源列表刷新由 `importService` 发出的 `sources:changed` 驱动，UI 不双写。
  */
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import type { ImportPreviewEntry, ImportResult, ImportSuggestion } from '@/types';
@@ -18,6 +18,7 @@ import AppHeader from '@/components/layout/AppHeader.vue';
 import ComplianceNotice from '@/components/common/ComplianceNotice.vue';
 import OfflineBanner from '@/components/common/OfflineBanner.vue';
 import SegmentedControl from '@/components/common/SegmentedControl.vue';
+import ToggleSwitch from '@/components/common/ToggleSwitch.vue';
 import EmptyState from '@/components/common/EmptyState.vue';
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
 import ImportPreviewList from '@/components/source/ImportPreviewList.vue';
@@ -48,6 +49,11 @@ const fileName = ref<string | null>(null);
 const selectedKeys = ref<string[]>([]);
 const localError = ref<string | null>(null);
 const duplicateStrategy = ref<'skip' | 'overwrite' | 'keep-both'>('skip');
+/**
+ * P1-3：「覆盖」时是否连带清空该源已缓存的内容（默认开 = FR-04 现行为）。
+ * 关掉后首页「最近添加」不缩水、详情不重新回源，但订阅里新增的条目要等下次浏览才入库。
+ */
+const clearCacheOnOverwrite = ref(true);
 const result = ref<ImportResult | null>(null);
 const resultOpen = ref(false);
 const fileInputRef = ref<HTMLInputElement | null>(null);
@@ -138,6 +144,11 @@ onMounted(async () => {
     url.value = prefill.trim();
     void fetchPreview();
   }
+});
+
+// P0-2：本页不在 KeepAlive 名单内，离开即销毁——顺手中止在途解析，别让它继续在后台占请求
+onBeforeUnmount(() => {
+  importer.abortPreview();
 });
 
 /** 跳批量评测页（CHG-12） */
@@ -277,6 +288,7 @@ function toggleAll(): void {
 
 async function commit(): Promise<void> {
   if (!preview.value || importableCount.value === 0 || importing.value) return;
+  importCheckResult.value = null;
   if (globalErrors.value.length > 0) {
     toast.error(globalErrors.value[0]?.message ?? '订阅存在错误，无法导入');
     return;
@@ -287,6 +299,7 @@ async function commit(): Promise<void> {
     const next = await importer.commit({
       selectedKeys: [...selectedKeys.value],
       onDuplicate: duplicateStrategy.value,
+      clearCache: clearCacheOnOverwrite.value,
     });
     result.value = next;
     resultOpen.value = true;
@@ -319,6 +332,34 @@ async function commit(): Promise<void> {
     };
     resultOpen.value = true;
     toast.error(`导入失败，未写入任何源：${message}`);
+  }
+}
+
+/**
+ * P1-1：体检刚导入的这批源。
+ *
+ * 常规 commit 不做任何探测（只有 `importWithDiagnostic` 路径会处置退化源），
+ * 于是"导入 30 个源、其中 12 个是死的"只能靠用户去搜索时撞错误发现。
+ * 这里复用 `sourceStore.checkSources` → `healthService.check(ids)`，
+ * 取消也复用同一条 `cancelHealthCheck` 通路（不新造探测实现）。
+ */
+const importCheckResult = ref<{ checked: number; ok: number; bad: number } | null>(null);
+
+async function checkImported(): Promise<void> {
+  const ids = result.value?.sourceIds ?? [];
+  if (ids.length === 0 || sourceStore.healthChecking) return;
+  importCheckResult.value = null;
+  try {
+    const report = await sourceStore.checkSources(ids);
+    if (report.aborted) {
+      toast.info('已取消检测，已检测的部分结果可在源列表看到');
+      return;
+    }
+    importCheckResult.value = report;
+    const text = `刚导入的 ${report.checked} 个源：可用 ${report.ok}，失效 ${report.bad}`;
+    toast[report.bad > 0 ? 'info' : 'success'](text);
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
   }
 }
 
@@ -402,6 +443,15 @@ function leave(): void {
           >
             <LoadingSpinner v-if="parsing" :size="16" />
             {{ parsing ? '获取中' : '获取' }}
+          </button>
+          <!-- P0-2：解析可取消——旧口径只能"丢弃结果"，请求仍会跑满 10s 预算 -->
+          <button
+            v-if="parsing"
+            class="btn btn--ghost btn--md import-fetch"
+            type="button"
+            @click="importer.abortPreview()"
+          >
+            取消
           </button>
         </div>
         <p class="field__hint">支持 TVBox 风格 sites[] 或简化 sources[] 格式，单份上限 2MB。</p>
@@ -589,6 +639,16 @@ function leave(): void {
             <p class="field__hint">
               默认「跳过」；「覆盖」会用订阅里的配置更新同名源；「保留两份」会生成新的 key。
             </p>
+            <!-- P1-3：覆盖策略唯一的副作用（连带清缓存）单独给一个出口，默认仍为 FR-04 行为 -->
+            <div v-if="duplicateStrategy === 'overwrite'" class="import-strategy__cache">
+              <div class="import-strategy__cache-texts">
+                <span class="import-strategy__cache-label">覆盖时清理该源缓存</span>
+                <span class="import-strategy__cache-hint">
+                  关闭后保留已缓存的影片与选集，订阅里新增的条目要等下次浏览才入库
+                </span>
+              </div>
+              <ToggleSwitch v-model="clearCacheOnOverwrite" label="覆盖时清理该源缓存" />
+            </div>
           </section>
 
           <button
@@ -615,6 +675,40 @@ function leave(): void {
         <p v-if="result && result.success > 0" class="import-result__sub">
           已写入 {{ result.sourceIds.length }} 个源，源列表已自动刷新
         </p>
+        <!-- P1-1：新导入的源没有健康记录，这里给一次只测本批的体检入口 -->
+        <div
+          v-if="result && result.success > 0 && result.sourceIds.length > 0"
+          class="import-result__check"
+        >
+          <div class="import-result__check-actions">
+            <button
+              class="btn btn--secondary btn--sm"
+              type="button"
+              :disabled="sourceStore.healthChecking"
+              title="只检测本次导入的源，不影响其它源的健康状态"
+              @click="checkImported"
+            >
+              <LoadingSpinner v-if="sourceStore.healthChecking" :size="14" />
+              {{
+                sourceStore.healthChecking
+                  ? '检测中…'
+                  : `体检刚导入的 ${result.sourceIds.length} 个源`
+              }}
+            </button>
+            <button
+              v-if="sourceStore.healthChecking"
+              class="btn btn--ghost btn--sm"
+              type="button"
+              @click="sourceStore.cancelHealthCheck()"
+            >
+              取消
+            </button>
+          </div>
+          <p v-if="importCheckResult" class="import-result__check-note">
+            可用 {{ importCheckResult.ok }} · 失效 {{ importCheckResult.bad }}
+            <template v-if="importCheckResult.bad > 0">（失效原因见源列表的健康徽章）</template>
+          </p>
+        </div>
         <ul v-if="(result?.issues.length ?? 0) > 0" class="import-result__issues">
           <li
             v-for="(issue, index) in result?.issues ?? []"
@@ -856,6 +950,36 @@ function leave(): void {
   gap: var(--space-2);
 }
 
+/* P1-3：覆盖策略下的缓存清理开关（沿用设置页开关行：surface + border，命中区 44） */
+.import-strategy__cache {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: calc(var(--touch-min) + var(--space-3));
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-surface);
+  border: var(--border-default);
+}
+
+.import-strategy__cache-texts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.import-strategy__cache-label {
+  font: var(--text-label-strong);
+  color: var(--color-text-primary);
+}
+
+.import-strategy__cache-hint {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
 .import-commit {
   margin-top: var(--space-2);
 }
@@ -897,6 +1021,25 @@ function leave(): void {
   margin-top: var(--space-1);
   font: var(--text-caption);
   color: var(--color-text-tertiary);
+}
+
+/* P1-1：导入后体检（按钮 + 结果一行，不抢主按钮的视觉权重） */
+.import-result__check {
+  margin-top: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.import-result__check-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.import-result__check-note {
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
 }
 
 .import-result__issues {

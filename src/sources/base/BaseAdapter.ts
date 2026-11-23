@@ -2,16 +2,17 @@
  * 适配器基类（API-01）
  *
  * 提供：
- * - 统一的 `testConnection` 实现（3s 超时、不抛错、错误进 `result.error`）；
+ * - 统一的 `testConnection` 实现（按源类型分级的探活窗口、不抛错、错误进 `result.error`）；
  * - 源禁用检查（API-02 已在前置做，这里再兜一层，防止直接调用适配器）；
  * - 公共 header 拼装、媒体条目 ID 生成与基础字段填充。
  *
  * 子类需实现 `probe`（探活）与全部数据方法；`probe` 返回条目数时填入 `itemCount`。
  */
-import { TIMEOUT_SEARCH_MS, TIMEOUT_TEST_CONNECTION_MS } from '@/shared/constants';
+import { TIMEOUT_SEARCH_MS } from '@/shared/constants';
 import { AppError, toErrorShape } from '@/shared/errors';
 import { mediaIdOf } from '@/shared/id';
 import { classifySourceFailure } from '@/shared/sourceFailure';
+import { probeWindowMsFor } from '@/sources/probeWindow';
 import type {
   BrowseParams,
   Category,
@@ -61,19 +62,12 @@ export abstract class BaseAdapter implements SourceAdapter {
   protected abstract probe(source: Source, signal?: AbortSignal): Promise<ProbeResult>;
 
   /**
-   * 探活超时窗口。子类可覆盖：探活不走 httpClient、无法被
-   * `withProbeTimeout` 约束的适配器（如 spider 的原生 jar 下载）需要更长的窗口。
+   * 探活超时窗口（P0-3 → P1-7）：按源类型分级，口径与 `sourceService.probeTimeoutOf`
+   * 同出一个模块，保证「`httpClient` 收窄层」与「适配器闸门层」两层窗口一致。
+   * 需要按运行时状态再分级的子类（爬虫源的 jar 冷/热）覆盖本方法。
    */
-  protected get probeTimeoutMs(): number {
-    return TIMEOUT_TEST_CONNECTION_MS;
-  }
-
-  /**
-   * 按源取探活窗口（P0-3）。默认与 `probeTimeoutMs` 一致；
-   * 需要「冷/热不同窗口」的适配器（爬虫源的 jar 冷启动 vs 已加载句柄）覆盖本方法。
-   */
-  protected probeWindowMs(_source: Source): number {
-    return this.probeTimeoutMs;
+  protected probeWindowMs(source: Source): number {
+    return probeWindowMsFor(source);
   }
 
   abstract listCategories(source: Source, signal?: AbortSignal): Promise<Category[]>;

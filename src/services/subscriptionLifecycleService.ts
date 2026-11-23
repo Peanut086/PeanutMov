@@ -19,6 +19,7 @@
  * 触发闸门（`autoRefreshRunAt` / 在途 Promise）只存内存，不落库。
  */
 import { sourceRepo } from '@/db/repositories/sourceRepo';
+import { subscriptionRepo } from '@/db/repositories/subscriptionRepo';
 import { kvRepo } from '@/db/repositories/kvRepo';
 import { onAppStateChange, type AppLifecycleState } from '@/native/appLifecycle';
 import { isOnline } from '@/native/network';
@@ -176,6 +177,22 @@ export function describeRefreshOutcome(
 export type RefreshSummaryTone = 'info' | 'success' | 'error';
 
 /**
+ * 订阅展示名（P0-1：源管理摘要与订阅管理页共用一份口径）。
+ *
+ * `subscriptionId` 是 URL 原文或文件名：URL 直接铺在屏幕上会撑满一行，
+ * 文件名则要末段才认得出是哪份订阅。
+ */
+export function subscriptionLabel(subscriptionId: string): string {
+  try {
+    return new URL(subscriptionId).hostname;
+  } catch {
+    const clean = subscriptionId.split('?')[0] ?? subscriptionId;
+    const parts = clean.split('/');
+    return parts[parts.length - 1] || clean;
+  }
+}
+
+/**
  * 「刷新全部」的一行文案（订阅管理页与源管理页共用一份口径）。
  *
  * 三档必须分开说：都没发起不是失败，把 deferred 省掉会让"TTL/退避跳过"显示成成功或失败。
@@ -253,16 +270,17 @@ async function readMap<T>(key: string): Promise<Record<string, T>> {
 }
 
 /**
- * 自动禁用前复检（P0-3）。
+ * 自动禁用前复检（P0-3 → P1-7 放开到全部联网源）。
  *
- * 只对爬虫源做：它们的探活要走 jar 下载 + dex 加载 + 防护初始化，与真实链路差异最大，
- * 体检抖动造成的「假死」几乎都出在这一类。复检成功则就地回写 `health=ok`，
+ * 禁用是不可逆的用户可见后果，而体检抖动造成的「假死」不只出在爬虫源：P1-7 实测口径下，
+ * 内网 alist / webdav / jellyfin 首目录大或 NAS 唤醒慢时同样会被判 timeout，连续 3 次即误禁。
+ * 故只要类型有适配器且真的联网，就复检一次：通过则就地回写 `health=ok`，
  * 并让调用方跳过本次禁用——宁可多留一个源，也不要一次抖动误禁一批好源。
  *
- * 非爬虫源 / Web 环境直接返回 false（不做网络请求，保持体检耗时与单测确定性）。
+ * 演示源（无网络请求）、Web 环境（保持体检耗时与单测确定性）不做复检。
  */
 async function recheckAlive(source: Source): Promise<boolean> {
-  if (source.type !== 'spider' || !isNative() || !sourceRegistry.has(source.type)) return false;
+  if (source.type === 'demo' || !isNative() || !sourceRegistry.has(source.type)) return false;
   try {
     const adapter = sourceRegistry.get(source.type);
     const result = await adapter.testConnection(source);
@@ -471,12 +489,37 @@ export const subscriptionLifecycleService = {
       else bySubscription.set(source.subscriptionId, [source]);
     }
 
+    // P1-2：订阅实体（DB v7 `subscriptions`）。来源标识一直写在每个源上，但订阅本身没有记录，
+    // 于是解析器给的名称只能从「最近 20 条」导入记录里临时捞，捞不到界面就退回主机名。
+    // 这里顺带把缺失的实体补建出来：主键由来源标识派生，所以补建天然幂等，不需要版本号或迁移标记。
+    const entities = new Map((await subscriptionRepo.list()).map((item) => [item.key, item] as const));
+    const recordNames = new Map(
+      (await listImportRecords()).map((record) => [record.url, record.name] as const),
+    );
+
     const out: SubscriptionSummary[] = [];
     for (const [subscriptionId, list] of bySubscription) {
+      let entity = entities.get(subscriptionId) ?? null;
+      if (!entity) {
+        const isUrl = /^https?:\/\//i.test(subscriptionId);
+        try {
+          entity = await subscriptionRepo.upsertKeyed({
+            key: subscriptionId,
+            url: isUrl ? subscriptionId : null,
+            fileName: isUrl ? null : subscriptionId,
+            name: recordNames.get(subscriptionId) ?? null,
+          });
+        } catch {
+          // 补建只是把名称固化下来，失败不该让摘要读不出来：退回主机名口径（与改动前一致）
+          entity = null;
+        }
+        if (entity) entities.set(subscriptionId, entity);
+      }
       // subscriptionId 可能是 URL 或文件名：刷新时间只在 URL 形态下有记录
       const lastRefreshAt = refreshState[subscriptionId] ?? null;
       out.push({
         subscriptionId,
+        name: entity?.name ?? null,
         sourceCount: list.length,
         alive: list.filter((s) => s.health === 'ok').length,
         dead: list.filter((s) => s.healthCheckedAt !== null && s.health !== 'ok' && s.health !== 'unknown').length,
@@ -506,7 +549,7 @@ export const subscriptionLifecycleService = {
         streaks[key] = streak;
         dirty = true;
         if (streak >= SUBSCRIPTION_AUTO_DISABLE_STREAK && !source.autoDisabledAt) {
-          // P0-3：禁用是不可逆的用户可见后果，先复检一次（爬虫源）
+          // P0-3 / P1-7：禁用是不可逆的用户可见后果，先复检一次（全部联网源）
           if (await recheckAlive(source)) {
             delete streaks[key];
             dirty = true;

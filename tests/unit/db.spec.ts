@@ -41,7 +41,7 @@ describe('DB 表结构与事务（AC-14）', () => {
     await resetAll();
   });
 
-  it('v5 建表：16 个 store（v3 的 13 个 + epgSources / channelPrefs / reminders）与全部索引均存在', async () => {
+  it('建表：17 个 store（v3 的 13 个 + epgSources / channelPrefs / reminders / subscriptions）与全部索引均存在', async () => {
     const db = await getDb();
     const stores = [...db.objectStoreNames].sort();
     expect(stores).toEqual(
@@ -62,11 +62,23 @@ describe('DB 表结构与事务（AC-14）', () => {
         'media',
         'reminders',
         'sources',
+        'subscriptions',
       ].sort(),
     );
 
     const tx = db.transaction(
-      ['sources', 'media', 'episodes', 'downloads', 'history', 'lives', 'epgSources', 'channelPrefs', 'reminders'],
+      [
+        'sources',
+        'media',
+        'episodes',
+        'downloads',
+        'history',
+        'lives',
+        'epgSources',
+        'channelPrefs',
+        'reminders',
+        'subscriptions',
+      ],
       'readonly',
     );
     expect([...tx.objectStore('sources').indexNames].sort()).toEqual(
@@ -94,6 +106,8 @@ describe('DB 表结构与事务（AC-14）', () => {
     expect([...tx.objectStore('reminders').indexNames].sort()).toEqual(
       ['by-channel', 'by-notifyAt', 'by-state'].sort(),
     );
+    // v7（P1-2）新增 subscriptions：主键由来源标识派生，量级只有几十条，刻意不建索引
+    expect([...tx.objectStore('subscriptions').indexNames]).toEqual([]);
     await tx.done;
   });
 
@@ -133,7 +147,7 @@ describe('DB 表结构与事务（AC-14）', () => {
     await deleteDatabase();
     resetDbConnection();
     const db = await getDb();
-    expect([...db.objectStoreNames].length).toBe(16);
+    expect([...db.objectStoreNames].length).toBe(17);
     expect(await sourceRepo.count()).toBe(0);
   });
 
@@ -218,5 +232,59 @@ describe('DB 表结构与事务（AC-14）', () => {
     expect(await mediaRepo.searchByTitle('沈腾')).toEqual([]);
     // 单字查询不放开演员比对
     expect(await mediaRepo.searchByTitle('腾', 10, { matchActors: true })).toEqual([]);
+  });
+
+  /**
+   * P1-4：子串阶段的召回口径（实测后维持主键序）
+   *
+   * 集合口径是硬约束：limit 够大时子串阶段必须与全表扫等价，一条不漏。
+   * 截断时给的是 id 序的前几条而不是「最近缓存的那批」——这是刻意保留的取舍：
+   * 沿 `by-cached` 倒序扫同样要在 limit 处收口（扫描深度不降），而索引游标每步多一次
+   * 主键回表，2 万条语料受控 A/B 实测 +27%~32%，故否决。下面第二条用例把这个结论钉住。
+   */
+  it('mediaRepo 子串阶段：召回集合与全表扫等价，截断按主键序（by-cached 倒序已被实测否决）', async () => {
+    const base = 1_700_000_000_000;
+    const mk = (n: number, title: string, cachedAt: number): MediaItem => ({
+      id: `demo:s${n}`,
+      sourceId: 'demo',
+      sourceItemId: `s${n}`,
+      title,
+      originalTitle: null,
+      type: 'series',
+      year: 2024,
+      area: null,
+      genres: [],
+      tags: [],
+      rating: null,
+      posterUrl: null,
+      backdropUrl: null,
+      description: null,
+      durationSec: null,
+      episodeCount: null,
+      titleLower: title.toLowerCase(),
+      isDemo: false,
+      cachedAt,
+      updatedAt: cachedAt,
+    });
+
+    // 「第 N 季」全部以「第」开头：前缀阶段一条不命中，只能走子串阶段
+    const matched = Array.from({ length: 30 }, (_, i) => mk(i, `第 ${i + 1} 季`, base + i));
+    const recent = Array.from({ length: 5 }, (_, i) => mk(100 + i, `新缓存 ${i + 1} 季`, base + 1000 + i));
+    const noise = Array.from({ length: 10 }, (_, i) => mk(200 + i, `无关影片 ${i + 1}`, base + 500 + i));
+    await mediaRepo.upsertMany([...matched, ...recent, ...noise]);
+
+    const everything = await mediaRepo.searchByTitle('季', 100);
+    expect(everything.map((item) => item.id).sort()).toEqual(
+      [...matched, ...recent].map((item) => item.id).sort(),
+    );
+
+    // 截断给主键序的前 3 条；by-cached 倒序会给 s104/s103/s102（最新缓存），已被实测否决
+    const top3 = await mediaRepo.searchByTitle('季', 3);
+    expect(top3.map((item) => item.id)).toEqual(['demo:s0', 'demo:s1', 'demo:s10']);
+
+    // 前缀阶段与子串阶段共用 seen 去重：既命中前缀又含子串的条目不重复出现
+    await mediaRepo.upsertMany([mk(300, '季节 变化', base + 2000), mk(301, '跨 季', base + 2001)]);
+    const both = await mediaRepo.searchByTitle('季', 50);
+    expect(both.map((item) => item.id).filter((id) => id === 'demo:s300')).toHaveLength(1);
   });
 });

@@ -3,13 +3,13 @@
  *
  * 查询约定：
  * - 列表按 `updatedAt` 倒序（同源）、分页索引 `by-source-updated`；
- * - 搜索走 `by-title` 前缀，中文子串回退全表过滤（缓存规模有限）；
+ * - 搜索走 `by-title` 前缀，不足时沿主键序补子串匹配（无索引可用，见 searchByTitle 注释）；
  * - 批量写入按 200 条拆分事务（技术方案 5.2，避免长事务阻塞 UI）。
  */
 import { withTx } from '@/db/index';
 import { STORE_NAMES, type CinemaTx } from '@/db/schema';
 import { SEARCH_LOCAL_LIMIT } from '@/shared/constants';
-import type { MediaItem, MediaType } from '@/types';
+import type { MediaItem } from '@/types';
 
 const BATCH_SIZE = 200;
 
@@ -98,20 +98,8 @@ export const mediaRepo = {
     );
   },
 
-  /** 同源同类型（筛选用；缓存量小，内存过滤） */
-  async listBySourceAndType(
-    sourceId: string,
-    type: MediaType,
-    opts?: { limit?: number; offset?: number },
-  ): Promise<MediaItem[]> {
-    const all = await this.listBySource(sourceId, { limit: Number.MAX_SAFE_INTEGER, offset: 0 });
-    return all
-      .filter((m) => m.type === type)
-      .slice(opts?.offset ?? 0, (opts?.offset ?? 0) + (opts?.limit ?? 30));
-  },
-
   /**
-   * 本地搜索：标题前缀优先（走 by-title 索引），不足再补子串匹配。
+   * 本地搜索：标题前缀优先（走 by-title 索引），不足再沿主键序补子串匹配。
    * `matchActors`（搜索页开启，换源候选不开启）让子串那一趟顺带比主演——演员没有索引
    * （存量数据也没这列），共用同一次扫描，不另开游标。
    * `keyword` 会转为小写；空关键词返回空数组。
@@ -141,9 +129,13 @@ export const mediaRepo = {
       if (out.length < limit) {
         // 单字查询不比主演：与 `matchesActor` 的 2 字门槛同口径，否则「王」会淹掉标题命中
         const actorKw = opts?.matchActors && kw.length >= 2 ? kw : null;
-        let allCursor = await store.openCursor();
-        while (allCursor && out.length < limit) {
-          const value = allCursor.value;
+        // P1-4 实测否决：这一趟沿 `by-cached` 倒序扫，收益只有「截断时给最近缓存的一批」，
+        // 但游标两版都在 limit 处收口，扫描深度并未下降（受控 A/B：4 例里 3 例 visited 相同、
+        // 1 例还多走 353 条），而索引游标每步要多一次主键回表 —— Chromium 实测 +27%~32%。
+        // 在最慢的那条路径上加价换排序口径，不划算，保持主键序。
+        let scanCursor = await store.openCursor();
+        while (scanCursor && out.length < limit) {
+          const value = scanCursor.value;
           const matched =
             value.titleLower.includes(kw) ||
             (actorKw !== null && (value.actors ?? []).some((name) => name.toLowerCase().includes(actorKw)));
@@ -151,7 +143,7 @@ export const mediaRepo = {
             seen.add(value.id);
             out.push(value);
           }
-          allCursor = await allCursor.continue();
+          scanCursor = await scanCursor.continue();
         }
       }
       return out;

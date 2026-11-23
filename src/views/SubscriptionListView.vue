@@ -25,6 +25,7 @@ import {
   listRefreshOutcomes,
   refreshSummaryText,
   refreshTracked,
+  subscriptionLabel,
   type SubscriptionRefreshOutcome,
 } from '@/services/subscriptionLifecycleService';
 import { useOnlineStatus } from '@/composables/useOnlineStatus';
@@ -58,6 +59,8 @@ interface SubscriptionRow {
   outcome: SubscriptionRefreshOutcome | null;
   /** 是否可刷新（URL 形态；文件导入的订阅无法重新拉取） */
   refreshable: boolean;
+  /** P1-2：订阅自带名称（来自订阅实体）；null = 没有名称，标题退回来源标识 */
+  name: string | null;
 }
 
 const rows = computed<SubscriptionRow[]>(() => {
@@ -80,6 +83,7 @@ const rows = computed<SubscriptionRow[]>(() => {
       importedAt: recordAt.get(id) ?? list.reduce((acc, s) => Math.max(acc, s.createdAt), 0),
       outcome: outcomes.value[id] ?? null,
       refreshable: /^https?:\/\//i.test(id),
+      name: summaryOf(id)?.name ?? null,
     }))
     .sort((a, b) => (b.importedAt ?? 0) - (a.importedAt ?? 0));
 });
@@ -92,6 +96,16 @@ const rows = computed<SubscriptionRow[]>(() => {
  */
 function refreshNote(row: SubscriptionRow) {
   return row.outcome ? describeRefreshOutcome(row.outcome) : null;
+}
+
+/**
+ * 行的展示名（P1-2）。
+ *
+ * 有订阅名称就用名称；没有则退回来源标识的短标签（主机名 / 文件名末段），
+ * 与源管理摘要共用 `subscriptionLabel` 一份口径，两处不会出现两套名字。
+ */
+function rowLabel(row: SubscriptionRow): string {
+  return row.name ?? subscriptionLabel(row.id);
 }
 
 onMounted(async () => {
@@ -142,18 +156,20 @@ async function refresh(row: SubscriptionRow): Promise<void> {
   }
   refreshingId.value = row.id;
   try {
+    // 与摘要列表同一口径的短标签：Toast 里铺整条 URL 没人读得下
+    const label = rowLabel(row);
     // 走与后台自动刷新同一个入口：手动刷新的结果同样进台账，退避状态也因此清零
     const { ok, reason, outcome, counts } = await refreshTracked(row.id);
     outcomes.value = { ...outcomes.value, [row.id]: outcome };
     if (!ok) {
-      toast.error(`「${row.id}」刷新失败：${reason ?? '未知原因'}`);
+      toast.error(`「${label}」刷新失败：${reason ?? '未知原因'}`);
       return;
     }
     const parts = [`覆盖 ${counts?.updated ?? 0} 个源`];
     if (counts && counts.newCount > 0) parts.push(`新增 ${counts.newCount} 条未导入`);
     if (counts && counts.jarDead > 0) parts.push(`${counts.jarDead} 个 jar 已失效未覆盖`);
     if (counts && counts.livesFailed > 0) parts.push(`${counts.livesFailed} 个直播源同步失败`);
-    const text = `「${row.id}」已刷新：${parts.join('，')}`;
+    const text = `「${label}」已刷新：${parts.join('，')}`;
     // 直播源没同步上就不算「全绿」：用 info 说完成绩，也把缺口留在屏幕上
     if (counts && counts.livesFailed > 0) toast.info(text);
     else toast.success(text);
@@ -168,7 +184,8 @@ async function refresh(row: SubscriptionRow): Promise<void> {
 async function removeSubscription(row: SubscriptionRow): Promise<void> {
   const ok = await ui.confirm({
     title: '删除该订阅的全部源？',
-    message: `将删除「${row.id}」贡献的 ${row.sourceCount} 个源（含已禁用的）。已下载的文件不受影响，可在下载页单独清理。`,
+    // 危险确认里保留完整地址：短标签好看但不足以判定"删的是哪一条"
+    message: `将删除「${rowLabel(row)}」贡献的 ${row.sourceCount} 个源（含已禁用的）。\n${row.id}\n已下载的文件不受影响，可在下载页单独清理。`,
     confirmText: '删除',
     danger: true,
   });
@@ -249,7 +266,9 @@ async function retry(): Promise<void> {
       <ul v-else class="subs-list">
         <li v-for="row in rows" :key="row.id" class="subs-row">
           <div class="subs-row__main">
-            <p class="subs-row__id truncate-1">{{ row.id }}</p>
+            <p class="subs-row__id truncate-1">{{ rowLabel(row) }}</p>
+            <!-- P1-2：有名称时来源标识降到次级一行——地址仍是判定「删的/刷的是哪条」的依据，不能省掉 -->
+            <p v-if="row.name" class="subs-row__url truncate-1">{{ row.id }}</p>
             <p class="subs-row__meta">
               {{ row.sourceCount }} 个源 · 启用 {{ row.enabledCount }}
               <template v-if="row.unhealthyCount > 0"> · 失效 {{ row.unhealthyCount }}</template>
@@ -269,11 +288,11 @@ async function retry(): Promise<void> {
               class="btn btn--secondary btn--sm"
               type="button"
               :disabled="refreshingId === row.id || !row.refreshable"
-              :title="row.refreshable ? '重新拉取并覆盖已有源' : '文件导入的订阅不可刷新'"
+              :title="row.refreshable ? '立刻重新拉取并覆盖已有源（不受 24h 与退避限制）' : '文件导入的订阅不可刷新'"
               @click="refresh(row)"
             >
               <LoadingSpinner v-if="refreshingId === row.id" :size="14" />
-              {{ refreshingId === row.id ? '刷新中' : '刷新' }}
+              {{ refreshingId === row.id ? '刷新中' : '立即刷新' }}
             </button>
             <button
               class="btn btn--secondary btn--sm subs-row__remove"
@@ -364,6 +383,12 @@ async function retry(): Promise<void> {
 .subs-row__id {
   font: var(--text-body-strong);
   color: var(--color-text-primary);
+}
+
+.subs-row__url {
+  margin-top: 2px;
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
 }
 
 .subs-row__meta {

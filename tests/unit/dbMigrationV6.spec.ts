@@ -9,7 +9,7 @@ import { cacheRepo } from '@/db/repositories/cacheRepo';
 import { DANMAKU_CACHE_TTL_MS, DB_NAME, DB_VERSION, EPG_CACHE_TTL_MS } from '@/shared/constants';
 import type { DanmakuMatch } from '@/types';
 
-import { tick } from './helpers';
+import { dropNewerStores, tick } from './helpers';
 
 /**
  * DB v6（danmakuCache / epgCache 的 by-fetched）升级链路。
@@ -25,6 +25,7 @@ function upgradeToV5(...args: Parameters<typeof upgrade>): void {
   upgrade(db, oldVersion, newVersion, tx);
   tx.objectStore(STORE_NAMES.danmakuCache).deleteIndex('by-fetched');
   tx.objectStore(STORE_NAMES.epgCache).deleteIndex('by-fetched');
+  dropNewerStores(db, 5);
 }
 
 describe('DB v6：缓存表 by-fetched', () => {

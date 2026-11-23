@@ -23,6 +23,7 @@
  */
 import { withTx } from '@/db/index';
 import { sourceRepo, toStorableSource } from '@/db/repositories/sourceRepo';
+import { subscriptionRepo } from '@/db/repositories/subscriptionRepo';
 import { appEvents } from '@/services/events';
 import {
   bucketFailures,
@@ -623,12 +624,28 @@ export const importService: ImportService = {
     }
 
     const overwrittenIds = toWrite.filter((s) => existingById.has(s.id)).map((s) => s.id);
+    // P1-3：缺省按 FR-04 清空被覆盖源的缓存；显式传 false 时覆盖只更新源配置、保留已缓存内容
+    const clearCache = options.clearCache !== false;
     try {
-      await withTx(['sources', 'media', 'lines', 'episodes', 'categories'], 'readwrite', async (tx) => {
+      await withTx(['sources', 'media', 'lines', 'episodes', 'categories', 'subscriptions'], 'readwrite', async (tx) => {
         const sourceStore = tx.objectStore('sources');
         // 预览对象来自 Vue 响应式状态，ext/headers 可能是 Proxy，
         // 结构化克隆会抛 DataCloneError，写入前必须还原成纯值
         for (const source of toWrite) await sourceStore.put(toStorableSource(source));
+        // P1-2：订阅实体与源同事务落库。解析器给出的订阅名称只在这一步还挂在预览上，
+        // 错过就得丢弃（界面只能抠主机名）；放进同一事务也避免「源写进去了、订阅没记下」。
+        if (subscriptionId) {
+          await subscriptionRepo.upsertKeyed(
+            {
+              key: subscriptionId,
+              url: preview.sourceUrl ?? null,
+              fileName: preview.sourceUrl ? null : preview.fileName,
+              name: preview.name,
+            },
+            tx,
+          );
+        }
+        if (!clearCache) return;
         for (const sourceId of overwrittenIds) {
           // overwrite：清空该源缓存（FR-04）
           const mediaKeys = await tx

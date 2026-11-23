@@ -21,6 +21,11 @@
  * - v6（2026-11-16，OPT-10）：`danmakuCache` / `epgCache` 新增 `by-fetched` 索引，
  *   供缓存 TTL 清扫与 LRU 上限淘汰按时间遍历（此前只有全表 `getAll`）。
  *   回滚方式：同 v5，纯派生索引，降级后不读即可。
+ * - v7（2026-11-22，P1-2）：新增 `subscriptions` store（订阅实体：来源标识 + 订阅自带名称）。
+ *   既有链路一律不改口径：`Source.subscriptionId` 照旧写，台账 kv 照旧以 URL 为 key，
+ *   新表只用于「找回名称」，读不到时界面回退 `subscriptionLabel()` 的主机名。
+ *   回滚方式：`git revert` 后旧客户端忽略多出的 store；该表是可重建的派生数据，
+ *   不必清空也不影响任何链路（无外键约束、无唯一约束）。
  */
 import type { IDBPDatabase, IDBPTransaction } from 'idb';
 
@@ -144,5 +149,11 @@ export function upgrade(
   if (oldVersion < 6) {
     tx.objectStore('danmakuCache').createIndex('by-fetched', 'fetchedAt');
     tx.objectStore('epgCache').createIndex('by-fetched', 'fetchedAt');
+  }
+  // v7（P1-2）：subscriptions（订阅实体）。纯新增 store，不动任何既有数据；
+  // 老库里的订阅不在这里补建——升级窗口里读不到业务数据（没有源可读），
+  // 由 `subscriptionLifecycleService.summarize()` 首次聚合时按 `Source.subscriptionId` 懒式补。
+  if (oldVersion < 7) {
+    db.createObjectStore('subscriptions', { keyPath: 'id' });
   }
 }

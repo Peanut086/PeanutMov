@@ -6,8 +6,9 @@
 import { defineStore } from 'pinia';
 import { computed, ref } from 'vue';
 
+import { subscriptionRepo } from '@/db/repositories/subscriptionRepo';
 import { sourceService } from '@/services/sourceService';
-import { healthService } from '@/services/healthService';
+import { healthService, type HealthSnapshot } from '@/services/healthService';
 import { subscriptionLifecycleService } from '@/services/subscriptionLifecycleService';
 import {
   buildTrendSeries,
@@ -389,6 +390,17 @@ export const useSourceStore = defineStore('source', () => {
     if (removedLives > 0) {
       logger.info('按订阅级联删除直播源', { subscriptionId, removedLives });
     }
+    // P1-2：这条订阅不再贡献任何源时收掉订阅实体，否则每换一批订阅就往表里堆一条孤儿。
+    // 放在「现在还有没有源」的判断上而不是 `removed > 0`：源被逐个删过再来这里删除，
+    // removed 是 0，实体同样已经没人引用了，得一起清掉。
+    // 名称显示读不到实体本来就退回主机名，所以这一步失败只记日志，不影响删除结果。
+    if (!(await sourceService.list()).some((s) => s.subscriptionId === subscriptionId)) {
+      try {
+        await subscriptionRepo.removeByKey(subscriptionId);
+      } catch (e) {
+        logger.warn('订阅实体清理失败', subscriptionId, e);
+      }
+    }
     return removed;
   }
 
@@ -477,6 +489,58 @@ export const useSourceStore = defineStore('source', () => {
           source.health !== 'unknown',
       )
       .map((source) => source.id);
+  }
+
+  /**
+   * P1-1：只体检指定的一批源（导入结果里的「体检刚导入的 N 个源」）。
+   *
+   * 与 `refreshHealth` 同一收尾（退化处置 → 重载列表 → 刷新订阅摘要），区别只在探测范围：
+   * 新导入的源没有任何健康记录，旧口径要等用户去搜索撞错才知道死活。
+   * 注意 `healthService.check(ids)` 返回的是与旧快照合并后的全量结果，
+   * 统计必须按传入 ids 取，否则会把"上次检测留下的 ok"算进本次成绩。
+   */
+  async function checkSources(
+    ids: string[],
+  ): Promise<{ aborted: boolean; checked: number; ok: number; bad: number }> {
+    if (healthChecking.value || ids.length === 0) {
+      return { aborted: false, checked: 0, ok: 0, bad: 0 };
+    }
+    healthChecking.value = true;
+    error.value = null;
+    const controller = new AbortController();
+    healthAbort = controller;
+    try {
+      const snapshot = await healthService.check(ids, controller.signal);
+      const verdict = verdictOf(ids, snapshot);
+      if (controller.signal.aborted) {
+        await reload();
+        return { ...verdict, aborted: true };
+      }
+      await subscriptionLifecycleService.applyHealthDegradation();
+      await reload();
+      void loadSummaries();
+      return { ...verdict, aborted: false };
+    } catch (e) {
+      if (!isCanceled(e)) {
+        error.value = toErrorShape(e, 'E_NETWORK');
+        throw e;
+      }
+      await reload();
+      return { aborted: true, checked: 0, ok: 0, bad: 0 };
+    } finally {
+      if (healthAbort === controller) {
+        healthAbort = null;
+        healthChecking.value = false;
+        healthProgress.value = null;
+      }
+    }
+  }
+
+  /** 本次范围内的可用/失效统计（未探测到的源既不计 ok 也不计 bad） */
+  function verdictOf(ids: string[], snapshot: HealthSnapshot) {
+    const probed = ids.filter((id) => snapshot.results[id] !== undefined);
+    const ok = probed.filter((id) => snapshot.results[id]?.health === 'ok').length;
+    return { checked: probed.length, ok, bad: probed.length - ok };
   }
 
   /**
@@ -792,6 +856,7 @@ export const useSourceStore = defineStore('source', () => {
     removeBySubscription,
     reorder,
     refreshHealth,
+    checkSources,
     cancelHealthCheck,
     failedSourceIds,
     create,

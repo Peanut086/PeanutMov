@@ -4,7 +4,7 @@
  * 页面四态（LoadState）与分页由 Store 维护，数据请求全部经 `libraryService`。
  */
 import { defineStore } from 'pinia';
-import { computed, ref, watch } from 'vue';
+import { computed, ref, shallowRef, watch } from 'vue';
 
 import { libraryService } from '@/services/libraryService';
 import { EMPTY_LIBRARY_FILTERS, markSourceFailedByError } from '@/services/libraryService';
@@ -21,7 +21,12 @@ import { lookupAliases } from '@/services/aliasService';
 import { lineHealthService } from '@/services/lineHealthService';
 import { appEvents } from '@/services/events';
 import { useSourceStore } from '@/stores/sourceStore';
-import { PAGE_SIZE, SEARCH_EXPANSION_DEADLINE_MS, SEARCH_LOCAL_LIMIT } from '@/shared/constants';
+import {
+  PAGE_SIZE,
+  SEARCH_AGGREGATE_MERGE_MS,
+  SEARCH_EXPANSION_DEADLINE_MS,
+  SEARCH_LOCAL_LIMIT,
+} from '@/shared/constants';
 import { AppError, isCanceled, toAppError, toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { isOnline } from '@/native/network';
@@ -71,6 +76,15 @@ export const useLibraryStore = defineStore('library', () => {
   /* ---------- v2.0/P0-P1：聚合检索重构 ---------- */
   /** 未去重的完整结果（分组视图的数据源） */
   const searchResultsAll = ref<MediaItem[]>([]);
+  /**
+   * P1-5：分组计算真正消费的快照。
+   *
+   * 渐进扇出下 `searchResultsAll` 每到一个源就整体换一次数组，直接喂给 `searchGroups`
+   * 等于每批都重跑一遍「去重 + 分组 + 三级排序」——96 个源就是几十次全量重算，
+   * 是搜索期间主线程长任务的集中来源。这里把追加按窗口合并成一批再发布，
+   * 到达顺序只影响上屏节奏、不影响终态；搜索结束前用 `publishSearchResults()` 强制对齐。
+   */
+  const searchResultsBatch = shallowRef<MediaItem[]>([]);
   /** 组卡视图（默认）/ 按源平铺视图 */
   const searchViewMode = ref<'grouped' | 'flat'>('grouped');
   /** 检索范围：全部 / 仅站点 / 仅爬虫 / 仅豆瓣 / 选定源 */
@@ -81,13 +95,38 @@ export const useLibraryStore = defineStore('library', () => {
 
   const playabilityOf = (mediaId: string): PlayabilityStatus => playabilityService.statusOf(mediaId);
 
-  /** 聚合分组（v2.0：可播性 → 健康 tier → 延迟排序） */
+  /** 合并窗口内的待发布时间点；null = 窗口未开 */
+  let aggregatePublishTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** 立刻发布最新结果快照（作废窗口内未触发的批次），保证读取派生值时拿到的就是终态 */
+  function publishSearchResults(): void {
+    if (aggregatePublishTimer !== null) {
+      clearTimeout(aggregatePublishTimer);
+      aggregatePublishTimer = null;
+    }
+    searchResultsBatch.value = searchResultsAll.value;
+  }
+
+  watch(
+    searchResultsAll,
+    () => {
+      // 窗口已开就不续期：结果源源不断时也保证每窗口至少发布一次，不会被饿死
+      if (aggregatePublishTimer !== null) return;
+      aggregatePublishTimer = setTimeout(() => {
+        aggregatePublishTimer = null;
+        searchResultsBatch.value = searchResultsAll.value;
+      }, SEARCH_AGGREGATE_MERGE_MS);
+    },
+    { flush: 'post' },
+  );
+
+  /** 聚合分组（v2.0：可播性 → 健康 tier → 延迟排序）；数据源是节流后的快照 */
   const searchGroups = computed<SearchResultGroup[]>(() => {
-    if (searchResultsAll.value.length === 0) return [];
+    if (searchResultsBatch.value.length === 0) return [];
     // PERF-0：聚合重算耗时（>8ms 才记，防渐进回调刷屏）
     const aggregateT0 = performance.now();
     const groups = groupSearchResults(
-      searchResultsAll.value,
+      searchResultsBatch.value,
       searchKeyword.value,
       (sourceId) => sourceStore.sources.find((s) => s.id === sourceId)?.health ?? 'unknown',
       (sourceId) => sourceStore.latencyOf(sourceId),
@@ -97,7 +136,7 @@ export const useLibraryStore = defineStore('library', () => {
     if (aggregateMs > 8) {
       logger.scope('searchPerf').info('aggregate', {
         ms: Math.round(aggregateMs),
-        items: searchResultsAll.value.length,
+        items: searchResultsBatch.value.length,
       });
     }
     return groups;
@@ -446,6 +485,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchExpandedNote.value = null;
     if (trimmed.length === 0) {
       searchResultsAll.value = [];
+      publishSearchResults();
       searchFailed.value = [];
       searchState.value = 'idle';
       searchTailSuggestions.value = [];
@@ -455,6 +495,7 @@ export const useLibraryStore = defineStore('library', () => {
     const controller = new AbortController();
     searchController = controller;
     searchResultsAll.value = [];
+    publishSearchResults();
     searchFailed.value = [];
     searchSkippedIds.value = [];
     searchTailSuggestions.value = [];
@@ -500,6 +541,8 @@ export const useLibraryStore = defineStore('library', () => {
         searchResultsAll.value = [...searchResultsAll.value, ...freshItems];
       }
 
+      // P1-5：扇出已结束，先把最后一批结果发布再判终态，不能让空态/成功态基于旧快照
+      publishSearchResults();
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
 
       // C-12：搜不到时给尾词建议芯片（去掉尾字优先，最多 3 条，算不出则不显示）
@@ -512,8 +555,12 @@ export const useLibraryStore = defineStore('library', () => {
         void expandEmptySearch(trimmed, expansion.signal);
       }
     } catch (e) {
-      if (isCanceled(e) || controller.signal.aborted) return;
+      if (isCanceled(e) || controller.signal.aborted) {
+        publishSearchResults();
+        return;
+      }
       searchResultsAll.value = [];
+      publishSearchResults();
       searchFailed.value = [];
       searchState.value = 'error';
       error.value = toErrorShape(e);
@@ -570,6 +617,7 @@ export const useLibraryStore = defineStore('library', () => {
         });
         if (fresh.length === 0) continue;
         searchResultsAll.value = [...searchResultsAll.value, ...fresh];
+        publishSearchResults();
         searchTailSuggestions.value = [];
         searchExpandedNote.value = variant;
         searchState.value = 'success';
@@ -625,8 +673,11 @@ export const useLibraryStore = defineStore('library', () => {
         searchTimeoutStreak.delete(id);
         searchBackoffSources.value.delete(id);
       }
+      publishSearchResults();
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
     } catch (e) {
+      // 增量入口整体失败也要把已上屏的结果对齐到快照：否则节流窗口会让列表"少一截"
+      publishSearchResults();
       if (isCanceled(e)) return;
       error.value = toErrorShape(e);
       appEvents.emit('toast', { text: '重试失败源未成功，可稍后再试或到源管理检查', type: 'info' });
@@ -670,8 +721,10 @@ export const useLibraryStore = defineStore('library', () => {
       if (result.skippedSourceIds.length > 0) {
         searchSkippedIds.value = [...searchSkippedIds.value, ...result.skippedSourceIds];
       }
+      publishSearchResults();
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
     } catch (e) {
+      publishSearchResults();
       if (isCanceled(e)) return;
       error.value = toErrorShape(e);
       appEvents.emit('toast', { text: '继续搜索未成功，可稍后再试', type: 'info' });
@@ -731,6 +784,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchProgress.value = null;
     searchKeyword.value = '';
     searchResultsAll.value = [];
+    publishSearchResults();
     searchFailed.value = [];
     searchPlayableOnly.value = false;
     searchState.value = 'idle';

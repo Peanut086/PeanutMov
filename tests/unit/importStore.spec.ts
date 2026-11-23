@@ -2,10 +2,12 @@ import { createPinia, setActivePinia } from 'pinia';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useImportStore } from '@/stores/importStore';
+import { importService } from '@/services/importService';
 import { sourceService } from '@/services/sourceService';
 import { settingsService } from '@/services/settingsService';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
 import { KV_KEY_IMPORT_RECORDS } from '@/shared/constants';
+import type { ImportPreview } from '@/types';
 import { readKv, resetAll } from './helpers';
 
 const SUBSCRIPTION = JSON.stringify({
@@ -24,6 +26,22 @@ function jsonResponse(body: string): Response {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+/** P0-2 取消用例用的最小预览体（只关心 sourceUrl 与条目数量） */
+function fakePreview(sourceUrl: string | null): ImportPreview {
+  return {
+    origin: 'url',
+    sourceUrl,
+    fileName: null,
+    fetchedAt: Date.now(),
+    name: '我的订阅',
+    total: 0,
+    entries: [],
+    globalIssues: [],
+    repos: [],
+    lives: [],
+  };
 }
 
 describe('importStore（API-14 v1.1 / CHG-02）', () => {
@@ -235,5 +253,77 @@ describe('importStore（API-14 v1.1 / CHG-02）', () => {
     expect(store.preview?.repos).toEqual([]);
     expect(store.preview?.entries.map((e) => e.key)).toEqual(['alist-a', 'webdav-b']);
     expect(store.preview?.sourceUrl).toBe('https://a.example.com/box.json');
+  });
+
+  /* ---------- P0-2：解析可取消（signal 真正交下去，而不只是丢弃结果） ---------- */
+
+  /** 受控预览：记录每次调用拿到的 signal，并由测试决定何时返回 */
+  function controllablePreview(
+    signals: AbortSignal[],
+    gates: Array<() => void>,
+  ) {
+    return vi.spyOn(importService, 'previewFromUrl').mockImplementation(async (url, signal) => {
+      signals.push(signal as AbortSignal);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      return fakePreview(url ?? null);
+    });
+  }
+
+  it('连续解析：新请求中止旧请求，且只有最后一次结果落地', async () => {
+    const signals: AbortSignal[] = [];
+    const gates: Array<() => void> = [];
+    controllablePreview(signals, gates);
+    const store = useImportStore();
+
+    const first = store.previewFromUrl('https://a.example.com/sub.json');
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    const second = store.previewFromUrl('https://b.example.com/sub.json');
+    await vi.waitFor(() => expect(signals).toHaveLength(2));
+
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[1]?.aborted).toBe(false);
+
+    gates.forEach((open) => open());
+    await Promise.all([first, second]);
+
+    expect(store.preview?.sourceUrl).toBe('https://b.example.com/sub.json');
+    expect(store.error).toBeNull();
+    expect(store.parsing).toBe(false);
+  });
+
+  it('abortPreview：中止在途解析后不落地结果、不写错误、parsing 归位', async () => {
+    const signals: AbortSignal[] = [];
+    const gates: Array<() => void> = [];
+    controllablePreview(signals, gates);
+    const store = useImportStore();
+
+    const pending = store.previewFromUrl(SUBSCRIPTION_URL);
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    store.abortPreview();
+
+    expect(signals[0]?.aborted).toBe(true);
+    expect(store.parsing).toBe(false);
+
+    gates[0]?.();
+    await pending;
+
+    expect(store.preview).toBeNull();
+    expect(store.error).toBeNull();
+  });
+
+  it('reset：清预览的同时中止在途解析（离开页面不再占请求）', async () => {
+    const signals: AbortSignal[] = [];
+    const gates: Array<() => void> = [];
+    controllablePreview(signals, gates);
+    const store = useImportStore();
+
+    const pending = store.previewFromUrl(SUBSCRIPTION_URL);
+    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    store.reset();
+
+    expect(signals[0]?.aborted).toBe(true);
+    gates[0]?.();
+    await pending;
+    expect(store.preview).toBeNull();
   });
 });
