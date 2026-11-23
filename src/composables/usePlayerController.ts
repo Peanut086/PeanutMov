@@ -108,6 +108,13 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   const backgroundPlayback = ref(options.backgroundPlayback);
   /** B1：通知栏/锁屏请求切换到的剧集 id（与 autoNextTarget 同一消费方式） */
   const remoteEpisodeTarget = ref<string | null>(null);
+  /**
+   * OPT-26（P2-⑫）：播放器层报上来的在线流停滞。
+   *
+   * 这里只转达事实、不缓存：重新取址要动解析缓存与路由起播，那些能力都在播放页，
+   * 播放器层拿不到解析服务（分层约束）。每次都是新对象，同样数值也能再触发一次。
+   */
+  const stallSignal = ref<{ positionSec: number; stuckMs: number; bufferedStalled: boolean | null } | null>(null);
   /** B3：睡眠定时——到点暂停，或播完本集就停住不连播 */
   const sleepTimer = useSleepTimer({
     onExpire: (choice) => {
@@ -245,6 +252,12 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     c.on('novideo', (info) => {
       // 不当作 error：声音还在播，用户可能想继续听，或换线路/换引擎
       noVideo.value = info;
+      setControlsVisible(true);
+    });
+
+    // OPT-26（P2-⑫）：在线流停滞——处置在播放页（重新取址要解析服务与路由）
+    c.on('stall', (info) => {
+      stallSignal.value = { ...info };
       setControlsVisible(true);
     });
 
@@ -854,6 +867,7 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     audioOnly,
     backgroundPlayback,
     remoteEpisodeTarget,
+    stallSignal,
     sleepTimer,
     localSubtitles,
     resolvedQuality,

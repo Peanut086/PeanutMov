@@ -1662,6 +1662,15 @@ input[type="range"].pl-rng::-moz-range-thumb {
   transform: scale(0.97);
 }
 
+/* OPT-26（P0-③-2）：源忙闸门未放行时，重试按钮是倒计时态——不能还是品牌色，
+   否则看上去可点，点下去撞的还是同一个爬虫实例 */
+.pl-cta:disabled {
+  background: var(--ov-press);
+  color: var(--tx-3);
+  cursor: default;
+  transform: none;
+}
+
 .pl-cta--ghost {
   background: transparent;
   border-color: var(--ov-line);

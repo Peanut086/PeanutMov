@@ -11,13 +11,17 @@
  * 2. `guidanceOf` 给出对应文案与动作集合，UI 只按动作渲染按钮；
  * 3. `sanitizeSourceMessage` 把脚本内部异常收敛成一句人话（原文只进日志）。
  */
-import type { AppErrorShape } from '@/types';
+import type { AppErrorShape, UnsupportedFormatReason } from '@/types';
 
 /** 源失败原因（面向用户的可行动分类） */
 export type SourceFailureKind =
   | 'source_dead'
   | 'source_busy'
   | 'timeout'
+  /** OPT-26（P0-②-1）：`E_UNSUPPORTED_FORMAT` 一族按 `reason` 分成四档，见 `classifyUnsupportedFormat` */
+  | 'magnet_link'
+  | 'dash_manifest'
+  | 'player_capability'
   | 'protocol_unsupported'
   | 'rule_script'
   | 'source_internal'
@@ -37,6 +41,13 @@ export type SourceFailureKind =
 /** UI 可渲染的动作 */
 export type SourceFailureAction =
   | 'retry'
+  /**
+   * OPT-26（P1-②-3）：这一轮没走过原生引擎时，面板给「用原生引擎重试」。
+   *
+   * `player_capability`（内置 `<video>` 的 code 4 / 离线裸 .ts）最常见：ExoPlayer 的解码能力
+   * 高于 WebView，同一条地址换一个内核往往就能播。两个引擎都已经试过的失败不再给这个动作。
+   */
+  | 'retry-native'
   | 'switch-source'
   | 'switch-line'
   | 'external'
@@ -59,6 +70,13 @@ export const RULE_SCRIPT_MESSAGE = '规则脚本异常（源站问题）';
 export const SOURCE_INTERNAL_MESSAGE = '源侧执行异常（源站问题）';
 /** 磁力链接的统一文案（App 无种子下载链路，只能外部打开） */
 export const MAGNET_MESSAGE = '磁力链接需用外部下载器/播放器打开';
+/**
+ * DASH 清单的拒绝文案（AC-40）。
+ *
+ * 放在 shared 而不是播放器侧：分类文案（`GUIDANCE.dash_manifest`）和抛错处
+ * （`player/sourceGuard.ts`）必须念同一句，而 shared 不能反向依赖 player。
+ */
+export const DASH_UNSUPPORTED_MESSAGE = '暂不支持 DASH(.mpd) 格式';
 /** 安全模式保护：爬虫源与原生播放器被暂停（近期连续崩溃触发） */
 export const SAFE_MODE_MESSAGE = '安全模式保护中：爬虫源已暂停';
 /** 爬虫隔离：同签名 24h 内崩溃 2 次，隔离 7 天 */
@@ -228,11 +246,38 @@ export function magnetUrlOf(error: AppErrorShape | null | undefined): string | n
   return null;
 }
 
+/**
+ * OPT-26（P0-②-1）：`E_UNSUPPORTED_FORMAT` 按子原因分档。
+ *
+ * 这个码此前被四类成因共用（磁力、DASH 清单、本机解不了、地址根本不是 http），
+ * 而文案只有一份「本 App 不做种子下载」——于是真机上一条 `<video>` 报的
+ * `格式不支持：MEDIA_SRC_NOT_SUPPORTED` 也套上了种子的话，用户被告知了一件
+ * 明细里根本没有 magnet: 的事。文案、动作、外部出口三样都按成因分档才对症。
+ *
+ * 没有 `reason` 时留在中性的 `protocol_unsupported`：源配置缺失（「该爬虫源缺少 jar」）
+ * 这类也用它，绝不能继续当成种子。
+ */
+export function classifyUnsupportedFormat(
+  reason: UnsupportedFormatReason | null | undefined,
+): SourceFailureKind {
+  switch (reason) {
+    case 'magnet_link':
+      return 'magnet_link';
+    case 'dash_manifest':
+      return 'dash_manifest';
+    case 'player_capability':
+      return 'player_capability';
+    case 'protocol_unsupported':
+    default:
+      return 'protocol_unsupported';
+  }
+}
+
 /** 错误 → 分类（唯一口径） */
 export function classifySourceFailure(error: AppErrorShape | null | undefined): SourceFailureKind {
   if (!error) return 'unknown';
   const text = `${error.message ?? ''} ${error.detail ?? ''}`;
-  if (isMagnetUrl(error.detail) || isMagnetUrl(error.message)) return 'protocol_unsupported';
+  if (isMagnetUrl(error.detail) || isMagnetUrl(error.message)) return 'magnet_link';
   // 保护态/配置态优先于内部异常判定（detail 里带 IllegalStateException 等原文）
   if (error.message === SAFE_MODE_MESSAGE || text.includes('safe mode active')) return 'safe_mode';
   if (error.message === QUARANTINE_MESSAGE || /quarantined/i.test(text)) return 'quarantined';
@@ -256,7 +301,7 @@ export function classifySourceFailure(error: AppErrorShape | null | undefined): 
 
   switch (error.code) {
     case 'E_UNSUPPORTED_FORMAT':
-      return 'protocol_unsupported';
+      return classifyUnsupportedFormat(error.reason);
     case 'E_TIMEOUT':
       return 'timeout';
     case 'E_KEYWORD_IGNORED':
@@ -324,10 +369,25 @@ const GUIDANCE: Record<SourceFailureKind, Omit<SourceFailureGuidance, 'kind'>> =
     hint: '源站响应过慢，可能是瞬时拥塞。可以稍后重试，或直接换源。',
     actions: ['retry', 'switch-source'],
   },
-  protocol_unsupported: {
+  magnet_link: {
     title: MAGNET_MESSAGE,
-    hint: '本 App 不做种子下载，需要交给外部下载器/播放器处理。',
-    actions: ['external', 'switch-source'],
+    hint: '这条线路给的是种子（magnet:）地址，本 App 不内置种子下载。用「用外部应用打开」交给下载器/播放器，或换一条给直链的线路/源。',
+    actions: ['external', 'switch-line', 'switch-source'],
+  },
+  dash_manifest: {
+    title: DASH_UNSUPPORTED_MESSAGE,
+    hint: '线路返回的是 DASH(.mpd) 清单，本 App 的播放链路只接 HLS 与直链（明确不支持，也不做绕过尝试）。这不是文件坏了：换一条 HLS/MP4 线路或换个源就能播。',
+    actions: ['switch-line', 'switch-source'],
+  },
+  player_capability: {
+    title: '当前设备播不了这个格式',
+    hint: '播放器接不住这个地址：常见是编码/封装超出本机能力（如 HEVC 10bit、AV1 在旧机型），或地址响应回来的并不是媒体流。换线路最直接；原生引擎（ExoPlayer）解码能力比内置内核高，也可以只用它再试一次。',
+    actions: ['switch-line', 'retry-native', 'retry', 'switch-source'],
+  },
+  protocol_unsupported: {
+    title: '播放地址格式不受支持',
+    hint: '这条地址不是本机可以直接播的东西（协议不是 http(s)，或该格式本 App 没有实现）。换线路通常立刻有效——同一源的另一条线路常常就是直链。',
+    actions: ['switch-line', 'switch-source', 'retry'],
   },
   rule_script: {
     title: RULE_SCRIPT_MESSAGE,

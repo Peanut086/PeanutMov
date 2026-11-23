@@ -36,10 +36,14 @@ const CASES: Array<{ title: string; year: number | null; episode: number }> =
 
 for (const item of CASES) {
   const started = Date.now();
-  const match = await danmakuService.match(item.title, item.year, item.episode);
+  const { match, missReason, attempts } = await danmakuService.match(item.title, item.year, item.episode);
   const label = `${item.title}${item.year ? `(${item.year})` : ''} 第${item.episode}集`;
   if (match === null) {
-    console.log(`${label.padEnd(26)} 无弹幕  ${Date.now() - started}ms`);
+    // 主因 + 逐源结局：这条链跑一次就够，不必再去翻 App 日志
+    console.log(
+      `${label.padEnd(26)} 无弹幕  ${Date.now() - started}ms  主因=${missReason}` +
+        `  ${attempts.map((a) => `${a.provider}:${a.outcome}`).join(' ')}`,
+    );
     continue;
   }
   const times = match.comments.map((c) => c.time);

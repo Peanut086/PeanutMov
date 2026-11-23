@@ -300,7 +300,10 @@ export class SiteAdapter extends BaseAdapter {
       throw new AppError('E_NO_PLAY_URL', '该源需要解析接口，但未配置或嗅探失败');
     }
     if (!/^https?:\/\//i.test(absolute) && !absolute.startsWith('magnet:')) {
-      throw new AppError('E_UNSUPPORTED_FORMAT', '播放地址协议不受支持');
+      // OPT-26（P0-②-1）：与爬虫源同档——协议不是 http，不是种子
+      throw new AppError('E_UNSUPPORTED_FORMAT', '播放地址协议不受支持', {
+        reason: 'protocol_unsupported',
+      });
     }
 
     // 网页播放页（/share/<id>、/play/<id>、*.html）：真实 m3u8 明文写在页面里，

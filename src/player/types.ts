@@ -42,6 +42,24 @@ export type PlayerEventMap = {
    */
   novideo: { videoWidth: number; videoHeight: number; elapsedSec: number };
   /**
+   * OPT-26（P2-⑫）：在线流停滞——位置与缓冲一起停住超过判定窗口。
+   *
+   * 引擎自己不会为这种形态报错（ExoPlayer 一直说 buffering，WebView 连 waiting 都没有），
+   * 所以这里只上报事实，处置（重新取址续播 / 走兜底）归播放页：播放器层拿不到解析服务。
+   * 每次加载最多一次，恢复后的新一轮加载会重新起表。
+   */
+  stall: {
+    /** 停住的位置（秒）：恢复时要回到这里 */
+    positionSec: number;
+    /** 已经停住的时长（毫秒） */
+    stuckMs: number;
+    /**
+     * 缓冲是否也停住：`null` = 这一路引擎给不出缓冲进度（原生桥只有位置），
+     * 此时判定只看位置。`true` 才是「地址不再供数据」的形态。
+     */
+    bufferedStalled: boolean | null;
+  };
+  /**
    * B1：媒体会话远端指令（通知栏/锁屏/蓝牙线控的上一集、下一集、关闭）。
    * 原生侧只转发意图，真正的切集由 View 层执行。
    */

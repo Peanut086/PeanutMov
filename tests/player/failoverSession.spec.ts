@@ -14,6 +14,8 @@ import {
   activeFailoverRound,
   armFailoverNavigation,
   beginLoadAttempt,
+  busyFailoverPlan,
+  BUSY_WAIT_MAX_MS,
   cancelFailoverRound,
   currentFailoverRound,
   failoverAttemptKey,
@@ -231,5 +233,28 @@ describe('订阅管理', () => {
     cancelFailoverRound('cancelled');
     expect(seen).toEqual([]);
     expect(round.isTerminal()).toBe(true);
+  });
+});
+
+describe('忙态兜底口径（P1-③-7 busyFailoverPlan）', () => {
+  it('非忙态错误码不进入忙态分支', () => {
+    for (const code of ['E_PARSE', 'E_DECODE', 'E_NO_PLAY_URL', 'E_NETWORK']) {
+      expect(busyFailoverPlan(code, 0)).toBe('not-busy');
+      expect(busyFailoverPlan(code, 30_000)).toBe('not-busy');
+      expect(busyFailoverPlan(code, null)).toBe('not-busy');
+    }
+  });
+
+  it('冷却在等待上限内原地等闸门，超过它直接换源', () => {
+    expect(busyFailoverPlan('E_SOURCE_BUSY', 0)).toBe('wait');
+    expect(busyFailoverPlan('E_SOURCE_BUSY', BUSY_WAIT_MAX_MS)).toBe('wait');
+    expect(busyFailoverPlan('E_SOURCE_BUSY', BUSY_WAIT_MAX_MS + 1)).toBe('switch-source');
+    expect(busyFailoverPlan('E_SOURCE_BUSY', 30_000)).toBe('switch-source');
+  });
+
+  it('缺失或为负的剩余冷却按「立刻可试」处理，不因此跳过换线', () => {
+    // 探测被这次点播放打断时 busyStateOf 回的是 0：没有占用就不许拦用户，也不该把换源当成唯一出路
+    expect(busyFailoverPlan('E_SOURCE_BUSY', undefined)).toBe('wait');
+    expect(busyFailoverPlan('E_SOURCE_BUSY', -5_000)).toBe('wait');
   });
 });

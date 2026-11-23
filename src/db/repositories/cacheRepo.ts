@@ -88,6 +88,12 @@ export const cacheRepo = {
     await trimToCap(STORE_NAMES.danmakuCache);
   },
 
+  /** 作废本集缓存（「重新匹配本集弹幕」：命中的是哪一条只有清掉才知道） */
+  async deleteDanmaku(key: string): Promise<void> {
+    const db = await getDb();
+    await db.delete(STORE_NAMES.danmakuCache, key);
+  },
+
   /* ---------- EPG（key = `epgv2:{sourceId}:{channelKey}:{yyyy-MM-dd}`） ---------- */
 
   async getEpg(key: string): Promise<EpgCacheRecord['programmes'] | null> {

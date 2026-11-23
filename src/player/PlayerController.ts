@@ -10,7 +10,14 @@
  * 明确边界：**不调用任何 Service**。播放源由 Store 解析后传入；
  * 切集通过 `resolveEpisode` 回调由 View 提供新参数。
  */
-import type { AppErrorShape, PlaybackRate, PlaybackSource, ResizeMode, SubtitleTrack } from '@/types';
+import type {
+  AppErrorShape,
+  ErrorCode,
+  PlaybackRate,
+  PlaybackSource,
+  ResizeMode,
+  SubtitleTrack,
+} from '@/types';
 import { AppError, toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { guessFormatFromUrl } from '@/shared/url';
@@ -32,6 +39,7 @@ import {
   NATIVE_METADATA_TIMEOUT_MS,
   NETWORK_RETRY_DELAY_MS,
   NETWORK_RETRY_TIMES,
+  NET_STALL_STUCK_MS,
   NO_VIDEO_CHECK_DELAY_MS,
   QUALITY_AUTO,
   RESUME_MAX_RATIO,
@@ -90,6 +98,24 @@ export function isNoVideo(stats: FrameStats | null, elapsedSec: number): boolean
   return elapsedSec >= 1;
 }
 
+/**
+ * P1-②-3：原生侧这些错误码是**确定性结论**——说的是"这条地址给不出来 / 拿不到 / 加密"，
+ * 不是"我这个内核解不动"。两个引擎都没播起来时，归属跟着它们走。
+ *
+ * 反过来说内置引擎那句 `MEDIA_ERR_SRC_NOT_SUPPORTED`（code 4）：同一个坏地址、同一轮
+ * CDN 断流都会让它响，单看它就把结论定成「格式不支持」是误判——真机那一轮就是这样。
+ */
+const DETERMINISTIC_NATIVE_CODES = new Set<ErrorCode>([
+  'E_NETWORK',
+  'E_TIMEOUT',
+  'E_SOURCE_UNAVAILABLE',
+  'E_NO_PLAY_URL',
+  'E_HTTP_404',
+  'E_HTTP_5XX',
+  'E_DRM_PROTECTED',
+  'E_SOURCE_BUSY',
+]);
+
 export interface PlayerControllerDeps {
   /** 进度写回调（由 View 注入 historyStore.save） */
   onProgress: (snapshot: ProgressSnapshot, opts: PlayerLoadOptions) => void | Promise<void>;
@@ -112,11 +138,17 @@ export interface PlayerControllerDeps {
 /**
  * P0-2 停滞判定（纯函数，便于单测）：
  * 相对锚点没有实质推进（< {@link STALL_MIN_ADVANCE_SEC}）且已经持续
- * {@link STALL_STUCK_MS} 以上 → 判定卡住。
+ * `stuckMs` 以上 → 判定卡住。预算分两档：本地用 {@link STALL_STUCK_MS}，
+ * 在线用 {@link NET_STALL_STUCK_MS}（弱网缓冲得有额外容忍）。
  */
-export function isPlaybackStalled(anchorSec: number, positionSec: number, elapsedMs: number): boolean {
+export function isPlaybackStalled(
+  anchorSec: number,
+  positionSec: number,
+  elapsedMs: number,
+  stuckMs = STALL_STUCK_MS,
+): boolean {
   if (positionSec - anchorSec >= STALL_MIN_ADVANCE_SEC) return false;
-  return elapsedMs >= STALL_STUCK_MS;
+  return elapsedMs >= stuckMs;
 }
 
 export class PlayerController {
@@ -177,6 +209,15 @@ export class PlayerController {
   private stallAnchorAt = 0;
   /** 本轮加载是否已经用过"复位重备"这一次机会（每次 load 重置） */
   private stallRecovered = false;
+  /**
+   * OPT-26（P2-⑫）：在线流停滞锚点——缓冲末端的推进与位置分开看。
+   *
+   * 位置不动 + 缓冲在涨 = 喂不饱（弱网，等就是了）；位置不动 + 缓冲也不涨 = 这条地址
+   * 不再供数据（签名过期 / 源侧断流），只有后者值得重新取址。
+   */
+  private stallBufferedAnchor = 0;
+  /** 本轮加载是否已经上报过停滞（每次 load 重置）：恢复动作不能对同一次加载连发 */
+  private stallNoticeIssued = false;
   /** FIX-PLAY-C2：本轮加载是否还有"解码错误跳过坏段"这一次机会（每次 load 重置） */
   private localDecodeRecovered = false;
 
@@ -184,6 +225,14 @@ export class PlayerController {
   private preflightAbort: AbortController | null = null;
   /** 预检代次：新一次加载/卸载时递增，旧预检返回后据此放弃，避免旧结果污染新播放 */
   private preflightEpoch = 0;
+
+  /**
+   * OPT-26（P1-②-3）：本轮引擎链是否真的用原生引擎试过这个地址。
+   *
+   * 面板要靠它决定给不给「用原生引擎重试」：错误码分不出"只挂了内置内核"和"两个内核都挂"
+   * （两者结论都是 player_capability），把已经证伪的动作再摆一次只会让用户原地打转。
+   */
+  private nativeAttemptedInLastChain = false;
 
   /** 加载代次：load() 入口递增，await 后校验，过期则中止（防止卸载后僵尸播放） */
   private loadSeq = 0;
@@ -277,6 +326,8 @@ export class PlayerController {
     // P0-2：停滞自愈按「每次加载」重置（复位机会不得跨集复用）
     this.stopStallWatchdog();
     this.stallRecovered = false;
+    // OPT-26（P2-⑫）：在线停滞的上报机会同样按「每次加载」发放
+    this.stallNoticeIssued = false;
     // FIX-PLAY-C2：解码容错机会同样按「每次加载」重置
     this.localDecodeRecovered = false;
     this.setState('loading');
@@ -331,10 +382,64 @@ export class PlayerController {
     }
   }
 
+  /**
+   * OPT-26（P0-②-2）：引擎链日志字段。
+   *
+   * 真机「格式不支持」那一轮，界面报了错、日志里却一行查不到是哪个引擎在什么地址上
+   * 拒的——回退是静默的，失败没有落盘。字段口径固定成「错误码 + 子原因 + 原文 + 地址」，
+   * 地址由 logger 统一脱敏（`redactUrl`），签名不会进日志。
+   */
+  private engineErrorFields(playback: PlaybackSource, error: unknown): Record<string, unknown> {
+    const shape = toErrorShape(error, 'E_DECODE');
+    return {
+      code: shape.code,
+      message: shape.message,
+      reason: shape.reason ?? null,
+      detail: shape.detail ?? null,
+      format: playback.format,
+      isLocal: playback.isLocal === true,
+      url: playback.url,
+    };
+  }
+
+  /**
+   * P1-②-3：两个引擎都没播起来时的错误归属。
+   *
+   * 结论以**原生**原因为准（原生是 ExoPlayer，能力上限比 WebView 的 `<video>` 高；它说
+   * 「拿不到地址/网络断了」时，内置那句 code 4 只是同一次失败的下游症状），原生只给出
+   * 泛化的 E_DECODE 时沿用内置结论。两边原文一起留在 detail（`原生: X；内置: Y`）：
+   * 面板读结论，日志与导出看全貌，事后不再靠猜是哪一个引擎拒的。
+   *
+   * `E_ABORTED` / `E_CANCELED` 不是失败原因（加载期间被销毁或被新一轮取代），不参与归属。
+   */
+  private engineChainError(nativeError: unknown, webviewError: unknown): AppError {
+    const native = toErrorShape(nativeError, 'E_DECODE');
+    const webview = toErrorShape(webviewError, 'E_DECODE');
+    const abortive: ErrorCode[] = ['E_ABORTED', 'E_CANCELED'];
+    if (abortive.includes(native.code)) return new AppError(webview.code, webview.message, {
+      detail: webview.detail,
+      reason: webview.reason,
+      httpStatus: webview.httpStatus,
+      retryable: webview.retryable,
+      cause: webviewError,
+    });
+    const lead = DETERMINISTIC_NATIVE_CODES.has(native.code) ? native : webview;
+    return new AppError(lead.code, lead.message, {
+      detail: `原生: ${native.message}；内置: ${webview.message}`,
+      reason: lead.reason,
+      httpStatus: lead.httpStatus,
+      retryable: lead.retryable,
+      cause: webviewError,
+    });
+  }
+
   /** 根据格式与原生能力选择引擎并 attach/load */
   private async attachEngine(playback: PlaybackSource): Promise<void> {
     // 解析层应已把网页播放页换回直链；走到这里仍是页面说明解析失败，
     // 快速报错交给容错链换线/换源，不让两个引擎对着 HTML 白等超时。
+    // P1-②-3：原生这一跳的失败要留到链尾——两个引擎都没播起来时，结论按原生原因归类
+    let nativeAttemptError: unknown = null;
+    this.nativeAttemptedInLastChain = false;
     if (isWebPlayPageUrl(playback.url)) {
       throw new AppError('E_NO_PLAY_URL', '播放地址仍是网页播放页，未解析到视频直链');
     }
@@ -356,7 +461,10 @@ export class PlayerController {
     // P1-5：离线裸 .ts 只有原生引擎能解。原生不可用（安全模式 / 插件缺失 / 非 Android）
     // 时直接报错，不要让 WebView 的 <video> 对着必然失败的文件等满元数据超时。
     if (playback.isLocal && format === 'ts' && !useNativeEngine) {
-      throw new AppError('E_UNSUPPORTED_FORMAT', '该离线文件需要原生播放器，当前不可用');
+      // OPT-26（P0-②-1）：这是本机能力档位问题，带子原因才不会套上种子的文案与出口
+      throw new AppError('E_UNSUPPORTED_FORMAT', '该离线文件需要原生播放器，当前不可用', {
+        reason: 'player_capability',
+      });
     }
 
     // AC-40：WebView 路径在创建任何引擎前完成两级前置检查，命中即拒绝——
@@ -378,6 +486,7 @@ export class PlayerController {
      * v1.8 优化：原生引擎支持 DASH/DRM，跳过前置检查
      */
     if (useNativeEngine) {
+      this.nativeAttemptedInLastChain = true;
       const nativeEngine = new NativeEngine({
         onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
         onTimeUpdate: (currentTime, duration, buffered) =>
@@ -413,17 +522,24 @@ export class PlayerController {
         this.progress.update(0, nativeEngine.getDuration());
         return;
       } catch (nativeError) {
+        nativeAttemptError = nativeError;
         try {
           nativeEngine.destroy();
         } catch {
           /* 回退路径上的清理失败可忽略 */
         }
+        logger.warn('引擎回退：原生引擎加载失败', {
+          ...this.engineErrorFields(playback, nativeError),
+          from: 'native',
+          to: playback.isLocal && format === 'ts' ? 'none' : 'webview',
+        });
         // P1-5：离线裸 .ts 只有原生引擎能解（WebView 的 <video> 不认 MPEG-TS）。
         // 静默回退等于让 <video> 对着必然失败的文件白等 20s 元数据超时，
         // 用户看到的就是"点了播放一直卡住"——这里直接给明确结论。
         if (playback.isLocal && format === 'ts') {
           throw new AppError('E_UNSUPPORTED_FORMAT', '该离线文件需要原生播放器，当前不可用', {
             detail: toErrorShape(nativeError, 'E_DECODE').message,
+            reason: 'player_capability',
           });
         }
         this.emit('notice', { message: '原生引擎不可用，已切回内置引擎' });
@@ -442,7 +558,9 @@ export class PlayerController {
     if (useHls) {
       const supported = await isHlsSupported();
       if (!supported) {
-        throw new AppError('E_UNSUPPORTED_FORMAT', '当前环境不支持 HLS 播放');
+        throw new AppError('E_UNSUPPORTED_FORMAT', '当前环境不支持 HLS 播放', {
+          reason: 'player_capability',
+        });
       }
       const hlsEngine = new HlsEngine({
         onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
@@ -475,6 +593,7 @@ export class PlayerController {
         this.progress.update(0, hlsEngine.getDuration());
         return;
       } catch (e) {
+        logger.warn('内置引擎（hls.js）加载失败', this.engineErrorFields(playback, e));
         webviewFailed = true;
         webviewError = e;
         this.destroyEngine();
@@ -508,6 +627,7 @@ export class PlayerController {
         this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
         return;
       } catch (e) {
+        logger.warn('内置引擎（<video>）加载失败', this.engineErrorFields(playback, e));
         webviewFailed = true;
         webviewError = e;
         this.destroyEngine();
@@ -516,7 +636,13 @@ export class PlayerController {
 
     // v1.8 优化：WebView 引擎失败后自动降级到原生引擎
     if (webviewFailed && this.options?.preferNativeEngine !== true && await isExoPlayerAvailable()) {
+      logger.warn('引擎回退：内置引擎失败，降级原生引擎', {
+        ...this.engineErrorFields(playback, webviewError),
+        from: 'webview',
+        to: 'native',
+      });
       this.emit('notice', { message: '内置引擎加载失败，自动切换到原生引擎' });
+      this.nativeAttemptedInLastChain = true;
       const nativeEngine = new NativeEngine({
         onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
         onTimeUpdate: (currentTime, duration, buffered) =>
@@ -550,19 +676,35 @@ export class PlayerController {
         this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
         this.progress.update(0, nativeEngine.getDuration());
         return;
-      } catch {
+      } catch (nativeError) {
         try {
           nativeEngine.destroy();
         } catch {
           /* 回退路径上的清理失败可忽略 */
         }
-        // 原生也失败，抛出原始 WebView 错误
-        throw webviewError;
+        // P1-②-3：归属以两边合判为准，日志同一行既给两边现场也给最终结论
+        const chained = this.engineChainError(nativeError, webviewError);
+        logger.error('播放引擎加载失败：原生降级也未通过', {
+          ...this.engineErrorFields(playback, nativeError),
+          webview: toErrorShape(webviewError, 'E_DECODE').code,
+          webviewMessage: toErrorShape(webviewError, 'E_DECODE').message,
+          attributedCode: chained.code,
+          attributedDetail: chained.detail,
+        });
+        throw chained;
       }
     }
 
-    // 原生引擎不可用或已尝试过，抛出 WebView 错误
-    throw webviewError;
+    // 原生引擎不可用时抛内置原始错误；原生也试过则同样按两边合判（P1-②-3）
+    const exhausted =
+      nativeAttemptError === null ? null : this.engineChainError(nativeAttemptError, webviewError);
+    logger.error('播放引擎加载失败：回退链已用尽', {
+      ...this.engineErrorFields(playback, webviewError),
+      nativeAttempted: nativeAttemptError !== null,
+      attributedCode: exhausted?.code ?? null,
+      attributedDetail: exhausted?.detail ?? null,
+    });
+    throw exhausted ?? webviewError;
   }
 
   /** 作废上一轮清单预检（切集/重试/销毁）：取消在飞请求并递增代次 */
@@ -715,6 +857,25 @@ export class PlayerController {
   }
 
   private handleEngineError(error: AppErrorShape): void {
+    /*
+     * OPT-26（P0-②-2）：运行期报错先落一行——此前只有本地解码那一支有日志，
+     * 「播到一半黑屏/卡住」在导出日志里是空白，只能靠用户复述。
+     *
+     * 只在引擎已经就位时才记：加载期内 `attachEngine` 先把 engineKind 清空，
+     * 同一个 `<video>` 的 error 事件会同时打到"加载监听"和"运行期监听"上（历史行为）。
+     * 加载失败由回退链那几行负责，这里再记一次就是同一次失败的两条线索。
+     */
+    if (this.engineKind !== null) {
+      logger.warn('播放中引擎报错', {
+        code: error.code,
+        message: error.message,
+        reason: error.reason ?? null,
+        detail: error.detail ?? null,
+        engine: this.engineKind,
+        position: this.engine?.getCurrentTime() ?? 0,
+        isLocal: this.options?.playback.isLocal === true,
+      });
+    }
     // FIX-PLAY-C2：本地产物的解码类错误不走换线/网络重试——离线播放没有"另一条线"，
     // 报错文案里的"切换线路"对已下载文件是误导。先做一次"跳过坏点复位重播"
     // （坏分片影响通常局部化），仍失败收口成 E_LOCAL_CORRUPT 指引重新下载。
@@ -791,17 +952,21 @@ export class PlayerController {
   /* ---------- P0-2：本地播放停滞自愈 ---------- */
 
   /**
-   * 登记停滞窗口：位置连续 {@link STALL_STUCK_MS} 不推进即视为卡死。
+   * 登记停滞窗口：位置连续不推进即视为卡死。
    *
-   * 只对本地产物启用——网络源的卡顿是缓冲，本引擎已有 waiting/重试链路，
-   * 这里插一脚只会把慢网速误报成"文件坏了"。
+   * P0-2 时这张表只对本地产物开（本地卡顿只可能是文件坏）；OPT-26（P2-⑫）把它也给在线流开——
+   * 签名地址过期不留任何错误，ExoPlayer 只说 buffering、WebView 连 waiting 都不报，
+   * 用户对着的就是"画面停住但没报错"。差别在预算与处置：在线流用
+   * {@link NET_STALL_STUCK_MS}，且不判"文件坏了"，只上报停滞交给播放页重新取址。
    */
   private startStallWatchdog(): void {
     this.stopStallWatchdog();
     const engine = this.engine;
-    if (!engine || !this.options?.playback.isLocal) return;
+    // 上报机会每次加载只有一次：暂停/继续反复起表不该变成第二次提示
+    if (!engine || this.stallNoticeIssued) return;
     this.stallAnchorSec = engine.getCurrentTime();
     this.stallAnchorAt = Date.now();
+    this.stallBufferedAnchor = engine.getBuffered();
     this.stallTimer = setInterval(() => this.tickStallWatchdog(), STALL_CHECK_INTERVAL_MS);
   }
 
@@ -812,6 +977,22 @@ export class PlayerController {
     }
   }
 
+  /** 推进过（或 seek 在飞）就重设锚点，窗口从头算 */
+  private resetStallAnchors(engine: PlayableEngine, now: number): void {
+    this.stallAnchorSec = engine.getCurrentTime();
+    this.stallAnchorAt = now;
+    this.stallBufferedAnchor = engine.getBuffered();
+  }
+
+  /**
+   * 原生桥给不出可信的缓冲末端（`NativeEngine.getBuffered()` 回的就是位置本身，
+   * 桥上没有 buffered 进度），那一路的停滞判定只能只看位置；
+   * WebView 引擎的 `getBuffered()` 是真实的缓冲末尾，可以拿来区分"弱网"与"断供"。
+   */
+  private bufferedSignalUsable(): boolean {
+    return this.engineKind !== 'native';
+  }
+
   private tickStallWatchdog(): void {
     if (this.destroyed || this.state !== 'playing') return;
     const engine = this.engine;
@@ -819,26 +1000,55 @@ export class PlayerController {
     const now = Date.now();
     // 定位在飞：原生 seek 本身要秒级（扫容器 + 重启硬解），此时不能算停滞
     if (this.seekSettleTarget !== null) {
-      this.stallAnchorAt = now;
-      this.stallAnchorSec = engine.getCurrentTime();
+      this.resetStallAnchors(engine, now);
       return;
     }
     const position = engine.getCurrentTime();
     if (position - this.stallAnchorSec >= STALL_MIN_ADVANCE_SEC) {
-      this.stallAnchorSec = position;
-      this.stallAnchorAt = now;
+      this.resetStallAnchors(engine, now);
     }
-    if (!isPlaybackStalled(this.stallAnchorSec, position, now - this.stallAnchorAt)) return;
-    this.stopStallWatchdog();
-    if (!this.stallRecovered) {
-      this.stallRecovered = true;
-      void this.restartLocalPlayback(position);
+    const stuckMs = now - this.stallAnchorAt;
+
+    if (this.options?.playback.isLocal) {
+      if (!isPlaybackStalled(this.stallAnchorSec, position, stuckMs)) return;
+      this.stopStallWatchdog();
+      if (!this.stallRecovered) {
+        this.stallRecovered = true;
+        void this.restartLocalPlayback(position);
+        return;
+      }
+      this.setState('error');
+      this.emit('error', toErrorShape(new AppError('E_LOCAL_STALL', undefined, {
+        detail: `position=${position.toFixed(1)}s 内无推进`,
+      })));
       return;
     }
-    this.setState('error');
-    this.emit('error', toErrorShape(new AppError('E_LOCAL_STALL', undefined, {
-      detail: `position=${position.toFixed(1)}s 内无推进`,
-    })));
+
+    // OPT-26（P2-⑫）：在线流。先分清「喂不饱」和「不再供数据」
+    const bufferedAdvanced = this.bufferedSignalUsable()
+      ? engine.getBuffered() - this.stallBufferedAnchor >= STALL_MIN_ADVANCE_SEC
+      : null;
+    if (!isPlaybackStalled(this.stallAnchorSec, position, stuckMs, NET_STALL_STUCK_MS)) return;
+    if (bufferedAdvanced === true) {
+      // 缓冲仍在涨：这是弱网，等就是了。拿重新取址去打弱网只会多烧一次爬虫调用
+      this.resetStallAnchors(engine, now);
+      return;
+    }
+    this.stopStallWatchdog();
+    this.stallNoticeIssued = true;
+    logger.warn('在线流停滞，交由播放页重新取址', {
+      position,
+      stuckMs,
+      bufferedAdvanced,
+      engine: this.engineKind,
+      url: this.options?.playback.url,
+    });
+    this.emit('stall', {
+      positionSec: position,
+      stuckMs,
+      // 走到这里只剩两种形态：缓冲也不涨（断供），或这一路给不出缓冲信号（未知）
+      bufferedStalled: bufferedAdvanced === null ? null : true,
+    });
   }
 
   /**
@@ -1261,9 +1471,23 @@ export class PlayerController {
     return this.engineKind;
   }
 
+  /** OPT-26（P1-②-3）：本轮引擎链是否碰过原生引擎（错误面板据此决定给不给「用原生引擎重试」） */
+  getNativeAttemptedInLastChain(): boolean {
+    return this.nativeAttemptedInLastChain;
+  }
+
   private setEngineKind(kind: 'native' | 'hls' | 'video'): void {
     if (this.engineKind === kind) return;
+    const from = this.engineKind;
     this.engineKind = kind;
+    // OPT-26（P0-②-2）：每轮播放实际由哪个引擎服务——回退链的终点，日志里必须有
+    logger.info('播放引擎就绪', {
+      from,
+      to: kind,
+      format: this.options?.playback.format ?? null,
+      isLocal: this.options?.playback.isLocal === true,
+      url: this.options?.playback.url ?? '',
+    });
     this.emit('enginechange', { kind });
   }
 

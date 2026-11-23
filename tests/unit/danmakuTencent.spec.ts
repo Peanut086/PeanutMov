@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { tencentProvider } from '@/services/danmaku/tencent';
 import { httpClient } from '@/sources/base/httpClient';
+import { logger } from '@/shared/logger';
 
 vi.mock('@/sources/base/httpClient', () => ({
   httpClient: { request: vi.fn(), requestWithMeta: vi.fn() },
@@ -174,6 +175,39 @@ describe('tencentProvider', () => {
 
     expect(result).toBeNull();
     expect(mockedRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it('集号越界留下一行「分集数少于请求集号」：这不是「腾讯没有这部剧」', async () => {
+    mockedRequest.mockResolvedValueOnce(SEARCH_RESPONSE).mockResolvedValueOnce(VINFO_RESPONSE);
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+
+    await tencentProvider.match({ title: '庆余年', year: 2019, episode: 3 });
+
+    // video_ids 是按序号硬取的：第 3 集落在只有 2 集的池子里，日志要能指出这个错位本身
+    expect(info).toHaveBeenCalledWith(
+      '腾讯分集数少于请求集号，本集不做无把握的偏移匹配',
+      expect.objectContaining({ episode: 3, videoIds: 2, cid: 'rjae621myqca41h' }),
+    );
+    info.mockRestore();
+  });
+
+  it('条数偏低时把 vid 与分片数打进日志（「取错集」这个怀疑要能复查）', async () => {
+    mockedRequest
+      .mockResolvedValueOnce(SEARCH_RESPONSE)
+      .mockResolvedValueOnce(VINFO_RESPONSE)
+      .mockResolvedValueOnce(INDEX_RESPONSE)
+      .mockResolvedValueOnce({ barrage_list: [{ content: '零星一条', time_offset: '0' }] })
+      .mockResolvedValueOnce({ barrage_list: [] });
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+
+    const result = await tencentProvider.match({ title: '庆余年', year: 2019, episode: 1 });
+
+    expect(result!.comments).toHaveLength(1);
+    expect(info).toHaveBeenCalledWith(
+      '腾讯弹幕条数偏低（门槛在服务层判定）',
+      expect.objectContaining({ vid: 'vidEp1', segments: 2, count: 1 }),
+    );
+    info.mockRestore();
   });
 
   it('单片分片失败不影响整集（返回已成功的部分）', async () => {

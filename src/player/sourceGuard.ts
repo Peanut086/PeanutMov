@@ -15,11 +15,9 @@
  *   大小写不敏感（REV-30）、同时扫描 `SESSION-KEY`（REV-31），避免两套口径漂移。
  */
 import { AppError } from '@/shared/errors';
+import { DASH_UNSUPPORTED_MESSAGE } from '@/shared/sourceFailure';
 
 import { MANIFEST_PREFLIGHT_TIMEOUT_MS } from '@/player/constants';
-
-/** DASH 拒绝文案（AC-40：提示「暂不支持该格式」并点明格式） */
-export const DASH_UNSUPPORTED_MESSAGE = '暂不支持 DASH(.mpd) 格式';
 
 /** 本地已下载产物作为下载源的拒绝文案（P0-1） */
 export const LOCAL_ARTIFACT_MESSAGE = '下载地址指向本地已下载文件，不能作为下载源，请从详情页重新下载';
@@ -186,7 +184,11 @@ export function detectUnsupportedSource(
   manifestText?: string | null,
 ): AppError | null {
   if (isDashUrl(url)) {
-    return new AppError('E_UNSUPPORTED_FORMAT', DASH_UNSUPPORTED_MESSAGE, { retryable: false });
+    // OPT-26（P0-②-1）：DASH 是「格式族」里独立的一档，文案与动作都不同于种子/未知协议
+    return new AppError('E_UNSUPPORTED_FORMAT', DASH_UNSUPPORTED_MESSAGE, {
+      retryable: false,
+      reason: 'dash_manifest',
+    });
   }
 
   const isHls = isM3u8Url(url) || (typeof manifestText === 'string' && manifestText.length > 0);

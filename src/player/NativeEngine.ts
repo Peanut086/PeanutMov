@@ -208,7 +208,17 @@ export class NativeEngine implements PlayableEngine {
     try {
       // 本地文件用 file:// URI（ExoPlayer 无法访问 Capacitor https://localhost 桥）
       const nativeUrl = source.isLocal ? toNativeFileUri(source.url) : source.url;
-      logger.debug('NativeEngine.prepare', { url: nativeUrl, isLocal: source.isLocal, format: source.format });
+      // OPT-26（P0-②-2）：用 info 而不是 debug——release 包把 debug 全滤掉了，于是
+      // 「ExoPlayer 到底收到什么地址、按什么 mime 嗅的」在真机日志里查不到，
+      // 而 UnrecognizedInputFormatException 一类的根因恰恰只有这一行能证实。
+      // 地址由 logger 统一脱敏（`redactUrl`），签名参数不会进日志。
+      logger.info('NativeEngine.prepare', {
+        url: nativeUrl,
+        isLocal: source.isLocal,
+        format: source.format,
+        mime: source.format === 'hls' ? 'application/x-mpegURL' : null,
+        startPositionMs: source.startPositionMs ?? 0,
+      });
       await ExoPlayer.prepare({
         url: nativeUrl,
         headers: exoHeadersOf(source.headers ?? {}),
@@ -664,7 +674,16 @@ function rectOf(host: HTMLElement): { x: number; y: number; width: number; heigh
 }
 
 function toLoadError(e: unknown): AppError {
-  return new AppError('E_DECODE', '原生引擎加载失败', { cause: e });
+  /*
+   * OPT-26（P0-②-2）：桥接原文（`UnrecognizedInputFormatException`、mime 嗅探失败那类）
+   * 此前只留在 `cause` 里——日志和「复制错误信息」都取不到，于是原生加载失败只剩下
+   * 「原生引擎加载失败」这句同义反复。detail 截断到 200，长堆栈不进 UI。
+   */
+  const raw = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
+  return new AppError('E_DECODE', '原生引擎加载失败', {
+    cause: e,
+    detail: raw.length > 0 ? raw.slice(0, 200) : null,
+  });
 }
 
 /**

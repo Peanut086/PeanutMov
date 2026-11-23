@@ -81,4 +81,38 @@ describe('URL 工具（AC-05 / AC-40）', () => {
     // 幂等：已打码的再跑一遍不能变形
     expect(redactUrl('https://a.com/d.m3u8?s=***&t=1')).toBe('https://a.com/d.m3u8?s=***&t=1');
   });
+
+  /**
+   * OPT-26（P0-②-2）：引擎链日志会把直链原样打出来，CDN 签名族必须一并盖住。
+   * 口径：参数名含凭据语素（auth/sign/secret/token/key…）**且**值长成签名样子才打码——
+   * 只按名字会把 `keyword=` 这类搜索词一起盖掉（那是请求侧唯一线索）。
+   */
+  it('CDN 签名参数按「名 + 形」双重判定打码', () => {
+    // 阿里云 CDN 时间戳防盗链：真机下载/播放链路最常见的一族
+    expect(redactUrl('https://a.com/vod/1.m3u8?auth_key=1794912583-a-b-c')).toBe(
+      'https://a.com/vod/1.m3u8?auth_key=***',
+    );
+    // 网宿（夸克/UC 直链走的就是这一族）
+    expect(redactUrl('https://a.com/d.mp4?wsSecret=9a8b7c6d5e4f3a2b1c0d&wsTime=1763000000')).toBe(
+      'https://a.com/d.mp4?wsSecret=***&wsTime=1763000000',
+    );
+    // 对象存储预签名：`X-Amz-Signature` / `OSSAccessKeyId` 都不是旧名单里的精确名
+    expect(redactUrl('https://a.com/f.mp4?X-Amz-Signature=DEADBEEF0123&x=1')).toBe(
+      'https://a.com/f.mp4?X-Amz-Signature=***&x=1',
+    );
+    expect(redactUrl('https://a.com/f.mp4?OSSAccessKeyId=LTAI5t9YngqQ&Expires=1763000000')).toBe(
+      'https://a.com/f.mp4?OSSAccessKeyId=***&Expires=1763000000',
+    );
+    // 名字像凭据、值却不是签名样子的（普通序号 / 纯数字时间戳）保持原样
+    expect(redactUrl('https://a.com/api?signature=1&Expires=1763000000')).toBe(
+      'https://a.com/api?signature=1&Expires=1763000000',
+    );
+    // 精确凭据名是无条件打码的（旧口径不变，与形状无关）
+    expect(redactUrl('https://a.com/api?auth=0&token=x')).toBe('https://a.com/api?auth=***&token=***');
+    // 搜索词不能被牵连：`keyword` 里含 `key`，中文编码后也像签名字符集
+    const encoded = encodeURIComponent('士兵突击');
+    expect(redactUrl(`https://a.com/search?keyword=${encoded}`)).toBe(
+      `https://a.com/search?keyword=${encoded}`,
+    );
+  });
 });

@@ -26,6 +26,7 @@ import { logger } from '@/shared/logger';
 import {
   classifySourceFailure,
   isMagnetUrl,
+  isSourceBusyMessage,
   COOLDOWN_MESSAGE,
   MAGNET_MESSAGE,
   QUARANTINE_MESSAGE,
@@ -297,6 +298,28 @@ const NATIVE_PROXY_TIMEOUT_MS = 25_000;
  * 会被直接拒绝，避免"重试失败源"往还在执行的实例上撞（原生侧另有 F1 同实例锁兜底）。
  */
 const ZOMBIE_COOLDOWN_MS = 30_000;
+
+/**
+ * 一次原生调用的发起场景（OPT-26 P0-③-1）。
+ *
+ * 只有两类，但处置必须分开：
+ * - `foreground`：用户点播放/下载/投屏，结果有人要；
+ * - `probe`：详情页线路探测，8 秒拿不到结果就丢，且用户随时可能点播放把它打断。
+ *
+ * 之所以不复用 `demand`：那是「要不要计入点播请求数」的记账口径，与并发闸门无关。
+ * 探测放弃时留下的调用**一定会自己落定**（原生没有取消通道，`raceNative` 的 signal 只在
+ * JS 侧生效），这条信息只有发起场景给得出，而它恰好决定了该不该登记 30 秒闸门
+ * ——登记了，用户每次「详情页探测等不到 → 点播放」都自锁半分钟（真机 12:18 / 12:24）。
+ */
+export type NativeCallOrigin = 'foreground' | 'probe';
+
+/**
+ * P2-⑪：一条已投进原生的调用在 JS 侧的登记项。
+ *
+ * `deadlineAt` 是「发起时刻 + 超时预算」这个**上界**（不是实测耗时，原生侧的队列长度
+ * 在 JS 不可观测）；`origin` 决定后来者怎么办——探测看见前台在飞就必须让路。
+ */
+type NativeCallMark = { deadlineAt: number; origin: NativeCallOrigin };
 /**
  * P1-5：被原生 F1 闸门挡回（「源正忙」）时的排队预算。
  *
@@ -306,16 +329,28 @@ const ZOMBIE_COOLDOWN_MS = 30_000;
  * 超过的（真僵尸）仍然快速失败，不陪等 30 秒。
  */
 const BUSY_WAIT_MAX_MS = 5_000;
+/**
+ * OPT-26（P0-③-1）：前台点播遇到僵尸闸门时的陪等预算。
+ *
+ * 真机实测被取消的那次调用 3.1 秒后落定（12:18 那条 `source_proxy_1947ms` 紧跟在取消之后），
+ * 2 秒能接住"探测刚被取消、用户随即点播放"这个主场景，又不会把详情页的响应拖到不可接受。
+ * 探测自己遇到闸门时不给这个预算（0）：它每条线路只有 8 秒窗口，等闸门是白等。
+ */
+const BUSY_ZOMBIE_RETRY_WINDOW_MS = 2_000;
 /** 原生说忙、但 JS 侧没记到在飞调用（预热等其它入口发的）时的保守冷却 */
 const BUSY_COOLDOWN_FALLBACK_MS = 6_000;
 /** 排队的轮询间隔（在飞调用落定时会主动摘掉冷却，通常一两次就能放行） */
 const BUSY_IDLE_POLL_MS = 150;
 /**
- * 「上一次调用还在原生侧跑」的两种成因：
+ * 「上一次调用还在原生侧跑」的三种成因（OPT-26 起分三档）：
  * - `busy`：原生 F1 锁挡回，报告的是**另一个**调用还在跑，它落定就有空位；
- * - `zombie`：本次调用自己超时/被放弃，原生线程仍在跑到自身看门狗（≈30s）。
+ * - `zombie`：本次调用自己超时/被放弃，原生线程仍在跑到自身看门狗（≈30s）；
+ * - `probe_abort`：探测被用户点播放打断。原生没有取消通道（`raceNative` 的 signal 只在
+ *   JS 侧生效），所以那条调用**一定会自己落定**，是 zombie 里唯一能等到确定空位的一档；
+ *   它不登记 30 秒闸门：紧随其后的前台调用投进去会被原生 F1 挡回，那时按 `busy` 排队，
+ *   空位由这条调用落定时的 `finally` 腾出来（OPT-26 P0-③-1）。
  */
-type NativeBusyKind = 'busy' | 'zombie';
+type NativeBusyKind = 'busy' | 'zombie' | 'probe_abort';
 
 /**
  * F4：本次会话内已知「jar 自带原生库」的源 id。
@@ -479,15 +514,20 @@ export class SpiderAdapter extends BaseAdapter {
   private readonly loading = new Map<string, Promise<string>>();
   /**
    * F3：sourceId → 冷却（截止时刻 + 成因，jar 爬虫专用）。
-   * 成因决定后来者怎么办：`busy` 排队等空位，`zombie` 不陪等直接快速失败。
+   * 成因决定后来者怎么办：`busy` 排队等空位，`zombie` 不陪等直接快速失败，
+   * `probe_abort` 不登记（见 `enterBusyCooldown`）。
    */
   private readonly invokeCooldown = new Map<string, { until: number; kind: NativeBusyKind }>();
   /**
    * P1-5：sourceId → 当前已发给原生、JS 侧仍在竞速的 jar 调用。
    * 用集合而非单值：被 F1 挡回的那次调用自己也在里面，它落定时只能摘掉自己那一条
    * （按对象引用删），否则会把真正在飞的那次的截止时间误删。
+   *
+   * P2-⑪：条目带上成因（`foreground` / `probe`）——后台让路要先知道这一源上压着的是
+   * 用户的点播还是一次探测。JS 侧已放弃但原生仍在跑的那条（僵尸）同样留在集合里，
+   * 而这正是探测该继续让路的时候。
    */
-  private readonly nativeCallDeadlines = new Map<string, Set<{ deadlineAt: number }>>();
+  private readonly nativeCallDeadlines = new Map<string, Set<NativeCallMark>>();
 
   /* ---------------- 探活与加载 ---------------- */
 
@@ -898,17 +938,19 @@ export class SpiderAdapter extends BaseAdapter {
     signal?: AbortSignal,
     /** SO-05：调用方传入的预算超时，覆盖默认 NATIVE_INVOKE_TIMEOUT_MS */
     timeoutMs?: number,
+    /** OPT-26（P0-③-1）：发起场景；探测被点播放打断时不能按僵尸登记闸门 */
+    origin: NativeCallOrigin = 'foreground',
   ) {
     signal?.throwIfAborted();
     // F3：上一次调用还在原生线程里跑时，不对同一实例发第二次并发调用；
     // P1-5：剩余时间很短的「源忙」排队等它落定再投，不再把用户支去等 30 秒
-    await this.reserveNativeCall(source, signal);
+    await this.reserveNativeCall(source, signal, origin);
     const handle = await this.ensureLoaded(source, signal);
     const effectiveTimeout = timeoutMs ?? NATIVE_INVOKE_TIMEOUT_MS;
     const isJar = extOf(source).kind !== 'js';
     try {
       const result = isJar
-        ? await this.invokeJar(source, handle, method, args, effectiveTimeout, arrayArgs, signal)
+        ? await this.invokeJar(source, handle, method, args, effectiveTimeout, arrayArgs, signal, origin)
         : // CHG-16：drpy 路由——TVBox 方法名映射为编排方法，位置参数拼成单参 JSON。
           // drpy 运行时自带引擎单线程队列，不存在并发重入，冷却逻辑不适用。
           await raceNative(
@@ -935,8 +977,7 @@ export class SpiderAdapter extends BaseAdapter {
   /**
    * jar 爬虫的单次原生调用（F1 同实例串行的 JS 侧配合）。
    *
-   * 被原生忙挡回时最多排队重投一次：第二次仍挡就直接抛，绝不循环——
-   * 「等空位」不等于「放开串行」，同一时刻仍然只有一个调用压在原生实例上。
+   * 忙态处置与 `playerContent` / `proxy` 共用 `raceJarNative`，见那里的说明。
    */
   private async invokeJar(
     source: Source,
@@ -947,41 +988,106 @@ export class SpiderAdapter extends BaseAdapter {
     /** 位置下标 → 数组值：List 形参必须走这里（桥接会展平嵌套数组） */
     arrayArgs?: Record<number, string[]>,
     signal?: AbortSignal,
+    origin: NativeCallOrigin = 'foreground',
   ): Promise<{ json: string | null; logs?: string[] }> {
+    return this.raceJarNative(
+      source,
+      () => SpiderNative.invoke({ handle, method, args, arrayArgs }),
+      signal,
+      timeoutMs,
+      origin,
+      method,
+    );
+  }
+
+  /**
+   * OPT-26（P0-③-1 / P0-③-3）：jar 爬虫原生调用的统一「竞速 + 忙态处置」。
+   *
+   * 从 `invokeJar` 里抽出来只有一个原因：`playerContent`（`invokePlayer`）与
+   * `SpiderNative.proxy`（`invokeProxy`）打的是同一个 jar 实例、同一个 9978 处理线程，
+   * 却各自裸用 `raceNative`——既不走串行闸门，也不登记在飞调用。于是两条后果：
+   * 1. 「探测取消 → 点播放」留下的僵尸对这两条路完全不可见，它们照样并发投进去，
+   *    撞上原生 F1 后以 `playerContent 执行异常: 源正忙` 收场（真机 12:24:38）；
+   * 2. 它们自己超时/被取消留下的僵尸没人登记，也就没人解除，30 秒闸门只由
+   *    `detailContent` 一条路写、一条路清。
+   *
+   * 三处现在共用一套口径：登记在飞 → 竞速 → 按成因处置（排队重投 / 登记闸门 /
+   * 报 `E_SOURCE_BUSY` + `retryAfterMs`）。被原生忙挡回时最多重投一次，绝不循环——
+   * 「等空位」不等于「放开串行」，同一时刻仍然只有一个调用压在原生实例上。
+   */
+  private async raceJarNative<T>(
+    source: Source,
+    run: () => Promise<T>,
+    signal: AbortSignal | undefined,
+    timeoutMs: number,
+    origin: NativeCallOrigin,
+    /** 日志里说清是哪一路（方法名或 `proxy`），排查时不必猜 */
+    label: string,
+  ): Promise<T> {
     for (let attempt = 0; ; attempt += 1) {
       // Promise.resolve().then 包装：mock/Web 代理可能**同步**抛错，直接取值会绕过 promise 轨道
-      const callPromise = Promise.resolve().then(() =>
-        SpiderNative.invoke({ handle, method, args, arrayArgs }),
-      );
+      const callPromise = Promise.resolve().then(run);
       // 僵尸真正结束时提前解除冷却（raceNative 的放弃 ≠ 原生任务的结束）。
       // finally 的返回 promise 会原样转发拒绝，必须再 catch 兜住，否则 unhandled。
       let callSettled = false;
-      const call = { deadlineAt: Date.now() + timeoutMs };
+      const call = { deadlineAt: Date.now() + timeoutMs, origin };
       this.markNativeCall(source.id, call);
       void callPromise
         .finally(() => {
           callSettled = true;
           this.clearNativeCall(source.id, call);
+          // 僵尸真正结束时提前解除闸门：这一句就是「等空位」能等到的原因
+          // （`raceNative` 的放弃不等于原生任务结束，只有这里是 JS 侧可信的结束时刻）。
           this.invokeCooldown.delete(source.id);
         })
         .catch(() => {});
       try {
         return await raceNative(() => callPromise, signal, timeoutMs);
       } catch (e) {
-        const busy = this.busyKindOf(e, callSettled);
+        const busy = this.busyKindOf(e, callSettled, origin);
         if (busy) {
-          this.enterBusyCooldown(source.id, busy);
-          // 只对「另一个调用还在跑」排队：僵尸那 30 秒不该让详情页陪着卡
-          if (attempt === 0 && busy === 'busy' && (await this.waitForNativeIdle(source.id, signal))) {
-            logger.debug('源忙排队成功，重投一次', { sourceName: source.name, method });
+          const cooldownUntil = this.enterBusyCooldown(source.id, busy);
+          // 只对「另一个调用还在跑」排队：僵尸那 30 秒不该让详情页陪着卡。
+          // `probe_abort` 不登记闸门（见 `enterBusyCooldown`），所以紧随其后的前台调用
+          // 会直接投进原生：真撞上在飞调用会被 F1 挡回，那时按 `busy` 排队重投——
+          // 空位是等得到的，因为那条被放弃的调用落定时会把闸门一起摘掉。
+          if (
+            attempt === 0 &&
+            busy === 'busy' &&
+            (await this.waitForNativeIdle(source.id, signal, 0, origin))
+          ) {
+            logger.debug('源忙排队成功，重投一次', { sourceName: source.name, call: label });
             continue;
           }
+          const retryAfterMs = this.retryAfterMsOf(cooldownUntil);
           if (!(e instanceof AppError)) {
             // 原生忙拒绝（F1 锁）：P1-3 独立成 `E_SOURCE_BUSY`——文案对准真实状态，
             // 也不再借"源不可用"被下游当成死源立刻重投、换线路、记线路连败
-            throw new AppError('E_SOURCE_BUSY', this.busyMessage(source.id), {
+            throw new AppError('E_SOURCE_BUSY', this.busyMessage(source.id, busy), {
               detail: source.name,
               cause: e,
+              retryAfterMs,
+            });
+          }
+          /*
+           * OPT-26（P0-③-1）：前台僵尸档改判错误码。
+           *
+           * 旧代码在这里直接 `throw e`，于是 JS 侧超时留下的在飞调用报出去的是
+           * `源响应超时（30 秒）` + `E_TIMEOUT`：分类成「解析超时」，文案让用户「稍后重试」，
+           * 而真正拦住重试的正是那条还没落定的调用（闸门 30 秒）。既然已经确定它没落定，
+           * 结论就是「这个源现在腾不出手」，改判 `E_SOURCE_BUSY` 才对得上，界面上
+           * 也因此拿到倒计时与对症动作（见 `GUIDANCE.source_busy`）。
+           *
+           * 只改前台档：探测（`probe_abort`）本来就没人读结果，改判只会把一次后台放弃
+           * 写成用户可见的故障。`E_ABORTED` 同理不改判——那是调用方主动放弃，
+           * 把取消说成故障会让下游重试链和「已取消」静默口径同时错位。
+           */
+          if (busy === 'zombie' && e.code === 'E_TIMEOUT') {
+            throw new AppError('E_SOURCE_BUSY', this.busyMessage(source.id, busy), {
+              detail: e.detail ?? source.name,
+              cause: e,
+              httpStatus: e.httpStatus,
+              retryAfterMs,
             });
           }
         }
@@ -990,26 +1096,50 @@ export class SpiderAdapter extends BaseAdapter {
     }
   }
 
-  /** F3：判定"上一次原生调用还在跑"并分成因（完成与到期同刻竞走时不该记冷却） */
-  private busyKindOf(e: unknown, callSettled: boolean): NativeBusyKind | null {
+  /**
+   * F3 / OPT-26（P0-③-1）：判定"上一次原生调用还在跑"并分成因。
+   *
+   * 完成与到期同刻竞走时不该记闸门，故 `callSettled` 先判；之后 `origin` 决定第 2 档归属——
+   * 同样是「放弃时调用还没回来」，前台请求和后台探测的处置相反：
+   * 探测被用户点播放打断（或它自己 30 秒到点、但那份结果早没人读了）留下的调用
+   * **一定会自己落定**，给它锁 30 秒等于让用户每次点播放都自锁半分钟。
+   */
+  private busyKindOf(
+    e: unknown,
+    callSettled: boolean,
+    origin: NativeCallOrigin = 'foreground',
+  ): NativeBusyKind | null {
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.includes('源正忙')) return 'busy';
-    if (e instanceof AppError && !callSettled && (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED')) {
-      return 'zombie';
+    if (msg.includes('源正忙') || isSourceBusyMessage(msg)) return 'busy';
+    if (e instanceof AppError && !callSettled) {
+      if (origin === 'probe' && (e.code === 'E_ABORTED' || e.code === 'E_TIMEOUT')) {
+        return 'probe_abort';
+      }
+      if (e.code === 'E_TIMEOUT' || e.code === 'E_ABORTED') return 'zombie';
     }
     return null;
   }
 
   /**
-   * P1-5：冷却窗口对准真实在飞调用。
-   * `busy` 取其它在飞调用最迟的 JS 截止时刻（那是"最坏还要多久"的上界，
-   * 真机实测常态只有 1~2s，旧口径一律按 30s 报）；`zombie` 维持 F3 的 30s。
+   * P1-5 / OPT-26（P0-③-1）：冷却窗口对准真实在飞调用，并返回闸门截止时刻。
+   *
+   * - `busy`：取其它在飞调用最迟的 JS 截止时刻（那是"最坏还要多久"的上界，
+   *   真机实测常态只有 1~2s，旧口径一律按 30s 报）；
+   * - `zombie`：维持 F3 的 30s；
+   * - `probe_abort`：**不登记闸门**。探测被点播放打断（或它自己到点、结果早没人读）时
+   *   留下的调用一定会落定，登记 30s 等于用户每次「详情页等不到 → 点播放」都自锁半分钟
+   *   （真机 12:18 / 12:24 的形态）。串行仍由原生 F1 守：紧随的前台调用投进去会被挡回，
+   *   那时按 `busy` 取值排队——那条调用落定的同一条 `finally` 会把闸门摘掉，空位等得到。
+   *
+   * 返回值给调用方换算 `retryAfterMs`：界面上的倒计时必须来自这道真实闸门，不能在 UI 猜。
    */
-  private enterBusyCooldown(sourceId: string, kind: NativeBusyKind): void {
+  private enterBusyCooldown(sourceId: string, kind: NativeBusyKind): number | null {
     const now = Date.now();
+    if (kind === 'probe_abort') return this.invokeCooldown.get(sourceId)?.until ?? null;
     if (kind === 'zombie') {
-      this.invokeCooldown.set(sourceId, { until: now + ZOMBIE_COOLDOWN_MS, kind });
-      return;
+      const until = now + ZOMBIE_COOLDOWN_MS;
+      this.invokeCooldown.set(sourceId, { until, kind });
+      return until;
     }
     let latest = 0;
     for (const call of this.nativeCallDeadlines.get(sourceId) ?? []) {
@@ -1019,16 +1149,17 @@ export class SpiderAdapter extends BaseAdapter {
       ? now + BUSY_COOLDOWN_FALLBACK_MS
       : Math.min(Math.max(latest, now + BUSY_IDLE_POLL_MS), now + ZOMBIE_COOLDOWN_MS);
     this.invokeCooldown.set(sourceId, { until, kind });
+    return until;
   }
 
   /** 登记/摘掉一次已发给原生、JS 侧仍在竞速的调用（按对象引用删，只删自己那条） */
-  private markNativeCall(sourceId: string, call: { deadlineAt: number }): void {
+  private markNativeCall(sourceId: string, call: NativeCallMark): void {
     const set = this.nativeCallDeadlines.get(sourceId) ?? new Set();
     set.add(call);
     this.nativeCallDeadlines.set(sourceId, set);
   }
 
-  private clearNativeCall(sourceId: string, call: { deadlineAt: number }): void {
+  private clearNativeCall(sourceId: string, call: NativeCallMark): void {
     const set = this.nativeCallDeadlines.get(sourceId);
     if (!set) return;
     set.delete(call);
@@ -1036,26 +1167,98 @@ export class SpiderAdapter extends BaseAdapter {
   }
 
   /**
-   * P1-5：等这个源排到空位——在飞调用落定时它的 finally 会摘掉冷却，这里只是轮询确认，
-   * 不并发发第二次（串行闸门不松口）。预算就是预算：不超过 BUSY_WAIT_MAX_MS。
+   * P2-⑪：这一源上是否压着前台调用（用户点播放/下载/投屏）。
+   *
+   * 不看 `deadlineAt` 是否过期：JS 侧超时放弃后原生那条仍在跑（僵尸），探测此时挤进去
+   * 撞的还是同一把 F1 锁——让路的判断必须按「原生还在不在跑」算，而不是按 JS 还等不等。
    */
-  private async waitForNativeIdle(sourceId: string, signal?: AbortSignal): Promise<boolean> {
-    const giveUpAt = Date.now() + BUSY_WAIT_MAX_MS;
-    for (;;) {
-      // 与 raceNative 同一口径：排队等待被取消也是 E_ABORTED，不能让 DOMException 串到错误面板
+  private foregroundInFlight(sourceId: string): boolean {
+    for (const call of this.nativeCallDeadlines.get(sourceId) ?? []) {
+      if (call.origin === 'foreground') return true;
+    }
+    return false;
+  }
+
+  /**
+   * P2-⑪：后台（探测/预热）投进原生之前的让路窗口。
+   *
+   * 让路不是取消：等的是前台**自然落定**（`finally` 摘掉登记），中途不掐任何东西，
+   * 所以不会留下 P0-③-1 那条「被取消的调用把源锁 30 秒」的形态。等满预算仍未空位时
+   * 照样放行——探测的失败口径不变（真撞上会被 F1 挡回，按 `probe_abort` 处理，不登记闸门），
+   * 但正常情况下用户点播放不再需要和三路探测抢同一个爬虫实例。
+   */
+  private async yieldToForeground(sourceId: string, signal?: AbortSignal): Promise<void> {
+    if (!this.foregroundInFlight(sourceId)) return;
+    const startedAt = Date.now();
+    while (this.foregroundInFlight(sourceId)) {
       if (signal?.aborted) throw new AppError('E_ABORTED');
-      const cooldown = this.invokeCooldown.get(sourceId);
-      if (cooldown === undefined) return true;
-      // 在飞调用中途变成僵尸（自己也没等到回执）：那是 30 秒量级，不陪等
-      if (cooldown.kind === 'zombie') return false;
-      if (Date.now() >= giveUpAt) return false;
+      if (Date.now() - startedAt >= BUSY_WAIT_MAX_MS) {
+        logger.debug('探测让路到预算上限，仍无空位', { sourceId, waitedMs: Date.now() - startedAt });
+        return;
+      }
       await new Promise((resolve) => setTimeout(resolve, BUSY_IDLE_POLL_MS));
     }
   }
 
-  /** 忙到排不上时的文案：给真实剩余秒数，不指挥用户去查网络 */
-  private busyMessage(sourceId: string): string {
-    const remainMs = (this.invokeCooldown.get(sourceId)?.until ?? 0) - Date.now();
+  /** 闸门还剩多久 ⇒ 界面多久后重新给出重试（不在闸门里就是 0：立刻可重试） */
+  private retryAfterMsOf(cooldownUntil: number | null): number {
+    if (cooldownUntil === null) return 0;
+    return Math.max(0, Math.min(ZOMBIE_COOLDOWN_MS, cooldownUntil - Date.now()));
+  }
+
+  /**
+   * P1-5：等这个源排到空位——在飞调用落定时它的 finally 会摘掉冷却，这里只是轮询确认，
+   * 不并发发第二次（串行闸门不松口）。预算就是预算：不超过 BUSY_WAIT_MAX_MS。
+   *
+   * OPT-26 起僵尸档不再"看一眼就 return false"：先按调用方给的 `zombieWaitMs` 陪等
+   * （详情页点播放给 2 秒——真机实测被取消的调用 3.1 秒落定，2 秒能接住大部分情况），
+   * 预算耗尽仍未落定才快速失败。旧口径在这里立刻退出，于是紧随探测取消的那次点播放
+   * 一次都没等到，只能看见「该源正忙」。
+   */
+  private async waitForNativeIdle(
+    sourceId: string,
+    signal?: AbortSignal,
+    zombieWaitMs = 0,
+    origin: NativeCallOrigin = 'foreground',
+  ): Promise<boolean> {
+    const startedAt = Date.now();
+    for (;;) {
+      // 与 raceNative 同一口径：排队等待被取消也是 E_ABORTED，不能让 DOMException 串到错误面板
+      if (signal?.aborted) throw new AppError('E_ABORTED');
+      const cooldown = this.invokeCooldown.get(sourceId);
+      // P2-⑪：冷却摘了不等于原生空着——前台还压着一条（或一条刚被 JS 放弃的僵尸）时，
+      // 后台在这里继续等，不等它排到空位就去撞 F1，用户那边多出来的就是「该源正忙」。
+      if (cooldown === undefined && this.probeMayAdmit(sourceId, origin)) return true;
+      // 预算按成因分档：`busy` 有真实截止点，给满 BUSY_WAIT_MAX_MS；
+      // 僵尸只能按调用方给的预算陪等（详情页点播放 2 秒，探测 0 秒不占线路探测预算）
+      const budgetMs = cooldown?.kind === 'zombie' ? zombieWaitMs : BUSY_WAIT_MAX_MS;
+      if (Date.now() - startedAt >= budgetMs) return false;
+      await new Promise((resolve) => setTimeout(resolve, BUSY_IDLE_POLL_MS));
+    }
+  }
+
+  /** P2-⑪：后台调用只有在「这一源没有前台在飞」时才算排到空位；前台不受此约束 */
+  private probeMayAdmit(sourceId: string, origin: NativeCallOrigin): boolean {
+    return origin === 'foreground' || !this.foregroundInFlight(sourceId);
+  }
+
+  /**
+   * 忙到排不上时的文案（OPT-26 P0-③-1 / P0-③-2）
+   *
+   * 旧口径不论成因一律报 `约 ${Math.ceil(remainMs / 1000)} 秒后结束`，而 zombie 档的
+   * `remainMs` 来自「30 秒保守假设」，不是观测——真机 12:18 那次留下闸门的调用
+   * 实际 3.1 秒后就落定了。把一个写死的上界印成"还要 30 秒"，等于让每个用户
+   * 都以为源坏半分钟，于是不停点重试。
+   *
+   * 现在按成因分句：`busy` 给真实剩余秒数（那是可兑现的），僵尸档不给秒数（给不出），
+   * 界面侧改用 `retryAfterMs` 倒计时决定按钮，不再依赖这句话。
+   */
+  private busyMessage(sourceId: string, kind: NativeBusyKind = 'busy'): string {
+    const cooldown = this.invokeCooldown.get(sourceId);
+    const remainMs = (cooldown?.until ?? 0) - Date.now();
+    if (kind !== 'busy') {
+      return '该源正忙（上一次请求还没跑完），稍后会自动重试，不必反复点';
+    }
     return remainMs > 0
       ? `该源正忙（上一次调用约 ${Math.ceil(remainMs / 1000)} 秒后结束），请稍后重试`
       : '该源正忙（上一次调用仍未结束），请稍后重试';
@@ -1068,31 +1271,74 @@ export class SpiderAdapter extends BaseAdapter {
    *   僵尸那 30 秒也算在里面，所以调用方要按 `busyWaitBudgetMs` 的上限自己收口。
    * - `queueDepth`：JS 侧已投进原生、尚未回执的调用数。**不是**原生池那条 32 长队列——
    *   原生 `ThreadPoolExecutor` 的队列长度在 JS 侧不可观测，这里给的是能实测的那一半。
+   * - OPT-26（P0-③-2）`kind` / `retryAfterMs`：成因与「界面多久后该重新给出重试」。
+   *   `retryAfterMs` 只在闸门真实存在时非 0，探测被打断（不登记闸门）时是 0——
+   *   这是"该不该禁用重试按钮"的唯一口径，不能在 UI 侧用文案反推。
    */
-  busyStateOf(sourceId: string): { inFlightMs: number; queueDepth: number } {
+  busyStateOf(sourceId: string): {
+    inFlightMs: number;
+    queueDepth: number;
+    kind: NativeBusyKind | null;
+    retryAfterMs: number;
+    foregroundInFlight: boolean;
+  } {
     const now = Date.now();
     let latest = 0;
     for (const call of this.nativeCallDeadlines.get(sourceId) ?? []) {
       latest = Math.max(latest, call.deadlineAt);
     }
-    const cooldownRemain = (this.invokeCooldown.get(sourceId)?.until ?? 0) - now;
+    const cooldown = this.invokeCooldown.get(sourceId);
+    const cooldownRemain = (cooldown?.until ?? 0) - now;
+    const inFlightMs = Math.max(0, Math.max(latest - now, cooldownRemain));
     return {
-      inFlightMs: Math.max(0, Math.max(latest - now, cooldownRemain)),
+      inFlightMs,
       queueDepth: this.nativeCallDeadlines.get(sourceId)?.size ?? 0,
+      kind: cooldownRemain > 0 ? cooldown?.kind ?? null : null,
+      retryAfterMs: cooldownRemain > 0 ? Math.min(ZOMBIE_COOLDOWN_MS, cooldownRemain) : 0,
+      // P2-⑪：让路判定的读数，日志里要能证明"这次排不上是探测在给点播让路"
+      foregroundInFlight: this.foregroundInFlight(sourceId),
     };
   }
 
-  /** F3 + P1-5：冷却窗口内先按成因排队，排不上或僵尸窗口才快速失败 */
-  private async reserveNativeCall(source: Source, signal?: AbortSignal): Promise<void> {
+  /**
+   * F3 + P1-5 / OPT-26（P0-③-1）：冷却窗口内先按成因排队，排不上或僵尸窗口才快速失败。
+   *
+   * `probe_abort` 档不会出现在这里（`enterBusyCooldown` 不登记它），
+   * 所以前台播放不会被一次被取消的探测锁在门外；真撞上在飞调用时原生 F1 会挡回，
+   * 届时按 `busy` 排队重投，串行语义不丢。
+   *
+   * P2-⑪：后台调用（探测/预热）在这道闸门前先给前台让路——不再"看到没闸门就投"。
+   * 没闸门只代表没有人**登记过**忙，不代表原生空着：用户的点播刚投进去时，探测挤进去
+   * 撞的就是同一把 F1 锁，于是"详情页一刷新，播放就报该源正忙"。让路是等待，不是取消，
+   * 因此不会制造 P0-③-1 修掉的那种自锁。
+   */
+  private async reserveNativeCall(
+    source: Source,
+    signal?: AbortSignal,
+    origin: NativeCallOrigin = 'foreground',
+  ): Promise<void> {
+    if (origin === 'probe') await this.yieldToForeground(source.id, signal);
     const cooldown = this.invokeCooldown.get(source.id);
-    if (cooldown === undefined) return;
-    if (cooldown.kind === 'busy' && (await this.waitForNativeIdle(source.id, signal))) return;
-    if (cooldown.until <= Date.now()) {
+    if (cooldown === undefined && this.probeMayAdmit(source.id, origin)) return;
+    const zombieBudgetMs = origin === 'probe' ? 0 : BUSY_ZOMBIE_RETRY_WINDOW_MS;
+    if (await this.waitForNativeIdle(source.id, signal, zombieBudgetMs, origin)) return;
+    /*
+     * 等完之后重新读一次闸门：让路等到头的探测可能面对的是"闸门早已被摘、只剩前台还在飞"
+     * （`yieldToForeground` 的预算用满就放行，真撞上自有 F1 挡回并按 `probe_abort` 处置）。
+     * 这时编一句「该源正忙」抛出去，等于把一次正常的后台放弃写成用户可见的故障。
+     */
+    const pending = this.invokeCooldown.get(source.id);
+    if (pending === undefined) return;
+    if (pending.until <= Date.now()) {
       // 窗口已过：摘掉冷却，允许下一次真正尝试，不再无限期锁死这个源
       this.invokeCooldown.delete(source.id);
       return;
     }
-    throw new AppError('E_SOURCE_BUSY', this.busyMessage(source.id), { detail: source.name });
+    throw new AppError(
+      'E_SOURCE_BUSY',
+      this.busyMessage(source.id, pending.kind),
+      { detail: source.name, retryAfterMs: this.busyStateOf(source.id).retryAfterMs },
+    );
   }
 
   /* ---------------- 数据方法 ---------------- */
@@ -1165,6 +1411,9 @@ export class SpiderAdapter extends BaseAdapter {
       [sourceItemId],
       { 0: [sourceItemId] },
       params.signal,
+      undefined,
+      // P2-⑪：探活类调用（可播性、体检）由调用方标成 probe，闸门据此让它们让路
+      params.origin ?? 'foreground',
     );
     const list = response.list ?? [];
     const matched = list.find((entry) => vodIdOf(entry) === sourceItemId);
@@ -1322,6 +1571,12 @@ export class SpiderAdapter extends BaseAdapter {
   async resolvePlayUrl(params: ResolvePlayParams): Promise<PlaybackSource> {
     const { source, sourceItemId, lineId, episodeId, episodeNumber } = params;
     this.assertEnabled(source);
+    /*
+     * OPT-26（P0-③-1）：这次取址是用户点播还是详情页线路探测。
+     * 只有探测会「用户点一下播放就把在飞的调用打断」，而那是 zombie 判定里唯一
+     * 能确定「调用还会自己落定」的情形——不分这一档，每次这样的点击都会自锁 30 秒。
+     */
+    const origin: NativeCallOrigin = params.origin ?? 'foreground';
 
     // 1. 取剧集列表（与 SiteAdapter 同一口径），定位用户点的那一集
     const response = await this.invoke(
@@ -1330,6 +1585,8 @@ export class SpiderAdapter extends BaseAdapter {
       [sourceItemId],
       { 0: [sourceItemId] },
       params.signal,
+      undefined,
+      origin,
     );
     const list = response.list ?? [];
     const matched = list.find((entry) => vodIdOf(entry) === sourceItemId);
@@ -1357,7 +1614,7 @@ export class SpiderAdapter extends BaseAdapter {
     // 2. playerContent(flag, id, vipFlags) 取真实播放地址；
     //    flag 用线路名，id 用剧集地址（TVBox 约定），vipFlags 传空数组
     const flag = line.name;
-    const played = await this.invokePlayer(source, flag, picked.url, params.signal);
+    const played = await this.invokePlayer(source, flag, picked.url, params.signal, origin);
 
     const raw = (played.url ?? played.playUrl ?? '').trim();
     if (raw.length === 0) {
@@ -1418,12 +1675,16 @@ export class SpiderAdapter extends BaseAdapter {
       throw new AppError('E_UNSUPPORTED_FORMAT', MAGNET_MESSAGE, {
         detail: direct.trim(),
         retryable: false,
+        reason: 'magnet_link',
       });
     }
     if (!/^https?:\/\//i.test(direct)) {
       throw new AppError('E_UNSUPPORTED_FORMAT', '播放地址协议不受支持', {
         detail: direct.slice(0, 120),
         retryable: false,
+        // OPT-26（P0-②-1）：磁力与「协议不是 http」是同一条判定里的两档，
+        // 但界面处置不同——磁力有外部出口，未知协议只能换线路。
+        reason: 'protocol_unsupported',
       });
     }
 
@@ -1523,11 +1784,22 @@ export class SpiderAdapter extends BaseAdapter {
     flag: string,
     id: string,
     signal?: AbortSignal,
+    origin: NativeCallOrigin = 'foreground',
   ): Promise<SpiderPlayerResult> {
     signal?.throwIfAborted();
     // P1-6：句柄已在内存（热）→ 10s 必须出结果；冷启动才给 30s 的下载/镜像余量
     const hot = this.handles.has(source.id);
     const invokeTimeout = hot ? NATIVE_INVOKE_TIMEOUT_HOT_MS : NATIVE_INVOKE_TIMEOUT_MS;
+    /*
+     * OPT-26（P0-③-3）：`playerContent` 与 `detailContent` 打的是同一个 jar 实例，
+     * 但这条路从没走串行闸门——`downloadService`（取地址喂原生下载器）、
+     * 详情页线路探测、播放页解析三条链会并发压同一个爬虫。F1 在原生侧拦的就是这件事
+     * （真机 12:24:38 的 `playerContent 执行异常: 源正忙` 是它挡回后留下的原文），
+     * F4 又把「带原生库的 jar 并发初始化」列为崩溃头号触发条件。
+     * JS 侧不配合，等于每次点播放都可能撞一次原生崩溃面。drpy（js）维持原口径：
+     * 它自带单线程队列，不存在并发重入。
+     */
+    if (extOf(source).kind !== 'js') await this.reserveNativeCall(source, signal, origin);
     const handle = await this.ensureLoaded(source, signal);
 
     // 方向3：设置本地代理归属，确保 9978 代理请求路由到正确的爬虫
@@ -1553,7 +1825,8 @@ export class SpiderAdapter extends BaseAdapter {
           invokeTimeout,
         );
       } else {
-        result = await raceNative(
+        result = await this.raceJarNative(
+          source,
           () =>
             SpiderNative.invoke({
               handle,
@@ -1564,6 +1837,8 @@ export class SpiderAdapter extends BaseAdapter {
             }),
           signal,
           invokeTimeout,
+          origin,
+          'playerContent',
         );
       }
       return parsePlayerJson(result.json, source.name);
@@ -1578,6 +1853,7 @@ export class SpiderAdapter extends BaseAdapter {
     source: Source,
     url: string,
     signal?: AbortSignal,
+    origin: NativeCallOrigin = 'foreground',
   ): Promise<SpiderProxyResult> {
     signal?.throwIfAborted();
     const handle = await this.ensureLoaded(source, signal);
@@ -1585,11 +1861,18 @@ export class SpiderAdapter extends BaseAdapter {
       // drpy 规则没有 TVBox 的 proxy(Map) 契约；parse=1 的场景走 resolveViaParse
       throw new AppError('E_NO_PLAY_URL', 'drpy 源不支持爬虫代理地址');
     }
+    // OPT-26（P0-③-3）：proxy 走的是同一个 jar 实例（`proxy(Map)` 反射进爬虫对象），
+    // 串行闸门口径与 playerContent 保持一致，否则「探测取消 → 点播放」在这条路上照样并发压上去
+    await this.reserveNativeCall(source, signal, origin);
     try {
-      const result = await raceNative(
+      // OPT-26（P0-③-3）：proxy 与 invoke 打的是同一个 9978 处理线程，登记口径共用 raceJarNative
+      const result = await this.raceJarNative(
+        source,
         () => SpiderNative.proxy({ handle, url }),
         signal,
         NATIVE_PROXY_TIMEOUT_MS,
+        origin,
+        'proxy',
       );
       return { url: result.url, headers: result.headers ?? {} };
     } catch (e) {

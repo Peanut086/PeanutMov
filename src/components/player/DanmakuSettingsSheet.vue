@@ -21,7 +21,12 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import type { DanmakuSettings } from '@/types';
 
 /** `importXml` 由播放页传入（有当前这一集才有意义）；设置页里不传即不渲染导入入口 */
-const props = defineProps<{ open: boolean; importXml?: ((file: File) => void | Promise<void>) | null }>();
+const props = defineProps<{
+  open: boolean;
+  importXml?: ((file: File) => void | Promise<void>) | null;
+  /** 「重新匹配本集弹幕」由播放页传入（它才知道当前是哪一集，也才知道要清哪一条缓存） */
+  rematch?: (() => void | Promise<void>) | null;
+}>();
 const emit = defineEmits<{ (e: 'update:open', value: boolean): void }>();
 
 const settings = useSettingsStore();
@@ -100,6 +105,20 @@ function onPickXml(event: Event): void {
   // 清空 value：第二次导入同一个文件也要触发 change
   input.value = '';
   if (file !== null) void props.importXml?.(file);
+}
+
+/* ---------- 重新匹配本集（结果由播放页用提示语回答，这里只管按钮别被连点） ---------- */
+
+const rematching = ref(false);
+
+async function onRematch(): Promise<void> {
+  if (rematching.value) return;
+  rematching.value = true;
+  try {
+    await props.rematch?.();
+  } finally {
+    rematching.value = false;
+  }
 }
 </script>
 
@@ -189,6 +208,21 @@ function onPickXml(event: Event): void {
         />
       </div>
 
+      <!-- 重新匹配本集：弹幕缓存 30 天有效，不清缓存的话「退出重进」并不等于重试 -->
+      <div v-if="props.rematch" class="danmaku-sheet__field">
+        <button
+          type="button"
+          class="btn btn--secondary btn--sm"
+          :disabled="rematching"
+          @click="onRematch"
+        >
+          {{ rematching ? "正在重新匹配…" : "重新匹配本集弹幕" }}
+        </button>
+        <p class="danmaku-sheet__hint">
+          作废本集已记住的那一条，重新问一遍所有弹幕源（换了源、拦下串片、当时超时都用它）
+        </p>
+      </div>
+
       <div class="danmaku-sheet__field">
         <label class="field__label" for="danmaku-danmuapi-base">自建弹幕聚合服务地址（可选，danmu_api / LogVar 弹幕 API）</label>
         <input
@@ -276,5 +310,11 @@ function onPickXml(event: Event): void {
 /* 隐藏的 input 仍能被按钮 click() 唤起系统选择器，不必为了可见性牺牲面板布局 */
 .danmaku-sheet__file {
   display: none;
+}
+
+.danmaku-sheet__hint {
+  margin: 0;
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
 }
 </style>

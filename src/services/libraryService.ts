@@ -34,6 +34,8 @@ import { SEARCH_BUDGET_MIN_MS, resolveGlobalDeadlineMs, resolveSearchTimeoutMs }
 import type { SearchBudgetPreset } from '@/shared/searchBudget';
 import { classifySourceFailure, isTransientFailure, sanitizeSourceMessage } from '@/shared/sourceFailure';
 import { isSourceBlocked } from '@/services/sourceBlockState';
+import { playTraceService } from '@/services/playTraceService';
+import { playUrlLifetimeService } from '@/services/playUrlLifetimeService';
 import { isKeywordIgnored } from '@/services/searchAggregate';
 import {
   PREWARM_SERIAL_STEP_DELAY_MS,
@@ -59,6 +61,7 @@ import type {
   SubtitleTrack,
   PageResult,
   PlaybackSource,
+  ResolvePlayOrigin,
   SearchResult,
   Source,
   SourceAdapter,
@@ -205,6 +208,15 @@ const resolvedPlayCache = new Map<string, ResolvedPlayCacheEntry>();
  */
 const DETAIL_BACKGROUND_REFRESH_MIN_MS = 120 * 1000;
 
+/** 诊断包里的地址只留 host：换 CDN 是常见成因，token 不能带出去 */
+function urlHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return '无法解析';
+  }
+}
+
 function resolvedPlayCacheKey(mediaId: string, lineId: string, episodeId: string | null | undefined): string {
   return `${mediaId}|${lineId}|${episodeId ?? ''}`;
 }
@@ -220,6 +232,24 @@ function getResolvedPlayCache(key: string): PlaybackSource | null {
   if (entry.playback.expiresAt != null && Date.now() > entry.playback.expiresAt) {
     resolvedPlayCache.delete(key);
     return null;
+  }
+  /*
+   * OPT-26（P2-⑫）：源侧不报过期时间时（爬虫/网盘的 `expiresAt` 基本恒为 null），
+   * 用这个 host 学到过的地址寿命兜住——30 分钟对十分钟就失效的签名直链太长了。
+   * 命中这里不算失败，只是重新取一次地址：代价一次解析，换掉一整集看不下去的画面。
+   */
+  const learnedTtlMs = playUrlLifetimeService.ttlOf(entry.playback.url);
+  if (learnedTtlMs !== null) {
+    const ageMs = Date.now() - entry.cachedAt;
+    if (ageMs > learnedTtlMs) {
+      resolvedPlayCache.delete(key);
+      logger.info('播放地址超出学到的可用寿命，重新解析', {
+        ageMs,
+        learnedTtlMs,
+        url: entry.playback.url,
+      });
+      return null;
+    }
   }
   return entry.playback;
 }
@@ -1144,7 +1174,13 @@ export const libraryService: LibraryService = {
     const source = await sourceRepo.get(item.sourceId);
     if (!source) throw new AppError('E_SOURCE_UNAVAILABLE', '该源已被移除');
     const adapter = await adapterFor(source);
-    const detail = await adapter.getDetail({ source, sourceItemId: item.sourceItemId });
+    // P2-⑪：这条纯粹是后台探活（只有可播性服务在用），必须标成 probe——
+    // 否则它既算「点播在途」顶开预热的让路闸门，又会在用户真点播时占着爬虫实例不放。
+    const detail = await adapter.getDetail({
+      source,
+      sourceItemId: item.sourceItemId,
+      origin: 'probe',
+    });
     return { episodeCount: detail.episodes.length, lineCount: detail.lines.length };
   },
 
@@ -1312,18 +1348,34 @@ export const libraryService: LibraryService = {
     const lineId = params.lineId ?? lines[0]?.id;
     if (!lineId) throw new AppError('E_NO_PLAY_URL');
 
+    // P0-1：后台探测（`demand:false`）不算「点播在途」——探测自己把预热的让路闸门顶开，
+    // 用户真点击时反而没人收手；播放/投屏/下载入口保持默认计入。
+    const countsAsDemand = params.demand !== false;
+    /*
+     * OPT-26（P2-⑬）：决策链只记用户这一路。探测每轮都在跑，把它们记进来等于
+     * 把「这一次起播为什么没成」淹在几百条后台事件里。
+     */
+    const trace = (text: string, fields?: Record<string, string | number | boolean | null>): void => {
+      if (countsAsDemand) playTraceService.note('resolve', text, fields);
+    };
+
     // P0-1: 播放地址内存缓存，避免每次播放都重跑 detailContent + playerContent
     const cacheKey = resolvedPlayCacheKey(item.id, lineId, params.episodeId);
     const cached = getResolvedPlayCache(cacheKey);
     if (cached) {
       logger.debug('播放地址缓存命中', { mediaId: item.id, lineId, episodeId: params.episodeId });
+      trace('播放地址缓存命中（未回源）', { host: urlHost(cached.url), format: cached.format });
       return cached;
     }
 
-    // P0-1：后台探测（`demand:false`）不算「点播在途」——探测自己把预热的让路闸门顶开，
-    // 用户真点击时反而没人收手；播放/投屏/下载入口保持默认计入。
-    const countsAsDemand = params.demand !== false;
+    /*
+     * OPT-26（P0-③-1）：同一件事（谁发起的）在并发闸门这里还有第二个含义，
+     * 但口径不能混用——`demand` 管记账，`origin` 管「被取消时该不该锁源」。
+     * 由 `demand` 推出 `origin`：只有线路探测会传 `demand:false`。
+     */
+    const origin: ResolvePlayOrigin = countsAsDemand ? 'foreground' : 'probe';
     if (countsAsDemand) beginPlaybackDemand();
+    const resolveStartedAt = Date.now();
     try {
       prewarm(adapter, source);
       const playback = await adapter.resolvePlayUrl({
@@ -1334,31 +1386,64 @@ export const libraryService: LibraryService = {
         episodeNumber,
         lineId,
         signal: params.signal,
+        origin,
       });
       calibrateAlive(source.id);
       setResolvedPlayCache(cacheKey, playback);
+      trace('回源取址成功', {
+        elapsedMs: Date.now() - resolveStartedAt,
+        host: urlHost(playback.url),
+        format: playback.format,
+        expiresAt: playback.expiresAt === null ? '源侧未报' : Date.now() - playback.expiresAt,
+      });
       return playback;
     } catch (e) {
       const error = readableSourceError(e);
       const kind = classifySourceFailure(error.toShape());
       const canceled = error.code === 'E_ABORTED' || error.code === 'E_CANCELED';
       // P1-3：重试预算来自实测在飞时长，不是又一个写死的秒数
-      const busy = adapter.busyStateOf?.(source.id) ?? { inFlightMs: 0, queueDepth: 0 };
+      const busy = adapter.busyStateOf?.(source.id) ?? {
+        inFlightMs: 0,
+        queueDepth: 0,
+        kind: null,
+        retryAfterMs: 0,
+      };
       const transient = isTransientFailure(kind) && !canceled;
       // 「源正忙」刻意不自动重投第二次（`isTransientFailure` 已把它排除）：第二次排的还是
-      // 同一个原生实例。等空位 + 有界重投在 `SpiderAdapter.invokeJar` 里已经做过一次。
+      // 同一个原生实例。等空位 + 有界重投在 `SpiderAdapter.raceJarNative` 里已经做过一次。
       const waitMs = transient ? Math.min(busy.inFlightMs, TRANSIENT_RETRY_WAIT_MS) : 0;
       logger.warn('源侧失败分档', {
         failureKind: kind,
         operation: 'resolvePlay',
+        // OPT-26（P0-③-2）：占用成因与放行倒计时一起落日志——
+        // 「该源正忙」到底是排队排不上、探测被打断，还是真僵尸，日志要能一眼分开
+        busyKind: busy.kind,
+        retryAfterMs: error.retryAfterMs ?? busy.retryAfterMs,
         inFlightMs: busy.inFlightMs,
         queueDepth: busy.queueDepth,
+        // P2-⑪：排不上是不是因为用户那一路正在播——后台让路的判定结果要能在日志里读到
+        foregroundInFlight: busy.foregroundInFlight ?? false,
+        // OPT-26（P0-③-1）：这条失败是用户点播还是后台探测来的，分档排查必须先分这个
+        requestOrigin: origin,
         retryCount: transient ? 1 : 0,
         waitBeforeRetryMs: waitMs,
         canceled,
         sourceId: source.id,
         mediaId: item.id,
         episodeId: params.episodeId,
+        detail: error.message,
+      });
+      // OPT-26（P2-⑬）：诊断包里要能直接读出「忙」是哪一种忙——排队、探测打断还是僵尸冷却
+      trace(`回源失败：${error.code}`, {
+        failureKind: kind,
+        busyKind: busy.kind,
+        retryAfterMs: error.retryAfterMs ?? busy.retryAfterMs,
+        inFlightMs: busy.inFlightMs,
+        queueDepth: busy.queueDepth,
+        foregroundInFlight: busy.foregroundInFlight ?? false,
+        willRetry: transient,
+        waitBeforeRetryMs: waitMs,
+        elapsedMs: Date.now() - resolveStartedAt,
         detail: error.message,
       });
       // 瞬态失败（jar 惰性初始化 NPE、源站瞬时 5xx/超时、解析页偶发空）自动重试一次。
@@ -1379,6 +1464,7 @@ export const libraryService: LibraryService = {
             episodeNumber,
             lineId,
             signal: params.signal,
+            origin,
           });
           calibrateAlive(source.id);
           setResolvedPlayCache(cacheKey, playback);
@@ -1590,14 +1676,24 @@ export const libraryService: LibraryService = {
               });
               if (bestLine) {
                 try {
-                  // 探测该线路（8s 超时）
+                  /*
+                   * P2-⑪：这是一次候选探测，不是用户点播——以前既不报 `demand:false` 也没有
+                   * signal，于是它按前台记账（把预热的让路闸门顶开），8 秒竞速放弃后底层调用
+                   * 还在跑，僵尸档按 30 秒锁住这个源，用户紧接着点播放就撞上「该源正忙」。
+                   */
+                  const probeAbort = new AbortController();
                   const probePromise = libraryService.resolvePlay({
                     mediaId: item.id,
                     episodeId: targetEp.id,
                     lineId: bestLine.id,
+                    demand: false,
+                    signal: probeAbort.signal,
                   });
                   const timeoutPromise = new Promise<never>((_, reject) =>
-                    setTimeout(() => reject(new Error('E_TIMEOUT')), 8000),
+                    setTimeout(() => {
+                      probeAbort.abort();
+                      reject(new Error('E_TIMEOUT'));
+                    }, 8000),
                   );
                   await Promise.race([probePromise, timeoutPromise]);
                   // 探测成功，记录到线路健康

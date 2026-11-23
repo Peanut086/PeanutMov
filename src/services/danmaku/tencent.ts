@@ -8,6 +8,8 @@
 import { requestWithHeaders } from './nativeHttp';
 import { pickCandidate, titleMatchScore } from './titlePick';
 import { seasonOfTitle } from '@/sources/douban/playMatch';
+import { DANMAKU_MIN_COMMENTS } from '@/shared/constants';
+import { logger } from '@/shared/logger';
 import type { DanmakuComment } from '@/types';
 import type { DanmakuProvider, DanmakuQuery } from './provider';
 
@@ -242,14 +244,46 @@ export const tencentProvider: DanmakuProvider = {
     if (cover === null) return null;
 
     const { title, videoIds } = await fetchEpisodeVids(cover.cid, query.signal);
-    const vid = videoIds[query.episode - 1];
-    if (vid === undefined) return null;
+    if (videoIds.length < query.episode) {
+      // 集号是按 video_ids 序号硬取的：第 10 集落在只有 8 集的池子里，取到的 vid 属于别的集
+      // （或直接越界）。这不是「腾讯没有这部剧」，是这一集对不上——必须说得出集数，否则界面
+      // 只会念一句「各弹幕源都没有」，而真因是序号错位。
+      logger.info('腾讯分集数少于请求集号，本集不做无把握的偏移匹配', {
+        title: query.title,
+        episode: query.episode,
+        videoIds: videoIds.length,
+        cid: cover.cid,
+      });
+      return null;
+    }
+    const vid = videoIds[query.episode - 1]!;
 
     const names = await fetchSegmentNames(vid, query.signal);
-    if (names.length === 0) return null;
+    if (names.length === 0) {
+      // vid 是「第 N 个 vid」而非「第 N 集」，条数为 0 时要能把这个怀疑复查一遍
+      logger.info('腾讯该 vid 没有弹幕分片', { title: query.title, episode: query.episode, vid });
+      return null;
+    }
 
     const comments = toComments(await fetchAllSegments(vid, names, query.signal));
-    if (comments.length === 0) return null;
+    if (comments.length === 0) {
+      logger.info('腾讯弹幕分片全为空', {
+        episode: query.episode,
+        vid,
+        segments: names.length,
+        firstSegment: names[0],
+      });
+      return null;
+    }
+    if (comments.length < DANMAKU_MIN_COMMENTS) {
+      // 门槛在服务层判定，vid 与分片数只有本源知道：留下这两项，才复查得了「取错集」这个怀疑
+      logger.info('腾讯弹幕条数偏低（门槛在服务层判定）', {
+        episode: query.episode,
+        vid,
+        segments: names.length,
+        count: comments.length,
+      });
+    }
     return { comments, matchedTitle: title };
   },
 };

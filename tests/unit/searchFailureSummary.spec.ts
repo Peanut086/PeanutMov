@@ -155,6 +155,10 @@ describe('SEARCH_FAILURE_LABELS（分类标签穷举）', () => {
     'source_dead',
     'source_busy',
     'timeout',
+    // OPT-26（P0-②-1）：`E_UNSUPPORTED_FORMAT` 一族按成因分成四档，标签各自独立
+    'magnet_link',
+    'dash_manifest',
+    'player_capability',
     'protocol_unsupported',
     'rule_script',
     'source_internal',
@@ -172,9 +176,10 @@ describe('SEARCH_FAILURE_LABELS（分类标签穷举）', () => {
     'unknown',
   ];
 
-  // P1-3 加 source_busy 后这里是 18 项；`SEARCH_FAILURE_LABELS` 是 Record<SourceFailureKind, string>，
+  // P1-3 加 source_busy 是 18 项，OPT-26 把「格式不支持」拆成四档后是 21 项；
+  // `SEARCH_FAILURE_LABELS` 是 Record<SourceFailureKind, string>，
   // 少一类会先编译失败，本条只钉「每类都有非空标签」和「没有多余键」。
-  it('18 类失败原因都有非空标签', () => {
+  it('21 类失败原因都有非空标签', () => {
     for (const kind of KINDS) {
       expect(SEARCH_FAILURE_LABELS[kind].trim().length).toBeGreaterThan(0);
     }

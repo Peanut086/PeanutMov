@@ -6,7 +6,7 @@
  * - UI 只读 `code` / `message`（必要时读 `detail`）；
  * - 文案集中在 `ERROR_MESSAGES`，AC-60 单测直接断言该表。
  */
-import type { AppErrorShape, ErrorCode } from '@/types';
+import type { AppErrorShape, ErrorCode, UnsupportedFormatReason } from '@/types';
 
 /* ---------- 错误码 → 用户文案（技术方案第 15 章） ---------- */
 export const ERROR_MESSAGES: Record<ErrorCode, string> = {
@@ -89,6 +89,19 @@ export interface AppErrorExtra {
   retryable?: boolean;
   httpStatus?: number | null;
   /**
+   * OPT-26（P0-②-1）：同码不同成因时带上来历。
+   *
+   * 只登记在 `E_UNSUPPORTED_FORMAT` 这一族：这个码此前被 4 个来源共用，
+   * 下游按码分类时全部套上「磁力链接」文案，连「用外部应用打开」都跟着出现。
+   * 其它码继续沿用「码 + 文案」的既有口径，不在这里扩表。
+   */
+  reason?: UnsupportedFormatReason | null;
+  /**
+   * OPT-26（P0-③-2）：闸门多久后放行（毫秒），只在 `E_SOURCE_BUSY` 上有值。
+   * 数值必须来自 `SpiderAdapter` 的真实占用读数，界面不许自己猜。
+   */
+  retryAfterMs?: number | null;
+  /**
    * 结构化补充信息，供调用方决定「下一步动作」。
    *
    * 只挂在 AppError 实例上、不进 `AppErrorShape`：形状会落库/进日志，而这类字段
@@ -108,6 +121,8 @@ export class AppError extends Error {
   readonly detail: string | null;
   readonly retryable: boolean;
   readonly httpStatus: number | null;
+  readonly reason: UnsupportedFormatReason | null;
+  readonly retryAfterMs: number | null;
   readonly meta: Record<string, unknown> | null;
 
   constructor(code: ErrorCode, message?: string, extra?: AppErrorExtra) {
@@ -117,6 +132,8 @@ export class AppError extends Error {
     this.detail = extra?.detail ?? null;
     this.retryable = extra?.retryable ?? RETRYABLE_CODES.has(code);
     this.httpStatus = extra?.httpStatus ?? null;
+    this.reason = extra?.reason ?? null;
+    this.retryAfterMs = extra?.retryAfterMs ?? null;
     this.meta = extra?.meta ?? null;
     if (extra?.cause !== undefined) {
       (this as { cause?: unknown }).cause = extra.cause;
@@ -124,13 +141,18 @@ export class AppError extends Error {
   }
 
   toShape(): AppErrorShape {
-    return {
+    const shape: AppErrorShape = {
       code: this.code,
       message: this.message,
       detail: this.detail,
       retryable: this.retryable,
       httpStatus: this.httpStatus,
     };
+    // 只在有值时带上：这两个字段是 OPT-26 新增的可选档位，
+    // 给每条错误都塞 null 会让既有快照断言（toEqual）无意义地全红。
+    if (this.reason !== null) shape.reason = this.reason;
+    if (this.retryAfterMs !== null) shape.retryAfterMs = this.retryAfterMs;
+    return shape;
   }
 }
 
@@ -170,6 +192,26 @@ export function toAppError(e: unknown, fallbackCode: ErrorCode = 'E_UNKNOWN'): A
   }
   if (typeof e === 'string' && e.length > 0) {
     return new AppError(fallbackCode, undefined, { detail: e });
+  }
+  /*
+   * OPT-26（P1-②-3）：已经分类好的结论不许再折回 fallbackCode。
+   *
+   * 原生引擎把 exostate 的 error 直接 reject 出来（`toPlayError` 给的是 `AppErrorShape`，
+   * 不是 Error），此前这条路在每一层都被折成泛化的 E_DECODE——一次真实的「源站断连」在
+   * 日志、面板和引擎链归属里都成了「本机解不了」。只有 code 是已登记错误码时才接管。
+   */
+  if (typeof e === 'object' && e !== null) {
+    const shape = e as Partial<AppErrorShape>;
+    if (typeof shape.code === 'string' && shape.code in ERROR_MESSAGES) {
+      return new AppError(shape.code as ErrorCode, shape.message ?? undefined, {
+        detail: shape.detail ?? null,
+        retryable: shape.retryable ?? undefined,
+        httpStatus: shape.httpStatus ?? undefined,
+        reason: shape.reason ?? undefined,
+        retryAfterMs: shape.retryAfterMs ?? undefined,
+        cause: e,
+      });
+    }
   }
   return new AppError(fallbackCode);
 }

@@ -550,6 +550,10 @@ export const SEARCH_FAILURE_LABELS: Record<SourceFailureKind, string> = {
   source_dead: '源站已失效',
   source_busy: '源正忙',
   timeout: '解析超时',
+  // OPT-26（P0-②-1）：`E_UNSUPPORTED_FORMAT` 拆成四档，汇总里「格式不支持」必须说清是哪一种
+  magnet_link: '种子地址',
+  dash_manifest: 'DASH 不支持',
+  player_capability: '本机播不了',
   protocol_unsupported: '格式不支持',
   rule_script: '规则脚本异常',
   source_internal: '源侧执行异常',

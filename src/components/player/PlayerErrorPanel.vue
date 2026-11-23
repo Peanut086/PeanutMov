@@ -11,6 +11,7 @@
 import { computed } from "vue";
 
 import type { AppErrorShape } from "@/types";
+import { useBusyRetryGate } from "@/composables/useBusyRetryGate";
 import { ERROR_MESSAGES } from "@/shared/errors";
 import {
   guidanceOf,
@@ -29,6 +30,13 @@ const props = withDefaults(
     canHealthCheck?: boolean;
     /** FIX-PLAY-C1：离线文件损坏时显示「重新下载本集」（本地播放没有可切的线路） */
     canRedownload?: boolean;
+    /**
+     * OPT-26（P1-②-3）：显示「用原生引擎重试」。
+     *
+     * 由 View 判定（它才知道这一轮到底走过哪个引擎）：原生可用、本轮没强制走过原生、
+     * 且不是本地文件（本地一律原生）时为真。两个引擎都失败的归属在 `PlayerController`。
+     */
+    canRetryNative?: boolean;
     /** 复制错误信息回调 */
     copyText?: string;
   }>(),
@@ -37,12 +45,15 @@ const props = withDefaults(
     canSwitchSource: false,
     canHealthCheck: false,
     canRedownload: false,
+    canRetryNative: false,
     copyText: "",
   },
 );
 
 const emit = defineEmits<{
   (e: "retry"): void;
+  /** OPT-26（P1-②-3）：本轮没用过原生引擎时，用它再试一次 */
+  (e: "retry-native"): void;
   (e: "switch-line"): void;
   (e: "switch-source"): void;
   (e: "health-check"): void;
@@ -97,6 +108,15 @@ const hint = computed(() => {
 });
 
 const showRetry = computed(() => props.error?.retryable !== false);
+
+/*
+ * OPT-26（P0-③-2）：源忙的放行倒计时决定「重试」按钮（口径见 `useBusyRetryGate`）。
+ * 面板上那句「稍后会自动重试」由这里的到点自动重试兑现，一次为限。
+ */
+const { remainMs: gateRemainMs, retryLabel } = useBusyRetryGate(
+  () => props.error,
+  () => emit("retry"),
+);
 </script>
 
 <template>
@@ -131,9 +151,21 @@ const showRetry = computed(() => props.error?.retryable !== false);
           v-if="showRetry"
           class="pl-cta"
           type="button"
+          :disabled="gateRemainMs > 0"
+          data-test="retry-cta"
           @click="emit('retry')"
         >
-          重试
+          {{ retryLabel }}
+        </button>
+        <!-- OPT-26（P1-②-3）：本轮只用内置内核试过时代，原生引擎是最便宜的一条出路 -->
+        <button
+          v-if="canRetryNative"
+          class="pl-cta pl-cta--ghost"
+          type="button"
+          data-test="retry-native-cta"
+          @click="emit('retry-native')"
+        >
+          用原生引擎重试
         </button>
         <button
           v-if="canSwitchLine"

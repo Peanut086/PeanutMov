@@ -46,6 +46,8 @@ const props = withDefaults(
     /** 当前线路名（chip 与摘要各用一次） */
     lineName?: string;
     danmakuEnabled?: boolean;
+    /** 弹幕那一格读数（「2096 条」/「未找到」/「超时」）：只写开关会把「没匹配到」念成「没打开」 */
+    danmakuReading?: string;
     /** 键盘/进度条步进秒数 */
     seekStep?: number;
     /** 音量 / 亮度（0~100 真值，落点由父级按 levelSource 决定） */
@@ -77,6 +79,7 @@ const props = withDefaults(
     subtitleLabel: "",
     lineName: "",
     danmakuEnabled: false,
+    danmakuReading: "",
     seekStep: 10,
     volume: 100,
     brightness: 100,
@@ -309,10 +312,13 @@ onBeforeUnmount(() => {
           class="pl-chip opt"
           type="button"
           :aria-pressed="danmakuEnabled"
+          :title="`弹幕：${danmakuEnabled ? danmakuReading || '开' : '关'}（点按开关）`"
           @click="emit('toggle-danmaku')"
         >
           <span class="pl-chip__k">弹幕</span
-          ><span class="pl-chip__v">{{ danmakuEnabled ? "开" : "关" }}</span>
+          ><span class="pl-chip__v">{{
+            danmakuEnabled ? danmakuReading || "开" : "关"
+          }}</span>
         </button>
         <!-- 实时码率当前引擎读不到，这一格诚实显示缓冲水位 -->
         <span class="pl-chip pl-chip--static pl-chip--net opt" title="缓冲水位">

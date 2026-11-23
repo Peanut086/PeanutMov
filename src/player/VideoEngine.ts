@@ -7,6 +7,7 @@
  */
 import type { AppErrorShape, PlaybackSource, ResizeMode } from '@/types';
 import { AppError, toErrorShape } from '@/shared/errors';
+import { logger } from '@/shared/logger';
 
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 
@@ -84,7 +85,9 @@ export class VideoEngine implements PlayableEngine {
             reject(new AppError('E_DECODE', `解码错误：${msg}`));
             break;
           case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-            reject(new AppError('E_UNSUPPORTED_FORMAT', `格式不支持：${msg}`));
+            // OPT-26（P0-②-1）：这一族的成因是「本机接不住」，不是种子——
+            // 挂上子原因，界面才不会给出「本 App 不做种子下载」这种对不上号的话
+            reject(new AppError('E_UNSUPPORTED_FORMAT', `格式不支持：${msg}`, { reason: 'player_capability' }));
             break;
           default:
             reject(new AppError('E_DECODE', msg));
@@ -228,6 +231,18 @@ export class VideoEngine implements PlayableEngine {
     add('ended', () => this.events.onEnded());
 
     add('error', () => {
+      /*
+       * OPT-26（P0-②-2）：`MediaError.code` 是分清「网络断开 / 解码失败 / 地址接不住」
+       * 的唯一原始证据——Android WebView 的 `message` 常年是空串，映射后的文案只剩一句
+       * 「暂不支持该格式」。这一行不带处置结论，只把现场记下来（地址由 logger 统一脱敏）。
+       */
+      logger.warn('WebView MediaError', {
+        mediaErrorCode: v.error?.code ?? null,
+        mediaErrorMessage: v.error?.message ?? '',
+        src: v.currentSrc || v.src || '',
+        networkState: v.networkState,
+        readyState: v.readyState,
+      });
       this.events.onError(mapMediaError(v.error));
     });
   }
@@ -247,7 +262,14 @@ export function mapMediaError(error: MediaError | null): AppErrorShape {
     case 3:
       return { code: 'E_DECODE', message: '视频解码失败，请尝试切换线路', retryable: true, ...base };
     case 4:
-      return { code: 'E_UNSUPPORTED_FORMAT', message: '暂不支持该格式', retryable: false, ...base };
+      return {
+        code: 'E_UNSUPPORTED_FORMAT',
+        message: '暂不支持该格式',
+        retryable: false,
+        // OPT-26（P0-②-1）：`MediaError.code === 4` 说的是本机播不了，与种子无关
+        reason: 'player_capability',
+        ...base,
+      };
     default:
       return toErrorShape(error ?? new Error('media error'));
   }

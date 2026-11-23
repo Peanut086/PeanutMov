@@ -6,7 +6,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseBilibiliXml } from '@/services/danmaku/bilibiliXml';
 import { bilibiliProvider, clearBilibiliCache } from '@/services/danmaku/bilibili';
 import { setDanmuApiBaseUrl, type DanmakuQuery } from '@/services/danmaku/provider';
-import { danmakuService, thinComments } from '@/services/danmakuService';
+import {
+  DANMAKU_CHIP_MISS,
+  DANMAKU_MISS_GUIDANCE,
+  danmakuService,
+  thinComments,
+  type DanmakuMissReason,
+} from '@/services/danmakuService';
 import { httpClient } from '@/sources/base/httpClient';
 import { DANMAKU_MIN_COMMENTS } from '@/shared/constants';
 import { logger } from '@/shared/logger';
@@ -82,6 +88,26 @@ describe('danmakuService 回退链（AC-126）', () => {
     }) as never);
   }
 
+  /**
+   * 让每一跳都耗时 5ms 并统计「同时在途」的峰值——并行还是串行直接由数字判定，
+   * 不靠读实现顺序（源全部按「搜不到」返回，链子走到底）。
+   */
+  async function peakConcurrency(run: () => Promise<unknown>): Promise<number> {
+    let live = 0;
+    let peak = 0;
+    mockedRequest.mockImplementation((async (url: string) => {
+      live += 1;
+      peak = Math.max(peak, live);
+      await new Promise((resolve) => {
+        setTimeout(resolve, 5);
+      });
+      live -= 1;
+      return NO_MATCH[urlHost(url)] ?? {};
+    }) as never);
+    await run();
+    return peak;
+  }
+
   beforeEach(() => {
     mockedRequest.mockReset();
     clearBilibiliCache();
@@ -109,9 +135,11 @@ describe('danmakuService 回退链（AC-126）', () => {
       return { success: true, animes: [] };
     });
 
-    const result = await danmakuService.match('狂飙', 2024, 5);
+    const { match: result, via, missReason } = await danmakuService.match('狂飙', 2024, 5);
 
     expect(result).not.toBeNull();
+    expect(via).toBe('provider');
+    expect(missReason).toBeNull();
     expect(result!.provider).toBe('danmu-api');
     expect(result!.comments[0]).toEqual({ time: 10, mode: 'scroll', color: 0xffffff, text: '聚合弹幕' });
     expect(result!.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
@@ -136,10 +164,12 @@ describe('danmakuService 回退链（AC-126）', () => {
     });
 
     // 集号 6：避开上一个用例写入同一缓存键
-    const result = await danmakuService.match('狂飙', 2024, 6);
+    const { match: result, attempts } = await danmakuService.match('狂飙', 2024, 6);
 
     expect(result!.provider).toBe('dandanplay');
     expect(urls.some((url) => url.includes('danmu.test'))).toBe(false);
+    // 未配置的源记成 unavailable，而不是「请求失败」——否则主因会把「没源可配」念成「源都不通」
+    expect(attempts.find((a) => a.provider === 'danmu-api')?.outcome).toBe('unavailable');
   });
 
   it('B 站无结果时回退 dandanplay；成功结果写入缓存（二次调用不发请求）', async () => {
@@ -158,19 +188,23 @@ describe('danmakuService 回退链（AC-126）', () => {
     });
 
     const first = await danmakuService.match('庆余年', 2019, 1);
-    expect(first).not.toBeNull();
-    expect(first!.provider).toBe('dandanplay');
-    expect(first!.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
+    expect(first.match).not.toBeNull();
+    expect(first.via).toBe('provider');
+    expect(first.match!.provider).toBe('dandanplay');
+    expect(first.match!.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
     // ⑤ shift 要穿过服务层交给渲染层（缓存里存原始时间轴）
-    expect(first!.offsetSec).toBe(3);
+    expect(first.match!.offsetSec).toBe(3);
 
     mockedRequest.mockClear();
     const second = await danmakuService.match('庆余年', 2019, 1);
-    expect(second).not.toBeNull();
+    expect(second.match).not.toBeNull();
+    // 「没发请求」要能被区分成缓存命中：调用方据此决定要不要提示「正在用离线弹幕」
+    expect(second.via).toBe('cache');
+    expect(second.attempts).toEqual([]);
     expect(mockedRequest).not.toHaveBeenCalled();
   });
 
-  it('B 站无结果时先走腾讯源，腾讯命中就不再请求后续源', async () => {
+  it('并行组：B 站挂了、腾讯有货时采用腾讯，之后的兜底源一个都不请求', async () => {
     const urls: string[] = [];
     route((url) => {
       urls.push(url);
@@ -192,15 +226,85 @@ describe('danmakuService 回退链（AC-126）', () => {
     });
 
     // 集号 2：避开上一个用例写入同一缓存键
-    const result = await danmakuService.match('庆余年', 2019, 2);
+    const { match: result } = await danmakuService.match('庆余年', 2019, 2);
 
     expect(result).not.toBeNull();
     expect(result!.provider).toBe('tencent');
     expect(result!.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
     expect(result!.comments[0]).toEqual({ time: 0, mode: 'scroll', color: 0xffffff, text: '腾讯弹幕0' });
-    // B 站 1 跳 + 腾讯 4 跳，命中即停
-    expect(urls).toHaveLength(5);
+    // 芒果/爱奇艺与腾讯同轮发起（串行时它们排在腾讯四跳之后，白等一次腾讯的往返）
+    expect(urls.some((url) => host(url, 'mobileso.bz.mgtv.com'))).toBe(true);
+    expect(urls.some((url) => host(url, 'mesh.if.iqiyi.com'))).toBe(true);
+    // 命中即停的仍是「未进入串行兜底」：乐视/优酷/两个聚合源都没被打扰
+    expect(urls.some((url) => url.includes('search.youku.com'))).toBe(false);
     expect(urls.some((url) => url.includes('dandanplay'))).toBe(false);
+  });
+
+  it('实时播放一轮里同时有多个源在途（P1-①-4 的并行口径）', async () => {
+    expect(await peakConcurrency(() => danmakuService.match('并行口径剧', 2024, 20))).toBeGreaterThan(1);
+  });
+
+  it('预取保持串行：批量预取不许把并发打进场源风控区', async () => {
+    expect(await peakConcurrency(() => danmakuService.prefetch('串行预取剧', 2024, 21))).toBe(1);
+  });
+
+  it('并行组预算到期：没答完的源记 timeout，答完了的照旧兜底', async () => {
+    vi.useFakeTimers();
+    // 三个源吊着不回（今天的「腾讯单源超时」就是这个形态），第四个按时说「没有」
+    const hung = new Promise<never>(() => {});
+    mockedRequest.mockImplementation(((url: string) => {
+      const target = urlHost(url);
+      if (['api.bilibili.com', 'pbaccess.video.qq.com', 'mobileso.bz.mgtv.com'].includes(target)) return hung;
+      return NO_MATCH[target] ?? {};
+    }) as never);
+
+    const pending = danmakuService.match('挂住的剧', 2024, 22);
+    await vi.advanceTimersByTimeAsync(12_000);
+    const result = await pending;
+    vi.useRealTimers();
+
+    const timedOut = result.attempts.filter((a) => a.outcome === 'timeout').map((a) => a.provider);
+    expect(timedOut).toEqual(expect.arrayContaining(['bilibili', 'tencent', 'mgtv']));
+    // 爱奇艺按时答了「没有」：超时不许盖过「源说没有」，否则「没这条剧」被念成「网络不行」
+    expect(result.missReason).toBe('no_result');
+  });
+
+  it('全场都没能答完时，主因是 timeout 而不是「源挂了」', async () => {
+    vi.useFakeTimers();
+    const HUNG = ['api.bilibili.com', 'pbaccess.video.qq.com', 'mobileso.bz.mgtv.com', 'mesh.if.iqiyi.com'];
+    mockedRequest.mockImplementation(((url: string) => {
+      // 并行组吊着不回，兜底段直接报错：两种「没结果」并存时，提示要说的是「超时」这件事
+      const target = urlHost(url);
+      return HUNG.includes(target) ? new Promise<never>(() => {}) : Promise.reject(new Error('源挂了'));
+    }) as never);
+
+    const pending = danmakuService.match('全场挂住的剧', 2024, 23);
+    await vi.advanceTimersByTimeAsync(12_000);
+    const result = await pending;
+    vi.useRealTimers();
+
+    expect(result.missReason).toBe('timeout');
+    expect(result.attempts.filter((a) => a.outcome === 'timeout')).toHaveLength(4);
+  });
+
+  it('重新匹配本集：先作废缓存再问一遍，而不是把同一条端回来', async () => {
+    route((url) => {
+      if (url.includes('/api/v2/match')) {
+        return { success: true, isMatched: true, matches: [{ episodeId: 99, animeTitle: '重新匹配剧', episodeTitle: '第40集', shift: 0 }] };
+      }
+      if (url.includes('/api/v2/comment/')) {
+        return { count: biliItems().length, comments: biliItems() };
+      }
+      return undefined;
+    });
+
+    expect((await danmakuService.match('重新匹配剧', 2024, 40)).via).toBe('provider');
+    // 不清缓存的「重试」确实只是重试个开头：命中过的这条会被原样取回，源一个都不问
+    expect((await danmakuService.match('重新匹配剧', 2024, 40)).via).toBe('cache');
+
+    const cleared = await danmakuService.rematch('重新匹配剧', 2024, 40);
+    expect(cleared.via).toBe('provider');
+    expect(cleared.match!.provider).toBe('dandanplay');
   });
 
   it('导入本地 xml 直写本集缓存：之后的 match 命中它，不再发请求', async () => {
@@ -215,12 +319,14 @@ describe('danmakuService 回退链（AC-126）', () => {
     );
     expect(count).toBe(1);
 
-    const match = await danmakuService.match('只有本地弹幕的剧', 2024, 2);
+    const { match, via } = await danmakuService.match('只有本地弹幕的剧', 2024, 2);
+    expect(via).toBe('cache');
     expect(match?.provider).toBe('local-xml');
     expect(match?.comments[0]?.text).toBe('本地弹幕');
   });
 
   it('解析不出弹幕的文件返回 0 条，不写坏缓存', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const count = await danmakuService.importLocalXml(
       '无法解析的剧',
       2024,
@@ -228,9 +334,17 @@ describe('danmakuService 回退链（AC-126）', () => {
       new File(['根本不是 xml'], 'a.xml', { type: 'text/xml' }),
     );
     expect(count).toBe(0);
+    // 导入失败当场留一行：否则界面只说「没有解析出弹幕」，事后无从知道是格式还是编码
+    expect(warn).toHaveBeenCalledWith(
+      '导入的本地弹幕 XML 解析不出条目',
+      expect.objectContaining({ title: '无法解析的剧', episode: 3 }),
+    );
+    warn.mockRestore();
 
     route(() => undefined);
-    expect(await danmakuService.match('无法解析的剧', 2024, 3)).toBeNull();
+    const miss = await danmakuService.match('无法解析的剧', 2024, 3);
+    expect(miss.match).toBeNull();
+    expect(miss.missReason).toBe('no_result');
   });
 
   it('远端题名与查询片名不符时不采用（防串片）', async () => {
@@ -247,7 +361,14 @@ describe('danmakuService 回退链（AC-126）', () => {
 
     const result = await danmakuService.match('伪装者', 2015, 1);
 
-    expect(result).toBeNull();
+    expect(result.match).toBeNull();
+    // 拦下疑似串片必须说得出是被谁拦的、拦成了什么题名
+    expect(result.missReason).toBe('title_mismatch');
+    expect(result.attempts.filter((a) => a.outcome === 'title_mismatch')).toHaveLength(1);
+    expect(result.attempts.find((a) => a.provider === 'dandanplay')).toMatchObject({
+      outcome: 'title_mismatch',
+      matchedTitle: '完全无关的片',
+    });
   });
 
   it('命中题名带季号而查询没有时判为串片（士兵突击 ↔ 士兵突击 第2季）', async () => {
@@ -262,7 +383,9 @@ describe('danmakuService 回退链（AC-126）', () => {
       return undefined;
     });
 
-    expect(await danmakuService.match('士兵突击', 2013, 1)).toBeNull();
+    const miss = await danmakuService.match('士兵突击', 2013, 1);
+    expect(miss.match).toBeNull();
+    expect(miss.missReason).toBe('title_mismatch');
   });
 
   it('查询自带季号时，命中同季仍采用', async () => {
@@ -278,7 +401,7 @@ describe('danmakuService 回退链（AC-126）', () => {
     });
 
     const result = await danmakuService.match('士兵突击 第2季', 2013, 1);
-    expect(result?.provider).toBe('dandanplay');
+    expect(result.match?.provider).toBe('dandanplay');
   });
 
   it('整集条数低于门槛视为未命中：继续回退且不写缓存', async () => {
@@ -293,13 +416,19 @@ describe('danmakuService 回退链（AC-126）', () => {
       return undefined;
     });
 
-    expect(await danmakuService.match('残料剧', 2024, 1)).toBeNull();
+    const first = await danmakuService.match('残料剧', 2024, 1);
+    expect(first.match).toBeNull();
+    expect(first.missReason).toBe('below_threshold');
+    expect(first.attempts.find((a) => a.provider === 'dandanplay')).toMatchObject({
+      outcome: 'below_threshold',
+      count: 2,
+    });
     // 同一套接线只改条数就能命中，证明拦下来的是门槛而不是用例写错了；
     // 且门槛不过不能落缓存——否则这里会取到先前那 2 条。
     comments = biliItems();
     const second = await danmakuService.match('残料剧', 2024, 1);
-    expect(second?.provider).toBe('dandanplay');
-    expect(second?.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
+    expect(second.match?.provider).toBe('dandanplay');
+    expect(second.match?.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
   });
 
   it('命中时留一条 info 日志（源 + 题名 + 集号 + 条数 + 偏移）', async () => {
@@ -329,12 +458,63 @@ describe('danmakuService 回退链（AC-126）', () => {
     info.mockRestore();
   });
 
+  it('未命中留一行 warn：主因 + 每一跳的结局（不必重跑也知道卡在哪）', async () => {
+    mockedRequest.mockRejectedValue(new Error('network down'));
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const result = await danmakuService.match('查无此剧', 2024, 7);
+
+    expect(result.match).toBeNull();
+    expect(result.missReason).toBe('failed');
+    expect(warn).toHaveBeenCalledWith(
+      '弹幕未命中',
+      expect.objectContaining({
+        title: '查无此剧',
+        episode: 7,
+        scene: 'playback',
+        reason: 'failed',
+        localXmlTried: false,
+      }),
+    );
+    const line = warn.mock.calls.find((c) => c[0] === '弹幕未命中')?.[1] as unknown as {
+      attempts: string;
+      detail: string;
+    };
+    expect(line.attempts).toContain('bilibili:failed');
+    expect(line.attempts).toContain('danmu-api:unavailable');
+    expect(line.detail).toContain('network down');
+    warn.mockRestore();
+  });
+
   it('全失败落本地 xml', async () => {
     mockedRequest.mockRejectedValue(new Error('network down'));
     const result = await danmakuService.match('棋魂', null, 1, () => BILI_XML);
-    expect(result).not.toBeNull();
-    expect(result!.provider).toBe('local-xml');
-    expect(result!.comments.length).toBe(3);
+    expect(result.via).toBe('local-xml');
+    expect(result.match).not.toBeNull();
+    expect(result.match!.provider).toBe('local-xml');
+    expect(result.match!.comments.length).toBe(3);
+  });
+
+  it('本地 xml 也解析不出时记成 local-xml:failed，主因仍是源侧结局', async () => {
+    route(() => undefined);
+    const result = await danmakuService.match('根本没有弹幕的剧', 2024, 9, () => '<html>不是 xml</html>');
+    expect(result.match).toBeNull();
+    expect(result.missReason).toBe('no_result');
+    expect(result.attempts.at(-1)).toMatchObject({ provider: 'local-xml', outcome: 'failed' });
+  });
+
+  it('每个主因都有界面提示（新增主因不会没有话说）', () => {
+    const reasons = Object.keys(DANMAKU_MISS_GUIDANCE) as DanmakuMissReason[];
+    expect(reasons.sort()).toEqual(
+      ['all_unavailable', 'below_threshold', 'failed', 'no_result', 'timeout', 'title_mismatch'].sort(),
+    );
+    for (const reason of reasons) {
+      expect(DANMAKU_MISS_GUIDANCE[reason].text.length).toBeGreaterThan(0);
+      // 顶栏那一格也要有话说：只给整句提示，读数栏仍会停在「开」
+      expect(DANMAKU_CHIP_MISS[reason].length).toBeGreaterThan(0);
+    }
+    // 门槛拦下要给人数：只说「没有弹幕」会把「有但太少」念成「源不行」
+    expect(DANMAKU_MISS_GUIDANCE.below_threshold.text).toContain(String(DANMAKU_MIN_COMMENTS));
   });
 
   it('dedupe：同文本 ±1s 合并', () => {

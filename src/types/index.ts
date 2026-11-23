@@ -55,12 +55,32 @@ export type ErrorCode =
   | 'E_CANCELED'
   | 'E_KEYWORD_IGNORED';
 
+/**
+ * OPT-26（P0-②-1）：`E_UNSUPPORTED_FORMAT` 的真实成因。
+ *
+ * 这个码在代码里有 4 个完全不同的来源：爬虫返回磁力链接、源给的是 DASH(`.mpd`) 清单、
+ * 地址协议根本不是 http、`<video>` 报 `MEDIA_ERR_SRC_NOT_SUPPORTED`（格式/编码/域名不支持）。
+ * 只有第一种该给「用外部应用打开」，但下游此前一律按码分类，于是后三种都套上了种子的文案——
+ * 真机那条「格式不支持 + 本 App 不做种子下载」（明细里根本没有 magnet:）就是这么来的。
+ * 码不够用时必须补子原因，而不是再造一个码：文案、动作、外部出口三样都按成因分档。
+ */
+export type UnsupportedFormatReason = 'magnet_link' | 'dash_manifest' | 'protocol_unsupported' | 'player_capability';
+
 export interface AppErrorShape {
   code: ErrorCode;
   message: string;
   detail: string | null;
   retryable: boolean;
   httpStatus: number | null;
+  /** OPT-26（P0-②-1）：同码不同成因时带上；只有 `E_UNSUPPORTED_FORMAT` 这一族在用 */
+  reason?: UnsupportedFormatReason | null;
+  /**
+   * OPT-26（P0-③-2）：闸门多久后放行（毫秒），来自 `SpiderAdapter` 的真实占用读数。
+   *
+   * 只在 `E_SOURCE_BUSY` 上有值。界面对它做两件事：倒计时期间禁用重试按钮、归零时自动重试一次。
+   * 「源正忙」此前是一句没有出口的话——用户只能反复点，而每次点只会挤同一个爬虫实例。
+   */
+  retryAfterMs?: number | null;
 }
 
 /* ---------- 源 ---------- */
@@ -319,6 +339,46 @@ export interface GetDetailParams {
   source: Source;
   sourceItemId: string;
   signal?: AbortSignal;
+  /**
+   * P2-⑪：发起场景。后台探活（可播性、体检第二轮）传 `probe`，爬虫闸门就会让它给
+   * 在飞的点播让路；缺省 `foreground` 与点播/详情页同一条路。
+   */
+  origin?: ResolvePlayOrigin;
+}
+
+/**
+ * OPT-26（P0-③-1）：一次取址是谁发起的。
+ *
+ * `probe` 是详情页后台线路探测——它 8 秒拿不到结果就丢，用户点播放还会立刻把它打断。
+ * 这条信息决定爬虫闸门怎么记那笔未完成调用（详见 `SpiderAdapter.busyKindOf`）：
+ * 探测被打断留下的调用一定会自己落定，等它就有空位；按 30 秒保守锁住源，
+ * 等于用户每次「探测没等到 → 点播放」都自锁半分钟。
+ */
+export type ResolvePlayOrigin = 'probe' | 'foreground';
+
+/**
+ * OPT-26（P0-③-2）：适配器报告的原生占用状态。
+ *
+ * `kind` 与 `SpiderAdapter.NativeBusyKind` 同一口径（那边是私有实现，这里只暴露界面需要的档位）：
+ * - `busy`：另一个调用还在跑，排队等得到空位；
+ * - `zombie`：超时/被放弃的调用仍在原生线程里，等不到确定时刻；
+ * - `probe_abort`：探测被点播放打断，一定会自己落定（不会登记闸门，故界面侧 `retryAfterMs` 为 0）；
+ * - `null`：此刻没有登记到的占用。
+ *
+ * `retryAfterMs` 只在闸门真实存在时非 0；界面用它做倒计时与到点自动重试，不许自己猜秒数。
+ */
+export type SourceBusyKind = 'busy' | 'zombie' | 'probe_abort';
+
+export interface SourceBusyState {
+  inFlightMs: number;
+  queueDepth: number;
+  kind: SourceBusyKind | null;
+  retryAfterMs: number;
+  /**
+   * P2-⑪：这一源上此刻是否压着前台调用（含 JS 侧已放弃、原生仍在跑的那条）。
+   * 后台让路的全部依据就是这个读数：为真时探测不开口，日志里也能看出"排不上是因为有人在播"。
+   */
+  foregroundInFlight?: boolean;
 }
 
 export interface ResolvePlayParams {
@@ -330,6 +390,8 @@ export interface ResolvePlayParams {
   /** P0-4: 剧集序号（用于 id 匹配失败时的兜底定位） */
   episodeNumber?: number;
   signal?: AbortSignal;
+  /** OPT-26（P0-③-1）：缺省按 `foreground`（用户请求）处理 */
+  origin?: ResolvePlayOrigin;
 }
 
 export interface SearchResult {
@@ -1188,8 +1250,12 @@ export interface SourceAdapter {
    * `inFlightMs` = 已投进原生、尚未落定的调用还剩多久（含冷却窗口剩余）；
    * `queueDepth` = JS 侧对该源已发出的在飞调用数。原生线程池的队列长度在 JS 侧不可观测，
    * 所以这里给的是"能实测的那一半"，命名上刻意不叫 poolQueue。未实现按 0 处理。
+   *
+   * OPT-26（P0-③-2）新增两档：`kind` 说清占用是哪一种成因（排队等得到 / 僵尸等不到 /
+   * 探测被打断 / 没有占用），`retryAfterMs` 是界面上倒计时的唯一来源——
+   * 「该源正忙」不能是一句没有出口的话。
    */
-  busyStateOf?(sourceId: string): { inFlightMs: number; queueDepth: number };
+  busyStateOf?(sourceId: string): SourceBusyState;
   testConnection(source: Source, signal?: AbortSignal): Promise<ConnectionResult>;
   /** CHG-15：后台预热（加载 jar/规则拿句柄），实现方自行吞错、失败静默 */
   warmup?(source: Source): Promise<void>;

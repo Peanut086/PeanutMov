@@ -111,5 +111,14 @@ export const STALL_CHECK_INTERVAL_MS = 1000;
 export const STALL_STUCK_MS = 8000;
 /** 推进下限：小于引擎轮询粒度（1s）与 seek 落关键帧误差的合理解释范围 */
 export const STALL_MIN_ADVANCE_SEC = 0.5;
+/**
+ * OPT-26（P2-⑫）：网络流停滞判定窗口，比本地那一档宽两倍多。
+ *
+ * 本地文件的停滞只有"时间轴坏了"一种解释，8 秒足够；网络流还要容纳弱网缓冲——
+ * 判得太急，1Mbps 的正常观看会被当成断流去重新取址。25 秒的口径是：
+ * 位置和缓冲**同时**不动 25 秒，已经不是"网慢"（喂不饱时缓冲仍在涨），
+ * 而是这条地址不再供数据了——签名过期、源侧断流都是这个形态。
+ */
+export const NET_STALL_STUCK_MS = 25_000;
 /** FIX-PLAY-C2：本地播放解码错误时，容错重播向前跳开的秒数（坏件通常局部，跳过可续看） */
 export const LOCAL_DECODE_SKIP_SEC = 10;

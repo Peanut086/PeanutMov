@@ -443,6 +443,27 @@ export function cancelFailoverRound(reason: FailoverTerminalReason = 'cancelled'
   current?.finish(reason);
 }
 
+/** 忙态原地等的上限（毫秒）：超过它，这一集已经被拖到「看起来像播放坏了」 */
+export const BUSY_WAIT_MAX_MS = 8_000;
+
+/**
+ * P1-③-7：「该源正忙」时这一轮该怎么办。
+ *
+ * 忙态不是线路坏了：同一个源的其它线路共用那个还压着上一个请求的爬虫实例，换线只是白撞一次闸门。
+ * 于是冷却在 `BUSY_WAIT_MAX_MS` 以内就原地等闸门放行（错误面板的倒计时到点会自动重试一次），
+ * 超过它就不干等，跳过换线直接换源；非忙态按常规兜底。
+ *
+ * `retryAfterMs` 只有一个来源：`SpiderAdapter.busyStateOf` 换算的真实占用剩余，不许界面自己猜。
+ */
+export function busyFailoverPlan(
+  code: string,
+  retryAfterMs: number | null | undefined,
+): "not-busy" | "wait" | "switch-source" {
+  if (code !== "E_SOURCE_BUSY") return "not-busy";
+  const remain = Math.max(0, retryAfterMs ?? 0);
+  return remain <= BUSY_WAIT_MAX_MS ? "wait" : "switch-source";
+}
+
 /** 测试辅助：清掉模块级状态 */
 export function __resetFailoverSession(): void {
   current?.finish('cancelled');

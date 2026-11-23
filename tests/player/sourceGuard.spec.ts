@@ -12,12 +12,12 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   assertSourceSupported,
   containsSampleAes,
-  DASH_UNSUPPORTED_MESSAGE,
   detectUnsupportedSource,
   isDashUrl,
   isM3u8Url,
   preflightManifest,
 } from '@/player/sourceGuard';
+import { DASH_UNSUPPORTED_MESSAGE } from '@/shared/sourceFailure';
 import { AppError } from '@/shared/errors';
 
 const SAMPLE_AES_MANIFEST = [
@@ -42,6 +42,8 @@ describe('sourceGuard.detectUnsupportedSource（AC-40）', () => {
     expect(error).toBeInstanceOf(AppError);
     expect(error?.code).toBe('E_UNSUPPORTED_FORMAT');
     expect(error?.message).toBe(DASH_UNSUPPORTED_MESSAGE);
+    // OPT-26（P0-②-1）：抛错处就带子原因，分类不再靠文案猜——DASH 不能被念成「种子」
+    expect(error?.reason).toBe('dash_manifest');
     expect(error?.retryable).toBe(false);
   });
 

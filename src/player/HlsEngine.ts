@@ -9,6 +9,7 @@
  */
 import type { AppErrorShape, PlaybackSource, ResizeMode } from '@/types';
 
+import { logger } from '@/shared/logger';
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 import { VideoEngine } from '@/player/VideoEngine';
 import { NETWORK_RETRY_TIMES } from '@/player/constants';
@@ -202,11 +203,19 @@ export class HlsEngine implements PlayableEngine {
 
         if (info.type === 'networkError' && this.networkRetries < NETWORK_RETRY_TIMES) {
           this.networkRetries += 1;
+          logger.warn('hls.js 网络错误，重新拉流', {
+            attempt: this.networkRetries,
+            details: info.details ?? null,
+          });
           hls.startLoad();
           return;
         }
         if (info.type === 'mediaError' && this.mediaRetries < NETWORK_RETRY_TIMES) {
           this.mediaRetries += 1;
+          logger.warn('hls.js 解码错误，恢复媒体缓冲', {
+            attempt: this.mediaRetries,
+            details: info.details ?? null,
+          });
           hls.recoverMediaError();
           return;
         }
@@ -218,6 +227,15 @@ export class HlsEngine implements PlayableEngine {
           retryable: true,
           httpStatus: null,
         };
+        // OPT-26（P0-②-2）：hls.js 的 type/details 比映射后的文案具体得多（manifestParseError、
+        // fragLoadingTimeOut…），恢复用尽后必须留在日志里，否则一轮失败只剩一句「检查网络」。
+        logger.error('hls.js 致命错误，恢复已用尽', {
+          type: info.type ?? null,
+          details: info.details ?? null,
+          code: error.code,
+          networkRetries: this.networkRetries,
+          mediaRetries: this.mediaRetries,
+        });
         settle(false, error.message);
         this.events.onError(error);
       });

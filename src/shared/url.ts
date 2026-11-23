@@ -166,10 +166,31 @@ const SIGNATURE_CHARS = /^[A-Za-z0-9%._+/=-]{8,}$/;
  */
 const SHORT_SIGNED_PARAM = /([?&](?:s|do)=)([^&#\s]{1,256})/gi;
 
+/**
+ * 纯 `%XX` 串是**编码后的文字**（中文搜索词、中文片名），不是签名。
+ *
+ * 少了这一格，`keyword=%E5%A3%AB%E5%85%B5...` 会因为字符集与「字母+数字」都命中而被盖掉——
+ * 那正是 P1-5 立规矩要保住的那条线索（哪个词发到了哪个源）。
+ * 真签名偶尔带 `%2F`、`%3D`，但都是混在十六进制/基六十四串里，不会整串都是转义。
+ */
+const PURE_ENCODED_TEXT = /^(?:%[0-9A-Fa-f]{2})+$/;
+
 function isSignatureShape(value: string): boolean {
+  if (PURE_ENCODED_TEXT.test(value)) return false;
   if (!SIGNATURE_CHARS.test(value)) return false;
   return /[0-9]/.test(value) && /[A-Za-z]/.test(value);
 }
+
+/**
+ * 带凭据语素的参数名（`auth_key`、`wsSecret`、`X-Amz-Signature`、`q-signature`、
+ * `OSSAccessKeyId`……）：按**名 + 形**双重判定才打码。
+ *
+ * 只按名字打不行——`keyword=` 里含 `key`，采集站的搜索词会被一起盖掉（真机日志里
+ * 「哪个词发到哪个源」是请求侧唯一线索）；只按形状打也不行——路径型 hash、分片序号
+ * 都长得像签名。两个条件同时成立才盖，与 `?s=` 同一口径。
+ */
+const NAMED_SECRET_PARAM =
+  /([?&][A-Za-z0-9_.-]*(?:token|secret|signature|sign|auth|pass|pwd|key)[A-Za-z0-9_.-]*=)([^&#\s]{1,512})/gi;
 
 /** 去除 URL 中的敏感查询参数（日志用，技术方案 13 章） */
 export function redactUrl(url: string): string {
@@ -178,7 +199,11 @@ export function redactUrl(url: string): string {
     /([?&](?:token|api_key|apikey|password|pwd|pw|auth|sign|key)=)[^&#]*/gi,
     '$1***',
   );
-  return named.replace(SHORT_SIGNED_PARAM, (match, head: string, value: string) =>
-    isSignatureShape(value) ? `${head}***` : match,
-  );
+  return named
+    .replace(SHORT_SIGNED_PARAM, (match, head: string, value: string) =>
+      isSignatureShape(value) ? `${head}***` : match,
+    )
+    .replace(NAMED_SECRET_PARAM, (match, head: string, value: string) =>
+      isSignatureShape(value) ? `${head}***` : match,
+    );
 }

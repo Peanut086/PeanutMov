@@ -497,6 +497,19 @@ async function ensurePlayable(ep: Episode): Promise<boolean> {
       toast.error('当前源数据异常，建议切换其他源');
       return false;
     }
+    /*
+     * OPT-26（P0-③-2）：源忙不再放行跳转。
+     *
+     * 旧口径把它归进「其它错误」直接 `return true`，于是这一次点击换来一趟页面跳转 +
+     * 播放页再解析一次——撞的还是同一个还压着上一条请求的爬虫实例，等待被翻倍计，
+     * 用户看到的是一个刚进来的错误页。留在详情页、按真实闸门给秒数，成本最低：
+     * 秒数来自 `retryAfterMs`（探测被这次点击打断时是 0，那时说的是"稍等片刻"而不是"半分钟"）。
+     */
+    if (err.code === 'E_SOURCE_BUSY') {
+      const remainSec = Math.ceil((err.retryAfterMs ?? 0) / 1000);
+      toast.info(remainSec > 0 ? `该源正忙，约 ${remainSec} 秒后可重试` : '该源正忙，请稍候再点');
+      return false;
+    }
     if (err.code === 'E_NETDISK_LOGIN_REQUIRED') {
       // P3-2 + FIX-A：先本地自检，区分「权限缺失」「cookie 文件异常」「真未登录」
       try {

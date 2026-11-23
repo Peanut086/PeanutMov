@@ -78,8 +78,16 @@ import { useSourceStore } from "@/stores/sourceStore";
 import { castService } from "@/services/castService";
 import { lineHealthService, lineKey } from "@/services/lineHealthService";
 import { rankLines } from "@/services/lineRanking";
+import {
+  formatPlayTraceText,
+  playTraceService,
+  sharePlayTraceText,
+  type TraceValue,
+} from "@/services/playTraceService";
+import { playUrlLifetimeService } from "@/services/playUrlLifetimeService";
 import { skipMarkService } from "@/services/skipMarkService";
 import { useBackButton } from "@/composables/useBackButton";
+import { useBusyRetryGate } from "@/composables/useBusyRetryGate";
 import { useDebounce } from "@/composables/useDebounce";
 import { usePlayerController } from "@/composables/usePlayerController";
 import { useSeekThumbnails } from "@/composables/useSeekThumbnails";
@@ -103,7 +111,13 @@ import {
   canShowGestureHelp,
   markGestureHelpShown,
 } from "@/player/gestureHelpPolicy";
-import { danmakuService } from "@/services/danmakuService";
+import {
+  DANMAKU_CHIP_MISS,
+  DANMAKU_MISS_GUIDANCE,
+  danmakuService,
+  type DanmakuMatchResult,
+  type DanmakuMissReason,
+} from "@/services/danmakuService";
 import DanmakuSettingsSheet from "@/components/player/DanmakuSettingsSheet.vue";
 import DanmakuStylePanel from "@/components/player/DanmakuStylePanel.vue";
 import DanmakuActions from "@/components/player/DanmakuActions.vue";
@@ -121,6 +135,8 @@ import {
   activeFailoverRound,
   armFailoverNavigation,
   beginLoadAttempt,
+  BUSY_WAIT_MAX_MS,
+  busyFailoverPlan,
   cancelFailoverRound,
   failoverAttemptKey,
   hasPendingFailoverNavigation,
@@ -675,6 +691,7 @@ const {
   audioOnly,
   backgroundPlayback,
   remoteEpisodeTarget,
+  stallSignal,
   acknowledgeRemoteEpisode,
   sleepTimer,
   setAudioOnly,
@@ -1200,6 +1217,93 @@ async function runLocalFileScan(): Promise<void> {
   }
 }
 
+/* ---------- OPT-26（P2-⑬）：一次播放决策链的一键导出诊断包 ---------- */
+
+/** 地址在诊断包里只留 host：换 CDN 与换源一样是常见成因，token 不能跟着包走出去 */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "无法解析";
+  }
+}
+
+function secondsOf(ms: number | null): number | null {
+  return ms === null ? null : Math.round(ms / 1000);
+}
+
+function describeDanmakuOutcome(outcome: DanmakuLoadOutcome): Record<string, TraceValue> {
+  if (outcome.kind === "shown") return { count: outcome.count };
+  if (outcome.kind === "miss")
+    return {
+      reason: outcome.reason,
+      guidance: DANMAKU_MISS_GUIDANCE[outcome.reason].text,
+    };
+  return {};
+}
+
+/** 引擎选定/回退是决策链上最容易「悄悄换了」的一环，切换必须留痕 */
+watch(
+  () => player.engineKind,
+  (kind, prev) => {
+    if (kind === null) return;
+    playTraceService.note(
+      "engine",
+      prev === null || prev === undefined
+        ? `引擎选定：${kind}`
+        : `引擎切换：${prev} → ${kind}`,
+      {
+        preferNative: nativeEngineEnabled.value || forceNativeEngine.value,
+        host: currentPlayback.value ? hostOf(currentPlayback.value.url) : null,
+      },
+    );
+  },
+);
+
+const playTraceExporting = ref(false);
+
+/**
+ * 生成并交出诊断包。
+ *
+ * 读数在这一层组装是刻意的：引擎状态、地址年龄、寿命学习结果都只有播放页同时拿得到，
+ * 而决策链里已经记下了每一步的判断依据，这里只补「此刻的现场」。
+ */
+async function exportPlayTrace(): Promise<void> {
+  if (playTraceExporting.value) return;
+  playTraceExporting.value = true;
+  try {
+    const playback = currentPlayback.value;
+    const lifetime = playback ? playUrlLifetimeService.entryOf(playback.url) : null;
+    const report = playTraceService.buildReport({
+      readings: {
+        引擎: player.engineKind ?? "未起播",
+        控制器状态: playerCtl.controller.value?.getPlayerState() ?? null,
+        位置: `${Math.round(player.currentTime)}s / ${Math.round(player.duration)}s`,
+        线路: currentLine.value?.name ?? null,
+        原生引擎偏好: nativeEngineEnabled.value || forceNativeEngine.value ? "开" : "关",
+        地址: playback ? `${hostOf(playback.url)}（${playback.format}）` : "本轮未取到",
+        地址已发出: playback
+          ? `${Math.round((playUrlLifetimeService.addressAgeMs(playback.url) ?? 0) / 1000)}s`
+          : "N/A",
+        "该 host 的地址寿命": lifetime
+          ? `样本 ${lifetime.staleSamples} 次，最短 ${Math.round(lifetime.staleAgeMs / 1000)}s 失效`
+          : "样本不足，未参与判定",
+        学到的缓存下界: secondsOf(playback ? playUrlLifetimeService.ttlOf(playback.url) : null),
+        弹幕: danmakuChipReading.value,
+      },
+    });
+    const result = await sharePlayTraceText(formatPlayTraceText(report));
+    if (result === "shared") toast.success("诊断包已生成，可直接发送");
+    else if (result === "copied") toast.success("诊断包已复制到剪贴板");
+    else toast.error("诊断包生成失败：分享与剪贴板都不可用");
+  } catch (e) {
+    // 组装失败是真实故障（读数取用炸了），不能伪装成"已导出"
+    toast.error(toErrorShape(e).message || "诊断包生成失败");
+  } finally {
+    playTraceExporting.value = false;
+  }
+}
+
 watch(currentPlayback, () => {
   localScan.value = null;
 });
@@ -1420,10 +1524,29 @@ async function resolveAndLoad(): Promise<boolean> {
   localIdentity.value = null;
   const it = item.value;
   const ep = currentEpisode.value;
+  /*
+   * OPT-26（P2-⑬）：决策链窗口按「条目 + 集号」归并。兜底换线、停滞重取址都会再跑一遍
+   * 这里，但那是同一次决策；换集/换条目才是新的一轮，前面的事件必须清空。
+   */
+  if (it) {
+    playTraceService.beginAttempt({
+      mediaId: it.id,
+      title: it.title,
+      episodeNumber: ep?.number ?? null,
+      episodeId: ep?.id ?? null,
+      lineId: currentLineId.value,
+      lineName: currentLine.value?.name ?? null,
+    });
+  }
   if (targetEpisodeMissing.value) {
     // P1-1：目标集在当前线路定位不到——不起播，把选择权交回用户
     logger.warn("目标集在当前线路无法定位，已拦在起播前", {
       mediaId: mediaId.value,
+      episodeId: episodeIdParam.value,
+      lineId: currentLineId.value,
+      episodeCount: episodes.value.length,
+    });
+    playTraceService.note("attempt", "目标集在当前线路定位不到，已拦在起播前", {
       episodeId: episodeIdParam.value,
       lineId: currentLineId.value,
       episodeCount: episodes.value.length,
@@ -1449,6 +1572,13 @@ async function resolveAndLoad(): Promise<boolean> {
     "resolveAndLoad",
     userIntent,
   );
+  playTraceService.note("attempt", userIntent ? "用户点播本集" : "自动起播本集", {
+    line: currentLine.value?.name ?? null,
+    episode: ep.number,
+    restart: restart.value,
+    deepLinkSec: tParamSec.value,
+    preferNative: nativeEngineEnabled.value || forceNativeEngine.value,
+  });
   const resolveStartTime = Date.now();
   try {
     const playback = await library.resolvePlay(
@@ -1462,6 +1592,16 @@ async function resolveAndLoad(): Promise<boolean> {
     if (!pageAlive || epoch !== loadEpoch) return false;
     setStage("connecting");
     currentPlayback.value = prepared;
+    // OPT-26（P2-⑫）：从这一刻起计地址年龄——寿命学习判的是「这一条直链发给播放器后能撑多久」
+    playUrlLifetimeService.noteAddressIssued(prepared.url);
+    playTraceService.note("resolve", "地址已交给播放器", {
+      elapsedMs: Date.now() - resolveStartTime,
+      host: hostOf(prepared.url),
+      format: prepared.format,
+      isLocal: prepared.isLocal,
+      expiresAt: prepared.expiresAt === null ? "源侧未报" : null,
+      learnedTtlSec: secondsOf(playUrlLifetimeService.ttlOf(prepared.url)),
+    });
     const rec = history.progressOf(it.sourceId, it.id);
     let start = 0;
     if (!restart.value) {
@@ -2063,6 +2203,8 @@ const FAILOVER_ERROR_CODES = new Set([
   "E_NO_PLAY_URL",
   "E_UNSUPPORTED_FORMAT",
   "E_PARSE",
+  // P1-③-7：忙态也是「这条源此刻给不出地址」，值得兜底——但兜法与坏了不同，见 `runFailover`
+  "E_SOURCE_BUSY",
 ]);
 
 /** v1.8/CHG-26：错误码指向「源健康问题」时，错误面板给出去体检的入口 */
@@ -2096,6 +2238,16 @@ const loadErrorGuidance = computed(() =>
 /** 磁力地址：有值时给「用外部应用打开」，否则重试没有任何意义 */
 const loadErrorMagnet = computed(() => magnetUrlOf(loadErrorShape.value));
 
+/*
+ * OPT-26（P0-③-2）：解析失败里「该源正忙」不是坏了，是上一个请求还压在这个爬虫实例上。
+ * 页面级错误层的「重试」与 PlayerErrorPanel 共用同一个闸门口径（禁用 + 真实倒计时 +
+ * 到点自动重试一次），两处面板不许各猜一套秒数。
+ */
+const { remainMs: loadErrorGateMs, retryLabel: loadErrorRetryLabel } = useBusyRetryGate(
+  () => loadErrorShape.value,
+  () => void resolveAndLoad(),
+);
+
 /**
  * 黑屏兜底：用原生引擎（ExoPlayer）重试当前集。
  * 不写设置——只在本次页面会话内强制，退出重进恢复默认。
@@ -2114,6 +2266,23 @@ async function retryWithNativeEngine(): Promise<void> {
 function dismissNoVideo(): void {
   noVideoDismissed.value = true;
 }
+
+/**
+ * OPT-26（P1-②-3）：错误面板给不给「用原生引擎重试」。
+ *
+ * 两个条件缺一不可：
+ * 1. 结论得是"本机内核接不住"——`guidanceOf` 里只有 player_capability 这一档声明了
+ *    `retry-native` 动作（网络断、鉴权失效、种子地址换成原生引擎都没有用）；
+ * 2. 本轮确实没碰过原生引擎。口径取自 `PlayerController` 的引擎链：用户开着实验性原生、
+ *    本地文件（一律原生）、或内置失败后已自动降级过原生，都已经试过，再摆一次只会让用户
+ *    原地打转。黑屏兜底那个入口不判这条，是因为它出现在"还在播但没画面"的场景，
+ *    与"加载就失败"不是同一条链。
+ */
+const canRetryNative = computed(() => {
+  const err = player.error;
+  if (!err || !guidanceOf(err).actions.includes("retry-native")) return false;
+  return playerCtl.controller.value?.getNativeAttemptedInLastChain() !== true;
+});
 
 /** 外部应用打开（磁力交给下载器/播放器；失败给明确 Toast） */
 async function openExternalUrl(url: string): Promise<void> {
@@ -2339,6 +2508,31 @@ async function runFailover(
   }
   failoverRunning.value = true;
   try {
+    // P1-③-7：「该源正忙」不是这条线路坏了——同一个源的其它线路共用那个还压着上一个请求的爬虫实例，
+    // 换线只是白撞一次闸门。于是冷却在 `BUSY_WAIT_MAX_MS` 以内就原地等闸门（面板上的倒计时到点自动
+    // 重试一次，P0-③-2 已做成），超过它才跳过换线直接换源。两种都不消耗换线额度，
+    // 线路健康也不记 busy（`lineHealthService` 的 NON_LINE_FAILURE_CODES）。
+    // 判定口径在 `busyFailoverPlan`（换线与换源都读它），这里只负责落地。
+    const plan = busyFailoverPlan(error.code, error.retryAfterMs);
+    playTraceService.note("failover", `兜底链启动（${origin}：${error.code}）`, {
+      plan,
+      retryAfterMs: error.retryAfterMs ?? 0,
+      line: currentLine.value?.name ?? null,
+    });
+    if (plan === "wait") {
+      publishFailoverError(error, origin);
+      return;
+    }
+    const skipLines = plan === "switch-source";
+    if (plan !== "not-busy") {
+      // 忙态兜底是「等」还是「走」，决定这一集接下来 8 秒的行为，必须能在生产日志里复盘
+      logger.info("兜底链：源正忙", {
+        plan,
+        retryAfterMs: error.retryAfterMs ?? 0,
+        waitMaxMs: BUSY_WAIT_MAX_MS,
+        ...opened.snapshot(),
+      });
+    }
     // P1-1 + P0-2：只试"确实有正在播的这一集"的线路——否则换线"成功"等于悄悄换了集。
     // 集号以会话钉住的目标为准（当前集定位失败时仍不能拿首集当代号）。
     const it = item.value;
@@ -2352,9 +2546,20 @@ async function runFailover(
           buildKey: (line) => lineKey(it.sourceId, it.sourceItemId, line.name),
         })
       : lines.value;
-    const candidates = ranked
+    const candidates = (skipLines ? [] : ranked)
       .filter((l) => l.id !== currentLineId.value)
       .filter((l) => number === null || episodeOnLine(l.id, number) !== null);
+    // 「这一轮到底有几条线可选」是判断空转与否的第一现场，生产日志必须看得见
+    logger.info("兜底链：换线候选", {
+      ...opened.snapshot(),
+      origin,
+      errorCode: error.code,
+      skipLines,
+      fromLineId: currentLineId.value,
+      episodeNumber: number,
+      candidateCount: candidates.length,
+      candidateNames: candidates.map((l) => l.name),
+    });
 
     // ① 换线：额度与去重都由会话判定，超限/到点自动停
     for (const candidate of candidates) {
@@ -2369,6 +2574,16 @@ async function runFailover(
           targetEpisode?.id ?? "",
         ),
       );
+      logger.info("兜底链：换线尝试", {
+        ...round.snapshot(),
+        toLineId: candidate.id,
+        toLineName: candidate.name,
+        toEpisodeId: targetEpisode?.id ?? null,
+      });
+      playTraceService.note("failover", `换线尝试 → ${candidate.name}`, {
+        from: currentLine.value?.name ?? null,
+        episodeNumber: number,
+      });
       toast.info(`起播失败，自动切换到线路「${candidate.name}」…`);
       await switchLine(candidate.id, { auto: true });
       if (!pageAlive) return;
@@ -2379,8 +2594,18 @@ async function runFailover(
     const round = failoverHandle();
     if (round && round.allowSource()) {
       round.chargeSourceAttempt();
+      logger.info("兜底链：换源尝试", {
+        ...round.snapshot(),
+        origin,
+        errorCode: error.code,
+        skipLines,
+      });
       player.patch({ error: null });
-      toast.info("当前源无法播放，正在尝试其它来源…");
+      toast.info(
+        skipLines
+          ? "这个源还在忙（上一个请求没跑完），正在尝试其它来源…"
+          : "当前源无法播放，正在尝试其它来源…",
+      );
       const target = await lookupAlternateSource(round);
       if (!pageAlive) return;
       if (target) {
@@ -2425,6 +2650,19 @@ watch(
       }
       // P0-3：播放出错时失效缓存，避免重试/换线复用已过期的坏 URL
       library.invalidatePlayCache(mediaId.value);
+      /*
+       * OPT-26（P2-⑫）：播开过之后再断流/超时，这条地址当前的年龄就是一条寿命证据。
+       * 只认这两种码：解不了格式、源正忙之类与地址放久了无关。
+       */
+      const played = currentPlayback.value;
+      if (
+        played &&
+        !played.isLocal &&
+        player.currentTime > 0 &&
+        (error.code === "E_NETWORK" || error.code === "E_TIMEOUT")
+      ) {
+        playUrlLifetimeService.recordStale(played.url);
+      }
       // 批次1：记录线路失败（按错误分类）
       const line = currentLine.value;
       const it = item.value;
@@ -2434,6 +2672,13 @@ watch(
           error.code,
         );
       }
+      playTraceService.note("error", `引擎报错：${error.code}`, {
+        message: error.message,
+        engine: player.engineKind,
+        positionSec: Math.round(player.currentTime),
+        durationSec: Math.round(player.duration),
+        url: hostOf(currentPlayback.value?.url ?? ""),
+      });
       void runFailover(error, "player");
     } else {
       // 错误清除（重试/换集成功）：停滞出口跟着撤
@@ -2765,6 +3010,69 @@ function retryPanel(): void {
   void resolveAndLoad();
 }
 
+/**
+ * OPT-26（P2-⑫）：每集已用掉的自动恢复次数（换集归零）。
+ *
+ * 播放器层每次加载只报一次停滞，这里再叠一层上限：地址怎么换都救不了源侧真断流，
+ * 不能把「重新取址」变成无限重连。
+ */
+const stallRecoverRounds = ref(0);
+
+/**
+ * 在线流停滞 → 自动重新取址续播。
+ *
+ * 症状是「画面停住但没有任何报错」：签名直链过期后 ExoPlayer 只会一直说 buffering，
+ * WebView 连 waiting 都不发。用户此时唯一的办法是退出重进，而退出重进做的事正是
+ * 重新取址——这里把它提前自动做掉。动作必须放在播放页：解析服务、线路、进度写回
+ * 都在这一层，播放器层拿不到解析服务。
+ *
+ * 不抢兜底链：`failoverRunning` 或已有待跳转的换线/换源时让路，那时该由兜底决定。
+ */
+async function autoRecoverFromStall(positionSec: number): Promise<void> {
+  const playback = currentPlayback.value;
+  if (!playback || playback.isLocal || !pageAlive) return;
+  if (failoverRunning.value || hasPendingFailoverNavigation()) return;
+  if (stallRecoverRounds.value >= 2) {
+    logger.warn("在线流停滞，自动恢复额度已用尽", {
+      positionSec,
+      url: playback.url,
+    });
+    return;
+  }
+  stallRecoverRounds.value += 1;
+  playTraceService.note("stall", "在线流停滞，自动重新取址续播", {
+    positionSec: Math.round(positionSec),
+    round: stallRecoverRounds.value,
+    engine: player.engineKind,
+    addressAgeSec: Math.round(
+      (playUrlLifetimeService.addressAgeMs(playback.url) ?? 0) / 1000,
+    ),
+    learnedTtlSec: secondsOf(playUrlLifetimeService.ttlOf(playback.url)),
+  });
+  // 顺手把这次断供记成该 host 的地址寿命样本：下次起播前就该重新取址，而不是等画面停住
+  const addressAgeSec = playUrlLifetimeService.recordStale(playback.url);
+  logger.warn("在线流停滞，自动重新取址续播", {
+    positionSec,
+    engine: player.engineKind,
+    addressAgeSec,
+    url: playback.url,
+  });
+  ui.toast("播放中断，正在重新获取地址", "info", 2200);
+  // 先把位置写回历史：`resolveAndLoad` 的续播位取自历史记录，不 flush 就退回上一个写入点
+  await playerCtl.controller.value?.flushProgress();
+  library.invalidatePlayCache(mediaId.value);
+  // 自动恢复不是用户新意图：兜底预算要继续，不能借停滞把上一轮额度重置
+  const ok = await resolveAndLoad();
+  if (!ok || !pageAlive) return;
+  const ctl = playerCtl.controller.value;
+  // 历史续播位可能比停滞位置旧几秒，差得多就直接定位回停滞点
+  if (ctl && Math.abs(ctl.getState().currentTime - positionSec) > 2) ctl.seek(positionSec);
+}
+
+watch(stallSignal, (signal) => {
+  if (signal) void autoRecoverFromStall(signal.positionSec);
+});
+
 function onBackgroundContinue(): void {
   resumeFromBackground();
   void togglePlay();
@@ -2817,27 +3125,187 @@ const danmakuReady = computed(
     !pageLoading.value,
 );
 
-/** 按当前媒体/集号拉取弹幕（缓存命中离线可用；关闭开关不发请求） */
 /**
- * 加载本集弹幕。返回是否真的拿到了弹幕（0 条也算没拿到）——
- * 调用方据此给反馈，避免「点了弹幕按钮什么都不发生」。
+ * 弹幕加载结局。
+ *
+ * OPT-26（P0-①-2）：这里原来返回 boolean，于是「弹幕不显示」的四种互不相干的原因
+ * （没有任何可用源 / 源都没答上来 / 拦下了疑似串片 / 渲染层还没挂上）只能念同一句
+ * 「当前集没有匹配到弹幕」；`miss.reason` 直接取自 `danmakuService` 的主因口径，
+ * 提示语只在这一处拼，别再在模板里写第二套。
  */
-async function loadDanmaku(): Promise<boolean> {
+type DanmakuLoadOutcome =
+  | { kind: "shown"; count: number }
+  | { kind: "skipped" }
+  | { kind: "not-mounted" }
+  | { kind: "error" }
+  | { kind: "miss"; reason: DanmakuMissReason };
+
+/** 自动链路（挂载/切集）的提示：一次进入本页只说一次，切集不再刷屏 */
+const danmakuAutoHintShown = ref(false);
+
+/**
+ * 把结局念出来（提示语来自 `DANMAKU_MISS_GUIDANCE`，与主因词表同源）。
+ *
+ * `manual`（弹幕开关、导入本地 xml）每次都答——用户刚点了东西，没有回应比坏消息更糟；
+ * 自动路径只在第一次未命中时说一次。
+ */
+function announceDanmaku(outcome: DanmakuLoadOutcome, manual: boolean): void {
+  if (outcome.kind === "shown" || outcome.kind === "skipped") return;
+  if (!manual) {
+    if (danmakuAutoHintShown.value) return;
+    danmakuAutoHintShown.value = true;
+  }
+  if (outcome.kind === "not-mounted") {
+    toast.info("画面还没就绪，重进本集后弹幕才会显示", 2800);
+    return;
+  }
+  if (outcome.kind === "error") {
+    toast.info("弹幕加载出错了，可在弹幕设置里重试", 2800);
+    return;
+  }
+  const hint = DANMAKU_MISS_GUIDANCE[outcome.reason];
+  if (hint.openSettings) {
+    toast.action(
+      `${hint.text}，可在这里配置聚合弹幕源或导入本地 XML`,
+      {
+        label: "弹幕设置",
+        onClick: () => {
+          danmakuOpen.value = true;
+        },
+      },
+      "info",
+      5200,
+    );
+    return;
+  }
+  toast.info(hint.text, 3200);
+}
+
+/**
+ * 挂载弹幕渲染层（幂等）。
+ *
+ * 以前只有 `watch(danmakuReady)` 会新建它：本集先就绪、画面区域后出现时，那一跳里
+ * `stageRef` 还是 null，之后再没人补挂——弹幕永远不显示且毫无提示（P0-①-3 的挂载竞态）。
+ * 现在「加载」与「挂载」都经过这里，`stageRef` 到位后自动补上。
+ */
+function ensureDanmakuOverlay(): DanmakuOverlay | null {
+  if (!danmakuReady.value || stageRef.value === null) return null;
+  if (danmakuOverlay.value !== null) return danmakuOverlay.value;
+  const overlay = new DanmakuOverlay({
+    settings: danmakuSettings.value,
+    getTime: () => player.currentTime,
+    // 原生引擎 1s 才轮询一次进度：帧内按播放状态/倍速在锚点上插值
+    isPlaying: () => player.playing,
+    getRate: () => player.rate,
+  });
+  overlay.attach(stageRef.value);
+  danmakuOverlay.value = overlay;
+  return overlay;
+}
+
+function releaseDanmakuOverlay(): void {
+  const overlay = danmakuOverlay.value;
+  if (overlay === null) return;
+  overlay.detach();
+  danmakuOverlay.value = null;
+}
+
+/**
+ * 同一集只跑一条匹配链路。
+ *
+ * 挂载那一跳（`danmakuReady`/`stageRef` 到位）和切集那一跳可能先后触发同一个集号；
+ * 未命中不会写缓存，于是两条链把整条回退打两遍——对正在限流的源等于白烧一倍请求。
+ */
+const danmakuInFlight = new Map<string, Promise<DanmakuLoadOutcome>>();
+
+/** 本集弹幕的最新结局，顶栏那一格读数由它来（P1-①-4：命中要看得见条数） */
+const danmakuOutcome = ref<DanmakuLoadOutcome | null>(null);
+
+/** 顶栏弹幕格的读数：开着但还不知道结果时保持原来的「开」，不猜 */
+const danmakuChipReading = computed(() => {
+  if (!danmakuSettings.value.enabled) return "关";
+  const outcome = danmakuOutcome.value;
+  if (outcome === null) return "开";
+  if (outcome.kind === "shown") return `${outcome.count} 条`;
+  if (outcome.kind === "miss") return DANMAKU_CHIP_MISS[outcome.reason];
+  if (outcome.kind === "error") return "出错";
+  if (outcome.kind === "not-mounted") return "没挂上";
+  return "开";
+});
+
+/**
+ * 加载本集弹幕（缓存命中离线可用；关闭开关不发请求）。
+ * 交回 `DanmakuLoadOutcome`：调用方据此决定念哪句提示，而不是「点了没反应」。
+ *
+ * `fetcher` 供「重新匹配本集弹幕」换用清缓存的那条链（P1-①-6）；默认的 `match` 会命中缓存。
+ */
+function loadDanmaku(
+  fetcher: (
+    title: string,
+    year: number | null,
+    episode: number,
+  ) => Promise<DanmakuMatchResult> = (title, year, episode) =>
+    danmakuService.match(title, year, episode),
+): Promise<DanmakuLoadOutcome> {
   const it = item.value;
   const ep = currentEpisode.value;
   if (!it || !ep || !danmakuSettings.value.enabled) {
     danmakuOverlay.value?.clear();
-    return false;
+    return Promise.resolve({ kind: "skipped" });
+  }
+  const key = `${it.title}|${it.year ?? "na"}|${ep.number}`;
+  const running = danmakuInFlight.get(key);
+  if (running !== undefined) return running;
+  // 新一轮判定开始：先收回上一集的读数，别让「2096 条」顶着正在加载的这一集
+  danmakuOutcome.value = null;
+  const promise = fetchDanmaku(it.title, it.year, ep.number, fetcher)
+    .then((outcome) => {
+      // 只报当前这一集的结局：切集之后上一集的判定不该顶着这一集的读数
+      const now = currentEpisode.value;
+      if (now?.number === ep.number) danmakuOutcome.value = outcome;
+      playTraceService.note("danmaku", `弹幕结局：${outcome.kind}`, describeDanmakuOutcome(outcome));
+      return outcome;
+    })
+    .finally(() => {
+      // 只清自己：导入本地 xml 会把这一集的在途链路作废（见 `importLocalDanmaku`）
+      if (danmakuInFlight.get(key) === promise) danmakuInFlight.delete(key);
+    });
+  danmakuInFlight.set(key, promise);
+  return promise;
+}
+
+async function fetchDanmaku(
+  title: string,
+  year: number | null,
+  episode: number,
+  fetcher: (
+    title: string,
+    year: number | null,
+    episode: number,
+  ) => Promise<DanmakuMatchResult>,
+): Promise<DanmakuLoadOutcome> {
+  const overlay = ensureDanmakuOverlay();
+  if (overlay === null) {
+    // 渲染层挂不上就谈不上「显示」：以前这里照样返回 true，界面念「弹幕已开启」而画面是空的
+    logger.warn("弹幕渲染层未就绪，本集弹幕未加载", { title, episode });
+    return { kind: "not-mounted" };
   }
   try {
-    const match = await danmakuService.match(it.title, it.year, ep.number);
-    if (match === null || match.comments.length === 0) return false;
+    const { match, missReason } = await fetcher(title, year, episode);
+    if (match === null || match.comments.length === 0) {
+      // 上一集的弹幕不能留在这一集画面上：未命中先清空，界面才不会念「有弹幕」而飘着别集的字
+      overlay.clear();
+      return {
+        kind: "miss",
+        reason: missReason ?? (match === null ? "no_result" : "below_threshold"),
+      };
+    }
     const base = danmakuSettings.value.merge
       ? danmakuService.dedupe(match.comments)
       : match.comments;
     // 弹弹play 的 `shift`：缓存里存原始时间轴，偏移只在渲染时叠加（换源/重进不回写缓存）
     const offset = Number.isFinite(match.offsetSec) ? match.offsetSec : 0;
-    danmakuOverlay.value?.load(
+    overlay.load(
       offset === 0
         ? base
         : base.map((comment) => ({
@@ -2845,10 +3313,11 @@ async function loadDanmaku(): Promise<boolean> {
             time: Math.max(0, comment.time + offset),
           })),
     );
-    return true;
-  } catch {
-    /* 弹幕失败静默：不影响播放 */
-    return false;
+    return { kind: "shown", count: base.length };
+  } catch (e) {
+    /* 弹幕异常不打扰播放，但必须留痕：否则「弹幕不显示」在日志里是一片空白 */
+    logger.warn('弹幕加载异常（不影响播放）', { title, episode }, e);
+    return { kind: "error" };
   }
 }
 
@@ -2868,7 +3337,8 @@ async function importLocalDanmaku(file: File): Promise<void> {
       ep.number,
       file,
     );
-  } catch {
+  } catch (e) {
+    logger.warn("本地弹幕文件读取失败", { title: it.title, episode: ep.number, name: file.name }, e);
     toast.info("本地弹幕文件读取失败", 2400);
     return;
   }
@@ -2881,11 +3351,38 @@ async function importLocalDanmaku(file: File): Promise<void> {
       danmaku: { ...danmakuSettings.value, enabled: true },
     });
   }
-  const loaded = await loadDanmaku();
+  // 这一集可能正有一条链在途（它是导入前发起的，看不到刚写进缓存的 xml）：作废它，重新拉一次
+  danmakuInFlight.clear();
+  const outcome = await loadDanmaku();
   toast.info(
-    loaded ? `已导入本地弹幕 ${count} 条` : "导入成功，重进本集后生效",
-    loaded ? 1800 : 2600,
+    outcome.kind === "shown" ? `已导入本地弹幕 ${count} 条` : "导入成功，重进本集后生效",
+    outcome.kind === "shown" ? 1800 : 2600,
   );
+}
+
+/**
+ * 「弹幕设置 → 重新匹配本集弹幕」（P1-①-6）：先作废本集缓存，再走一遍完整链路。
+ *
+ * 没有这个入口时，用户唯一的重试手段是退出重进（而缓存 30 天有效，退出重进也只会把同一条再端
+ * 回来）；「命中了串片」「当时源正在限流」这两种情况在界面上就都没有第二次机会。
+ */
+async function rematchDanmaku(): Promise<void> {
+  const it = item.value;
+  const ep = currentEpisode.value;
+  if (!it || !ep) {
+    logger.warn("重新匹配弹幕时当前集不存在", { title: it?.title ?? null });
+    return;
+  }
+  if (!danmakuSettings.value.enabled) {
+    await settings.update({ danmaku: { ...danmakuSettings.value, enabled: true } });
+  }
+  toast.info("正在重新匹配本集弹幕…", 1600);
+  // 上一轮可能还在途（它用的仍是旧缓存）：作废后按「清缓存 + 重跑」那条链再来一次
+  danmakuInFlight.clear();
+  const outcome = await loadDanmaku((title, year, episode) =>
+    danmakuService.rematch(title, year, episode),
+  );
+  announceDanmaku(outcome, true);
 }
 
 async function toggleDanmaku(): Promise<void> {
@@ -2898,11 +3395,12 @@ async function toggleDanmaku(): Promise<void> {
     toast.info("弹幕已关闭");
     return;
   }
-  const loaded = await loadDanmaku();
-  toast.info(
-    loaded ? "弹幕已开启" : "当前集没有匹配到弹幕（B 站/腾讯可能都没有该片）",
-    loaded ? 1800 : 2800,
-  );
+  const outcome = await loadDanmaku();
+  if (outcome.kind === "shown") {
+    toast.info(`弹幕已开启（${outcome.count} 条）`, 1800);
+    return;
+  }
+  announceDanmaku(outcome, true);
 }
 
 /** v1.8 修复：原生引擎 surface 移到 WebView 之下，DOM 层（弹幕/字幕）可见，无需互斥 */
@@ -3110,24 +3608,25 @@ function openSubtitlePanel(): void {
   subtitleOpen.value = true;
 }
 
-/** 设置开启/关闭 → 挂载或卸载渲染层 */
-watch(danmakuReady, (ready) => {
-  if (ready && stageRef.value && danmakuOverlay.value === null) {
-    const overlay = new DanmakuOverlay({
-      settings: danmakuSettings.value,
-      getTime: () => player.currentTime,
-      // 原生引擎 1s 才轮询一次进度：帧内按播放状态/倍速在锚点上插值
-      isPlaying: () => player.playing,
-      getRate: () => player.rate,
-    });
-    overlay.attach(stageRef.value);
-    danmakuOverlay.value = overlay;
-    void loadDanmaku();
-  } else if (!ready && danmakuOverlay.value !== null) {
-    danmakuOverlay.value.detach();
-    danmakuOverlay.value = null;
-  }
-});
+/**
+ * 设置开启/关闭 → 挂载或卸载渲染层。
+ *
+ * `stageRef` 也在依赖里：本集就绪早于画面区域出现时，只盯 `danmakuReady` 的那一跳会看到
+ * `stageRef === null` 然后不再回来（P0-①-3）；这里等画面到位后补挂并补拉一次弹幕。
+ */
+watch(
+  [danmakuReady, stageRef],
+  () => {
+    if (danmakuReady.value) {
+      const alreadyMounted = danmakuOverlay.value !== null;
+      if (ensureDanmakuOverlay() === null) return;
+      if (!alreadyMounted) void loadDanmaku().then((o) => announceDanmaku(o, false));
+      return;
+    }
+    releaseDanmakuOverlay();
+  },
+  { immediate: true, flush: "post" },
+);
 
 // 设置变化（字号/速度等）即时生效
 watch(danmakuSettings, (next) => danmakuOverlay.value?.setSettings(next), {
@@ -3189,7 +3688,7 @@ watch(
   () => {
     // 节奏属于这一集：不换集会拿上一集的格子给这一集画一条假曲线
     cutRhythm.reset();
-    void loadDanmaku();
+    void loadDanmaku().then((outcome) => announceDanmaku(outcome, false));
   },
 );
 
@@ -3256,6 +3755,8 @@ watch(episodeIdParam, async (next, prev) => {
   // 线路切换内部改路由时由 `switchLine` 自己加载，这里跳过以免同一集加载两次
   if (pendingLineSwitchEpisode !== null && next === pendingLineSwitchEpisode)
     return;
+  // OPT-26（P2-⑫）：停滞恢复额度按集发放，换集重新开始
+  stallRecoverRounds.value = 0;
   await resolveAndLoad();
   // 直接带旧集号进入（历史/继续观看）时同样提示已下线（AC-68）
   announceOfflineEpisode();
@@ -3843,6 +4344,7 @@ onBeforeUnmount(() => {
               :quality-label="qualityLabel"
               :line-name="currentLine?.name ?? ''"
               :danmaku-enabled="danmakuSettings.enabled"
+              :danmaku-reading="danmakuChipReading"
               :seek-step="playerSettings.seekStepSec"
               :volume="player.volume"
               :brightness="player.brightness"
@@ -4331,6 +4833,20 @@ onBeforeUnmount(() => {
                 {{ localScan.text }}
               </p>
             </li>
+            <!-- OPT-26（P2-⑬）：决策链诊断包——排查"这一集为什么播不了"时不必连电脑捞日志 -->
+            <li>
+              <button
+                class="sheet-list__item"
+                type="button"
+                :disabled="playTraceExporting"
+                @click="exportPlayTrace"
+              >
+                <span>{{
+                  playTraceExporting ? "正在整理决策链…" : "播放诊断包"
+                }}</span>
+                <span class="sheet-list__value">本轮起播的链路与日志</span>
+              </button>
+            </li>
             <li>
               <button
                 class="sheet-list__item"
@@ -4575,7 +5091,9 @@ onBeforeUnmount(() => {
         :can-switch-source="canSwitchSourceManual"
         :can-health-check="canHealthCheck"
         :can-redownload="localStallTaskId !== null"
+        :can-retry-native="canRetryNative"
         @retry="retryPanel"
+        @retry-native="retryWithNativeEngine"
         @switch-line="onSwitchLine"
         @switch-source="onSwitchSource"
         @health-check="goHealthCheck"
@@ -4637,9 +5155,11 @@ onBeforeUnmount(() => {
               v-else-if="!loadErrorMagnet"
               class="pl-cta"
               type="button"
+              :disabled="loadErrorGateMs > 0"
+              data-test="page-retry"
               @click="resolveAndLoad"
             >
-              重试
+              {{ loadErrorRetryLabel }}
             </button>
             <!-- v1.8/CHG-26：解析失败常是源坏了，直接给换源路径 -->
             <button
@@ -4667,6 +5187,7 @@ onBeforeUnmount(() => {
     <DanmakuSettingsSheet
       v-model:open="danmakuOpen"
       :import-xml="importLocalDanmaku"
+      :rematch="rematchDanmaku"
     />
     <SkipMarkSheet
       v-model="skipMarkOpen"

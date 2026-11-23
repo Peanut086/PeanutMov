@@ -133,6 +133,24 @@ describe('AC-60 错误码 → 用户文案映射', () => {
     expect(toAppError(quota).message).toBe(ERROR_MESSAGES.E_STORAGE_QUOTA);
   });
 
+  /*
+   * OPT-26（P1-②-3）：原生引擎 reject 出来的是 `AppErrorShape`（明文对象，不是 Error）。
+   * 折成 fallbackCode 等于把「源站断连」改口成「本机解不了」——归属与出口都跟着跑偏。
+   */
+  it('toAppError：已分类的 shape 原样接管，认不出的 code 才回落 fallback', () => {
+    const shape = toErrorShape(
+      { code: 'E_NETWORK', message: '视频加载失败，请检查网络', detail: 'cause=x', retryable: true },
+      'E_DECODE',
+    );
+    expect(shape.code).toBe('E_NETWORK');
+    expect(shape.message).toBe('视频加载失败，请检查网络');
+    expect(shape.detail).toBe('cause=x');
+    expect(shape.retryable).toBe(true);
+
+    expect(toErrorShape({ code: 'E_NOT_A_CODE', message: 'x' }, 'E_DECODE').code).toBe('E_DECODE');
+    expect(toErrorShape({ message: '没有 code 的对象' }, 'E_DECODE').code).toBe('E_DECODE');
+  });
+
   it('鉴权类错误码不可重试（AC-39 / REV-16：403 重试无意义）', () => {
     expect(RETRYABLE_CODES.has('E_HTTP_403')).toBe(false);
     expect(RETRYABLE_CODES.has('E_AUTH')).toBe(false);

@@ -19,9 +19,14 @@ import {
   SOURCE_INTERNAL_MESSAGE,
 } from '@/shared/sourceFailure';
 
-/** 构造最小 AppErrorShape（分类只看 code / message / detail） */
-function shape(code: AppErrorShape['code'], message: string, detail: string | null = null): AppErrorShape {
-  return { code, message, detail, retryable: true, httpStatus: null };
+/** 构造最小 AppErrorShape（分类看 code / message / detail / reason） */
+function shape(
+  code: AppErrorShape['code'],
+  message: string,
+  detail: string | null = null,
+  reason: AppErrorShape['reason'] = null,
+): AppErrorShape {
+  return { code, message, detail, retryable: true, httpStatus: null, reason };
 }
 
 describe('isRuleScriptMessage / sanitizeSourceMessage（P1-5）', () => {
@@ -95,10 +100,55 @@ describe('classifySourceFailure（P0-1）', () => {
     expect(classifySourceFailure(shape('E_AUTH', '认证失败'))).toBe('auth');
   });
 
-  it('磁力优先归为协议不支持（即使 code 是别的）', () => {
+  it('磁力优先归为种子档（即使 code 是别的）', () => {
     expect(classifySourceFailure(shape('E_PARSE', '解析失败', 'magnet:?xt=urn:btih:abc'))).toBe(
-      'protocol_unsupported',
+      'magnet_link',
     );
+  });
+
+  /*
+   * OPT-26（P0-②-1）：`E_UNSUPPORTED_FORMAT` 此前只有一个档位，四类成因共用「本 App 不做
+   * 种子下载」这句文案与「用外部应用打开」这个出口。真机那条明细里根本没有 magnet:，
+   * 界面却照样念种子——所以这一档必须按 `reason` 拆开，并且没有子原因时不许再提种子。
+   */
+  it('同一码按 reason 拆成四档，动作各不相同', () => {
+    expect(classifySourceFailure(shape('E_UNSUPPORTED_FORMAT', '磁力链接需用外部下载器/播放器打开', null, 'magnet_link'))).toBe('magnet_link');
+    expect(classifySourceFailure(shape('E_UNSUPPORTED_FORMAT', '暂不支持 DASH(.mpd) 格式', null, 'dash_manifest'))).toBe('dash_manifest');
+    expect(classifySourceFailure(shape('E_UNSUPPORTED_FORMAT', '格式不支持：MEDIA_SRC_NOT_SUPPORTED', null, 'player_capability'))).toBe('player_capability');
+    expect(classifySourceFailure(shape('E_UNSUPPORTED_FORMAT', '播放地址协议不受支持', null, 'protocol_unsupported'))).toBe('protocol_unsupported');
+
+    // 只有种子那一档有外部出口；其余三档「用外部应用打开」都是无用动作
+    expect(guidanceOf(shape('E_UNSUPPORTED_FORMAT', 'x', null, 'magnet_link')).actions).toContain('external');
+    for (const kind of ['dash_manifest', 'player_capability', 'protocol_unsupported'] as const) {
+      const reason = kind as NonNullable<AppErrorShape['reason']>;
+      expect(guidanceOf(shape('E_UNSUPPORTED_FORMAT', 'x', null, reason)).actions).not.toContain('external');
+    }
+  });
+
+  /*
+   * OPT-26（P1-②-3）：「用原生引擎重试」是解码档独有的出口。
+   * 种子要外部应用、DASH 明确不绕过、协议不是 http(s) 换内核也没用——只有"本机内核接不住"
+   * 才值得再用 ExoPlayer 试一次。面板与 View 的闸门都读这一份口径（不各判一套）。
+   */
+  it('只有「本机能力」这一档声明 retry-native 出口', () => {
+    expect(guidanceOf(shape('E_UNSUPPORTED_FORMAT', 'x', null, 'player_capability')).actions).toContain('retry-native');
+    for (const reason of ['magnet_link', 'dash_manifest', 'protocol_unsupported'] as const) {
+      expect(guidanceOf(shape('E_UNSUPPORTED_FORMAT', 'x', null, reason)).actions).not.toContain('retry-native');
+    }
+    expect(guidanceOf(shape('E_TIMEOUT', '源响应超时')).actions).not.toContain('retry-native');
+  });
+
+  it('没有 reason 的格式错误不许提种子（真机「格式不支持 + 不做种子下载」的根因）', () => {
+    const g = guidanceOf(shape('E_UNSUPPORTED_FORMAT', '格式不支持：MEDIA_ERR_SRC_NOT_SUPPORTED'));
+    expect(g.kind).toBe('protocol_unsupported');
+    expect(g.hint).not.toContain('种子');
+    expect(g.hint).not.toContain('magnet');
+  });
+
+  it('四档都不属于「自动重投一次」的瞬态档', () => {
+    for (const kind of ['magnet_link', 'dash_manifest', 'player_capability', 'protocol_unsupported'] as const) {
+      expect(isTransientFailure(kind)).toBe(false);
+    }
   });
 
   it('空错误 → unknown', () => {
@@ -194,7 +244,7 @@ describe('源正忙独立成档（P1-3）', () => {
 describe('guidanceOf', () => {
   it('每类都给文案与动作，磁力给「外部打开」', () => {
     const magnet = guidanceOf(shape('E_UNSUPPORTED_FORMAT', '暂不支持该格式', 'magnet:?xt=urn:btih:abc'));
-    expect(magnet.kind).toBe('protocol_unsupported');
+    expect(magnet.kind).toBe('magnet_link');
     expect(magnet.actions).toContain('external');
     expect(magnet.title).toContain('磁力');
 

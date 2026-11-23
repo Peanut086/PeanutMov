@@ -12,6 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEMO_CATEGORIES, DEMO_ITEMS } from '@/data/demo/demoCatalog';
 import { DEMO_SOURCE_ID, seedDemoData } from '@/data/demo/demoSeed';
 import { libraryService } from '@/services/libraryService';
+import { playTraceService } from '@/services/playTraceService';
+import { playUrlLifetimeService } from '@/services/playUrlLifetimeService';
 import { sourceService } from '@/services/sourceService';
 import { sourceRegistry } from '@/sources/registry';
 import { categoryIdFor } from '@/sources/base/normalize';
@@ -809,5 +811,72 @@ describe('源忙分档、详情预算与预热让路（P1-3）', () => {
     // 地址变了：缓存必须作废，重播重新回源取新地址
     await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
     expect(resolveSpy).toHaveBeenCalledTimes(2);
+  });
+
+  // P2-⑫：爬虫/网盘的 expiresAt 恒为 null，30 分钟内存 TTL 对十分钟就过期的签名直链太长
+  it('host 学到过地址寿命 → 缓存里的超期直链重新回源，没超期仍复用（P2-⑫）', async () => {
+    const { item, line, episodeId } = await seedPlayable();
+    const resolveSpy = vi.spyOn(siteAdapter(), 'resolvePlayUrl').mockResolvedValue(playbackOf(line.id));
+    const ttlSpy = vi.spyOn(playUrlLifetimeService, 'ttlOf').mockReturnValue(null);
+
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
+    const cachedAt = Date.now();
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+
+    ttlSpy.mockReturnValue(60_000);
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(cachedAt + 30_000);
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+
+    nowSpy.mockReturnValue(cachedAt + 90_000);
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
+    expect(resolveSpy).toHaveBeenCalledTimes(2);
+    // 重新取到的新地址要按新时间记账，否则下一次又立刻被判定超期
+    nowSpy.mockRestore();
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
+    expect(resolveSpy).toHaveBeenCalledTimes(2);
+  });
+
+  // P2-⑬：诊断包里的「resolve」段就是这几个判断点，链路必须在服务这一侧接上
+  it('决策链只记用户这一路：回源结果/失败进链，缓存命中进链，探测不进（P2-⑬）', async () => {
+    const { item, line, episodeId } = await seedPlayable();
+    playTraceService.__reset();
+    playTraceService.beginAttempt({
+      mediaId: item.id,
+      title: item.title,
+      episodeNumber: 1,
+      episodeId,
+      lineId: line.id,
+      lineName: line.name,
+    });
+
+    const resolveSpy = vi.spyOn(siteAdapter(), 'resolvePlayUrl').mockResolvedValue(playbackOf(line.id));
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
+    await libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id });
+    expect(resolveSpy).toHaveBeenCalledTimes(1);
+    const texts = playTraceService.eventsOf().map((e) => e.text);
+    expect(texts).toEqual(['回源取址成功', '播放地址缓存命中（未回源）']);
+    expect(playTraceService.eventsOf()[0]!.fields).toMatchObject({ host: 'cdn.example.com', format: 'mp4' });
+
+    // 同一件事由后台探测发起时不进链：否则一次起播的事件会被几百条探测淹没
+    libraryService.invalidatePlayCache(item.id);
+    playTraceService.__reset();
+    playTraceService.beginAttempt({
+      mediaId: item.id,
+      title: item.title,
+      episodeNumber: 1,
+      episodeId,
+      lineId: line.id,
+      lineName: line.name,
+    });
+    resolveSpy.mockRejectedValue(new AppError('E_SOURCE_BUSY', SOURCE_BUSY_MESSAGE));
+    await expect(libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id })).rejects.toThrow();
+    await expect(
+      libraryService.resolvePlay({ mediaId: item.id, episodeId, lineId: line.id, demand: false }),
+    ).rejects.toThrow();
+    const failed = playTraceService.eventsOf();
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.text).toBe('回源失败：E_SOURCE_BUSY');
+    expect(failed[0]!.fields).toMatchObject({ willRetry: false, foregroundInFlight: false });
   });
 });
