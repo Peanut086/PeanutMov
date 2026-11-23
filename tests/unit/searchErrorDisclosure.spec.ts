@@ -84,5 +84,5 @@ describe('libraryStore.search 全失败态（OPT-13）', () => {
 });
 
 function emptyResult(): SearchResult {
-  return { items: [], sourceIds: [], failed: [], candidates: 0, filteredOut: 0, skippedSourceIds: [] };
+  return { items: [], sourceIds: [], failed: [], candidates: 0, filteredOut: 0, skippedSourceIds: [], localTruncated: false };
 }

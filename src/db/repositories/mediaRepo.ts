@@ -4,12 +4,13 @@
  * 查询约定：
  * - 列表按 `updatedAt` 倒序（同源）、分页索引 `by-source-updated`；
  * - 搜索走 `by-title` 前缀，不足时沿主键序补子串匹配（无索引可用，见 searchByTitle 注释）；
+ *   子串那一趟带时间预算（OPT-21），扫不完返回 `truncated`；
  * - 批量写入按 200 条拆分事务（技术方案 5.2，避免长事务阻塞 UI）。
  */
 import { withTx } from '@/db/index';
 import { STORE_NAMES, type CinemaTx } from '@/db/schema';
-import { SEARCH_LOCAL_LIMIT } from '@/shared/constants';
-import type { MediaItem } from '@/types';
+import { SEARCH_LOCAL_LIMIT, SEARCH_SUBSTRING_BUDGET_MS, SEARCH_SUBSTRING_CHECK_ROWS } from '@/shared/constants';
+import type { LocalSearchScan, MediaItem } from '@/types';
 
 const BATCH_SIZE = 200;
 
@@ -102,19 +103,24 @@ export const mediaRepo = {
    * 本地搜索：标题前缀优先（走 by-title 索引），不足再沿主键序补子串匹配。
    * `matchActors`（搜索页开启，换源候选不开启）让子串那一趟顺带比主演——演员没有索引
    * （存量数据也没这列），共用同一次扫描，不另开游标。
-   * `keyword` 会转为小写；空关键词返回空数组。
+   * `keyword` 会转为小写；空关键词返回空结果。
+   *
+   * OPT-21：子串这一趟受 `SEARCH_SUBSTRING_BUDGET_MS` 时间预算约束，扫不完就置 `truncated`，
+   * 调用方必须把它说出去（见 `LocalSearchScan`）。前缀阶段凑满 `limit` 时整趟不进入、零额外开销。
    */
   async searchByTitle(
     keyword: string,
     limit = SEARCH_LOCAL_LIMIT,
     opts?: { matchActors?: boolean },
-  ): Promise<MediaItem[]> {
+  ): Promise<LocalSearchScan> {
     const kw = keyword.trim().toLowerCase();
-    if (kw.length === 0) return [];
+    if (kw.length === 0) return { items: [], visited: 0, truncated: false };
     return withTx(['media'], 'readonly', async (tx) => {
       const store = tx.objectStore(STORE_NAMES.media);
       const seen = new Set<string>();
       const out: MediaItem[] = [];
+      let visited = 0;
+      let truncated = false;
 
       const prefixRange = IDBKeyRange.bound(kw, `${kw}\uffff`);
       let cursor = await store.index('by-title').openCursor(prefixRange);
@@ -133,6 +139,8 @@ export const mediaRepo = {
         // 但游标两版都在 limit 处收口，扫描深度并未下降（受控 A/B：4 例里 3 例 visited 相同、
         // 1 例还多走 353 条），而索引游标每步要多一次主键回表 —— Chromium 实测 +27%~32%。
         // 在最慢的那条路径上加价换排序口径，不划算，保持主键序。
+        // OPT-21 因此沿用同一趟：被预算截断时给的是「主键序靠前的一段」，方向由调用方披露。
+        const startedAt = performance.now();
         let scanCursor = await store.openCursor();
         while (scanCursor && out.length < limit) {
           const value = scanCursor.value;
@@ -143,10 +151,19 @@ export const mediaRepo = {
             seen.add(value.id);
             out.push(value);
           }
+          visited += 1;
+          // 每 CHECK_ROWS 行看一次钟：取钟开销实测在噪声内，粒度同时是超调上限
+          if (
+            visited % SEARCH_SUBSTRING_CHECK_ROWS === 0 &&
+            performance.now() - startedAt >= SEARCH_SUBSTRING_BUDGET_MS
+          ) {
+            truncated = true;
+            break;
+          }
           scanCursor = await scanCursor.continue();
         }
       }
-      return out;
+      return { items: out, visited, truncated };
     });
   },
 

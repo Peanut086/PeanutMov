@@ -93,6 +93,7 @@ function result(overrides: Partial<SearchResult> = {}): SearchResult {
     candidates: 1,
     filteredOut: 0,
     skippedSourceIds: [],
+    localTruncated: false,
     ...overrides,
   };
 }

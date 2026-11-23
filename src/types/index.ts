@@ -345,6 +345,23 @@ export interface SearchResult {
   groups?: SearchResultGroup[];
   /** SO-02：全局截止（28s）后因超时未启动搜索的源 ID */
   skippedSourceIds: string[];
+  /**
+   * OPT-21：本地库的子串扫描被时间预算截断。
+   *
+   * 与 `skippedSourceIds` 是两件事：那是"远程还有源没试"，这是"本地只翻了前面一段记录"。
+   * 截断按主键序（= 源分组顺序），丢的是靠后的整片源而不是均匀尾批，UI 必须说出去，
+   * 否则「库里明明有」会被读成「没搜到」。
+   */
+  localTruncated: boolean;
+}
+
+/** 一次本地搜索扫描的结果（OPT-21：`visited` / `truncated` 用来说明"没扫完"这件事） */
+export interface LocalSearchScan {
+  items: MediaItem[];
+  /** 子串兜底这一趟走过的记录数（前缀阶段就凑满 limit 时为 0） */
+  visited: number;
+  /** 时间预算耗尽、表没扫完：`items` 只覆盖主键序靠前的一段 */
+  truncated: boolean;
 }
 
 /** v1.7/CHG-20 聚合检索：检索范围 */

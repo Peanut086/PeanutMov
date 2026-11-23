@@ -193,7 +193,7 @@ describe('DB 表结构与事务（AC-14）', () => {
     // updatedAt 倒序：最大的 m34 在最前
     expect(firstPage[0]?.id).toBe('demo:m34');
 
-    const searched = await mediaRepo.searchByTitle('影片 3');
+    const { items: searched } = await mediaRepo.searchByTitle('影片 3');
     expect(searched.length).toBeGreaterThan(0);
     expect(searched.every((item) => item.titleLower.includes('影片 3'))).toBe(true);
   });
@@ -225,13 +225,13 @@ describe('DB 表结构与事务（AC-14）', () => {
     });
     await mediaRepo.upsertMany([mk(1, '飞驰人生', ['沈腾', '尹正']), mk(2, '独行月球', ['沈腾'])]);
 
-    const byActor = await mediaRepo.searchByTitle('沈腾', 10, { matchActors: true });
+    const { items: byActor } = await mediaRepo.searchByTitle('沈腾', 10, { matchActors: true });
     expect(byActor.map((item) => item.id).sort()).toEqual(['demo:a1', 'demo:a2']);
 
     // 默认口径不变：换源候选那条路径仍只认片名
-    expect(await mediaRepo.searchByTitle('沈腾')).toEqual([]);
+    expect((await mediaRepo.searchByTitle('沈腾')).items).toEqual([]);
     // 单字查询不放开演员比对
-    expect(await mediaRepo.searchByTitle('腾', 10, { matchActors: true })).toEqual([]);
+    expect((await mediaRepo.searchByTitle('腾', 10, { matchActors: true })).items).toEqual([]);
   });
 
   /**
@@ -273,18 +273,19 @@ describe('DB 表结构与事务（AC-14）', () => {
     const noise = Array.from({ length: 10 }, (_, i) => mk(200 + i, `无关影片 ${i + 1}`, base + 500 + i));
     await mediaRepo.upsertMany([...matched, ...recent, ...noise]);
 
-    const everything = await mediaRepo.searchByTitle('季', 100);
+    const { items: everything, truncated: everythingTruncated } = await mediaRepo.searchByTitle('季', 100);
+    expect(everythingTruncated).toBe(false);
     expect(everything.map((item) => item.id).sort()).toEqual(
       [...matched, ...recent].map((item) => item.id).sort(),
     );
 
     // 截断给主键序的前 3 条；by-cached 倒序会给 s104/s103/s102（最新缓存），已被实测否决
-    const top3 = await mediaRepo.searchByTitle('季', 3);
+    const { items: top3 } = await mediaRepo.searchByTitle('季', 3);
     expect(top3.map((item) => item.id)).toEqual(['demo:s0', 'demo:s1', 'demo:s10']);
 
     // 前缀阶段与子串阶段共用 seen 去重：既命中前缀又含子串的条目不重复出现
     await mediaRepo.upsertMany([mk(300, '季节 变化', base + 2000), mk(301, '跨 季', base + 2001)]);
-    const both = await mediaRepo.searchByTitle('季', 50);
+    const { items: both } = await mediaRepo.searchByTitle('季', 50);
     expect(both.map((item) => item.id).filter((id) => id === 'demo:s300')).toHaveLength(1);
   });
 });

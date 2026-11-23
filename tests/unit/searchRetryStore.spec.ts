@@ -55,6 +55,7 @@ function result(overrides: Partial<SearchResult> = {}): SearchResult {
     candidates: 0,
     filteredOut: 0,
     skippedSourceIds: [],
+    localTruncated: false,
     ...overrides,
   };
 }

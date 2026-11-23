@@ -69,6 +69,13 @@ export const useLibraryStore = defineStore('library', () => {
   const searchFilteredOut = ref(0);
   /** SO-02：全局截止（28s）后因超时未启动搜索的源 ID */
   const searchSkippedIds = ref<string[]>([]);
+  /**
+   * OPT-21：本地子串扫描被时间预算截断（库里可能有已缓存的片名没翻到）。
+   *
+   * 与 `searchSkippedIds` 分开：那是"远程还有源没试"，这是"本地只扫了前面一段记录"，
+   * 两者的下一步动作不一样，合成一句会两头都说不清。
+   */
+  const searchLocalTruncated = ref(false);
   /** C-12：搜不到时的尾词建议芯片（如"今天也是太阳雨"→"今天也是太阳"/"今天"/"太阳雨"） */
   const searchTailSuggestions = ref<string[]>([]);
   /** SO-ALIAS：原词 0 结果时，某扩展词救回结果则记录该词（UI 显示"按「××」找到"） */
@@ -498,6 +505,7 @@ export const useLibraryStore = defineStore('library', () => {
     publishSearchResults();
     searchFailed.value = [];
     searchSkippedIds.value = [];
+    searchLocalTruncated.value = false;
     searchTailSuggestions.value = [];
     try {
       const result = await libraryService.search({
@@ -525,6 +533,7 @@ export const useLibraryStore = defineStore('library', () => {
       searchCandidates.value = result.candidates;
       searchFilteredOut.value = result.filteredOut;
       searchSkippedIds.value = result.skippedSourceIds;
+      searchLocalTruncated.value = result.localTruncated;
 
       // 阶段 5：把 result.items 中未上屏的本地缓存条目并入 searchResultsAll
       // 这样曾经成功过的源会稳定出现在「N 个来源」里，不再完全看当次网络脸色
@@ -573,6 +582,8 @@ export const useLibraryStore = defineStore('library', () => {
       }
       if (typeof meta?.candidates === 'number') searchCandidates.value = meta.candidates;
       if (typeof meta?.filteredOut === 'number') searchFilteredOut.value = meta.filteredOut;
+      // OPT-21：本地扫描截断同样随抛错丢失，错误态下「库里其实有」的披露要靠 meta 接回来
+      if (meta?.localTruncated === true) searchLocalTruncated.value = true;
     } finally {
       if (searchController === controller) searchController = null;
       searchProgress.value = null;
@@ -675,6 +686,8 @@ export const useLibraryStore = defineStore('library', () => {
       }
       publishSearchResults();
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
+      // OPT-21：增量入口也会重跑本地扫描并把命中并上屏，截断只能在事后补披露，不能改回 false
+      if (result.localTruncated) searchLocalTruncated.value = true;
     } catch (e) {
       // 增量入口整体失败也要把已上屏的结果对齐到快照：否则节流窗口会让列表"少一截"
       publishSearchResults();
@@ -721,6 +734,8 @@ export const useLibraryStore = defineStore('library', () => {
       if (result.skippedSourceIds.length > 0) {
         searchSkippedIds.value = [...searchSkippedIds.value, ...result.skippedSourceIds];
       }
+      // OPT-21：同上，增量搜索的本地命中也是"扫了一部分"的产物
+      if (result.localTruncated) searchLocalTruncated.value = true;
       publishSearchResults();
       searchState.value = searchResults.value.length === 0 ? 'empty' : 'success';
     } catch (e) {
@@ -894,6 +909,7 @@ export const useLibraryStore = defineStore('library', () => {
     searchCandidates,
     searchFilteredOut,
     searchSkippedIds,
+    searchLocalTruncated,
     continueSearchSkipped,
     searchTailSuggestions,
     searchExpandedNote,

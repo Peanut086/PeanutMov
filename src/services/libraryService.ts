@@ -938,15 +938,21 @@ export const libraryService: LibraryService = {
 
   async search(params): Promise<SearchResult> {
     const keyword = params.keyword.trim();
-    if (keyword.length === 0) return { items: [], sourceIds: [], failed: [], candidates: 0, filteredOut: 0, skippedSourceIds: [] };
+    if (keyword.length === 0)
+      return { items: [], sourceIds: [], failed: [], candidates: 0, filteredOut: 0, skippedSourceIds: [], localTruncated: false };
     const pageSize = params.pageSize ?? SEARCH_LOCAL_LIMIT;
     const hideDemo = await hideDemoEnabled();
 
     const online = isOnline();
 
     // 本地缓存也认主演：搜演员时能捞回已缓存/已看过的同名作品（换源候选那条路径不开，见 mediaRepo）
-    const localRaw = await mediaRepo.searchByTitle(keyword, SEARCH_LOCAL_LIMIT, { matchActors: true });
-    const local = hideDemo ? localRaw.filter((item) => !item.isDemo) : localRaw;
+    const localScan = await mediaRepo.searchByTitle(keyword, SEARCH_LOCAL_LIMIT, { matchActors: true });
+    // OPT-21：本地库太大时这一趟被时间预算收口，命中只代表「主键序靠前的一段」。
+    // visited 进日志：命中数下降时可取证，不必重跑（真机日志走 LogsView 导出）。
+    if (localScan.truncated) {
+      logger.debug('本地子串扫描被时间预算截断', { keyword, visited: localScan.visited });
+    }
+    const local = hideDemo ? localScan.items.filter((item) => !item.isDemo) : localScan.items;
 
     const allSources = await sourceRepo.list();
     const eligible = allSources.filter(
@@ -1076,13 +1082,23 @@ export const libraryService: LibraryService = {
             candidates: enabled.length,
             filteredOut,
             failedSourceIds: failed.map((f) => f.sourceId),
+            // OPT-21：全源失败是抛错返回的，本地截断这件事不能随结果一起丢
+            localTruncated: localScan.truncated,
           },
         });
       }
     }
 
     const sourceIds = [...new Set(merged.map((item) => item.sourceId))];
-    return { items: merged.slice(0, pageSize), sourceIds, failed, candidates: enabled.length, filteredOut, skippedSourceIds };
+    return {
+      items: merged.slice(0, pageSize),
+      sourceIds,
+      failed,
+      candidates: enabled.length,
+      filteredOut,
+      skippedSourceIds,
+      localTruncated: localScan.truncated,
+    };
   },
 
   async getDetail(mediaId, opts): Promise<MediaDetail> {
@@ -1499,7 +1515,8 @@ export const libraryService: LibraryService = {
     const promise = (async () => {
       let results: MediaItem[];
       if (scope === 'cache') {
-        results = await mediaRepo.searchByTitle(keyword, SEARCH_LOCAL_LIMIT);
+        // 换源候选只要片名匹配（matchActors 关），且不必披露截断：候选池本就取前若干条比价
+        results = (await mediaRepo.searchByTitle(keyword, SEARCH_LOCAL_LIMIT)).items;
       } else {
         // network scope：调用 search 扇出，pageSize 放大以容纳更多候选
         const searchResult = await libraryService.search({

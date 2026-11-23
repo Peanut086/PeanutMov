@@ -123,6 +123,17 @@ const zeroCandidates = computed(
 /** SO-02：有因全局截止而未搜索的源 */
 const hasSkipped = computed(() => library.searchSkippedIds.length > 0);
 /**
+ * OPT-21：本地子串扫描被时间预算截断时的一句话说明（结果态与空态共用，样式沿用软提示）。
+ *
+ * 口径要点：漏掉的是主键序靠后的那一段（按源聚成片），不是均匀尾批；而前缀命中走 `by-title`
+ * 索引、完全不受预算影响——所以"把片名开头打全"是用户唯一能自己补足本地的动作。
+ */
+const localScanNote = computed(() =>
+  library.searchLocalTruncated
+    ? '本地缓存只扫描了前面一部分记录，靠后的没翻到；把片名开头打全可走完整索引'
+    : null,
+);
+/**
  * P3-2：把「还要等多久」写成看得见的数。
  *
  * 真机 96 源全量扇出跑到 44.8s 才收敛，屏幕上只有「仍在搜索其它源（94/96）」——既不知道
@@ -143,6 +154,7 @@ const emptyDescription = computed(() => {
     return `${keywordIgnoredCount.value} 个源返回的内容与关键词无关（已过滤），其余源未命中`;
   }
   if (hasSkipped.value) return `仅搜索了 ${library.searchCandidates - library.searchSkippedIds.length} / ${library.searchCandidates} 个源，剩余 ${library.searchSkippedIds.length} 个因超时未搜索`;
+  if (localScanNote.value) return localScanNote.value;
   return '换个关键词，或检查源是否启用';
 });
 const showError = computed(
@@ -723,6 +735,9 @@ function openSourceManage(): void {
           :busy="isSearching"
           @continue="continueSkipped"
         />
+
+        <!-- OPT-21：本地缓存的覆盖缺口与远程覆盖缺口是两件事，并排放在一起各自说清 -->
+        <div v-if="localScanNote" class="search-expanded-note" role="status">{{ localScanNote }}</div>
 
         <!-- SO-ALIAS：原词 0 结果、由查询扩展救回的来源标注（不藏着掖着，也不打断结果浏览） -->
         <div v-if="library.searchExpandedNote" class="search-expanded-note" role="status">
