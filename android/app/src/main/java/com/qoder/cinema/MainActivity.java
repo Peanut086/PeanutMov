@@ -2,9 +2,13 @@ package com.qoder.cinema;
 
 import android.content.Intent;
 import android.os.Bundle;
+import android.provider.Settings;
+import android.view.View;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebView;
 import android.widget.Toast;
+
+import androidx.core.splashscreen.SplashScreen;
 
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.WebViewListener;
@@ -28,6 +32,9 @@ import com.getcapacitor.community.keepawake.KeepAwakePlugin;
  * @author xyp
  */
 public class MainActivity extends BridgeActivity {
+
+    /** 开屏→首帧的交接时长（ms）：长了像卡住，短了像硬切 */
+    private static final long SPLASH_HANDOFF_MS = 220L;
 
     /** 渲染进程崩溃后 recreate 时用于恢复崩溃前的 URL，避免回到空白页 */
     private static String pendingRestoreUrl;
@@ -54,6 +61,25 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(PlayerUiPlugin.class);
         // P2-2：提醒投递诊断 + 系统授权页入口（src/native/notificationScheduler.ts 调用）
         registerPlugin(ReminderPlugin.class);
+        // S-01：core-splashscreen 依赖一直装着，但没人调 installSplashScreen()，于是
+        // postSplashScreenTheme 从未生效——Activity 全程挂在开屏主题上，窗口背景成了开屏图层。
+        // 必须在 super.onCreate() 之前安装（它会就地切换主题）。
+        SplashScreen splashScreen = SplashScreen.installSplashScreen(this);
+        // 首帧画好时由我们接手揭开开屏：只做 alpha+scale，与前端动效口径一致，避免硬切。
+        splashScreen.setOnExitAnimationListener(provider -> {
+            View icon = provider.getIconView();
+            if (icon == null || animatorsDisabled()) {
+                provider.remove();
+                return;
+            }
+            icon.animate()
+                    .alpha(0f)
+                    .scaleX(1.06f)
+                    .scaleY(1.06f)
+                    .setDuration(SPLASH_HANDOFF_MS)
+                    .withEndAction(provider::remove)
+                    .start();
+        });
         super.onCreate(savedInstanceState);
 
         // 默认 WebView 会按系统「字体大小」缩放文字，而设计 tokens 的 padding / 图标 / 高度是
@@ -93,6 +119,11 @@ public class MainActivity extends BridgeActivity {
                 xcrash.XCrash.testNativeCrash(true);
             }, 1000);
         }
+    }
+
+    /** 系统把动画时长缩放关掉（无障碍/开发者选项）时不做交接动效，直接揭开 */
+    private boolean animatorsDisabled() {
+        return Settings.Global.getFloat(getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f;
     }
 
     @Override

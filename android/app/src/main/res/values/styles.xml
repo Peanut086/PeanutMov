@@ -16,14 +16,21 @@
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
         <item name="android:windowBackground">#FF000000</item>
+        <!-- S-01：这几项原本是开屏主题（Theme.SplashScreen）带进来的，交接后必须由这里接手，
+             否则 installSplashScreen() 一生效，状态栏/导航栏就从透明变成 AppCompat 默认灰 -->
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:fitsSystemWindows">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 
 
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
-        <item name="android:background">@drawable/splash</item>
-        <!-- Android 12+ 走系统 splash：与 pre-12 位图开屏同底色同标记 -->
-        <item name="windowSplashScreenBackground">#FF0B0B0F</item>
+        <!-- 开屏底色与前端设计 token（color-bg-base）同值：冷启动交接时不允许出现第二种黑 -->
+        <item name="windowSplashScreenBackground">#FF000000</item>
         <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
+        <!-- S-01：MainActivity 必须调 installSplashScreen()，否则这一条永不生效——
+             Activity 会一直挂在 Theme.SplashScreen 上，把开屏图层当普通窗口背景用 -->
         <item name="postSplashScreenTheme">@style/AppTheme.NoActionBar</item>
     </style>
 </resources>

@@ -20,13 +20,13 @@ const config: CapacitorConfig = {
     CapacitorHttp: {
       enabled: true,
     },
-    SplashScreen: {
-      launchShowDuration: 300,
-      backgroundColor: '#0b0b0f',
-    },
+    // S-01：@capacitor/splash-screen 未安装（开屏由 Android 12+ 系统 splash +
+    // res/values/styles.xml 的 AppTheme.NoActionBarLaunch 承担），
+    // 这一段没有任何插件消费，留着只会让人以为底色和时长在这里调。
     StatusBar: {
       style: 'DARK',
-      backgroundColor: '#0b0b0f',
+      // 与 --color-bg-base / windowSplashScreenBackground 同值：状态栏、开屏、页面是同一个黑
+      backgroundColor: '#000000',
       // CHG-29：Android WebView 的 env(safe-area-inset-top) 恒为 0，且 StatusBar 插件
       // 默认 overlaysWebView=true 会把 WebView 铺到状态栏下。关闭 overlay 让 WebView
       // 回到状态栏下方，避免播放器顶栏/弹幕 HUD 压进状态栏。Android 15+ 的 edge-to-edge
