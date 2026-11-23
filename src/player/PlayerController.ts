@@ -626,6 +626,9 @@ export class PlayerController {
 
   private handleLoadedMetadata(duration: number): void {
     this.progress.update(this.engine?.getCurrentTime() ?? 0, duration);
+    // 原生引擎缓冲恢复只上报 ready（playWhenReady 未变，不会有 playing 事件）：
+    // 播放态下 waiting 已在别处置真，这里收口，否则"正在缓冲"永挂
+    if (this.state === 'playing') this.emit('statechange', { playing: true, waiting: false });
     this.emit('ready', { duration });
   }
 
@@ -1104,7 +1107,10 @@ export class PlayerController {
   private handleRemotePlaying(playing: boolean): void {
     if (this.destroyed) return;
     if (playing) {
+      const wasPlaying = this.state === 'playing';
       this.setState('playing');
+      // waiting 置真不改 state，恢复上报同态时 setState 会吞掉事件——这里手动收口
+      if (wasPlaying) this.emit('statechange', { playing: true, waiting: false });
     } else {
       this.handlePause();
     }

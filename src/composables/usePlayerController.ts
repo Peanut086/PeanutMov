@@ -151,7 +151,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     hideTimer = setTimeout(() => {
       hideTimer = null;
       // 暂停/结束/错误时不自动隐藏，保证用户能找到按钮
-      if (player.playing) setControlsVisible(false);
+      // 缓冲等待态不隐藏：控制条得一直够得着（暂停/下一集），恢复后再走隐藏计时
+      if (player.playing && !player.waiting) setControlsVisible(false);
     }, CONTROLS_HIDE_DELAY_MS);
   }
 
@@ -210,7 +211,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     c.on('statechange', ({ playing, waiting }) => {
       player.patch({ playing, waiting });
       if (playing) {
-        scheduleHide();
+        // waiting 中保控制条常驻（隐藏计时在 scheduleHide 里被 waiting 闸住），
+        // 收口后再登记自动隐藏
+        if (waiting) setControlsVisible(true);
+        else scheduleHide();
         pausedAt = null;
       } else {
         setControlsVisible(true);

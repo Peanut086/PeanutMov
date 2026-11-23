@@ -1489,6 +1489,9 @@ input[type="range"].pl-rng::-moz-range-thumb {
   position: absolute;
   inset: 0;
   z-index: calc(var(--z-hud) - 1);
+  /* 透明背景层不得吞手势：单击唤控制条/双击暂停要能穿透到下层手势层，
+     否则缓冲提示一旦挂住，整个画面就点不动（仅按钮恢复响应） */
+  pointer-events: none;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1553,6 +1556,7 @@ input[type="range"].pl-rng::-moz-range-thumb {
   flex-wrap: wrap;
   justify-content: center;
   gap: var(--s2);
+  pointer-events: auto;
 }
 
 /* ---------- 错误：说清「哪一步失败」并给可执行出口 ---------- */
