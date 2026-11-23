@@ -244,6 +244,29 @@ export async function nativeDownloadStopForegroundService(): Promise<void> {
   logger.debug('Native download foreground service stopped');
 }
 
+/**
+ * 下载进度通知的载荷（N-02）
+ *
+ * 数字全部由 JS 队列汇总算出：原生只认直链任务，HLS 的字节都在 JS 下载器里，
+ * 只有 JS 有全量视图。`percent` 用队列 summary 的加权口径，不是字节比。
+ */
+export interface NativeDownloadNotice {
+  doneCount: number;
+  totalCount: number;
+  percent: number;
+  remainingBytes: number;
+  speedBps: number;
+}
+
+/**
+ * 刷新下载进度通知。
+ *
+ * 每秒都可能被调用，因此不打日志（日志量远大于信息量）；原生不可用时静默跳过。
+ */
+export async function nativeDownloadUpdateProgress(notice: NativeDownloadNotice): Promise<void> {
+  await callNative('updateProgress', { ...notice });
+}
+
 // ========== 事件监听 ==========
 
 export function onProgress(listener: ProgressListener): () => void {

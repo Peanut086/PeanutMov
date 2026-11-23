@@ -42,6 +42,8 @@ public class DownloadPlugin extends Plugin {
         super.load();
         downloadManager = NativeDownloadManager.getInstance(getContext());
         downloadManager.setPlugin(this);
+        // N-02：JS 完成通知显式落「下载」渠道，渠道必须在这里就存在（服务不一定起过）
+        DownloadService.ensureChannel(getContext());
         Log.d(TAG, "DownloadPlugin loaded");
     }
 
@@ -201,6 +203,24 @@ public class DownloadPlugin extends Plugin {
         result.put("ok", true);
         result.put("maxConcurrent", value);
         call.resolve(result);
+    }
+
+    /**
+     * 刷新下载进度通知（N-02）。
+     *
+     * 数字一律走 `getData().optXxx`：JS 数字在 org.json 里是 Integer，
+     * `call.getLong(key, 0L)` 会把整型值当类型不符静默退回默认值（同源缺陷见 ExoPlayerPlugin P0-7）。
+     * 通知不可用（无权限/服务未起）时静默返回，不影响下载本身。
+     */
+    @PluginMethod
+    public void updateProgress(PluginCall call) {
+        int doneCount = call.getData().optInt("doneCount", 0);
+        int totalCount = call.getData().optInt("totalCount", 0);
+        int percent = call.getData().optInt("percent", 0);
+        long remainingBytes = call.getData().optLong("remainingBytes", 0L);
+        long speedBps = call.getData().optLong("speedBps", 0L);
+        DownloadService.updateProgress(getContext(), doneCount, totalCount, percent, remainingBytes, speedBps);
+        call.resolve();
     }
 
     /**

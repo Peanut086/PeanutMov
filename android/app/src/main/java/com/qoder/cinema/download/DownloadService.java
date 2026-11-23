@@ -10,6 +10,7 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.util.Log;
 
 import androidx.annotation.Nullable;
@@ -31,7 +32,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * 生命周期：
  * - 有下载任务时启动，所有任务完成/暂停后自动停止
- * - NativeDownloadManager 通过 updateNotification() 更新进度
+ * - 进度由 JS 队列汇总后经 `DownloadPlugin.updateProgress` 下发（N-02）：原生侧只认直链任务，
+ *   HLS 任务的字节都在 JS 下载器里，只有 JS 有全量视图
  *
  * EXT-04 / FR-60：转封装（`MediaToolPlugin` → `MediaRemuxer`）期间也要求服务存活，
  * 否则用户切后台后系统可能把进程回收，`.mp4.part` 变成残留半截文件。
@@ -44,7 +46,19 @@ public class DownloadService extends Service {
     private static final String TAG = "DownloadService";
     private static final String CHANNEL_ID = "download_channel";
     private static final String CHANNEL_NAME = "下载";
+    /**
+     * N-02：完成提示单独一条渠道。「下载」渠道是 LOW（后台保活进度要静音），
+     * 而 Android 8+ 的声音由渠道决定、通知侧无法覆盖——分开才能既安静跟踪进度、又响一声告知完成。
+     */
+    private static final String DONE_CHANNEL_ID = "download_done";
+    private static final String DONE_CHANNEL_NAME = "下载完成";
     private static final int NOTIFICATION_ID = 1001;
+    /** N-02：下载类通知收进同一组， shade 里可折叠 */
+    private static final String GROUP_DOWNLOADS = "peanutmov.downloads";
+    /** 进度通知的最小刷新间隔：JS 侧进度回调很密，这里兜住 notify 次数 */
+    private static final long NOTIFY_MIN_INTERVAL_MS = 1000L;
+    private static long lastNotifiedAt = 0L;
+    private static int lastNotifiedPercent = -1;
 
     /** 转封装等后处理任务计数（进程内，配对调用；<0 视为失衡并复位） */
     private static final AtomicInteger postprocessCount = new AtomicInteger(0);
@@ -61,7 +75,7 @@ public class DownloadService extends Service {
         super.onCreate();
         instanceRef = new WeakReference<>(this);
         notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-        createNotificationChannel();
+        ensureChannel(this);
         Log.d(TAG, "DownloadService created");
     }
 
@@ -120,17 +134,32 @@ public class DownloadService extends Service {
         }
     }
 
-    private void createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID,
-                    CHANNEL_NAME,
-                    NotificationManager.IMPORTANCE_LOW // 不发出声音
-            );
-            channel.setDescription("视频下载进度");
-            channel.setShowBadge(false);
-            notificationManager.createNotificationChannel(channel);
-        }
+    /**
+     * 建立下载相关的两条通知渠道（minSdk 29 ≥ O，无版本分支）。
+     *
+     * 幂等，且必须在插件加载时就调一次：JS 侧的完成通知（Capacitor LocalNotifications）
+     * 显式带 `channelId`，渠道不存在时那条通知会被系统静默丢弃——前台服务只在后台跑下载时才存在，
+     * 不能指望它顺带把渠道建出来。
+     */
+    public static void ensureChannel(Context context) {
+        NotificationManager manager = context.getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        NotificationChannel progress = new NotificationChannel(
+                CHANNEL_ID,
+                CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_LOW // 不发出声音
+        );
+        progress.setDescription("视频下载进度");
+        progress.setShowBadge(false);
+        manager.createNotificationChannel(progress);
+
+        NotificationChannel done = new NotificationChannel(
+                DONE_CHANNEL_ID,
+                DONE_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_DEFAULT // 完成要响一声，但不横幅打扰
+        );
+        done.setDescription("下载完成提示");
+        manager.createNotificationChannel(done);
     }
 
     /**
@@ -141,7 +170,7 @@ public class DownloadService extends Service {
     private boolean startForegroundNotification() {
         if (isForeground) return true;
 
-        Notification notification = buildNotification("下载中...", 0, 0, false);
+        Notification notification = buildNotification("视频下载", "准备下载...", null, 0, true);
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -161,17 +190,43 @@ public class DownloadService extends Service {
     }
 
     /**
-     * 更新通知进度
+     * 刷新下载进度通知（N-02）。
+     *
+     * 进度由 JS 侧汇总后下发：原生只认直链任务，HLS 任务在 JS 下载器里，
+     * 只有 JS 有全量视图。百分比沿用队列 summary 的加权口径（P2-1：字节比会把
+     * "13 个任务里 2 个完成"算成 100%），这里只做展示与节流。
      */
-    public void updateNotification(int downloadedCount, int totalCount, long totalBytes, long speedBps) {
-        if (!isForeground) return;
+    public static void updateProgress(Context context, int doneCount, int totalCount, int percent,
+                                      long remainingBytes, long speedBps) {
+        DownloadService service = instanceRef.get();
+        if (service == null || !service.isForeground) return;
 
-        String title = String.format("下载中 %d/%d", downloadedCount, totalCount);
-        String content = formatSpeed(speedBps);
-        int progress = totalCount > 0 ? (downloadedCount * 100 / totalCount) : 0;
+        long now = SystemClock.elapsedRealtime();
+        synchronized (DownloadService.class) {
+            if (percent == lastNotifiedPercent && now - lastNotifiedAt < NOTIFY_MIN_INTERVAL_MS) return;
+            lastNotifiedPercent = percent;
+            lastNotifiedAt = now;
+        }
+        service.notifyProgress(doneCount, totalCount, percent, remainingBytes, speedBps);
+    }
 
-        Notification notification = buildNotification(content, progress, totalBytes, true);
+    private void notifyProgress(int doneCount, int totalCount, int percent, long remainingBytes, long speedBps) {
+        if (notificationManager == null) return;
+        String title = String.format("下载中 %d/%d", doneCount, totalCount);
+        String content = percent + "% · " + formatSpeed(speedBps);
+        // 未开始任务的大小未知时，剩余字节只是"已知部分"，ETA 因此偏乐观——文案用「约」承担这一点
+        // 不确定进度按 percent 判：JS 侧体积未知时会把剩余字节报 0，但百分比仍是可信的
+        Notification notification = buildNotification(title, content, remainingEtaText(remainingBytes, speedBps),
+                percent, percent <= 0);
         notificationManager.notify(NOTIFICATION_ID, notification);
+    }
+
+    private static String remainingEtaText(long remainingBytes, long speedBps) {
+        if (remainingBytes <= 0 || speedBps <= 0) return null;
+        long minutes = remainingBytes / speedBps / 60;
+        if (minutes < 1) return "剩余不足 1 分钟";
+        if (minutes < 60) return "剩余约 " + minutes + " 分钟";
+        return "剩余约 " + (minutes / 60) + " 小时 " + (minutes % 60) + " 分";
     }
 
     /**
@@ -182,7 +237,8 @@ public class DownloadService extends Service {
     private void notifyPostprocess(int percent) {
         if (!isForeground || notificationManager == null) return;
         String content = percent >= 0 ? ("转封装中 " + percent + "%") : "转封装中...";
-        Notification notification = buildNotification(content, percent >= 0 ? Math.max(percent, 1) : 0, 0, percent < 0);
+        Notification notification = buildNotification("视频下载", content, null,
+                percent >= 0 ? Math.max(percent, 1) : 0, percent < 0);
         notificationManager.notify(NOTIFICATION_ID, notification);
     }
 
@@ -198,7 +254,8 @@ public class DownloadService extends Service {
         super.stopSelf();
     }
 
-    private Notification buildNotification(String content, int progress, long totalBytes, boolean indeterminate) {
+    private Notification buildNotification(String title, String content, String subText, int progress,
+                                           boolean indeterminate) {
         // 点击通知打开主界面
         Intent intent = new Intent(this, MainActivity.class);
         intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -208,18 +265,26 @@ public class DownloadService extends Service {
         );
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_sys_download)
-                .setContentTitle("视频下载")
+                .setSmallIcon(R.drawable.ic_stat_peanut)
+                .setContentTitle(title)
                 .setContentText(content)
                 .setOngoing(true)
                 .setAutoCancel(false)
+                .setOnlyAlertOnce(true)
                 .setContentIntent(pendingIntent)
+                .setGroup(GROUP_DOWNLOADS)
+                // Android 12+ 默认把前台服务通知延后最多 10s，下载一开就要看得见
+                .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
                 .setPriority(NotificationCompat.PRIORITY_LOW);
 
-        if (indeterminate && progress == 0) {
+        if (subText != null) {
+            builder.setSubText(subText);
+        }
+
+        if (indeterminate) {
             builder.setProgress(0, 0, true); // 不确定进度条
         } else if (progress > 0) {
-            builder.setProgress(100, progress, false);
+            builder.setProgress(100, Math.min(progress, 100), false);
         }
 
         return builder.build();

@@ -23,7 +23,7 @@ import { deleteFile, stat, toPlayableUrl } from '@/native/fs';
 import { currentNetworkType, isOnline, onNetworkChange, primeNetworkStatus } from '@/native/network';
 import { onAppStateChange, type AppLifecycleState } from '@/native/appLifecycle';
 import { applyNativeSpeedLimit } from '@/native/mediaToolPlugin';
-import { nativeDownloadSetConcurrency } from '@/native/downloadPlugin';
+import { nativeDownloadSetConcurrency, nativeDownloadUpdateProgress } from '@/native/downloadPlugin';
 import {
   DOWNLOAD_CELLULAR_WARN_BYTES,
   DOWNLOAD_DEFAULT_CONCURRENCY,
@@ -187,8 +187,11 @@ async function summaryOf(): Promise<DownloadSummary> {
 }
 
 async function emitQueueSummary(): Promise<void> {
-  emitDownload({ type: 'queue', summary: await summaryOf() });
+  const summary = await summaryOf();
+  emitDownload({ type: 'queue', summary });
   appEvents.emit('downloads:changed', { id: null });
+  // N-02：队列跑空就把合并窗口里的完成通知立即落地，最后一条不必等满窗口
+  if (summary.downloading === 0 && summary.queued === 0) flushCompleteNotices();
   // OPT-09：队列在后台跑空/全暂停后要把保活收回来（前台时直接短路，不查库）
   await syncKeepAliveIfBackground();
 }
@@ -397,6 +400,9 @@ async function ensureQueue(): Promise<DownloadQueue> {
     const next: DownloadTask = { ...current, ...guarded, updatedAt: guarded.updatedAt ?? Date.now() };
     await downloadRepo.save(next);
     emitDownload({ type: 'progress', task: next });
+    if (next.status === 'downloading') inFlightSpeed.set(next.id, next.speedBps ?? 0);
+    else inFlightSpeed.delete(next.id);
+    scheduleProgressNotice();
   };
 
   const engine = createDownloadEngine({
@@ -431,6 +437,7 @@ async function ensureQueue(): Promise<DownloadQueue> {
     onStatus: (task, previous) => {
       emitDownload({ type: 'status', task, previous });
       void emitQueueSummary();
+      if (task.status !== 'downloading') inFlightSpeed.delete(task.id);
       // 下载完成后，下载关联的字幕和封面
       if (task.status === 'completed' && previous !== 'completed') {
         void downloadService.downloadAttachments(task, {
@@ -450,10 +457,8 @@ async function ensureQueue(): Promise<DownloadQueue> {
         }).catch((e) => {
           logger.warn('下载附件失败（忽略）', { taskId: task.id, error: toAppError(e).message });
         });
-        // 发送下载完成通知
-        void sendDownloadCompleteNotification(task).catch((e) => {
-          logger.warn('发送下载完成通知失败（忽略）', { taskId: task.id, error: e });
-        });
+        // 发送下载完成通知（N-02：窗口内合并，批量下载不再逐集刷屏）
+        queueDownloadCompleteNotice(task);
       }
     },
     beforeStart: refreshBeforeStart,
@@ -1809,6 +1814,8 @@ export const downloadService = {
           void syncKeepAliveIfBackground().then(() => {
             logger.debug('进入后台，Android 按队列状态同步前台 Service');
           });
+          // N-02：切后台立刻补一次进度通知，不让用户等到下一次字节回写才看到数字
+          void pushProgressNotice();
         } else {
           // Web：暂停下载（WebView 可能被冻结）
           void downloadService.pauseAll('background').catch((e: unknown) => {
@@ -2097,6 +2104,7 @@ export const downloadService = {
     queue = null;
     listeners.clear();
     orphanRequeueStreak.clear();
+    resetDownloadNotices();
     bootstrapped = false;
     // 启动一次性闸门放回未触发：与 `bootstrapped` 同一语义，否则用例里第二次
     // `checkZombieTasks()` 直接 return，分类结果永远断不到。
@@ -2312,9 +2320,47 @@ export async function ensureNotificationPermission(): Promise<boolean> {
   return notifPermission === 'granted';
 }
 
-async function sendDownloadCompleteNotification(task: DownloadTask): Promise<void> {
-  const title = task.episodeTitle ? `${task.title} - ${task.episodeTitle}` : task.title;
-  const body = '下载完成';
+/**
+ * 与原生 `DownloadService` 的渠道/分组键同口径：改一边必须改另一边。
+ * 两条渠道都由 `DownloadPlugin.load()` 预先建好（同 P2-2 的节目提醒做法）：
+ * 渠道不存在时系统会静默丢弃通知，而前台服务只在后台跑下载时才存在。
+ * 完成提示走可发声的 `download_done`，进度保活走静音的 `download_channel`。
+ */
+const DOWNLOAD_DONE_CHANNEL_ID = 'download_done';
+const DOWNLOAD_NOTICE_GROUP = 'peanutmov.downloads';
+
+/**
+ * 完成通知合并窗口（N-02）：批量下载逐集弹通知会把通知栏刷爆，
+ * 窗口内完成的集并成一条。队列跑空时提前落地，最后一条不等满窗口。
+ */
+const COMPLETE_NOTICE_WINDOW_MS = 8000;
+let completeBucket: DownloadTask[] = [];
+let completeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function queueDownloadCompleteNotice(task: DownloadTask): void {
+  completeBucket.push(task);
+  if (completeTimer) return;
+  completeTimer = setTimeout(() => flushCompleteNotices(), COMPLETE_NOTICE_WINDOW_MS);
+}
+
+function flushCompleteNotices(): void {
+  if (completeTimer) {
+    clearTimeout(completeTimer);
+    completeTimer = null;
+  }
+  const batch = completeBucket;
+  completeBucket = [];
+  if (batch.length === 0) return;
+  void sendDownloadCompleteNotice(batch).catch((e) => {
+    logger.warn('发送下载完成通知失败（忽略）', e);
+  });
+}
+
+async function sendDownloadCompleteNotice(batch: DownloadTask[]): Promise<void> {
+  const first = batch[0];
+  const firstTitle = first.episodeTitle ? `${first.title} - ${first.episodeTitle}` : first.title;
+  const title = batch.length === 1 ? firstTitle : `${batch.length} 个下载完成`;
+  const body = batch.length === 1 ? '下载完成' : `${firstTitle} 等 ${batch.length} 项`;
 
   // 完成回调里绝不弹框请求权限：仅静默检查已授予状态（OPT-18）
   if (isNative()) {
@@ -2328,16 +2374,20 @@ async function sendDownloadCompleteNotification(task: DownloadTask): Promise<voi
       await LocalNotifications.schedule({
         notifications: [
           {
-            id: hashStringToInt(task.id),
+            id: hashStringToInt(first.id),
             title,
             body,
             sound: 'default',
-            smallIcon: 'ic_stat_icon_config_sample',
-            iconColor: '#488AFF',
+            // 品牌资产：旧值是插件示例名（工程里并不存在）+ 一套与产品无关的蓝
+            smallIcon: 'ic_stat_peanut',
+            iconColor: '#F0A82E',
+            // 与进度通知同一组（折叠成一叠），但用可发声的完成渠道；旧行为落插件自建 default 渠道
+            channelId: DOWNLOAD_DONE_CHANNEL_ID,
+            group: DOWNLOAD_NOTICE_GROUP,
           },
         ],
       });
-      logger.debug('下载完成通知已发送', { taskId: task.id });
+      logger.debug('下载完成通知已发送', { count: batch.length, taskId: first.id });
     } catch (e) {
       logger.warn('发送通知失败', e);
     }
@@ -2352,10 +2402,79 @@ async function sendDownloadCompleteNotification(task: DownloadTask): Promise<voi
         return;
       }
       new Notification(title, { body, silent: false });
-      logger.debug('Web 通知已发送', { taskId: task.id });
+      logger.debug('Web 通知已发送', { count: batch.length, taskId: first.id });
     } catch (e) {
       logger.warn('发送 Web 通知失败', e);
     }
+  }
+}
+
+/* ---------------- 下载进度通知（N-02） ---------------- */
+
+/** 进度通知的最小间隔：字节回写很密，通知不需要跟着抖 */
+const PROGRESS_NOTICE_INTERVAL_MS = 1500;
+/** 在飞任务的瞬时速度，按 taskId 记；状态离开 downloading 即清，避免把已完成的算进合计 */
+const inFlightSpeed = new Map<string, number>();
+let progressNoticeAt = 0;
+let progressNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function aggregateSpeedBps(): number {
+  let sum = 0;
+  for (const value of inFlightSpeed.values()) sum += value;
+  return sum;
+}
+
+/**
+ * 把队列汇总推到系统通知。
+ *
+ * 只在后台跑：前台时下载页自己就是进度面板，不值得为通知每秒读一次库。
+ */
+function scheduleProgressNotice(): void {
+  if (!isNative() || lastLifecycleState !== 'background') return;
+  const wait = PROGRESS_NOTICE_INTERVAL_MS - (Date.now() - progressNoticeAt);
+  if (wait <= 0) {
+    void pushProgressNotice();
+    return;
+  }
+  if (progressNoticeTimer) return;
+  progressNoticeTimer = setTimeout(() => {
+    progressNoticeTimer = null;
+    void pushProgressNotice();
+  }, wait);
+}
+
+/** 卸载/测试复位：丢弃挂起的通知窗口，别让它们在队列销毁后落地 */
+function resetDownloadNotices(): void {
+  if (completeTimer) {
+    clearTimeout(completeTimer);
+    completeTimer = null;
+  }
+  completeBucket = [];
+  if (progressNoticeTimer) {
+    clearTimeout(progressNoticeTimer);
+    progressNoticeTimer = null;
+  }
+  progressNoticeAt = 0;
+  inFlightSpeed.clear();
+}
+
+async function pushProgressNotice(): Promise<void> {
+  progressNoticeAt = Date.now();
+  try {
+    const summary = await downloadRepo.summary();
+    if (summary.downloading === 0 && summary.queued === 0) return;
+    // 有任务体积未知时分母不可信，宁可不报剩余量（与 P2-1 同一个坑）
+    const remaining =
+      summary.unknownSizeTasks > 0 ? 0 : Math.max(0, summary.totalBytes - summary.downloadedBytes);
+    await nativeDownloadUpdateProgress({
+      doneCount: summary.completed,
+      totalCount: summary.total,
+      percent: Math.round(summary.progress * 100),
+      remainingBytes: remaining,
+      speedBps: aggregateSpeedBps(),
+    });
+  } catch (e) {
+    logger.debug('下载进度通知下发失败（忽略）', toAppError(e).message);
   }
 }
 
