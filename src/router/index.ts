@@ -250,9 +250,12 @@ const router = createRouter({
         const container = document.querySelector<HTMLElement>('[data-scroll="page"]');
         if (isInnerScroller(container) && innerTop > 0) {
           container.scrollTop = innerTop;
+          container.dispatchEvent(new Event('scroll'));
         } else if (pageTop > 0) {
           window.scrollTo(0, pageTop);
         }
+        // 虚拟网格不能等浏览器异步派发滚动事件，返程首帧需要立刻按新位置重算窗口。
+        document.dispatchEvent(new Event('scroll'));
         resolve(false);
       }, 100);
     });

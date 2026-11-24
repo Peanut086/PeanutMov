@@ -1,31 +1,24 @@
 /**
  * 封面共享元素转场（列表封面 ⇄ 播放画面）
  *
- * 去程：点击时把封面 `<img>` 复制到一个视口固定的浮层里，原图先隐去；
- * 播放页挂载后调用 `finishSharedCover(stageEl)`，浮层图用 280ms 从封面矩形
- * 形变到视频舞台矩形，再淡出交回真实画面。
+ * 去程：点击时把封面 `<img>` 复制到视口固定浮层，播放页挂载后飞向视频舞台并淡出。
+ * 返程：返回前把海报立在舞台矩形上，目标页 enter 后收回卡片当前位置；卡片按
+ * `data-cover-key` 重新查询，虚拟列表回收 DOM 时不会攥着过期引用。
  *
- * 返程：播放页返回前调用 `rewindSharedCover(stageEl, coverKey, posterUrl)`，
- * 把海报立在舞台矩形上；目标页 enter 完成后由 App.vue 触发
- * `finishSharedCoverRewind()`，收回到**卡片当前位置**。卡片按 `data-cover-key`
- * 重新查询而不是持有元素引用——虚拟列表会回收 DOM，攥着的引用必然过期；
- * 查不到、还没加载、已滚出视口，一律原地淡出，绝不飞错位图。
- *
- * 形变走 left/top/width/height 而不是 transform：封面 2:3、舞台 16:9，
- * 非等比缩放会把海报拉歪，而改尺寸能让 `object-fit: cover` 每帧自己重裁。
- * 浮层加 `contain`，把这份逐帧布局限制在自己的子树里。
+ * 飞行只改 `transform/opacity`，不再逐帧改 `top/left/width/height`。2:3 与 16:9
+ * 之间保持等比缩放，并在落点淡出交回真实画面，避免非等比拉伸与逐帧布局。
  */
 import { ref } from 'vue';
 
 const DURATION_MS = 280;
 const EASE = 'cubic-bezier(0.22, 0.9, 0.26, 1)';
 const FADE_MS = 120;
-/** 播放页没能接上（重定向、加载异常）时的兜底清理 */
 const STALE_MS = 2500;
-/** 动画看门狗：页面被节流时动画不会推进，到点直接收尾，浮层绝不长期盖住播放页 */
 const GUARD_MS = DURATION_MS + FADE_MS + 400;
+const REWIND_SETTLE_MS = 260;
+const REWIND_POLL_MS = 32;
+const MAX_REWIND_RETARGETS = 4;
 
-/** 转场进行中：App.vue 据此把页面滑入换成淡入，避免位移叠加 */
 export const sharedCoverActive = ref(false);
 
 interface Rect {
@@ -44,9 +37,6 @@ interface PendingCover {
   timer: ReturnType<typeof setTimeout>;
 }
 
-let pending: PendingCover | null = null;
-
-/** 返程中的浮层：源矩形是播放舞台，目标矩形等目标页渲染出来再查 */
 interface RewindingCover {
   overlay: HTMLDivElement;
   clone: HTMLImageElement;
@@ -54,8 +44,11 @@ interface RewindingCover {
   fromRadius: string;
   coverKey: string;
   timer: ReturnType<typeof setTimeout>;
+  restore?: () => void;
+  animation?: Animation;
 }
 
+let pending: PendingCover | null = null;
 let rewinding: RewindingCover | null = null;
 
 function rectOf(el: Element): Rect {
@@ -76,6 +69,53 @@ function place(el: HTMLElement, rect: Rect): void {
   el.style.left = `${rect.left}px`;
   el.style.width = `${rect.width}px`;
   el.style.height = `${rect.height}px`;
+  el.style.transformOrigin = 'top left';
+}
+
+function flightFrames(from: Rect, to: Rect, fromRadius: string, toRadius: string): Keyframe[] {
+  const transform = `translate(${to.left - from.left}px, ${to.top - from.top}px) scale(${to.width / from.width})`;
+  return [
+    { transform: 'translate(0px, 0px) scale(1)', borderRadius: fromRadius },
+    { transform, borderRadius: toRadius },
+  ];
+}
+
+function nearRect(a: Rect, b: Rect, threshold: number): boolean {
+  return (
+    Math.abs(a.top - b.top) < threshold &&
+    Math.abs(a.left - b.left) < threshold &&
+    Math.abs(a.width - b.width) < threshold &&
+    Math.abs(a.height - b.height) < threshold
+  );
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+async function fadeOverlay(overlay: HTMLElement): Promise<void> {
+  if (typeof overlay.animate !== 'function') return;
+  let guard: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      overlay.animate([{ opacity: 1 }, { opacity: 0 }], {
+        duration: FADE_MS,
+        easing: 'linear',
+        fill: 'forwards',
+      }).finished,
+      new Promise<void>((resolve) => {
+        guard = setTimeout(resolve, FADE_MS + 400);
+      }),
+    ]);
+  } catch {
+    // 动画被打断时直接交回真实画面。
+  } finally {
+    clearTimeout(guard);
+  }
 }
 
 function dispose(p: PendingCover): void {
@@ -85,24 +125,17 @@ function dispose(p: PendingCover): void {
   sharedCoverActive.value = false;
 }
 
-/** 放弃转场（导航未发生或中途失败），恢复原封面显示 */
 export function cancelSharedCover(): void {
   if (!pending) return;
   dispose(pending);
   pending = null;
 }
 
-/**
- * 开始转场：`source` 传封面容器或封面 `<img>` 本身。
- * 封面未加载、已滑出视口、动效被系统关闭时静默跳过，导航行为与现状一致。
- */
 export function beginSharedCover(source: Element | null | undefined): void {
   if (pending || typeof document === 'undefined' || reducedMotion()) return;
-  // 返程浮层还没收干净就再次进入：直接撤掉，不允许两层封面叠着
   if (rewinding) cancelSharedCoverRewind();
 
-  const img =
-    source instanceof HTMLImageElement ? source : (source?.querySelector('img') ?? null);
+  const img = source instanceof HTMLImageElement ? source : (source?.querySelector('img') ?? null);
   if (!img?.complete || img.naturalWidth === 0) return;
 
   const from = rectOf(img);
@@ -120,8 +153,7 @@ export function beginSharedCover(source: Element | null | undefined): void {
 
   const clone = img.cloneNode(false) as HTMLImageElement;
   clone.removeAttribute('loading');
-  clone.style.cssText =
-    'position:absolute;object-fit:cover;display:block;will-change:left,top,width,height,border-radius;';
+  clone.style.cssText = 'position:absolute;object-fit:cover;display:block;will-change:transform,opacity;';
   place(clone, from);
   clone.style.borderRadius = radiusOf(clipHost);
 
@@ -143,10 +175,6 @@ export function beginSharedCover(source: Element | null | undefined): void {
   sharedCoverActive.value = true;
 }
 
-/**
- * 播放页调用：把浮层封面形变到目标矩形并淡出。
- * 没有进行中的转场、目标不可见时立即清理，不产生任何动画。
- */
 export async function finishSharedCover(target: Element | null | undefined): Promise<void> {
   const p = pending;
   if (!p) return;
@@ -165,37 +193,17 @@ export async function finishSharedCover(target: Element | null | undefined): Pro
     return;
   }
 
-  const toRadius = radiusOf(target as Element);
   const run = (async () => {
-    await p.clone.animate(
-      [
-        {
-          top: `${p.from.top}px`,
-          left: `${p.from.left}px`,
-          width: `${p.from.width}px`,
-          height: `${p.from.height}px`,
-          borderRadius: p.fromRadius,
-        },
-        {
-          top: `${to.top}px`,
-          left: `${to.left}px`,
-          width: `${to.width}px`,
-          height: `${to.height}px`,
-          borderRadius: toRadius,
-        },
-      ],
-      { duration: DURATION_MS, easing: EASE, fill: 'forwards' },
-    ).finished;
-    await p.overlay.animate([{ opacity: 1 }, { opacity: 0 }], {
-      duration: FADE_MS,
-      easing: 'linear',
+    await p.clone.animate(flightFrames(p.from, to, p.fromRadius, radiusOf(target as Element)), {
+      duration: DURATION_MS,
+      easing: EASE,
       fill: 'forwards',
     }).finished;
+    await fadeOverlay(p.overlay);
   })().catch(() => {
-    // 动画被打断（页面被销毁等）：直接收尾
+    // 动画被打断时直接收尾。
   });
 
-  // 后台/节流标签页不出帧，Animation.finished 会一直挂着，因此限时收尾
   let guard: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
     run,
@@ -207,17 +215,6 @@ export async function finishSharedCover(target: Element | null | undefined): Pro
   dispose(p);
 }
 
-/* ---------- 返程：舞台 → 原卡片 ---------- */
-
-/** 目标页重建封面要时间（DetailView 不在 KeepAlive 名单里），给一小段等待预算 */
-const REWIND_SETTLE_MS = 260;
-const REWIND_POLL_MS = 32;
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** 按 id 重新查询当前挂在 DOM 上的封面；图片没解码完不算查到 */
 function findCoverTarget(coverKey: string): { host: HTMLElement; img: HTMLImageElement } | null {
   for (const el of document.querySelectorAll<HTMLElement>('[data-cover-key]')) {
     if (el.dataset.coverKey !== coverKey) continue;
@@ -231,23 +228,60 @@ function findCoverTarget(coverKey: string): { host: HTMLElement; img: HTMLImageE
 
 function inViewport(rect: Rect): boolean {
   const vp = document.documentElement;
-  return rect.top < vp.clientHeight && rect.top + rect.height > 0 && rect.left < vp.clientWidth && rect.left + rect.width > 0;
+  return (
+    rect.top < vp.clientHeight &&
+    rect.top + rect.height > 0 &&
+    rect.left < vp.clientWidth &&
+    rect.left + rect.width > 0
+  );
 }
 
-/** 撤掉返程浮层：动画跑到一半也要保证 DOM 不残留 */
+async function waitForStableTarget(
+  coverKey: string,
+): Promise<{ host: HTMLElement; img: HTMLImageElement; rect: Rect } | null> {
+  const deadline = Date.now() + REWIND_SETTLE_MS;
+  let previous: { img: HTMLImageElement; rect: Rect } | null = null;
+  let stableFrames = 0;
+
+  while (Date.now() < deadline) {
+    const found = findCoverTarget(coverKey);
+    if (!found) {
+      previous = null;
+      stableFrames = 0;
+      await delay(REWIND_POLL_MS);
+      continue;
+    }
+    const rect = rectOf(found.img);
+    if (previous !== null && previous.img === found.img && nearRect(rect, previous.rect, 0.5)) stableFrames += 1;
+    else stableFrames = 0;
+    if (stableFrames >= 2) return { ...found, rect };
+    previous = { img: found.img, rect };
+    await nextFrame();
+  }
+  return null;
+}
+
+function hideCoverImage(img: HTMLImageElement): () => void {
+  const previousVisibility = img.style.visibility;
+  img.style.visibility = 'hidden';
+  return () => {
+    img.style.visibility = previousVisibility;
+  };
+}
+
 function cancelSharedCoverRewind(): void {
   const p = rewinding;
   if (!p) return;
   rewinding = null;
   clearTimeout(p.timer);
+  p.animation?.cancel?.();
+  p.animation = undefined;
+  p.restore?.();
+  p.restore = undefined;
   p.overlay.remove();
   sharedCoverActive.value = false;
 }
 
-/**
- * 播放页返回前调用：凭海报 URL 重建一张封面立在舞台矩形上。
- * 舞台不可见、海报缺失、动效被系统关闭时静默跳过，返回行为与现状一致。
- */
 export function rewindSharedCover(
   stage: Element | null | undefined,
   coverKey: string | null | undefined,
@@ -267,8 +301,7 @@ export function rewindSharedCover(
   const clone = document.createElement('img');
   clone.src = posterUrl;
   clone.alt = '';
-  clone.style.cssText =
-    'position:absolute;object-fit:cover;display:block;will-change:left,top,width,height,border-radius;';
+  clone.style.cssText = 'position:absolute;object-fit:cover;display:block;will-change:transform,opacity;';
   place(clone, from);
   clone.style.borderRadius = radiusOf(stage);
   overlay.appendChild(clone);
@@ -285,30 +318,17 @@ export function rewindSharedCover(
   sharedCoverActive.value = true;
 }
 
-/**
- * 目标页 enter 完成后调用（App.vue 的 Transition 钩子）：把浮层收回卡片当前位置。
- * 等不到卡片、卡片被回收或已滚出视口时原地淡出，不产生错位飞行。
- */
 export async function finishSharedCoverRewind(): Promise<void> {
   const p = rewinding;
   if (!p || typeof document === 'undefined') return;
 
-  const deadline = Date.now() + REWIND_SETTLE_MS;
-  let found = findCoverTarget(p.coverKey);
-  while (!found && Date.now() < deadline) {
-    await delay(REWIND_POLL_MS);
-    found = findCoverTarget(p.coverKey);
-  }
-  // 等待期间被看门狗撤走或新一轮转场抢占
+  const found = await waitForStableTarget(p.coverKey);
   if (rewinding !== p) return;
-
-  const to = found ? rectOf(found.img) : null;
   if (
     !found ||
-    !to ||
-    to.width < 24 ||
-    to.height < 24 ||
-    !inViewport(to) ||
+    found.rect.width < 24 ||
+    found.rect.height < 24 ||
+    !inViewport(found.rect) ||
     reducedMotion() ||
     typeof p.clone.animate !== 'function'
   ) {
@@ -316,48 +336,72 @@ export async function finishSharedCoverRewind(): Promise<void> {
     return;
   }
 
-  rewinding = null;
-  clearTimeout(p.timer);
+  let current: { host: HTMLElement; img: HTMLImageElement } = found;
+  p.restore = hideCoverImage(current.img);
+  let retargets = 0;
 
-  const previousVisibility = found.img.style.visibility;
-  found.img.style.visibility = 'hidden';
-  const toRadius = radiusOf(found.host);
+  while (rewinding === p) {
+    const latest = findCoverTarget(p.coverKey);
+    if (!latest) {
+      cancelSharedCoverRewind();
+      return;
+    }
+    if (latest.img !== current.img) {
+      p.restore?.();
+      current = latest;
+      p.restore = hideCoverImage(current.img);
+    }
 
-  const run = (async () => {
-    await p.clone.animate(
-      [
-        {
-          top: `${p.from.top}px`,
-          left: `${p.from.left}px`,
-          width: `${p.from.width}px`,
-          height: `${p.from.height}px`,
-          borderRadius: p.fromRadius,
-        },
-        {
-          top: `${to.top}px`,
-          left: `${to.left}px`,
-          width: `${to.width}px`,
-          height: `${to.height}px`,
-          borderRadius: toRadius,
-        },
-      ],
+    const to = rectOf(current.img);
+    if (to.width < 24 || to.height < 24 || !inViewport(to)) {
+      cancelSharedCoverRewind();
+      return;
+    }
+
+    let moved = false;
+    let animation: Animation | null = null;
+    const onMove = (): void => {
+      if (!nearRect(rectOf(current.img), to, 1)) {
+        moved = true;
+        animation?.cancel();
+      }
+    };
+    window.addEventListener('scroll', onMove, true);
+    window.addEventListener('resize', onMove);
+    animation = p.clone.animate(
+      flightFrames(p.from, to, p.fromRadius, radiusOf(current.host)),
       { duration: DURATION_MS, easing: EASE, fill: 'forwards' },
-    ).finished;
-  })().catch(() => {
-    // 动画被打断（页面被销毁等）：按跑完处理，下方照常交回真图
-  });
+    );
+    p.animation = animation;
+    try {
+      await animation.finished;
+    } catch {
+      // cancel() 会拒绝 finished；是否重定向由下方落点检查决定。
+    }
+    window.removeEventListener('scroll', onMove, true);
+    window.removeEventListener('resize', onMove);
+    if (p.animation === animation) p.animation = undefined;
+    if (rewinding !== p) return;
 
-  let guard: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
-    run,
-    new Promise<void>((resolve) => {
-      guard = setTimeout(resolve, GUARD_MS);
-    }),
-  ]);
-  clearTimeout(guard);
+    const landed = rectOf(current.img);
+    if (moved || !nearRect(landed, to, 1)) {
+      animation.cancel();
+      retargets += 1;
+      if (retargets > MAX_REWIND_RETARGETS) {
+        cancelSharedCoverRewind();
+        return;
+      }
+      continue;
+    }
 
-  // 落点与卡片重合，直接交回真图，不再叠一层淡出
-  found.img.style.visibility = previousVisibility;
-  p.overlay.remove();
-  sharedCoverActive.value = false;
+    p.restore?.();
+    p.restore = undefined;
+    await fadeOverlay(p.overlay);
+    if (rewinding !== p) return;
+    clearTimeout(p.timer);
+    p.overlay.remove();
+    rewinding = null;
+    sharedCoverActive.value = false;
+    return;
+  }
 }

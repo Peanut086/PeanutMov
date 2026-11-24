@@ -6,8 +6,21 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { pickCandidate, titleMatchScore, type Scored } from '@/services/danmaku/titlePick';
+import { cleanDanmakuSearchTitle, pickCandidate, titleMatchScore, type Scored } from '@/services/danmaku/titlePick';
 import { seasonOfTitle } from '@/sources/douban/playMatch';
+
+describe('cleanDanmakuSearchTitle', () => {
+  it.each([
+    ['士兵突击 全30集', '士兵突击'],
+    ['庆余年(2019)', '庆余年'],
+    ['庆余年 2019', '庆余年'],
+    ['庆余年 更新至12集', '庆余年'],
+    ['庆余年 第二季', '庆余年 第二季'],
+    ['流浪地球2', '流浪地球2'],
+  ])('%s → %s', (input, expected) => {
+    expect(cleanDanmakuSearchTitle(input)).toBe(expected);
+  });
+});
 
 describe('titleMatchScore', () => {
   it('归一化相等记 2 分，剥掉季号/年份/集数后相等记 1 分', () => {

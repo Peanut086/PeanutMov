@@ -239,7 +239,7 @@ export const tencentProvider: DanmakuProvider = {
   available: () => true,
   async match(query) {
     if (query.episode < 1) return null;
-    const items = await searchItems(query.title, query.signal);
+    const items = await searchItems(query.searchTitle ?? query.title, query.signal);
     const cover = pickCover(items, query);
     if (cover === null) return null;
 

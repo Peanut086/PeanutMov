@@ -6,6 +6,7 @@
  * 因此列表项、分类、线路与剧集的构造只保留这一份实现。
  */
 import { episodeIdOf, lineIdOf, mediaIdOf } from '@/shared/id';
+import { logger } from '@/shared/logger';
 import { toAbsoluteUrl } from '@/shared/url';
 import {
   categoryIdFor,
@@ -129,11 +130,22 @@ export function toItemFromVod(source: Source, vod: TvboxVod, makeItem: ItemFacto
   const episodeCount = episodeCountFromRemarks(vod.vod_remarks);
   const durationSec = normalizeDurationSec(vod.vod_remarks);
   const inferredType = inferMediaType(vod.type_name, vod.vod_name);
+  const titleYear = yearFromTitle(title);
+  const sourceYear = normalizeYear(vod.vod_year);
+  if (titleYear !== null && sourceYear !== null && titleYear !== sourceYear) {
+    logger.info('源站元数据年份冲突，采用片名年份', {
+      sourceId: source.id,
+      sourceItemId: vodIdOf(vod),
+      title,
+      sourceYear,
+      titleYear,
+    });
+  }
   return makeItem({
     sourceItemId: vodIdOf(vod),
     title: title || '未命名',
     type: inferredType === 'other' ? inferTypeFromShape(vod.vod_remarks, episodeCount) ?? 'other' : inferredType,
-    year: normalizeYear(vod.vod_year) ?? yearFromTitle(title),
+    year: titleYear ?? sourceYear,
     area: vod.vod_area ? normalizeTitle(vod.vod_area) : null,
     genres: normalizeStringList(vod.type_name),
     tags: normalizeTags(vod.vod_remarks).slice(0, 3),

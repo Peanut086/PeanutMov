@@ -331,7 +331,7 @@ export const DANMAKU_MIN_COMMENTS = 20;
  * 命中结果被缓存 30 天，选片判据一改就必须让存量污染条目（如按错年串到别的片上的
  * `士兵突击:2013:*`）自动作废，否则修复只对新剧生效。改动选片/校验规则时递增。
  */
-export const DANMAKU_MATCH_RULE_VER = 2;
+export const DANMAKU_MATCH_RULE_VER = 3;
 /** 弹幕缓存 TTL（30 天；命中缓存不发网络请求） */
 export const DANMAKU_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /**

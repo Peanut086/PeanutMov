@@ -108,7 +108,7 @@ function pickAlbum(albums: IqiyiAlbum[], query: DanmakuQuery): AlbumHit | null {
 /** 搜索接口被风控时 code 为 -1；空结果不是错误，返回 null 由调用方回退下一源 */
 async function searchAlbum(query: DanmakuQuery): Promise<AlbumHit | null> {
   const params = new URLSearchParams({
-    key: query.title,
+    key: query.searchTitle ?? query.title,
     current_page: '1',
     mode: '1',
     source: 'input',

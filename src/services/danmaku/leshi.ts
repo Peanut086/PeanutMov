@@ -182,7 +182,7 @@ export const leshiProvider: DanmakuProvider = {
   async match(query) {
     if (query.episode < 1) return null;
     const html = await requestWithHeaders<string>(
-      `${SEARCH_URL}?from=pc&wd=${encodeURIComponent(query.title)}`,
+      `${SEARCH_URL}?from=pc&wd=${encodeURIComponent(query.searchTitle ?? query.title)}`,
       { headers: LE_HEADERS, responseType: 'text', timeoutMs: 8000, retries: 0, signal: query.signal },
     );
     const result = pickResult(parseResults(html), query);

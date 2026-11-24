@@ -186,6 +186,11 @@ function spyAnimate(el: HTMLElement): (Keyframe[] | undefined)[] {
   return calls;
 }
 
+function translationOf(frames: Keyframe[] | undefined): { x: number; y: number } {
+  const match = /translate\(([-\d.]+)px,\s*([-\d.]+)px\)/.exec(String(frames?.[1]?.transform ?? ''));
+  return { x: Number(match?.[1]), y: Number(match?.[2]) };
+}
+
 describe('useSharedElement · 返回反向共享元素', () => {
   beforeEach(() => {
     // 横向可见性判定要用到 clientWidth，happy-dom 同样恒为 0
@@ -206,8 +211,11 @@ describe('useSharedElement · 返回反向共享元素', () => {
 
     expect(calls).toHaveLength(1);
     const frames = calls[0]!;
-    expect(frames[0]).toMatchObject({ top: '60px', width: '360px' });
-    expect(frames[1]).toMatchObject({ top: '300px', left: '24px', width: '96px', height: '144px' });
+    expect(clone.style.top).toBe('60px');
+    expect(clone.style.width).toBe('360px');
+    expect(frames[0]).toMatchObject({ transform: 'translate(0px, 0px) scale(1)' });
+    expect(frames[1]).not.toHaveProperty('top');
+    expect(translationOf(frames)).toEqual({ x: 24, y: 240 });
     expect(document.body.contains(overlay)).toBe(false);
     expect(sharedCoverActive.value).toBe(false);
     // 卡片图只是临时隐身，收尾必须原样还回去
@@ -224,7 +232,68 @@ describe('useSharedElement · 返回反向共享元素', () => {
     card.img.getBoundingClientRect = rectBox(620, 24, 96, 144);
     await finishSharedCoverRewind();
 
-    expect(calls[0]![1]).toMatchObject({ top: '620px' });
+    expect(translationOf(calls[0])).toEqual({ x: 24, y: 560 });
+  });
+
+  it('动画已启动后卡片再换位，返程落点必须跟着最新位置', async () => {
+    const card = mountCard('m1', 300);
+    const stage = mountStage();
+    rewindSharedCover(stage, 'm1', 'https://cdn.example.com/poster.jpg');
+
+    const { clone } = lastOverlay();
+    const calls: (Keyframe[] | undefined)[] = [];
+    let releaseFirst: (() => void) | undefined;
+    clone.animate = ((frames: Keyframe[]) => {
+      calls.push(frames);
+      if (calls.length === 1) {
+        card.img.getBoundingClientRect = rectBox(620, 24, 96, 144);
+        window.dispatchEvent(new Event('scroll'));
+        return {
+          finished: new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          }),
+          cancel: vi.fn(),
+        } as unknown as Animation;
+      }
+      return { finished: Promise.resolve(), cancel: vi.fn() } as unknown as Animation;
+    }) as HTMLElement['animate'];
+
+    const done = finishSharedCoverRewind();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    releaseFirst?.();
+    await done;
+
+    expect(calls.length).toBeGreaterThan(1);
+    expect(translationOf(calls.at(-1))).toEqual({ x: 24, y: 560 });
+  });
+
+  it('返程动画被新导航取消时恢复卡片可见性', async () => {
+    const card = mountCard('m1', 300);
+    const stage = mountStage();
+    rewindSharedCover(stage, 'm1', 'https://cdn.example.com/poster.jpg');
+    const { overlay, clone } = lastOverlay();
+    let started!: () => void;
+    const animationStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    clone.animate = (() => {
+      started();
+      let reject!: (reason?: unknown) => void;
+      const finished = new Promise<void>((_resolve, rejectPromise) => {
+        reject = rejectPromise;
+      });
+      return { finished, cancel: () => reject() } as unknown as Animation;
+    }) as HTMLElement['animate'];
+
+    const done = finishSharedCoverRewind();
+    await animationStarted;
+    expect(card.img.style.visibility).toBe('hidden');
+    beginSharedCover(document.createElement('div'));
+    await done;
+
+    expect(card.img.style.visibility).toBe('');
+    expect(document.body.contains(overlay)).toBe(false);
+    expect(sharedCoverActive.value).toBe(false);
   });
 
   it('目标页没有出现时原地撤层，不飞错位图', async () => {
@@ -282,7 +351,7 @@ describe('useSharedElement · 返回反向共享元素', () => {
     await finishSharedCoverRewind();
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]![1]).toMatchObject({ top: '300px' });
+    expect(translationOf(calls[0])).toEqual({ x: 24, y: 240 });
     expect(card.img.style.visibility).toBe('');
   });
 

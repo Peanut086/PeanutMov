@@ -12,6 +12,24 @@
  */
 import { normalizeTitleForMatch, stripTitleNoise } from '@/sources/douban/playMatch';
 
+const SEARCH_YEAR_IN_BRACKETS = /[（(【[]\s*(?:19|20)\d{2}\s*年?\s*[）)】\]]/g;
+const SEARCH_YEAR_AT_TAIL = /(?:\s+|[-_/·])(?:19|20)\d{2}\s*(?:年版|版)?$/;
+const SEARCH_UPDATE_SUFFIX = /(?:更新至|更新到|更新)\s*\d+\s*[集话期]?(?:\s*[全完结])?$/;
+const SEARCH_COUNT_SUFFIX = /(?:全|共)\s*\d+\s*[集话期](?:\s*[全完结])?$/;
+
+/** Provider 搜索词：只去非身份后缀，季号与片名数字必须原样保留。 */
+export function cleanDanmakuSearchTitle(title: string): string {
+  const cleaned = title
+    .trim()
+    .replace(SEARCH_YEAR_IN_BRACKETS, '')
+    .replace(SEARCH_UPDATE_SUFFIX, '')
+    .replace(SEARCH_COUNT_SUFFIX, '')
+    .replace(SEARCH_YEAR_AT_TAIL, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || title.trim();
+}
+
 /** 片名匹配精度：2 = 归一化完全相等，1 = 去掉季号/年份/集数后相等，0 = 不相关 */
 export function titleMatchScore(candidateTitle: string, queryTitle: string): number {
   const targetExact = normalizeTitleForMatch(queryTitle);

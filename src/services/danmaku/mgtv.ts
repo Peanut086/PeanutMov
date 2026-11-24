@@ -121,7 +121,7 @@ async function fetchEpisodes(
 
 async function searchVideoId(query: DanmakuQuery): Promise<string | null> {
   const response = await requestWithHeaders<MgtvSearchResponse>(
-    `${SEARCH_URL}?q=${encodeURIComponent(query.title)}&pn=1&pc=20`,
+    `${SEARCH_URL}?q=${encodeURIComponent(query.searchTitle ?? query.title)}&pn=1&pc=20`,
     { headers: MGTV_HEADERS, responseType: 'json', timeoutMs: 8000, retries: 0, signal: query.signal },
   );
   const items = (response.data?.contents ?? []).flatMap((group) => group.data ?? []);

@@ -180,13 +180,14 @@ describe('toItemFromVod：派生字段落到条目上', () => {
     expect(toItemFromVod(source, { vod_id: 14, vod_name: '2001太空漫游' }, makeItem).year).toBeNull();
   });
 
-  it('vod_year 有值时以它为准，不被片名覆盖', () => {
+  it('片名年份优先于错标 vod_year，片名无可信年份时才用 vod_year', () => {
     const item = toItemFromVod(
       source,
       { vod_id: 15, vod_name: '流浪地球(2019)', vod_year: '2023' },
       makeItem,
     );
-    expect(item.year).toBe(2023);
+    expect(item.year).toBe(2019);
+    expect(toItemFromVod(source, { vod_id: 20, vod_name: '流浪地球', vod_year: '2019' }, makeItem).year).toBe(2019);
   });
 
   it('电影备注「正片」不会被误判成连载', () => {

@@ -95,7 +95,9 @@ const preloading = ref(false);
 
 const mediaId = computed(() => (typeof route.params.mediaId === 'string' ? route.params.mediaId : ''));
 const detail = computed(() => library.detail);
-const item = computed<MediaItem | null>(() => detail.value?.item ?? null);
+const item = computed<MediaItem | null>(
+  () => detail.value?.item ?? library.searchResultsAll.find((entry) => entry.id === mediaId.value) ?? null,
+);
 
 /**
  * 顶部背景就是海报本身，但它最终被 `blur(14~28px)` 糊成一层色带——按原图请求
@@ -728,13 +730,41 @@ function onManualLineSelect(newLineId: string): void {
 /** 本次详情页会话内已尝试过自动换源的 mediaId（防循环） */
 const autoSwitchTried = new Set<string>();
 
-onMounted(async () => {
+let coverFinishStarted = false;
+
+function finishCover(el: HTMLElement | null): void {
+  if (!el || coverFinishStarted || isError.value) return;
+  coverFinishStarted = true;
+  void finishSharedCover(el);
+}
+
+watch(
+  posterRef,
+  (el) => {
+    if (el) void nextTick(() => finishCover(el));
+  },
+  { flush: 'post' },
+);
+
+watch(
+  isError,
+  (failed) => {
+    if (!failed) return;
+    coverFinishStarted = true;
+    cancelSharedCover();
+  },
+  { immediate: true },
+);
+
+onMounted(() => {
   void detectCastSupport();
-  await Promise.all([history.load(), favorites.load(), downloads.load()]);
-  await load(false);
-  // E4：列表卡封面飞入详情 hero（去程收尾）。无进行中的转场时是空操作。
-  await nextTick();
-  void finishSharedCover(posterRef.value);
+  void Promise.all([history.load(), favorites.load(), downloads.load()]).catch((error) => {
+    logger.warn('详情页辅助数据加载失败', error);
+  });
+  void load(false).catch((error) => {
+    logger.warn('详情页内容加载失败', error);
+  });
+  finishCover(posterRef.value);
 });
 
 /**
@@ -1235,9 +1265,32 @@ function openCompliance(): void {
     <OfflineBanner v-if="isOffline" />
 
     <div ref="scrollEl" class="detail__scroll">
+      <section v-if="item && !isError" ref="heroEl" class="detail-hero">
+        <div ref="posterRef" class="detail-hero__poster">
+          <PosterImage
+            :src="item.posterUrl"
+            :alt="item.title"
+            :fallback-title="item.title"
+            :cover-key="item.id"
+            :width-px="IMG_W_POSTER"
+          />
+        </div>
+        <div class="detail-hero__meta">
+          <h1 class="detail-hero__title" data-narrative-title>{{ item.title }}</h1>
+          <p v-if="item.originalTitle" class="detail-hero__original">{{ item.originalTitle }}</p>
+          <MediaMeta :item="item" />
+          <p v-if="progressRecord" class="detail-hero__progress">
+            看到 {{ formatClock(progressRecord.positionSec) }}
+            <span aria-hidden="true"> · </span>
+            {{ Math.round(progressRecord.progress * 100) }}%
+            <template v-if="isFinished"> · 已看完</template>
+          </p>
+        </div>
+      </section>
+
       <!-- loading -->
       <template v-if="loading">
-        <div class="detail-skeleton">
+        <div v-if="!item" class="detail-skeleton">
           <div class="skeleton detail-skeleton__poster" />
           <div class="detail-skeleton__meta">
             <div class="skeleton detail-skeleton__title" />
@@ -1282,29 +1335,6 @@ function openCompliance(): void {
 
       <!-- success -->
       <template v-else-if="item">
-        <section ref="heroEl" class="detail-hero">
-          <div ref="posterRef" class="detail-hero__poster">
-            <PosterImage
-              :src="item.posterUrl"
-              :alt="item.title"
-              :fallback-title="item.title"
-              :cover-key="item.id"
-              :width-px="IMG_W_POSTER"
-            />
-          </div>
-          <div class="detail-hero__meta">
-            <h1 class="detail-hero__title" data-narrative-title>{{ item.title }}</h1>
-            <p v-if="item.originalTitle" class="detail-hero__original">{{ item.originalTitle }}</p>
-            <MediaMeta :item="item" />
-            <p v-if="progressRecord" class="detail-hero__progress">
-              看到 {{ formatClock(progressRecord.positionSec) }}
-              <span aria-hidden="true"> · </span>
-              {{ Math.round(progressRecord.progress * 100) }}%
-              <template v-if="isFinished"> · 已看完</template>
-            </p>
-          </div>
-        </section>
-
         <section data-narrative class="detail-section">
           <h2 class="section-title">简介</h2>
           <p

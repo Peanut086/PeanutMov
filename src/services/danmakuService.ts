@@ -21,6 +21,7 @@ import { iqiyiProvider } from '@/services/danmaku/iqiyi';
 import { youkuProvider } from '@/services/danmaku/youku';
 import { leshiProvider } from '@/services/danmaku/leshi';
 import { danmuApiProvider, dandanplayProvider, localXmlProvider, type DanmakuProvider, type DanmakuQuery, type DanmakuQueryScene } from '@/services/danmaku/provider';
+import { cleanDanmakuSearchTitle } from '@/services/danmaku/titlePick';
 import { normalizeTitleForMatch, seasonOfTitle, stripTitleNoise } from '@/sources/douban/playMatch';
 import { decodeSubtitle } from '@/player/SrtConverter';
 import { logger } from '@/shared/logger';
@@ -334,7 +335,7 @@ export const danmakuService = {
     localXml: (() => string | null) | null = null,
     scene: DanmakuQueryScene = 'playback',
   ): Promise<DanmakuMatchResult> {
-    const query: DanmakuQuery = { title, year, episode, scene };
+    const query: DanmakuQuery = { title, searchTitle: cleanDanmakuSearchTitle(title), year, episode, scene };
     const attempts: DanmakuAttempt[] = [];
 
     // ① 缓存
@@ -451,10 +452,30 @@ export const danmakuService = {
    * 手动重试必须清缓存——未命中本来就不写缓存，但「命中了串片/命中了旧规则」这两种情况下，
    * 不清就直接把同一条坏结果再端回来，界面看起来像「重试没用」。
    */
-  async rematch(title: string, year: number | null, episode: number): Promise<DanmakuMatchResult> {
-    await cacheRepo.deleteDanmaku(danmakuCacheKey(title, year, episode));
-    logger.info('弹幕重新匹配：已作废本集缓存', { title, episode });
-    return this.match(title, year, episode, null, 'playback');
+  async rematch(
+    title: string,
+    year: number | null,
+    episode: number,
+    options?: { ignoreYear?: boolean },
+  ): Promise<DanmakuMatchResult> {
+    const originalKey = danmakuCacheKey(title, year, episode);
+    const effectiveYear = options?.ignoreYear ? null : year;
+    const effectiveKey = danmakuCacheKey(title, effectiveYear, episode);
+    await cacheRepo.deleteDanmaku(originalKey);
+    if (effectiveKey !== originalKey) await cacheRepo.deleteDanmaku(effectiveKey);
+    logger.info('弹幕重新匹配：已作废本集缓存', {
+      title,
+      queryYear: year,
+      effectiveYear,
+      yearRelaxed: options?.ignoreYear === true,
+      episode,
+    });
+    const result = await this.match(title, effectiveYear, episode, null, 'playback');
+    if (result.match !== null && effectiveKey !== originalKey) {
+      await cacheRepo.putDanmaku(originalKey, result.match);
+      logger.info('弹幕命中：已回填原年份缓存别名', { title, queryYear: year, effectiveYear, episode });
+    }
+    return result;
   },
 
   /**

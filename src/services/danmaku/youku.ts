@@ -115,7 +115,7 @@ function pickShow(cards: YoukuSearchCard[], query: DanmakuQuery): YoukuSearchCar
 
 async function searchShow(query: DanmakuQuery): Promise<YoukuSearchCard | null> {
   const params = new URLSearchParams({
-    keyword: query.title,
+    keyword: query.searchTitle ?? query.title,
     site: '1',
     categories: '0',
     ftype: '0',

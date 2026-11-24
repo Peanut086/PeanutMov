@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseBilibiliXml } from '@/services/danmaku/bilibiliXml';
 import { bilibiliProvider, clearBilibiliCache } from '@/services/danmaku/bilibili';
 import { setDanmuApiBaseUrl, type DanmakuQuery } from '@/services/danmaku/provider';
+import { tencentProvider } from '@/services/danmaku/tencent';
 import {
   DANMAKU_CHIP_MISS,
   DANMAKU_MISS_GUIDANCE,
@@ -86,6 +87,39 @@ describe('danmakuService 回退链（AC-126）', () => {
       const value = plan(url) ?? NO_MATCH[urlHost(url)] ?? {};
       return value instanceof Error ? Promise.reject(value) : Promise.resolve(value);
     }) as never);
+  }
+
+  function routeTencentSoldiers(): void {
+    route((url) => {
+      if (host(url, 'pbaccess.video.qq.com')) {
+        return {
+          ret: 0,
+          data: {
+            areaBoxList: [
+              {
+                boxId: 'MainNeed',
+                itemList: [{ doc: { id: 'soldiers2006' }, videoInfo: { title: '士兵突击', year: 2006 } }],
+              },
+            ],
+          },
+        };
+      }
+      if (host(url, 'node.video.qq.com')) {
+        return { c: { title: '士兵突击', video_ids: Array.from({ length: 30 }, (_, index) => `soldierEp${index + 1}`) } };
+      }
+      if (url.includes('/barrage/base/')) {
+        return { segment_index: { '0': { segment_start: '0', segment_name: 't/v1/0/30000' } } };
+      }
+      if (url.includes('/barrage/segment/')) {
+        return {
+          barrage_list: Array.from({ length: DANMAKU_MIN_COMMENTS }, (_, index) => ({
+            content: `士兵突击弹幕${index}`,
+            time_offset: `${index * 5000}`,
+          })),
+        };
+      }
+      return undefined;
+    });
   }
 
   /**
@@ -402,6 +436,81 @@ describe('danmakuService 回退链（AC-126）', () => {
 
     const result = await danmakuService.match('士兵突击 第2季', 2013, 1);
     expect(result.match?.provider).toBe('dandanplay');
+  });
+
+  it('源站错标年份时，手动忽略年份可命中并回填原年份缓存', async () => {
+    routeTencentSoldiers();
+
+    const strict = await danmakuService.match('士兵突击', 2013, 10);
+    expect(strict.match).toBeNull();
+
+    const rematch = danmakuService.rematch as unknown as (
+      title: string,
+      year: number | null,
+      episode: number,
+      options?: { ignoreYear?: boolean },
+    ) => ReturnType<typeof danmakuService.rematch>;
+    const relaxed = await rematch.call(danmakuService, '士兵突击', 2013, 10, { ignoreYear: true });
+    expect(relaxed.match?.provider).toBe('tencent');
+    expect(relaxed.match?.comments).toHaveLength(DANMAKU_MIN_COMMENTS);
+
+    mockedRequest.mockClear();
+    const cached = await danmakuService.match('士兵突击', 2013, 10);
+    expect(cached.via).toBe('cache');
+    expect(cached.match?.provider).toBe('tencent');
+    expect(mockedRequest).not.toHaveBeenCalled();
+  });
+
+  it('手动忽略年份仍拒绝同名第二季，不能把放宽年份变成串片', async () => {
+    route((url) => {
+      if (host(url, 'api.bilibili.com')) return new Error('network down');
+      if (host(url, 'pbaccess.video.qq.com')) {
+        return {
+          ret: 0,
+          data: {
+            areaBoxList: [
+              {
+                boxId: 'MainNeed',
+                itemList: [{ doc: { id: 'soldiersSeason2' }, videoInfo: { title: '士兵突击 第2季', year: 2013 } }],
+              },
+            ],
+          },
+        };
+      }
+      if (url.includes('/api/v2/match')) {
+        return { success: true, isMatched: true, matches: [{ episodeId: 12, animeTitle: '士兵突击 第2季', episodeTitle: '第12集', shift: 0 }] };
+      }
+      if (url.includes('/api/v2/comment/')) {
+        return { count: biliItems().length, comments: biliItems() };
+      }
+      return undefined;
+    });
+
+    const tencentMatch = vi.spyOn(tencentProvider, 'match');
+    try {
+      const rematch = danmakuService.rematch as unknown as (
+        title: string,
+        year: number | null,
+        episode: number,
+        options?: { ignoreYear?: boolean },
+      ) => ReturnType<typeof danmakuService.rematch>;
+      const relaxed = await rematch.call(danmakuService, '士兵突击', 2013, 12, { ignoreYear: true });
+      expect(tencentMatch).toHaveBeenCalledWith(expect.objectContaining({ title: '士兵突击', year: null }));
+      expect(relaxed.match).toBeNull();
+      expect(relaxed.missReason).toBe('title_mismatch');
+    } finally {
+      tencentMatch.mockRestore();
+    }
+  });
+
+  it('弹幕搜索词去掉全集数后缀，不把来源标题噪声带进 Provider', async () => {
+    routeTencentSoldiers();
+
+    const result = await danmakuService.match('士兵突击 全30集', 2006, 11);
+    const searchCall = mockedRequest.mock.calls.find(([url]) => host(String(url), 'pbaccess.video.qq.com'));
+    const body = JSON.parse(String(searchCall?.[1]?.body ?? '{}')) as { query?: string };
+    expect(body.query).toBe('士兵突击');
+    expect(result.match?.provider).toBe('tencent');
   });
 
   it('整集条数低于门槛视为未命中：继续回退且不写缓存', async () => {

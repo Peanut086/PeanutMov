@@ -41,7 +41,10 @@ export type DanmakuQueryScene = 'playback' | 'prefetch';
 
 /** 匹配查询：片名归一化由 provider 内部完成 */
 export interface DanmakuQuery {
+  /** 原始片名：最终选片与季号校验始终使用它。 */
   title: string;
+  /** 仅用于 Provider 搜索的非身份后缀清洗结果。 */
+  searchTitle?: string;
   year: number | null;
   /** 1 起的集号；电影固定 1 */
   episode: number;
@@ -227,7 +230,7 @@ export interface DanmakuProviderMatch {
 /** 文件名形态的查询串：弹弹play 的文件识别按文件名做模糊匹配 */
 function ddpFileName(query: DanmakuQuery): string {
   const year = query.year !== null ? `.${query.year}` : '';
-  return `${query.title}${year}.S01E${String(query.episode).padStart(2, '0')}`;
+  return `${query.searchTitle ?? query.title}${year}.S01E${String(query.episode).padStart(2, '0')}`;
 }
 
 /**
@@ -242,7 +245,7 @@ async function searchEpisodeCandidate(
 ): Promise<DdpMatchCandidate | null> {
   const url =
     `${baseUrl}/api/v2/search/episodes` +
-    `?anime=${encodeURIComponent(query.title)}&episode=${query.episode}`;
+    `?anime=${encodeURIComponent(query.searchTitle ?? query.title)}&episode=${query.episode}`;
   const response = await requestWithHeaders<DdpSearchEpisodesResponse>(url, {
     headers: auth,
     responseType: 'json',

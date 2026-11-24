@@ -145,7 +145,7 @@ async function findSeason(query: DanmakuQuery): Promise<number | null> {
   const target = stripTitleNoise(query.title);
   if (target.length === 0) return null;
   for (const type of ['media_bangumi', 'media_ft'] as const) {
-    const items = await searchSeasons(type, query.title, query.signal);
+    const items = await searchSeasons(type, query.searchTitle ?? query.title, query.signal);
     const hit = items.find((item) => stripTitleNoise(plainTitle(item.title)) === target);
     if (hit?.season_id !== undefined) return hit.season_id;
   }

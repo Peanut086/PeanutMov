@@ -3233,6 +3233,17 @@ const danmakuChipReading = computed(() => {
   return "开";
 });
 
+const canIgnoreDanmakuYear = computed(() => {
+  const year = item.value?.year;
+  const outcome = danmakuOutcome.value;
+  return (
+    year !== null &&
+    year !== undefined &&
+    outcome?.kind === "miss" &&
+    outcome.reason === "no_result"
+  );
+});
+
 /**
  * 加载本集弹幕（缓存命中离线可用；关闭开关不发请求）。
  * 交回 `DanmakuLoadOutcome`：调用方据此决定念哪句提示，而不是「点了没反应」。
@@ -3366,7 +3377,7 @@ async function importLocalDanmaku(file: File): Promise<void> {
  * 没有这个入口时，用户唯一的重试手段是退出重进（而缓存 30 天有效，退出重进也只会把同一条再端
  * 回来）；「命中了串片」「当时源正在限流」这两种情况在界面上就都没有第二次机会。
  */
-async function rematchDanmaku(): Promise<void> {
+async function runDanmakuRematch(ignoreYear: boolean): Promise<void> {
   const it = item.value;
   const ep = currentEpisode.value;
   if (!it || !ep) {
@@ -3376,13 +3387,23 @@ async function rematchDanmaku(): Promise<void> {
   if (!danmakuSettings.value.enabled) {
     await settings.update({ danmaku: { ...danmakuSettings.value, enabled: true } });
   }
-  toast.info("正在重新匹配本集弹幕…", 1600);
+  toast.info(ignoreYear ? "正在忽略年份重新匹配本集弹幕…" : "正在重新匹配本集弹幕…", 1600);
   // 上一轮可能还在途（它用的仍是旧缓存）：作废后按「清缓存 + 重跑」那条链再来一次
   danmakuInFlight.clear();
   const outcome = await loadDanmaku((title, year, episode) =>
-    danmakuService.rematch(title, year, episode),
+    ignoreYear
+      ? danmakuService.rematch(title, year, episode, { ignoreYear: true })
+      : danmakuService.rematch(title, year, episode),
   );
   announceDanmaku(outcome, true);
+}
+
+async function rematchDanmaku(): Promise<void> {
+  await runDanmakuRematch(false);
+}
+
+async function rematchDanmakuIgnoringYear(): Promise<void> {
+  await runDanmakuRematch(true);
 }
 
 async function toggleDanmaku(): Promise<void> {
@@ -5188,6 +5209,7 @@ onBeforeUnmount(() => {
       v-model:open="danmakuOpen"
       :import-xml="importLocalDanmaku"
       :rematch="rematchDanmaku"
+      :rematch-ignore-year="canIgnoreDanmakuYear ? rematchDanmakuIgnoringYear : null"
     />
     <SkipMarkSheet
       v-model="skipMarkOpen"

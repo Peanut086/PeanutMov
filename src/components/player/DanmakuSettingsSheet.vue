@@ -26,6 +26,8 @@ const props = defineProps<{
   importXml?: ((file: File) => void | Promise<void>) | null;
   /** 「重新匹配本集弹幕」由播放页传入（它才知道当前是哪一集，也才知道要清哪一条缓存） */
   rematch?: (() => void | Promise<void>) | null;
+  /** 仅在源站年份可疑且本轮未命中时出现，由播放页决定是否可放宽年份。 */
+  rematchIgnoreYear?: (() => void | Promise<void>) | null;
 }>();
 const emit = defineEmits<{ (e: 'update:open', value: boolean): void }>();
 
@@ -111,11 +113,12 @@ function onPickXml(event: Event): void {
 
 const rematching = ref(false);
 
-async function onRematch(): Promise<void> {
+async function onRematch(ignoreYear = false): Promise<void> {
   if (rematching.value) return;
   rematching.value = true;
   try {
-    await props.rematch?.();
+    if (ignoreYear) await props.rematchIgnoreYear?.();
+    else await props.rematch?.();
   } finally {
     rematching.value = false;
   }
@@ -214,13 +217,25 @@ async function onRematch(): Promise<void> {
           type="button"
           class="btn btn--secondary btn--sm"
           :disabled="rematching"
-          @click="onRematch"
+          @click="onRematch(false)"
         >
           {{ rematching ? "正在重新匹配…" : "重新匹配本集弹幕" }}
         </button>
         <p class="danmaku-sheet__hint">
           作废本集已记住的那一条，重新问一遍所有弹幕源（换了源、拦下串片、当时超时都用它）
         </p>
+      </div>
+
+      <div v-if="props.rematchIgnoreYear" class="danmaku-sheet__field">
+        <button
+          type="button"
+          class="btn btn--secondary btn--sm"
+          :disabled="rematching"
+          @click="onRematch(true)"
+        >
+          {{ rematching ? "正在重新匹配…" : "源站年份可能不准，忽略年份重试本集" }}
+        </button>
+        <p class="danmaku-sheet__hint">只放宽年份，仍会校验片名与季号；命中后本集直接记住结果。</p>
       </div>
 
       <div class="danmaku-sheet__field">

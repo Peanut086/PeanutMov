@@ -236,7 +236,7 @@ export function useVirtualGrid<T>(
    * `recompute()` 要读 `getComputedStyle`（列数/间距）与 `getBoundingClientRect`，
    * 手指滑动时一帧能来十几个 scroll 事件，逐个执行就是把布局反复逼出来。
    *
-   * 只合并**真实**滚动：`LibraryView` 恢复滚动位置时派发的是一个手工
+   * 只合并**真实**滚动：路由恢复滚动位置时派发的是一个手工
    * `new Event('scroll')`，那一帧必须立刻算完，否则返程首帧只画得出占位空白
    * （`isTrusted` 是唯一能区分两者的判据）。
    */
