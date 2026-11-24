@@ -9,7 +9,7 @@
  * P0-4：「最近添加」读跨源缓存（library.homeRecent，毫秒级、离线可用），
  * 当前源首页由 store 后台预热；本页被 KeepAlive 缓存，回 tab 静默刷新不重闪骨架。
  */
-import { computed, onActivated, ref, watch } from 'vue';
+import { computed, onActivated, onDeactivated, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import type { HistoryRecord, MediaItem } from '@/types';
@@ -75,6 +75,7 @@ function replayBadge(): void {
 
 const localError = ref<string | null>(null);
 const pullRefreshing = ref(false);
+const hasLeftHome = ref(false);
 const initialLoading = computed(
   () => library.homeState === 'idle' || library.homeState === 'loading',
 );
@@ -173,6 +174,10 @@ async function load(): Promise<void> {
     localError.value = toErrorShape(e).message;
   }
 }
+
+onDeactivated(() => {
+  hasLeftHome.value = true;
+});
 
 // KeepAlive 下 onActivated 首次进入也会触发（替代 onMounted），回 tab 时静默刷新
 onActivated(() => {
@@ -376,6 +381,7 @@ async function onPullRefresh(): Promise<void> {
               v-for="(item, idx) in recentRow"
               :key="item.id"
               class="home-grid__item"
+              :class="{ 'home-grid__item--enter': !hasLeftHome }"
               :style="{ '--i': idx }"
             >
               <PosterCard
@@ -488,6 +494,9 @@ async function onPullRefresh(): Promise<void> {
 
 .home-grid__item {
   min-width: 0;
+}
+
+.home-grid__item--enter {
   animation: card-enter 250ms var(--ease-decelerate) both;
   animation-delay: calc(var(--i, 0) * 40ms);
 }
@@ -687,7 +696,7 @@ async function onPullRefresh(): Promise<void> {
 
 @media (prefers-reduced-motion: reduce) {
   .home-empty,
-  .home-grid__item {
+  .home-grid__item--enter {
     animation: none;
   }
 }

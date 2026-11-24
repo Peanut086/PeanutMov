@@ -1,9 +1,9 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { defineComponent } from 'vue';
+import { defineComponent, nextTick, ref } from 'vue';
 
-import type { DownloadTask, HistoryRecord } from '@/types';
+import type { DownloadTask, HistoryRecord, MediaItem } from '@/types';
 
 /**
  * 首页「继续观看」补帧接线（G-B08）
@@ -109,13 +109,13 @@ function makeTask(overrides: Partial<DownloadTask> = {}): DownloadTask {
   } as DownloadTask;
 }
 
-async function mountHome(records: HistoryRecord[], tasks: DownloadTask[]) {
+async function mountHome(records: HistoryRecord[], tasks: DownloadTask[], recent: MediaItem[] = []) {
   const pinia = createPinia();
   setActivePinia(pinia);
   useHistoryStore().continueWatching = records;
   useDownloadStore().tasks = tasks;
   const library = useLibraryStore();
-  library.homeRecent = [];
+  library.homeRecent = recent;
   library.homeState = 'success';
 
   const wrapper = mount(HomeView, { global: { plugins: [pinia], stubs: { ContinueWatchingRow: ROW } } });
@@ -138,6 +138,49 @@ beforeEach(() => {
   film.request.mockReset();
   film.frames.clear();
   routerPush.mockClear();
+});
+
+describe('HomeView KeepAlive 入场动画', () => {
+  it('首次进入播放卡片入场动画，回插首页时不重播', async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    const library = useLibraryStore();
+    library.homeRecent = [
+      {
+        id: 'demo:m1',
+        sourceId: 'demo',
+        title: '影片一',
+        posterUrl: 'https://example.test/p.jpg',
+        year: 2024,
+        type: 'movie',
+        episodeCount: null,
+        isDemo: false,
+      } as MediaItem,
+    ];
+    library.homeState = 'success';
+
+    const Host = defineComponent({
+      components: { HomeView },
+      setup() {
+        const showHome = ref(true);
+        return { showHome };
+      },
+      template: '<KeepAlive><HomeView v-if="showHome" /></KeepAlive>',
+    });
+    const wrapper = mount(Host, {
+      global: { plugins: [pinia], stubs: { ContinueWatchingRow: ROW } },
+    });
+    await flushPromises();
+
+    expect(wrapper.find('.home-grid__item').classes()).toContain('home-grid__item--enter');
+
+    wrapper.vm.showHome = false;
+    await nextTick();
+    wrapper.vm.showHome = true;
+    await flushPromises();
+
+    expect(wrapper.find('.home-grid__item').classes()).not.toContain('home-grid__item--enter');
+  });
 });
 
 describe('HomeView 续播帧补队', () => {
