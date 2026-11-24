@@ -617,6 +617,24 @@ function foldFingerprint(acc: number, part: string): number {
   return hash >>> 0;
 }
 
+/** 只描述清单分片结构，排除签名 URL、Cookie 与密钥 URI，避免换链即误判换片。 */
+export function hlsPlaylistFingerprint(playlist: HlsPlaylist): string {
+  const durations = playlist.segments
+    .map((segment) => `${Math.round(segment.duration * 1000)}:${segment.byteRange?.length ?? 0}`)
+    .join(',');
+  const parts = [
+    String(playlist.mediaSequence ?? 0),
+    String(playlist.targetDuration ?? 0),
+    String(playlist.segments.length),
+    durations,
+    String(playlist.discontinuityCount ?? 0),
+    String(playlist.initMapCount ?? 0),
+    playlist.container ?? '',
+    playlist.endList ? '1' : '0',
+  ];
+  return foldFingerprint(0x811c9dc5, parts.join('|')).toString(16).padStart(8, '0');
+}
+
 /**
  * 源站失效后的常见形态之一：清单正常、每一片都是同一段素材，字节数/分片数/结构校验全能过，
  * 最后交出一部同一片重复 N 次拼成的假片——真机实测整批 13 集产物 md5 完全相同、时长 19.5 秒，
@@ -806,7 +824,43 @@ export class HlsDownloader {
       throw new AppError('E_PARSE', '无法解析有效的 media playlist');
     }
 
-    logger.debug('解析到分片', { count: playlist.segments.length, hasKey: !!playlist.segments[0]?.key });
+    const playlistFingerprint = hlsPlaylistFingerprint(playlist);
+    if (task.hlsPlaylistFingerprint && task.hlsPlaylistFingerprint !== playlistFingerprint) {
+      logger.warn('HLS 清单结构变化，旧分片索引不再可用', {
+        taskId: task.id,
+        previous: task.hlsPlaylistFingerprint,
+        current: playlistFingerprint,
+        completedSegments: task.completedSegments?.length ?? 0,
+      });
+      task = {
+        ...task,
+        downloadedBytes: 0,
+        totalBytes: null,
+        completedSegments: [],
+        hlsTotalSegments: 0,
+        hlsPlaylistFingerprint: playlistFingerprint,
+        resumable: false,
+        filePath: null,
+        blobKey: null,
+      };
+      await this.deps.saveProgress(task.id, {
+        downloadedBytes: 0,
+        totalBytes: null,
+        completedSegments: [],
+        hlsTotalSegments: 0,
+        hlsPlaylistFingerprint: playlistFingerprint,
+        resumable: false,
+        filePath: null,
+        blobKey: null,
+        updatedAt: now(),
+      });
+    }
+
+    logger.debug('解析到分片', {
+      count: playlist.segments.length,
+      hasKey: !!playlist.segments[0]?.key,
+      playlistFingerprint,
+    });
 
     // 3. 下载初始化分片（fMP4）
     if (playlist.initSegment) {
@@ -894,26 +948,51 @@ export class HlsDownloader {
     // 「结算前最后一秒的节流没落库」，不是分片丢了。走下面那句清空重下会把一整集
     // 重新取一遍，而产物本来就是完整的。
     if (firstBegin.actualStartBytes !== startBytes && startBytes > 0 && !firstBegin.adoptedArtifact) {
-      logger.warn(
-        firstBegin.actualStartBytes > startBytes
-          ? '磁盘比 DB 记账还多：上一轮停止时未结算，索引无从归属，从头下载'
-          : '磁盘比 DB 记账少：分片确实丢了，从头下载',
-        {
-          taskId: task.id,
-          dbBytes: startBytes,
-          fileBytes: firstBegin.actualStartBytes,
-          delta: firstBegin.actualStartBytes - startBytes,
-        },
-      );
-      completedSegments = [];
-      // P2-6：整集重下要烧掉一整份流量（实测一集 780MB），不能像现在这样只在日志里留一行。
-      // 直链侧同样的处境早就有话术（`downloadEngine` 的「该地址不支持断点续传，将重新下载」），
-      // 这里补齐，用户至少知道进度为什么没了、不是 App 在下错东西。
-      appEvents.emit('toast', { text: '本地进度与文件对不上，本集将重新下载', type: 'info' });
-      // 第二次 begin 会清空 .part 并从 0 重新计数；播种必须跟着换成它的返回值。
-      // 沿用第一次的 actualStartBytes 会让计数器凭空多出一整份旧文件（真机实测
-      // 磁盘 881,720 字节 / 计数 1,763,440 字节，正好两倍），进度条与大小校验一起失真。
-      started = await sink.begin({ task: { ...task, resumable: false }, startBytes: 0 });
+      const fileBytes = firstBegin.actualStartBytes;
+      if (fileBytes > startBytes && sink.truncateTo) {
+        try {
+          await sink.truncateTo(startBytes);
+          started = { actualStartBytes: startBytes };
+          logger.info('已截断未记账的下载尾部，保留分片断点', {
+            taskId: task.id,
+            dbBytes: startBytes,
+            fileBytes,
+            recoveredTailBytes: fileBytes - startBytes,
+          });
+        } catch (e) {
+          logger.error('截断未记账尾部失败，停止追加并保留现场', {
+            taskId: task.id,
+            dbBytes: startBytes,
+            fileBytes,
+            error: toAppError(e).message,
+          });
+          throw new AppError('E_LOCAL_CORRUPT', '本地下载尾部与进度不一致且无法安全截断，已停止下载', {
+            retryable: true,
+            cause: e,
+          });
+        }
+      } else {
+        logger.warn(
+          fileBytes > startBytes
+            ? '磁盘比 DB 记账还多且当前 sink 不支持安全截断，从头下载'
+            : '磁盘比 DB 记账少：分片确实丢了，从头下载',
+          {
+            taskId: task.id,
+            dbBytes: startBytes,
+            fileBytes,
+            delta: fileBytes - startBytes,
+          },
+        );
+        completedSegments = [];
+        // P2-6：整集重下要烧掉一整份流量（实测一集 780MB），不能像现在这样只在日志里留一行。
+        // 直链侧同样的处境早就有话术（`downloadEngine` 的「该地址不支持断点续传，将重新下载」），
+        // 这里补齐，用户至少知道进度为什么没了、不是 App 在下错东西。
+        appEvents.emit('toast', { text: '本地进度与文件对不上，本集将重新下载', type: 'info' });
+        // 第二次 begin 会清空 .part 并从 0 重新计数；播种必须跟着换成它的返回值。
+        // 沿用第一次的 actualStartBytes 会让计数器凭空多出一整份旧文件（真机实测
+        // 磁盘 881,720 字节 / 计数 1,763,440 字节，正好两倍），进度条与大小校验一起失真。
+        started = await sink.begin({ task: { ...task, resumable: false }, startBytes: 0 });
+      }
     }
 
     let downloaded = started.actualStartBytes;
@@ -929,6 +1008,7 @@ export class HlsDownloader {
       speedBps: 0,
       updatedAt: now(),
       completedSegments,
+      hlsPlaylistFingerprint: playlistFingerprint,
     });
 
     // 6. 写入初始化分片（FIX-D5：用独立标志，不再向 completedSegments 写入 -1）
@@ -940,9 +1020,11 @@ export class HlsDownloader {
       await sink.write(playlist.initSegment.data);
       downloaded += playlist.initSegment.data.byteLength;
       initCompleted = true;
+      await sink.flush?.();
       await this.deps.saveProgress(task.id, {
         downloadedBytes: downloaded,
         completedSegments,
+        hlsPlaylistFingerprint: playlistFingerprint,
         updatedAt: now(),
       });
     } else if (playlist.initSegment?.data && !started.adoptedArtifact) {
@@ -1146,6 +1228,7 @@ export class HlsDownloader {
 
           const currentTime = now();
           if (currentTime - lastPersist >= 1000) {
+            await sink.flush?.();
             const elapsedSec = Math.max((currentTime - lastSampleAt) / 1000, 0.001);
             const speedBps = Math.max(0, Math.round((downloaded - lastSampleBytes) / elapsedSec));
             // FIX-D5：用纯媒体分片数估算，排除 init segment
@@ -1164,6 +1247,7 @@ export class HlsDownloader {
               completedSegments,
               hlsTotalSegments: totalSegments,
               hlsDiscontinuities: playlist.discontinuityCount ?? 0,
+              hlsPlaylistFingerprint: playlistFingerprint,
             });
           }
         }
@@ -1213,6 +1297,7 @@ export class HlsDownloader {
 
       // 8. 完成前硬校验（FIX-D8：防止假完成）
       if (completedCount !== totalSegments || writeBuffer.size > 0 || nextWriteIndex !== totalSegments) {
+        await sink.flush?.();
         await this.deps.saveProgress(task.id, {
           downloadedBytes: downloaded,
           resumable: true,
@@ -1220,6 +1305,7 @@ export class HlsDownloader {
           completedSegments,
           hlsTotalSegments: totalSegments,
           hlsDiscontinuities: playlist.discontinuityCount ?? 0,
+          hlsPlaylistFingerprint: playlistFingerprint,
         });
         throw new AppError(
           'E_NETWORK',
@@ -1270,6 +1356,7 @@ export class HlsDownloader {
         completedSegments,
         hlsTotalSegments: totalSegments,
         hlsDiscontinuities: playlist.discontinuityCount ?? 0,
+        hlsPlaylistFingerprint: playlistFingerprint,
         /*
          * P0-4：容器判定跟着产物一起落库。此前 `container` 只有转封装交付那几笔才会写，
          * 一条没转封装的 TS/fMP4 记录永远停在「尚未判定」，MIME、文件自检、播放器选型
@@ -1546,7 +1633,13 @@ export class HlsDownloader {
         if (currentTask?.status === 'canceled') {
           await sink.abort().catch(() => undefined);
         } else {
-          await sink.suspend().catch(() => undefined);
+          const suspended = await sink.suspend().then(
+            () => true,
+            () => false,
+          );
+          if (!suspended) {
+            logger.warn('暂停时落盘失败，保留上一份 DB 检查点', { taskId: task.id });
+          }
           /**
            * DL-P1-4：`suspend()` 会把写盘缓冲刷干净——文件长度从此等于 `downloaded`，
            * 但 DB 里还是上一次节流（1s）的旧值。真机实测「暂停→立即继续」三次命中：
@@ -1558,12 +1651,13 @@ export class HlsDownloader {
            * 刚清零的 779 MB 记账恢复回去——真机那条 `dbBytes: 779919880 / fileBytes: 0`
            * 就是这么配对出来的。
            */
-          if (!refusalSettled) {
+          if (!refusalSettled && suspended) {
             await this.deps
               .saveProgress(task.id, {
                 downloadedBytes: downloaded,
                 completedSegments,
                 resumable: true,
+                hlsPlaylistFingerprint: playlistFingerprint,
                 updatedAt: now(),
               })
               .catch(() => undefined);
@@ -1740,7 +1834,7 @@ export class HlsDownloader {
       status === 429 ? 'E_HTTP_429' :
       status >= 500 ? 'E_HTTP_5XX' :
       'E_HTTP_400';
-    return new AppError(code, `${message}：HTTP ${status}`);
+    return new AppError(code, `${message}：HTTP ${status}`, { httpStatus: status });
   }
 }
 

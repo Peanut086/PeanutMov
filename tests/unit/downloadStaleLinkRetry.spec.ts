@@ -100,15 +100,19 @@ async function seedFailed(overrides: Partial<DownloadTask> = {}): Promise<Downlo
   return task;
 }
 
-async function retryAndCapture(): Promise<DownloadTask> {
-  await downloadService.retry('task-stale-retry');
+async function captureRun(action: () => Promise<unknown>): Promise<DownloadTask> {
+  await action();
   // 队列在微任务里才调度，等它真正把任务交给引擎
   for (let i = 0; i < 100 && h.runs.length === 0; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   const ran = h.runs[h.runs.length - 1];
-  if (!ran) throw new Error('重试没有把任务交给下载引擎');
+  if (!ran) throw new Error('续传没有把任务交给下载引擎');
   return ran;
+}
+
+async function retryAndCapture(): Promise<DownloadTask> {
+  return captureRun(() => downloadService.retry('task-stale-retry'));
 }
 
 describe('失败重试前刷新直链（#3）', () => {
@@ -167,6 +171,21 @@ describe('失败重试前刷新直链（#3）', () => {
     expect(ran.resumable).toBe(false);
   });
 
+  it('HLS 资源路径变了但已有清单指纹：保留进度，交给下载器复核清单', async () => {
+    await seedFailed({ hlsPlaylistFingerprint: 'stable-playlist' });
+    vi.spyOn(libraryService, 'resolvePlay').mockResolvedValue(
+      makePlayback({ url: 'https://cdn.example.com/vod/ep1-720p.m3u8?sign=fresh' }),
+    );
+
+    const ran = await retryAndCapture();
+
+    expect(ran.url).toContain('ep1-720p.m3u8');
+    expect(ran.downloadedBytes).toBe(500);
+    expect(ran.completedSegments).toEqual([0, 1, 2]);
+    expect(ran.hlsPlaylistFingerprint).toBe('stable-playlist');
+    expect(ran.resumable).toBe(true);
+  });
+
   it('网络类失败不重新解析（地址没坏，重试即可）', async () => {
     await seedFailed({ errorCode: 'E_NETWORK', errorMessage: '网络中断' });
     const resolve = vi.spyOn(libraryService, 'resolvePlay');
@@ -206,6 +225,56 @@ describe('失败重试前刷新直链（#3）', () => {
     await retryAndCapture();
 
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('跨进程后的无错误码任务：续传前仍强制刷新 HLS 直链', async () => {
+    await seedFailed({ errorCode: null, errorMessage: null, linkResolvedAt: 1 });
+    const resolve = vi.spyOn(libraryService, 'resolvePlay').mockResolvedValue(makePlayback());
+
+    const ran = await retryAndCapture();
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(ran.url).toContain('sign=fresh');
+    expect(ran.downloadedBytes).toBe(500);
+  });
+
+  it('暂停任务跨进程继续：也走同一条派发前刷新闸门', async () => {
+    await seedFailed({ status: 'paused', errorCode: null, errorMessage: null, linkResolvedAt: 1 });
+    const resolve = vi.spyOn(libraryService, 'resolvePlay').mockResolvedValue(makePlayback());
+
+    const ran = await captureRun(() => downloadService.resume('task-stale-retry'));
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(ran.url).toContain('sign=fresh');
+  });
+
+  it('跨进程刷新拿到同一条稳定地址：允许起跑一次，不按旧死链拦截', async () => {
+    const stale = await seedFailed({ errorCode: null, errorMessage: null, linkResolvedAt: 1 });
+    const resolve = vi.spyOn(libraryService, 'resolvePlay').mockResolvedValue(
+      makePlayback({ url: OLD_URL, headers: stale.headers }),
+    );
+
+    const ran = await retryAndCapture();
+
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(ran.url).toBe(OLD_URL);
+  });
+
+  it('跨进程刷新失败：不拿旧地址起跑，直接留下可行动失败原因', async () => {
+    await seedFailed({ errorCode: null, errorMessage: null, linkResolvedAt: 1 });
+    vi.spyOn(libraryService, 'resolvePlay').mockRejectedValue(new Error('源挂了'));
+
+    await downloadService.retry('task-stale-retry');
+    let row = await downloadRepo.get('task-stale-retry');
+    for (let i = 0; i < 100 && row?.status !== 'failed'; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      row = await downloadRepo.get('task-stale-retry');
+    }
+
+    expect(h.runs).toHaveLength(0);
+    expect(row?.status).toBe('failed');
+    expect(row?.errorCode).toBe('E_SOURCE_UNAVAILABLE');
+    expect(row?.errorMessage).toContain('应用重启后刷新下载地址失败');
   });
 
   it('403/404/鉴权失败同样按直链失效处理', async () => {

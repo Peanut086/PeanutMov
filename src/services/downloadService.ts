@@ -143,6 +143,8 @@ const LOCAL_TASK_REPAIRED_MESSAGE = '任务链接已失效，请从详情页重�
  * 超时报明确错误让用户重试，而不是无限等。
  */
 const LOCAL_RESOLVE_TIMEOUT_MS = 8000;
+/** HLS 签名直链只在当前进程内复用；重启后续传必须先重新解析。 */
+const PROCESS_STARTED_AT = Date.now();
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -220,18 +222,23 @@ function resourcePathOf(url: string): string {
 /** 源站把同一条死链原样回吐时给用户的可行动文案（DL-P0-4） */
 const STALE_UNCHANGED_MESSAGE = '该线路的直链已过期，源站没有给出新地址，请更换线路或源';
 
+type RefreshReason = 'known-stale' | 'process-restart';
+
 /**
- * 失败重试前重新解析直链与请求头（解析失败则沿用原地址，不阻断重试）。
+ * 重试前或跨进程续传前重新解析直链与请求头。
  *
- * 资源路径变了就是换了一份清单：旧的 `.part` 与分片序号不能再拼上去，
- * 否则得到的是能"完成"却播不动的损坏文件（FIX-D8 同类）。
+ * 资源路径变了未必是另一份 HLS 清单：CDN 常把新签名塞进同一条 m3u8 地址。
+ * 新任务带清单指纹时交给下载器复核，老任务仍按整份资源变化保守清零。
  *
  * 返回换链结果，调用方据此决定要不要拿原来那条链再撞一次：
  * - `'refreshed'`：拿到了新地址（换了签名，或整份清单都换了）
- * - `'unchanged'`：地址与请求头逐字未变——重试必然再吃一次同样的 402/403
- * - `'failed'`：解析本身没成或结果不可用，沿用原地址
+ * - `'unchanged'`：地址与请求头逐字未变
+ * - `'failed'`：解析本身没成或结果不可用
  */
-async function refreshStaleLink(task: DownloadTask): Promise<'refreshed' | 'unchanged' | 'failed'> {
+async function refreshStaleLink(
+  task: DownloadTask,
+  reason: RefreshReason = 'known-stale',
+): Promise<'refreshed' | 'unchanged' | 'failed'> {
   try {
     // 动态引入：libraryService 静态依赖 downloadService，顶层 import 会成环
     const { libraryService } = await import('@/services/libraryService');
@@ -263,24 +270,28 @@ async function refreshStaleLink(task: DownloadTask): Promise<'refreshed' | 'unch
       JSON.stringify(play.headers ?? {}) === JSON.stringify(task.headers ?? {});
     // 以库里的当前行为底本回写：拿派发前那份快照会把刚被暂停/取消的任务复活成 downloading
     const current = (await downloadRepo.get(task.id)) ?? task;
+    const fingerprintReusable =
+      task.format === 'hls' && isHlsDownload({ format: play.format, url: play.url }) && Boolean(task.hlsPlaylistFingerprint);
     const next: DownloadTask = {
       ...current,
       url: play.url,
       headers: play.headers ?? task.headers,
       format: play.format,
+      linkResolvedAt: Date.now(),
       /**
-       * 原样回吐时顺手把结论写进这一行：卡片上的文案要和 toast 是同一句。
-       * 继续挂着上一次「源返回了网页而不是视频清单」那种描述，用户只会照着它再点一次重试。
+       * 已确认失效的直链原样回吐才写入失败结论；跨进程刷新拿到同一条稳定地址时，
+       * 仍允许先试一次，不能仅凭 URL 未变就判死。
        */
-      ...(unchanged
+      ...(unchanged && reason === 'known-stale'
         ? { errorCode: 'E_SOURCE_UNAVAILABLE' as ErrorCode, errorMessage: STALE_UNCHANGED_MESSAGE }
         : {}),
-      ...(resourceChanged
+      ...(resourceChanged && !fingerprintReusable
         ? {
             downloadedBytes: 0,
             totalBytes: null,
             completedSegments: [],
             hlsTotalSegments: 0,
+            hlsPlaylistFingerprint: null,
             resumable: false,
             filePath: null,
             blobKey: null,
@@ -294,15 +305,17 @@ async function refreshStaleLink(task: DownloadTask): Promise<'refreshed' | 'unch
       if (oldPart !== nativePartPathOf(next)) await deleteFile(oldPart).catch(() => undefined);
     }
     await persist(next);
-    logger.info('失败任务已刷新直链', {
+    logger.info('下载直链已刷新', {
       taskId: task.id,
+      reason,
       errorCode: task.errorCode,
       resourceChanged,
+      fingerprintReusable,
       unchanged,
     });
     return unchanged ? 'unchanged' : 'refreshed';
   } catch (e) {
-    logger.warn('刷新直链失败，沿用原地址重试', { taskId: task.id, error: toAppError(e).message });
+    logger.warn('刷新直链失败', { taskId: task.id, reason, error: toAppError(e).message });
     return 'failed';
   }
 }
@@ -321,13 +334,39 @@ async function refreshStaleLink(task: DownloadTask): Promise<'refreshed' | 'unch
  * 所以按行落库并补发状态事件，走不了 `transition`。
  */
 async function refreshBeforeStart(task: DownloadTask): Promise<void> {
-  if (!task.errorCode || !STALE_LINK_CODES.has(task.errorCode)) return;
-  if ((await refreshStaleLink(task)) !== 'unchanged') return;
+  const knownStale = Boolean(task.errorCode && STALE_LINK_CODES.has(task.errorCode));
+  const crossedProcess =
+    task.format === 'hls' && (task.linkResolvedAt ?? task.createdAt) < PROCESS_STARTED_AT;
+  if (!knownStale && !crossedProcess) return;
+
+  const reason: RefreshReason = knownStale ? 'known-stale' : 'process-restart';
+  const result = await refreshStaleLink(task, reason);
+  if (result === 'refreshed') return;
+  if (result === 'failed' && !knownStale) {
+    const current = await downloadRepo.get(task.id);
+    if (!current) return;
+    const failed: DownloadTask = {
+      ...current,
+      status: 'failed',
+      speedBps: 0,
+      errorCode: 'E_SOURCE_UNAVAILABLE',
+      errorMessage: '应用重启后刷新下载地址失败，请检查网络或更换线路后重试',
+      updatedAt: Date.now(),
+    };
+    logger.warn('跨进程续传未刷新到直链，本次不起跑', { taskId: task.id, reason });
+    await persist(failed);
+    emitDownload({ type: 'status', task: failed, previous: 'queued' });
+    await emitQueueSummary();
+    return;
+  }
+  // 重启刷新拿到同一条稳定地址时允许试一次；只有已确认失效的旧链原样回吐才判死。
+  if (result === 'unchanged' && !knownStale) return;
+
   const current = await downloadRepo.get(task.id);
   if (!current) return;
   // 文案已由 `refreshStaleLink` 在原样回吐时写好，这里只负责把 queued 收成 failed
   const failed: DownloadTask = { ...current, status: 'failed', speedBps: 0, updatedAt: Date.now() };
-  logger.warn('直链已过期且源站未给出新地址，本次不起跑', { taskId: task.id });
+  logger.warn('直链已过期且源站未给出新地址，本次不起跑', { taskId: task.id, reason });
   await persist(failed);
   emitDownload({ type: 'status', task: failed, previous: 'queued' });
   await emitQueueSummary();
@@ -726,6 +765,7 @@ async function runCreate(
     posterUrl: input.posterUrl,
     url: input.url,
     headers: input.headers ?? {},
+    linkResolvedAt: now,
     format: input.format,
     quality: input.quality ?? null,
     status: 'queued',

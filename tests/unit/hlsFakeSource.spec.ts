@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createHlsDownloader } from '@/services/hlsDownloader';
+import { createHlsDownloader, hlsPlaylistFingerprint, parseM3u8 } from '@/services/hlsDownloader';
 import { settingsService } from '@/services/settingsService';
 import type { BeginResult, DownloadSink } from '@/services/downloadSink';
 import type { DownloadTask } from '@/types';
@@ -91,31 +91,66 @@ function fetchFor(count: number, bodies: Map<string, Uint8Array>): typeof fetch 
 }
 
 /** 记录调用的假 sink：既能控制 begin 返回值，也能断言有没有走到 finish */
-function recorderSink(beginResults: BeginResult[]): DownloadSink & {
+function recorderSink(
+  beginResults: BeginResult[],
+  options: {
+    flush?: () => Promise<void>;
+    suspend?: () => Promise<void>;
+    truncateTo?: (size: number) => Promise<void>;
+  } = {},
+): DownloadSink & {
   beginCalls: number;
   finishCalls: number;
+  flushCalls: number;
+  truncateCalls: number[];
   bytes: number;
+  fileBytes: number;
 } {
-  const sink = {
-    kind: 'filesystem' as const,
+  const sink: DownloadSink & {
+    beginCalls: number;
+    finishCalls: number;
+    flushCalls: number;
+    truncateCalls: number[];
+    bytes: number;
+    fileBytes: number;
+  } = {
+    kind: 'filesystem',
     beginCalls: 0,
     finishCalls: 0,
+    flushCalls: 0,
+    truncateCalls: [],
     bytes: 0,
+    fileBytes: 0,
     async begin(): Promise<BeginResult> {
       const result = beginResults[Math.min(sink.beginCalls, beginResults.length - 1)] as BeginResult;
       sink.beginCalls += 1;
+      sink.fileBytes = result.actualStartBytes;
       return result;
     },
     async write(chunk: Uint8Array): Promise<void> {
       sink.bytes += chunk.byteLength;
+      sink.fileBytes += chunk.byteLength;
+    },
+    async flush(): Promise<void> {
+      sink.flushCalls += 1;
+      await options.flush?.();
     },
     async finish() {
       sink.finishCalls += 1;
-      return { filePath: 'downloads/demo_m1/demo_m1_e1.ts', blobKey: null, size: sink.bytes };
+      return { filePath: 'downloads/demo_m1/demo_m1_e1.ts', blobKey: null, size: sink.fileBytes };
     },
-    async suspend(): Promise<void> {},
+    async suspend(): Promise<void> {
+      await options.suspend?.();
+    },
     async abort(): Promise<void> {},
   };
+  if (options.truncateTo) {
+    sink.truncateTo = async (size: number) => {
+      sink.truncateCalls.push(size);
+      await options.truncateTo?.(size);
+      sink.fileBytes = size;
+    };
+  }
   return sink;
 }
 
@@ -195,6 +230,170 @@ describe('从头下载时重新播种字节计数（DL-P1-1）', () => {
   });
 });
 
+describe('硬中断后的断点恢复', () => {
+  it('磁盘只多出未记账尾部：截断尾部并保留已完成分片', async () => {
+    const startBytes = SEGMENT_BYTES;
+    const sink = recorderSink([{ actualStartBytes: startBytes + 1024 }], {
+      truncateTo: async () => undefined,
+    });
+    const source = task({ downloadedBytes: startBytes, completedSegments: [0] });
+    const patches: Partial<DownloadTask>[] = [];
+    const downloader = createHlsDownloader({
+      load: async () => source,
+      saveProgress: async (_id, patch) => {
+        patches.push(patch);
+      },
+      fetchImpl: fetchFor(3, segments(3, (index) => index + 1)),
+      createSinkImpl: () => sink,
+    });
+
+    await downloader.run(source, new AbortController().signal);
+
+    expect(sink.beginCalls).toBe(1);
+    expect(sink.truncateCalls).toEqual([startBytes]);
+    expect(sink.bytes).toBe(2 * SEGMENT_BYTES);
+    const final = patches[patches.length - 1] as Partial<DownloadTask>;
+    expect(final.downloadedBytes).toBe(3 * SEGMENT_BYTES);
+    expect(final.completedSegments).toEqual([0, 1, 2]);
+  });
+
+  it('尾部截断失败：不追加、不清空旧文件，直接保留现场失败', async () => {
+    const sink = recorderSink([{ actualStartBytes: 400_000 + 1024 }], {
+      truncateTo: async () => {
+        throw new Error('read-only file system');
+      },
+    });
+    const source = task({ downloadedBytes: 400_000, completedSegments: [0] });
+    const downloader = createHlsDownloader({
+      load: async () => source,
+      saveProgress: async () => undefined,
+      fetchImpl: fetchFor(3, segments(3, (index) => index + 1)),
+      createSinkImpl: () => sink,
+    });
+
+    await expect(downloader.run(source, new AbortController().signal)).rejects.toMatchObject({
+      code: 'E_LOCAL_CORRUPT',
+      retryable: true,
+    });
+    expect(sink.beginCalls).toBe(1);
+    expect(sink.bytes).toBe(0);
+    expect(sink.finishCalls).toBe(0);
+  });
+
+  it('字节检查点落库前先刷盘，DB 不会记下尚未持久化的字节', async () => {
+    let clock = 0;
+    const sink = bufferedSink(() => {
+      clock += 1100;
+    });
+    const observations: Array<{ dbBytes: number; fileBytes: number; buffered: number }> = [];
+    const downloader = createHlsDownloader({
+      load: async () => task(),
+      now: () => clock,
+      saveProgress: async (_id, patch) => {
+        if (patch.downloadedBytes !== undefined) {
+          observations.push({
+            dbBytes: patch.downloadedBytes,
+            fileBytes: sink.fileBytes,
+            buffered: sink.buffered,
+          });
+        }
+      },
+      fetchImpl: fetchFor(3, segments(3, (index) => index + 1)),
+      createSinkImpl: () => sink,
+    });
+
+    await downloader.run(task(), new AbortController().signal);
+
+    expect(sink.flushCalls).toBeGreaterThan(1);
+    expect(observations.every((row) => row.dbBytes === row.fileBytes && row.buffered === 0)).toBe(true);
+  });
+
+  it('刷盘与暂停落盘都失败：不得把未持久化字节写进 DB', async () => {
+    let clock = 0;
+    const sink = recorderSink([{ actualStartBytes: 0 }], {
+      flush: async () => {
+        throw new Error('disk full');
+      },
+      suspend: async () => {
+        throw new Error('disk full');
+      },
+    });
+    const patches: Partial<DownloadTask>[] = [];
+    const downloader = createHlsDownloader({
+      load: async () => task(),
+      now: () => (clock += 2000),
+      saveProgress: async (_id, patch) => {
+        patches.push(patch);
+      },
+      fetchImpl: fetchFor(1, segments(1, 1)),
+      createSinkImpl: () => sink,
+    });
+
+    await expect(downloader.run(task(), new AbortController().signal)).rejects.toMatchObject({ code: 'E_UNKNOWN' });
+
+    expect(patches.every((patch) => patch.downloadedBytes === 0)).toBe(true);
+    expect(sink.finishCalls).toBe(0);
+  });
+});
+
+describe('HLS 清单指纹续传判定', () => {
+  it('签名地址变化但清单结构相同：保留旧分片，只补缺失分片', async () => {
+    const fingerprint = hlsPlaylistFingerprint(parseM3u8(manifest(3), 'https://cdn.example.com/media.m3u8'));
+    const sink = recorderSink([{ actualStartBytes: SEGMENT_BYTES }], {
+      truncateTo: async () => undefined,
+    });
+    const source = task({
+      downloadedBytes: SEGMENT_BYTES,
+      completedSegments: [0],
+      hlsPlaylistFingerprint: fingerprint,
+    });
+    const fetchImpl = fetchFor(3, segments(3, (index) => index + 1));
+    const downloader = createHlsDownloader({
+      load: async () => source,
+      saveProgress: async () => undefined,
+      fetchImpl,
+      createSinkImpl: () => sink,
+    });
+
+    await downloader.run(source, new AbortController().signal);
+
+    expect(sink.beginCalls).toBe(1);
+    expect(sink.truncateCalls).toEqual([]);
+    expect((fetchImpl as unknown as { mock: { calls: unknown[] } }).mock.calls).toHaveLength(3);
+  });
+
+  it('清单结构变化：清零旧索引并从头下载，不拼接另一份清单', async () => {
+    const current = hlsPlaylistFingerprint(parseM3u8(manifest(3), 'https://cdn.example.com/media.m3u8'));
+    const previous = hlsPlaylistFingerprint(parseM3u8(manifest(4), 'https://cdn.example.com/media.m3u8'));
+    const sink = recorderSink([{ actualStartBytes: 0 }]);
+    const source = task({
+      downloadedBytes: SEGMENT_BYTES,
+      completedSegments: [0],
+      hlsPlaylistFingerprint: previous,
+    });
+    const patches: Partial<DownloadTask>[] = [];
+    const downloader = createHlsDownloader({
+      load: async () => source,
+      saveProgress: async (_id, patch) => {
+        patches.push(patch);
+      },
+      fetchImpl: fetchFor(3, segments(3, (index) => index + 1)),
+      createSinkImpl: () => sink,
+    });
+
+    await downloader.run(source, new AbortController().signal);
+
+    expect(patches).toContainEqual(expect.objectContaining({
+      downloadedBytes: 0,
+      completedSegments: [],
+      hlsPlaylistFingerprint: current,
+      resumable: false,
+    }));
+    expect(sink.beginCalls).toBe(1);
+    expect(sink.bytes).toBe(3 * SEGMENT_BYTES);
+  });
+});
+
 /**
  * 续传记账（真机实测 DL-P1-4）。
  *
@@ -211,6 +410,8 @@ function bufferedSink(onWrite?: () => void) {
     fileBytes: 0,
     /** 还在写盘缓冲里的字节 */
     buffered: 0,
+    flushCalls: 0,
+    truncateCalls: [] as number[],
     begins: [] as number[],
     async begin(init: { task: DownloadTask; startBytes: number }) {
       sink.begins.push(init.startBytes);
@@ -229,12 +430,22 @@ function bufferedSink(onWrite?: () => void) {
       }
       onWrite?.();
     },
+    async flush() {
+      sink.flushCalls += 1;
+      sink.fileBytes += sink.buffered;
+      sink.buffered = 0;
+    },
+    async truncateTo(size: number) {
+      sink.truncateCalls.push(size);
+      sink.fileBytes = size;
+      sink.buffered = 0;
+    },
     async finish() {
+      await sink.flush();
       return { filePath: 'downloads/demo_m1/demo_m1_e1.ts', blobKey: null, size: sink.fileBytes };
     },
     async suspend() {
-      sink.fileBytes += sink.buffered;
-      sink.buffered = 0;
+      await sink.flush();
     },
     async abort() {
       sink.fileBytes = 0;

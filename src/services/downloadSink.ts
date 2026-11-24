@@ -27,6 +27,7 @@ import {
   stat,
   writeBase64,
   appendBase64,
+  truncatePart,
 } from '@/native/fs';
 import type { DownloadSinkKind, DownloadTask } from '@/types';
 
@@ -54,6 +55,10 @@ export interface DownloadSink {
   begin(init: SinkInit): Promise<BeginResult>;
   /** 追加一块数据 */
   write(chunk: Uint8Array): Promise<void>;
+  /** 把缓冲写入持久层；保存字节检查点前必须调用 */
+  flush?(): Promise<void>;
+  /** 裁掉未记账的文件尾部；当前字节检查点之前的数据保持不变 */
+  truncateTo?(size: number): Promise<void>;
   /** 完成：返回记录值（文件路径或 blob key） */
   finish(): Promise<{ filePath: string | null; blobKey: string | null; size: number }>;
   /** 暂停：保留已写入数据供续传 */
@@ -279,22 +284,37 @@ export class NativeFsSink implements DownloadSink {
       merged.set(buf, offset);
       offset += buf.byteLength;
     }
-    this.writeBuffer = [];
-    this.writeBufferSize = 0;
-
     const base64 = arrayBufferToBase64(merged.buffer);
     await appendBase64(this.partPath, base64);
+    this.writeBuffer = [];
+    this.writeBufferSize = 0;
     this.written += merged.byteLength;
+  }
+
+  async flush(): Promise<void> {
+    if (!this.started) throw new AppError('E_INVALID_STATE', 'sink 未初始化');
+    await this.flushBuffer();
+  }
+
+  async truncateTo(size: number): Promise<void> {
+    if (!this.started) throw new AppError('E_INVALID_STATE', 'sink 未初始化');
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new AppError('E_INVALID_INPUT', '截断长度必须是非负安全整数');
+    }
+    this.writeBuffer = [];
+    this.writeBufferSize = 0;
+    await truncatePart(this.partPath, size);
+    this.written = size;
   }
 
   async finish(): Promise<{ filePath: string | null; blobKey: string | null; size: number }> {
     if (!this.started) {
       return { filePath: null, blobKey: null, size: 0 };
     }
-    this.started = false;
 
     // P1-1: 刷出剩余缓冲
     await this.flushBuffer();
+    this.started = false;
 
     /*
      * DL-P1-1：先按磁盘真实大小对账，再决定要不要把 `.part` 晋升成成品。

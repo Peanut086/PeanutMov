@@ -15,6 +15,11 @@ vi.mock('@/shared/platform', () => ({
   isNative: vi.fn(() => true),
 }));
 
+const nativeTruncate = vi.hoisted(() => vi.fn());
+vi.mock('@/native/downloadPlugin', () => ({
+  nativeDownloadTruncatePart: nativeTruncate,
+}));
+
 const fs = vi.hoisted(() => ({
   mkdir: vi.fn(),
   writeFile: vi.fn(),
@@ -87,6 +92,9 @@ function promoteArtifact(): void {
 beforeEach(() => {
   vi.resetAllMocks();
   installFakeFs();
+  nativeTruncate.mockImplementation(async (filePath: string, length: number) => {
+    store.set(filePath, length);
+  });
   artifactPath = nativeFilePathOf(hlsTask());
   partPath = nativePartPathOf(hlsTask());
 });
@@ -190,5 +198,84 @@ describe('采纳已晋升成品作为续传基线（DL-R0）', () => {
 
     expect(again.actualStartBytes).toBe(0);
     expect(store.get(partPath)).toBe(0);
+  });
+});
+
+describe('NativeFsSink 检查点刷盘与尾部截断', () => {
+  it('flush() 把不足 512KB 的缓冲真正落到 .part', async () => {
+    const sink = new NativeFsSink();
+    await sink.begin({ task: hlsTask(), startBytes: 0 });
+    await sink.write(new Uint8Array(2000));
+
+    expect(store.get(partPath)).toBe(0);
+    await sink.flush?.();
+    expect(store.get(partPath)).toBe(2000);
+  });
+
+  it('append 失败后保留缓冲：重试只写一次，不把同一段追加两遍', async () => {
+    fs.appendFile.mockRejectedValueOnce(new Error('disk full'));
+    const sink = new NativeFsSink();
+    await sink.begin({ task: hlsTask(), startBytes: 0 });
+    const chunk = new Uint8Array(600 * 1024);
+
+    await expect(sink.write(chunk)).rejects.toMatchObject({ code: 'E_UNKNOWN' });
+    await sink.flush?.();
+
+    expect(fs.appendFile).toHaveBeenCalledTimes(2);
+    expect(store.get(partPath)).toBe(chunk.byteLength);
+  });
+
+  it('finish() 刷盘失败时仍可由 suspend() 重试落盘', async () => {
+    fs.appendFile.mockRejectedValueOnce(new Error('disk full'));
+    const sink = new NativeFsSink();
+    await sink.begin({ task: hlsTask(), startBytes: 0 });
+    await sink.write(new Uint8Array(2000));
+
+    await expect(sink.finish()).rejects.toMatchObject({ code: 'E_UNKNOWN' });
+    await sink.suspend();
+
+    expect(store.get(partPath)).toBe(2000);
+    expect(store.has(artifactPath)).toBe(false);
+  });
+
+  it('截断未记账尾部后更新计数，后续追加与成品大小保持连续', async () => {
+    store.set(partPath, 400_000);
+    const sink = new NativeFsSink();
+    const result = await sink.begin({
+      task: hlsTask({ downloadedBytes: 400_000, completedSegments: [0], hlsTotalSegments: 1 }),
+      startBytes: 400_000,
+    });
+    expect(result.actualStartBytes).toBe(400_000);
+
+    await sink.truncateTo?.(300_000);
+    await sink.write(new Uint8Array(1000));
+    const finished = await sink.finish();
+
+    expect(nativeTruncate).toHaveBeenCalledWith(partPath, 300_000);
+    expect(finished.size).toBe(301_000);
+    expect(store.get(artifactPath)).toBe(301_000);
+  });
+
+  it('拒绝负数、小数与超出安全整数的截断长度', async () => {
+    const sink = new NativeFsSink();
+    await sink.begin({ task: hlsTask(), startBytes: 0 });
+
+    for (const length of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      await expect(sink.truncateTo?.(length)).rejects.toMatchObject({ code: 'E_INVALID_INPUT' });
+    }
+    expect(nativeTruncate).not.toHaveBeenCalled();
+  });
+
+  it('原生截断失败时保留文件与旧计数，不伪装成截断成功', async () => {
+    store.set(partPath, 400_000);
+    nativeTruncate.mockRejectedValueOnce(new Error('read-only file system'));
+    const sink = new NativeFsSink();
+    await sink.begin({
+      task: hlsTask({ downloadedBytes: 400_000, completedSegments: [0], hlsTotalSegments: 1 }),
+      startBytes: 400_000,
+    });
+
+    await expect(sink.truncateTo?.(300_000)).rejects.toMatchObject({ code: 'E_UNKNOWN' });
+    expect(store.get(partPath)).toBe(400_000);
   });
 });

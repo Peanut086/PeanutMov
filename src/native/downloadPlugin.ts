@@ -174,6 +174,13 @@ export async function nativeDownloadStart(task: NativeDownloadTask): Promise<voi
   logger.debug('Native download started', { taskId: task.taskId });
 }
 
+export async function nativeDownloadTruncatePart(filePath: string, length: number): Promise<void> {
+  await initPlugin();
+  const p = pluginRef;
+  if (!p) throw new Error('Native download plugin not available');
+  await p.truncatePart({ filePath, length });
+}
+
 /**
  * 控制类调用：原生不可用时静默跳过（调用方已按 available 走过 JS 回退）
  */

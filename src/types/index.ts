@@ -600,6 +600,8 @@ export interface DownloadTask {
   posterUrl: string | null;
   url: string;
   headers: Record<string, string>;
+  /** 最近一次成功解析直链的时间；用于识别跨进程后续传 */
+  linkResolvedAt?: number;
   format: MediaFormat;
   quality: string | null;
   status: DownloadStatus;
@@ -662,6 +664,8 @@ export interface DownloadTask {
   hlsTotalSegments?: number;
   /** FIX-PLAY-D1: 清单里 #EXT-X-DISCONTINUITY 边界数（归因元数据：边界多的流时间轴/转封装更易出问题） */
   hlsDiscontinuities?: number;
+  /** 排除签名与密钥 URI 后的 HLS 清单指纹，用于判断旧分片能否续传 */
+  hlsPlaylistFingerprint?: string | null;
   errorMessage: string | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;

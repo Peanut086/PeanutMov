@@ -16,6 +16,9 @@ import com.qoder.cinema.download.DownloadService;
 
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -159,6 +162,52 @@ public class DownloadPlugin extends Plugin {
         }
         downloadManager.cancel(taskId);
         call.resolve();
+    }
+
+    /** 截断 HLS 未结算尾部；只允许应用私有目录内已存在的 .part 文件。 */
+    @PluginMethod
+    public void truncatePart(PluginCall call) {
+        String relativePath = call.getString("filePath");
+        Object rawLength = call.getData().opt("length");
+        if (!(rawLength instanceof Number)) {
+            call.reject("non-negative integer length required");
+            return;
+        }
+        double requestedLength = ((Number) rawLength).doubleValue();
+        if (requestedLength < 0D || requestedLength > Long.MAX_VALUE || requestedLength != Math.rint(requestedLength)) {
+            call.reject("non-negative integer length required");
+            return;
+        }
+        long length = ((Number) rawLength).longValue();
+        if (relativePath == null || relativePath.trim().isEmpty()) {
+            call.reject("filePath required");
+            return;
+        }
+        try {
+            File root = getContext().getFilesDir().getCanonicalFile();
+            File target = new File(root, relativePath).getCanonicalFile();
+            if (!target.toPath().startsWith(root.toPath())
+                    || !target.isFile()
+                    || !target.getName().endsWith(".part")) {
+                call.reject("truncate target must be an existing .part file inside app data");
+                return;
+            }
+            if (length > target.length()) {
+                call.reject("truncate length exceeds current file size");
+                return;
+            }
+            try (RandomAccessFile file = new RandomAccessFile(target, "rw")) {
+                if (file.length() < length) {
+                    throw new IOException("file became shorter than truncate length");
+                }
+                file.setLength(length);
+                file.getFD().sync();
+            }
+            call.resolve();
+        } catch (IOException | SecurityException | IllegalArgumentException e) {
+            Log.e(TAG, "Failed to truncate download part", e);
+            call.reject("Failed to truncate download part: " + e.getMessage());
+        }
     }
 
     /**

@@ -12,6 +12,7 @@ import { Directory, Filesystem } from '@capacitor/filesystem';
 import { AppError } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import { isNative } from '@/shared/platform';
+import { nativeDownloadTruncatePart } from '@/native/downloadPlugin';
 
 export const FS_ROOT = 'downloads';
 
@@ -177,6 +178,18 @@ export async function deleteFile(path: string): Promise<void> {
     const info = describeRejection(e);
     if (isDoesNotExist(info)) return;
     logger.debug('删除文件失败', { path, code: info.code, message: info.message });
+    throw mapFsError(e);
+  }
+}
+
+/** 截断应用私有目录内的下载临时文件，禁止扩展文件长度 */
+export async function truncatePart(path: string, length: number): Promise<void> {
+  if (!Number.isSafeInteger(length) || length < 0) {
+    throw new AppError('E_INVALID_INPUT', '截断长度必须是非负安全整数');
+  }
+  try {
+    await nativeDownloadTruncatePart(normalizeFsPath(path), length);
+  } catch (e) {
     throw mapFsError(e);
   }
 }

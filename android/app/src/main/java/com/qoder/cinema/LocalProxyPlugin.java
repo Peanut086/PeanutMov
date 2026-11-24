@@ -273,6 +273,10 @@ public class LocalProxyPlugin extends Plugin {
         }
     }
 
+    private static String redirectCacheKey(String token, String url) {
+        return token + "|" + url;
+    }
+
     private static Request.Builder buildRequest(Target target, String url, String range) {
         Request.Builder builder = new Request.Builder().url(url);
         for (Map.Entry<String, String> entry : target.headers.entrySet()) {
@@ -301,11 +305,12 @@ public class LocalProxyPlugin extends Plugin {
         String url = target.url;
 
         // OPT-14: 302 跳转目标缓存（带 TTL 检查，过期则回源）
-        RedirectEntry cachedEntry = redirectCache.get(url);
+        String redirectKey = redirectCacheKey(token, target.url);
+        RedirectEntry cachedEntry = redirectCache.get(redirectKey);
         if (cachedEntry != null && !cachedEntry.isExpired()) {
             url = cachedEntry.url;
         } else if (cachedEntry != null) {
-            redirectCache.remove(url);
+            redirectCache.remove(redirectKey);
         }
 
         Request request = buildRequest(target, url, range).build();
@@ -322,9 +327,11 @@ public class LocalProxyPlugin extends Plugin {
             status = response.code();
         }
 
-        // OPT-14: 缓存跳转结果（带时间戳）
-        if (!url.equals(target.url)) {
-            redirectCache.put(target.url, new RedirectEntry(url));
+        // OPT-14: 只缓存最终成功的跳转；同一 URL 不同 token/请求头不得互相污染。
+        if (status >= 200 && status < 300 && !url.equals(target.url)) {
+            redirectCache.put(redirectKey, new RedirectEntry(url));
+        } else if (status >= 400) {
+            redirectCache.remove(redirectKey);
         }
 
         OutputStream out = client.getOutputStream();
