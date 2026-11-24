@@ -106,6 +106,49 @@ describe('useSharedElement · 封面共享元素转场', () => {
     expect(sharedCoverActive.value).toBe(false);
   });
 
+  it('详情路由回顶后再采样目标，避免封面飞向旧滚动位置', async () => {
+    const { host, img } = mountCover();
+    beginSharedCover(host);
+    const overlay = img.parentElement?.nextElementSibling as HTMLElement;
+    const clone = overlay.querySelector('img') as HTMLImageElement;
+    const calls = spyAnimate(clone);
+    const stage = document.createElement('div');
+    let targetTop = -1647;
+    stage.getBoundingClientRect = () => rectBox(targetTop, 0, 430, 242)();
+    document.body.appendChild(stage);
+
+    const done = finishSharedCover(stage);
+    requestAnimationFrame(() => {
+      targetTop = 64;
+    });
+    await done;
+
+    expect(calls).toHaveLength(1);
+    expect(translationOf(calls[0])).toEqual({ x: -24, y: -56 });
+    expect(document.body.contains(overlay)).toBe(false);
+    expect(img.style.visibility).toBe('');
+  });
+
+  it('目标页不出帧时稳定采样也会撤层', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0);
+    const { host, img } = mountCover();
+    beginSharedCover(host);
+    const overlay = img.parentElement?.nextElementSibling as HTMLElement;
+    const stage = document.createElement('div');
+    stage.getBoundingClientRect = rectBox(64, 0, 430, 242);
+    document.body.appendChild(stage);
+
+    const done = finishSharedCover(stage);
+    await vi.advanceTimersByTimeAsync(900);
+    await expect(done).resolves.toBeUndefined();
+
+    expect(document.body.contains(overlay)).toBe(false);
+    expect(img.style.visibility).toBe('');
+    expect(sharedCoverActive.value).toBe(false);
+    vi.useRealTimers();
+  });
+
   it('动画卡住（页面不出帧）时看门狗仍会收尾', async () => {
     vi.useFakeTimers();
     const { host, img } = mountCover();
@@ -119,6 +162,7 @@ describe('useSharedElement · 封面共享元素转场', () => {
     const stage = document.createElement('div');
     stage.getBoundingClientRect = () =>
       ({ top: 0, left: 0, width: 360, height: 202, bottom: 202, right: 360, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    document.body.appendChild(stage);
 
     const done = finishSharedCover(stage);
     await vi.advanceTimersByTimeAsync(900);

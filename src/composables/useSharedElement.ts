@@ -97,6 +97,23 @@ function nextFrame(): Promise<void> {
   return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
+async function waitForStableRect(target: Element): Promise<Rect | null> {
+  const deadline = Date.now() + REWIND_SETTLE_MS;
+  let previous: Rect | null = null;
+  let stableFrames = 0;
+
+  while (Date.now() < deadline) {
+    if (!target.isConnected) return null;
+    const rect = rectOf(target);
+    if (previous !== null && nearRect(rect, previous, 0.5)) stableFrames += 1;
+    else stableFrames = 0;
+    if (stableFrames >= 2) return rect;
+    previous = rect;
+    await Promise.race([nextFrame(), delay(REWIND_POLL_MS)]);
+  }
+  return null;
+}
+
 async function fadeOverlay(overlay: HTMLElement): Promise<void> {
   if (typeof overlay.animate !== 'function') return;
   let guard: ReturnType<typeof setTimeout> | undefined;
@@ -181,7 +198,7 @@ export async function finishSharedCover(target: Element | null | undefined): Pro
   pending = null;
   clearTimeout(p.timer);
 
-  const to = target ? rectOf(target) : null;
+  const to = target ? await waitForStableRect(target) : null;
   const animatable =
     !!to &&
     to.width >= 24 &&
