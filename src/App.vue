@@ -43,6 +43,13 @@ const route = useRoute();
 const router = useRouter();
 const showTabBar = computed(() => route.meta.requiresLayout === true);
 
+/** 播放页换集只更新路由参数，不重建承载全屏状态的控制器。 */
+const routeViewKey = computed(() =>
+  route.name === 'player'
+    ? JSON.stringify([route.params.mediaId, route.query])
+    : route.fullPath,
+);
+
 /**
  * 记录上一次路由的 depth，用于判断过渡方向。
  * 通过 beforeEach 在路由更新前快照来源 depth，
@@ -233,7 +240,7 @@ function recover(): void {
       <SafeModeBanner />
       <!-- 底部 TabBar 为 fixed，由外壳统一预留空间，页面无需各自处理 -->
       <div ref="contentRef" class="app-content" :class="{ 'app-content--tabbar': showTabBar }">
-        <RouterView v-slot="{ Component, route: current }">
+        <RouterView v-slot="{ Component }">
           <Transition :name="transitionName" @after-enter="onRouteEnter">
             <!-- 首页 KeepAlive（P0-4）：回 tab 不重闪骨架、不重新全量拉取；
                  搜索页 KeepAlive（CHG-28）：从详情/播放返回时保留关键词与结果，
@@ -241,7 +248,7 @@ function recover(): void {
                  媒体库 KeepAlive：返回时列表与滚动位置原样保留，转场期间不重排、不重解码封面；
                  其余页面进出 Player/Detail 等重资源页，保持即用即毁 -->
             <KeepAlive :include="['HomeView', 'SearchView', 'LibraryView']">
-              <component :is="Component" :key="current.fullPath" class="route-view" />
+              <component :is="Component" :key="routeViewKey" class="route-view" />
             </KeepAlive>
           </Transition>
         </RouterView>

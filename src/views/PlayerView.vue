@@ -338,8 +338,7 @@ const lineId = ref<string | null>(null);
 /* ---------- P0-2：换线 / 换源会话（跨路由存活的预算） ---------- */
 
 /**
- * 为什么要搬到模块级会话：`App.vue` 用 `current.fullPath` 给路由组件打 key，播放页又会
- * 在每次 `router.replace` 时被重建。过去预算记在实例 ref 上（`failoverStartedAt` /
+ * 为什么要搬到模块级会话：`App.vue` 的路由 key 会在线路/换源等导航时重建播放页。过去预算记在实例 ref 上（`failoverStartedAt` /
  * `failoverLineTried` / `failoverSourceTried`），重建即归零——真机表现就是集号在 ep1/ep2
  * 之间来回跳、线路一直自动切到全部失效：每一轮都以为自己是第一次，35 秒窗口和
  * 「最多再试几条线路」的上限从未真正生效。
@@ -3128,8 +3127,7 @@ function chooseEpisode(ep: Episode): void {
   drawerOpen.value = false;
   if (ep.id === playingIdentity.value?.episodeId) return;
   /*
-   * G-A06：过片幕布在路由替换**前**触发。播放页整页重建，旧实例的 DOM 留不到新帧上，
-   * 所以状态交给模块级（见 useEpisodeLeader），渲染层在 App 壳里。
+   * G-A06：过片幕布在路由替换**前**触发。切集只更新路由参数，幕布状态交给模块级并渲染在 App 壳里。
    * 只演一次视觉：不换集音轨——连播时这声「啪」会盖住正在播的台词，代价大于惊喜。
    */
   if (settings.easterEggsEnabled) {
