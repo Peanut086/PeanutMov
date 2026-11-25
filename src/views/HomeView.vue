@@ -236,6 +236,7 @@ function continuePlay(rec: HistoryRecord, origin?: HTMLElement): void {
   }
   const query: Record<string, string> = {};
   if (rec.episodeId) query.episodeId = rec.episodeId;
+  if (rec.lineId) query.lineId = rec.lineId;
   beginSharedCover(origin);
   void router.push({ name: 'player', params: { mediaId: rec.mediaId, episodeId: rec.episodeId ?? undefined }, query });
 }

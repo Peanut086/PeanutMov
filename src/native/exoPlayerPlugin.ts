@@ -29,6 +29,10 @@ export interface ExoPrepareOptions {
   autoPlay?: boolean;
   /** P0-7: 续播起始位置（毫秒），0 或 undefined 表示从头播放 */
   startPositionMs?: number;
+  /** P2-2：一次 load 的会话标识；Java 用它丢弃旧 player 实例的事件 */
+  sessionId?: string;
+  /** P2-2：同一 NativeEngine 内递增的加载代次，与 sessionId 联合过滤事件 */
+  requestGeneration?: number;
   /**
    * B1：锁屏/通知栏/蓝牙元数据。
    *
@@ -85,8 +89,17 @@ export interface ExoFrameLuma {
   box?: { left: number; top: number; width: number; height: number };
 }
 
+export type ExoPlayerUnavailableReason = 'plugin_missing' | 'safe_mode' | 'unsupported';
+
+export interface ExoPlayerStatus {
+  available: boolean;
+  supported: boolean;
+  safeMode: boolean;
+  reason: ExoPlayerUnavailableReason | null;
+}
+
 export interface ExoPlayerPlugin {
-  isSupported(): Promise<{ supported: boolean }>;
+  isSupported(): Promise<{ supported: boolean; safeMode?: boolean }>;
   prepare(options: ExoPrepareOptions): Promise<void>;
   setRect(options: ExoRect): Promise<void>;
   play(): Promise<void>;
@@ -97,7 +110,8 @@ export interface ExoPlayerPlugin {
   setVolume(options: { volume: number }): Promise<void>;
   /** v1.8/CHG-25：droppedFrames 为本次会话累计丢帧（AC-125 帧率采样） */
   progress(): Promise<{ positionMs: number; durationMs: number; droppedFrames?: number }>;
-  release(): Promise<void>;
+  /** P2-2：可等待释放；带会话参数时，旧 session 的迟到 release 不会关掉新 player */
+  release(options?: { sessionId?: string; requestGeneration?: number }): Promise<void>;
   /** v1.8 优化：获取视频轨列表（清晰度） */
   getQualities(): Promise<{ qualities: ExoQuality[] }>;
   /** v1.8 优化：切换视频轨（清晰度） */
@@ -144,12 +158,13 @@ export interface ExoPlayerPlugin {
   setAudioOnly(options: { enabled: boolean }): Promise<void>;
   /**
    * 状态监听（ready / buffering / ended / error / qualities / textTracks /
-   * audioTracks / playing / paused / remote / surface）；返回解绑 handle。
+   * audioTracks / playing / paused / remote / surface / firstframe / seeksettled）；返回解绑 handle。
    *
    * `remote` 是通知栏/锁屏/线控发来的指令，`command` 为 previous / next / stop；
    * `playing` / `paused` 是原生侧播放意图变化（含音频焦点被抢），JS 必须跟着同步。
    * `surface` 是 P1-4 的取样目标代次变化（建/毁、纯音频收起画面、离开播放页），
    * 带 `generation` 与 `valid`，亮度取样据此停轮询与恢复。
+   * `seeksettled` 带请求目标、真实落点和首帧耗时，不能用目标值冒充真实位置。
    */
   addListener(
     eventName: 'exostate',
@@ -157,10 +172,33 @@ export interface ExoPlayerPlugin {
       state: string;
       message?: string;
       duration?: number;
+      positionMs?: number;
+      targetMs?: number;
+      latencyMs?: number;
+      errorCodeName?: string;
+      causeChain?: string;
+      hasVideoTrack?: boolean;
+      videoTrackCount?: number;
+      videoWidth?: number;
+      videoHeight?: number;
+      firstFrameRendered?: boolean;
+      audioOnly?: boolean;
+      visible?: boolean;
+      playerAttached?: boolean;
+      surfaceValid?: boolean;
+      surfaceShown?: boolean;
+      surfaceWidth?: number;
+      surfaceHeight?: number;
+      webViewBackgroundTransparent?: boolean;
+      rect?: ExoRect;
+      reason?: string;
       command?: string;
       qualities?: ExoQuality[];
       textTracks?: ExoTextTrack[];
       audioTracks?: ExoAudioTrack[];
+      sessionId?: string;
+      requestGeneration?: number;
+      /** SurfaceView 取样目标代次，与 P2-2 的 requestGeneration 不是同一个概念 */
       generation?: number;
       valid?: boolean;
     }) => void,
@@ -169,14 +207,26 @@ export interface ExoPlayerPlugin {
 
 export const ExoPlayer = registerPlugin<ExoPlayerPlugin>('ExoPlayer');
 
-export async function isExoPlayerAvailable(): Promise<boolean> {
+export async function getExoPlayerStatus(): Promise<ExoPlayerStatus> {
   try {
     const result = await ExoPlayer.isSupported();
-    return result.supported === true;
+    const supported = result.supported === true;
+    const safeMode = result.safeMode === true;
+    if (!supported) {
+      return { available: false, supported: false, safeMode, reason: 'unsupported' };
+    }
+    if (safeMode) {
+      return { available: false, supported: true, safeMode: true, reason: 'safe_mode' };
+    }
+    return { available: true, supported: true, safeMode: false, reason: null };
   } catch (e) {
     logger.debug('ExoPlayer 插件不可用（回退 WebView 引擎）', e);
-    return false;
+    return { available: false, supported: false, safeMode: false, reason: 'plugin_missing' };
   }
+}
+
+export async function isExoPlayerAvailable(): Promise<boolean> {
+  return (await getExoPlayerStatus()).available;
 }
 
 /** headers 对象 → 插件数组格式（Java 侧逐项还原） */

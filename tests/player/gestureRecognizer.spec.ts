@@ -116,6 +116,32 @@ describe('GestureRecognizer', () => {
     if (commit?.type === 'seek-commit') expect(commit.targetSec).toBeCloseTo(130, 1);
   });
 
+  it('seek 能力不可靠时水平拖动不再派发预览或提交，但仍保留音量手势', () => {
+    const { recognizer, intents } = makeRecognizer();
+    const ctx = makeCtx({ seekEnabled: false });
+    recognizer.pointerDown({ pointerId: 1, clientX: 300, clientY: 320 }, ctx);
+    recognizer.pointerMove({ pointerId: 1, clientX: 420, clientY: 322 }, ctx);
+    recognizer.pointerUp({ pointerId: 1, clientX: 420, clientY: 322 });
+
+    expect(intents.some((i) => i.type === 'seek-preview' || i.type === 'seek-commit')).toBe(false);
+    expect(intents).toContainEqual({ type: 'seek-cancel' });
+
+    recognizer.pointerDown({ pointerId: 2, clientX: 300, clientY: 480 }, ctx);
+    recognizer.pointerMove({ pointerId: 2, clientX: 302, clientY: 416 }, ctx);
+    recognizer.pointerUp({ pointerId: 2, clientX: 302, clientY: 416 });
+    expect(intents.some((i) => i.type === 'volume')).toBe(true);
+  });
+
+  it('总时长未知但 seek 仍可靠时保留相对水平拖动', () => {
+    const { recognizer, intents } = makeRecognizer();
+    const ctx = makeCtx({ duration: 0 });
+    recognizer.pointerDown({ pointerId: 1, clientX: 100, clientY: 320 }, ctx);
+    recognizer.pointerMove({ pointerId: 1, clientX: 220, clientY: 322 }, ctx);
+    recognizer.pointerUp({ pointerId: 1, clientX: 220, clientY: 322 });
+
+    expect(intents).toContainEqual({ type: 'seek-commit', targetSec: 130 });
+  });
+
   it('水平拖动超出片尾时钳制到总时长（AC-48）', () => {
     const { recognizer, intents } = makeRecognizer();
     const ctx = makeCtx({ currentTime: 980, duration: 1000 });

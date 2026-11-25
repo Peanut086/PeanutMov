@@ -35,6 +35,7 @@ import { deleteFile, stat } from '@/native/fs';
 import { toErrorShape } from '@/shared/errors';
 import { isNative } from '@/shared/platform';
 import { logger } from '@/shared/logger';
+import { isRepairableTsTask, repairLocalTsIndex } from '@/services/localTsRepair';
 import type { DownloadRemuxOutcome, DownloadTask } from '@/types';
 
 /** 启动后的静默期：让首页数据加载、起播预热先跑完 */
@@ -112,6 +113,19 @@ async function listCandidates(): Promise<DownloadTask[]> {
   return completed.filter(
     (task) => typeof task.filePath === 'string' && /\.ts$/i.test(task.filePath) && !isOfflineFileInUse(task.id),
   );
+}
+
+async function repairUnindexedTs(): Promise<void> {
+  const completed = await downloadRepo.listByStatus(['completed']);
+  for (const task of completed) {
+    if (!isRepairableTsTask(task) || isOfflineFileInUse(task.id)) continue;
+    if (await waitForQueueIdle() === null) return;
+    try {
+      await repairLocalTsIndex(task.id);
+    } catch (e) {
+      logger.warn('存量 TS 索引修复失败，保留原文件', { taskId: task.id, error: e });
+    }
+  }
 }
 
 type FileOutcome = 'done' | 'missing' | 'busy' | 'no-space' | DownloadRemuxOutcome;
@@ -296,41 +310,44 @@ export async function runOfflineRemuxMigration(): Promise<void> {
     });
 
     const settings = await settingsService.get();
-    if (settings.download.remuxToMp4 === false) return;
+    const shouldRemux = settings.download.remuxToMp4 !== false;
+    const candidates = shouldRemux ? await listCandidates() : [];
 
-    const candidates = await listCandidates();
-    if (candidates.length === 0) return;
+    if (candidates.length > 0) {
+      logger.info(`开始优化离线文件：${candidates.length} 个待转封装`, { queueWaitMs: bootWaitMs });
+      const unbind = await bindProgress();
+      let done = 0;
+      let noSpace = false;
+      emitState({ active: true, done: 0, total: candidates.length, percent: 0, title: candidates[0]?.title ?? null });
 
-    logger.info(`开始优化离线文件：${candidates.length} 个待转封装`, { queueWaitMs: bootWaitMs });
-    const unbind = await bindProgress();
-    let done = 0;
-    let noSpace = false;
-    emitState({ active: true, done: 0, total: candidates.length, percent: 0, title: candidates[0]?.title ?? null });
-
-    try {
-      for (const candidate of candidates) {
-        // 迁移期间用户可能新建下载：每次开始前重新让路
-        const queueWaitMs = await waitForQueueIdle();
-        if (queueWaitMs === null) break;
-        if (queueWaitMs > 0) logger.info('离线文件优化让路后重新开跑', { taskId: candidate.id, queueWaitMs });
-        emitState({ done, percent: 0, title: candidate.title });
-        const outcome = await migrateOne(candidate.id);
-        done += 1;
-        if (outcome === 'no-space') {
-          noSpace = true;
-          break;
+      try {
+        for (const candidate of candidates) {
+          // 迁移期间用户可能新建下载：每次开始前重新让路
+          const queueWaitMs = await waitForQueueIdle();
+          if (queueWaitMs === null) break;
+          if (queueWaitMs > 0) logger.info('离线文件优化让路后重新开跑', { taskId: candidate.id, queueWaitMs });
+          emitState({ done, percent: 0, title: candidate.title });
+          const outcome = await migrateOne(candidate.id);
+          done += 1;
+          if (outcome === 'no-space') {
+            noSpace = true;
+            break;
+          }
         }
+      } finally {
+        unbind();
+        emitState({ active: false, done, total: candidates.length, percent: 0, title: null });
       }
-    } finally {
-      unbind();
-      emitState({ active: false, done, total: candidates.length, percent: 0, title: null });
+
+      if (noSpace) {
+        logger.warn('离线文件优化因空间不足提前结束', { done, total: candidates.length });
+      } else {
+        logger.info(`离线文件优化结束：${done}/${candidates.length}`);
+      }
     }
 
-    if (noSpace) {
-      logger.warn('离线文件优化因空间不足提前结束', { done, total: candidates.length });
-    } else {
-      logger.info(`离线文件优化结束：${done}/${candidates.length}`);
-    }
+    // 索引修复与 remux 开关无关；转封装因 B 帧等原因跳过时，也在这里补真实时间轴索引。
+    await repairUnindexedTs();
   } catch (e) {
     // F11：此前只记 `e.message`——原生插件抛出的非 Error 载荷（Java 侧字符串）与堆栈全部丢失，
     // 真机上「异常退出」后无从定位是空间、权限还是插件本身。本轮只把现场留全，迁移逻辑不动。

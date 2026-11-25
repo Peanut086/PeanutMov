@@ -55,6 +55,12 @@ export interface MediaToolPlugin {
   cancelRemux(options: { taskId?: string; inputPath?: string }): Promise<{ canceled: boolean }>;
   /** P0-3：独立复检盘上产物（开机对账 / 采纳孤儿 MP4 前），`path` 同上口径 */
   verifyMedia(options: { path: string; expectedDurationUs?: number }): Promise<MediaVerifyRaw>;
+  /** P1-B：Media3 Transformer 无损转封装 PoC；输入永不删除，不接受已有输出 */
+  probeTsRemux(options: {
+    inputPath: string;
+    outputPath: string;
+    timeoutMs?: number;
+  }): Promise<TransformerTsProbeResult>;
   /**
    * A-03：从本地文件抽进度条预览帧。
    * `path` 是相对 `Directory.Data` 的路径（与 `remuxMp4` 同一口径，不接受绝对路径）。
@@ -67,6 +73,8 @@ export interface MediaToolPlugin {
   }): Promise<{ frames: Array<{ index: number; timeMs: number; dataUrl: string }> }>;
   /** FIX-PLAY-C3：离线 TS 文件对齐自检（`path` 同上口径） */
   scanTs(options: { path: string }): Promise<TsScanResult>;
+  /** D：只读提取视频 PTS/DTS/PCR 时间轴，用于生成本地 BYTERANGE 清单 */
+  scanTsTimeline(options: { path: string }): Promise<TsTimelineScanResult>;
   /** 转封装进度（≤2 次/秒，按 `inputPath` 归属） */
   addListener(
     eventName: 'remuxProgress',
@@ -217,6 +225,71 @@ export interface MediaVerifyRawSeekPoint {
   hit?: boolean;
 }
 
+export interface TransformerTrackFingerprint {
+  mime: string;
+  samples: number;
+  payloadBytes: number;
+  syncSamples: number;
+  bSlices: number;
+  firstPtsUs: number;
+  lastPtsUs: number;
+  sha256: string;
+}
+
+export interface TransformerTsProbeResult {
+  ok: boolean;
+  success: boolean;
+  verdict: 'pass' | 'failed';
+  engine: string;
+  code: string;
+  reason: string;
+  reasons?: string[];
+  inputPath: string;
+  outputPath: string;
+  inputBytes: number;
+  outputBytes: number;
+  partBytes?: number;
+  inputRetained: boolean;
+  outputPublished?: boolean;
+  elapsedMs: number;
+  durationMs?: number;
+  durationUs?: number;
+  expectedDurationUs?: number;
+  copyOnly: boolean;
+  fallbackApplied: boolean;
+  encodedSamplesPreserved?: boolean;
+  videoFrameCount?: number;
+  videoFrameCountMatches?: boolean;
+  durationMatchesTransformer?: boolean;
+  audioEncoderName?: string | null;
+  videoEncoderName?: string | null;
+  processedInputs?: Array<{ audioDecoderName: string | null; videoDecoderName: string | null }>;
+  tracks?: Record<string, {
+    input: TransformerTrackFingerprint | null;
+    output: TransformerTrackFingerprint | null;
+    preserved: boolean;
+  }>;
+  avSync?: {
+    checked: boolean;
+    preserved: boolean;
+    inputStartDeltaUs?: number;
+    inputEndDeltaUs?: number;
+    outputStartDeltaUs?: number;
+    outputEndDeltaUs?: number;
+    toleranceUs?: number;
+  };
+  bSlices?: { input: number; output: number; presentInInput: boolean; preserved: boolean };
+  probeVerdict?: string;
+  trackCount?: number;
+  audioTrackCount?: number;
+  videoTrackIndex?: number;
+  videoMime?: string | null;
+  width?: number;
+  height?: number;
+  seekPoints?: MediaVerifyRawSeekPoint[];
+  exception?: string;
+}
+
 export interface MediaVerifyResult {
   ok: boolean;
   /** `pass` / `missing` / `no-tracks` / `no-video-track` / `no-duration` / `duration-drift-NN` / `head-seek-miss` / `middle-seek-miss` / `tail-seek-miss` / `probe-error-Xxx` */
@@ -311,6 +384,45 @@ export interface TsScanResult {
   firstBadOffset: number;
   /** 最后一个完整包之后剩余的字节数 */
   tailBytes: number;
+}
+
+export interface TsTimelineSegment {
+  offset: number;
+  durationUs: number;
+  discontinuity: boolean;
+}
+
+export interface TsTimelineScanResult {
+  ok: boolean;
+  timelineReliable: boolean;
+  verdict: 'ok' | 'not-ts' | 'corrupt' | 'truncated' | 'prefix' | 'no-timeline';
+  fileSize: number;
+  packetSize: number;
+  alignedStart: number;
+  totalPackets: number;
+  badPackets: number;
+  firstBadOffset: number;
+  tailBytes: number;
+  timestampCount: number;
+  timelineSource: 'video-pts' | 'pcr' | '';
+  durationUs: number;
+  discontinuities: number;
+  segments: TsTimelineSegment[];
+}
+
+/** 与 `scanTsFile` 一样只把能力缺席返回 null；结构或时间轴不合格是有效结论。 */
+export async function scanTsTimelineFile(path: string): Promise<TsTimelineScanResult | null> {
+  if (!isMediaToolAvailable()) return null;
+  try {
+    return await MediaTool.scanTsTimeline({ path });
+  } catch (e) {
+    const message = (e as Error)?.message ?? String(e);
+    if (/not implemented|unimplemented|method/i.test(message)) {
+      logger.debug('MediaTool.scanTsTimeline 不可用（旧 APK）', { error: message });
+      return null;
+    }
+    throw e;
+  }
 }
 
 /**

@@ -19,7 +19,7 @@ import { danmakuService } from '@/services/danmakuService';
 import { DownloadQueue, transition } from '@/services/downloadQueue';
 import { createDownloadEngine, setDownloadEngine } from '@/services/downloadEngine';
 import { isDownloadPhaseSettled, nativeFilePathOf, nativePartPathOf, readBlob } from '@/services/downloadSink';
-import { deleteFile, stat, toPlayableUrl } from '@/native/fs';
+import { deleteFile, readTextFile, stat, toPlayableUrl } from '@/native/fs';
 import { currentNetworkType, isOnline, onNetworkChange, primeNetworkStatus } from '@/native/network';
 import { onAppStateChange, type AppLifecycleState } from '@/native/appLifecycle';
 import { applyNativeSpeedLimit } from '@/native/mediaToolPlugin';
@@ -51,6 +51,9 @@ import {
 } from '@/services/downloadBatch';
 import { downloadPreflight, type PreflightOptions, type PreflightResult } from '@/services/downloadPreflight';
 import { markOfflineFileInUse } from '@/services/offlineRemuxMigration';
+import { buildLocalHlsManifest, isCompleteLocalHlsIndex, localHlsIndexPathOf } from '@/services/localHlsIndex';
+import { repairLocalTsIndex, type LocalTsRepairResult } from '@/services/localTsRepair';
+import { createSafeReplacement, promoteReplacement } from '@/services/downloadReplacement';
 import { getPhase, isInTrackedPostProcess } from '@/services/downloadPhaseRegistry';
 import { isLocalArtifactUrl, LOCAL_ARTIFACT_MESSAGE } from '@/player/sourceGuard';
 import type {
@@ -93,6 +96,10 @@ export interface LocalPlayResult {
   url: string;
   /** 'capacitor' = convertFileSrc 结果；'blob' = createObjectURL */
   kind: 'capacitor' | 'blob';
+  /** 实际交给播放器的媒体格式；本地 HLS 为 m3u8 清单。 */
+  format: MediaFormat;
+  /** 视频成品字节数；HLS 清单播放时仍是合并 TS 的大小。 */
+  size: number;
   revoke(): void;
 }
 
@@ -520,7 +527,10 @@ async function ensureQueue(): Promise<DownloadQueue> {
       }),
   });
 
-  queue.run((task, ctx) => engine.run(task, ctx.signal));
+  queue.run(async (task, ctx) => {
+    await engine.run(task, ctx.signal);
+    if (task.replacesTaskId) await promoteReplacement(task.id);
+  });
 
   return queue;
 }
@@ -1156,6 +1166,21 @@ export const downloadService = {
     return next;
   },
 
+  /** D：只读扫描真实时间轴并补本地 BYTERANGE 清单，原 TS 不变。 */
+  async repairLocalIndex(id: string, options: { force?: boolean } = {}): Promise<LocalTsRepairResult> {
+    return repairLocalTsIndex(id, options);
+  },
+
+  /** D：独立候选安全重下；候选复检并提交成功前，旧 completed 产物始终可用。 */
+  async safeRedownload(id: string): Promise<DownloadTask> {
+    const q = await ensureQueue();
+    const candidate = await createSafeReplacement(id);
+    q.enqueue(candidate);
+    emitDownload({ type: 'status', task: candidate, previous: 'completed' });
+    await emitQueueSummary();
+    return candidate;
+  },
+
   /**
    * 重新下载（扩展方法，供 AC-78"本地文件不可用 → 重新下载"使用）：
    * 复用原任务记录，清空 filePath/blobKey 与进度后重新入队。
@@ -1271,6 +1296,11 @@ export const downloadService = {
       }
       // OPT-12：未完成分块（*.part）不在 filePath 里，删除任务时一并清理，避免磁盘残片
       if (isNative()) {
+        if (task.hlsIndexPath) {
+          const ok = await deleteFile(task.hlsIndexPath).then(() => true).catch(() => false);
+          fileLeftBehind = fileLeftBehind || !ok;
+          await deleteFile(`${task.hlsIndexPath}.part`).catch(() => undefined);
+        }
         await deleteFile(nativePartPathOf(task)).catch(() => undefined);
       }
     }
@@ -1367,12 +1397,57 @@ export const downloadService = {
       if (!info.exists || info.size === 0) {
         throw new AppError('E_FILE_MISSING');
       }
+
+      const declaresLocalHls = task.hlsIndex != null || task.hlsIndexPath != null;
+      if (task.format === 'hls' && mergedFormatOf(task) === 'ts' && declaresLocalHls) {
+        try {
+          const index = task.hlsIndex;
+          const indexPath = task.hlsIndexPath;
+          if (
+            !index ||
+            !indexPath ||
+            indexPath !== localHlsIndexPathOf(path) ||
+            task.hlsPlaylistFingerprint !== index.playlistFingerprint ||
+            !isCompleteLocalHlsIndex(index, task.hlsTotalSegments, info.size)
+          ) {
+            throw new AppError('E_LOCAL_CORRUPT', '本地 HLS 字节索引不完整');
+          }
+          const playlistInfo = await withTimeout(
+            stat(indexPath),
+            LOCAL_RESOLVE_TIMEOUT_MS,
+            '本地播放清单读取超时，请重试',
+          );
+          if (!playlistInfo.exists || playlistInfo.size === 0) {
+            throw new AppError('E_LOCAL_CORRUPT', '本地 HLS 播放清单缺失');
+          }
+          const content = await withTimeout(
+            readTextFile(indexPath),
+            LOCAL_RESOLVE_TIMEOUT_MS,
+            '本地播放清单读取超时，请重试',
+          );
+          if (content !== buildLocalHlsManifest(index, path)) {
+            throw new AppError('E_LOCAL_CORRUPT', '本地 HLS 播放清单与字节索引不一致');
+          }
+          const url = await withTimeout(
+            toPlayableUrl(indexPath),
+            LOCAL_RESOLVE_TIMEOUT_MS,
+            '本地播放清单读取超时，请重试',
+          );
+          return { url, kind: 'capacitor', format: 'hls', size: info.size, revoke: () => undefined };
+        } catch (e) {
+          logger.warn('本地 HLS 清单不可用，回退合并 TS 播放', {
+            taskId: task.id,
+            error: toAppError(e).message,
+          });
+        }
+      }
+
       const url = await withTimeout(
         toPlayableUrl(path),
         LOCAL_RESOLVE_TIMEOUT_MS,
         '本地文件读取超时，请重试',
       );
-      return { url, kind: 'capacitor', revoke: () => undefined };
+      return { url, kind: 'capacitor', format: mergedFormatOf(task), size: info.size, revoke: () => undefined };
     }
 
     const key = task.blobKey ?? task.id;
@@ -1382,6 +1457,8 @@ export const downloadService = {
     return {
       url,
       kind: 'blob',
+      format: mergedFormatOf(task),
+      size: blob.size,
       revoke: () => {
         try {
           URL.revokeObjectURL(url);
@@ -1480,25 +1557,8 @@ export const downloadService = {
     const task = await this.findActiveByEpisode(mediaId, episodeId);
     if (!task || task.status !== 'completed') return null;
     try {
-      const local = await this.getLocalPlayUrl(task.id);
-      const subtitles = await localSubtitlesOf(task);
-      markOfflineFileInUse(task.id);
-      // A-03：抽帧只认相对 Directory.Data 的路径，blob 兜底没有文件可抽
-      const localPath = task.sink === 'filesystem' ? finalFilePathOf(task) : undefined;
-      return {
-        url: local.url,
-        localPath,
-        // 产物实况决定播放器选型，口径见 `mergedFormatOf`
-        format: mergedFormatOf(task),
-        headers: {},
-        subtitles,
-        lineId: `local:${task.id}`,
-        quality: task.quality,
-        expiresAt: null,
-        isLocal: true,
-      };
-    } catch (e) {
-      logger.warn('本地文件不可用', { taskId: task.id, error: toAppError(e).message });
+      return await this.taskToPlayback(task);
+    } catch {
       return null;
     }
   },
@@ -1529,11 +1589,15 @@ export const downloadService = {
       }
       return null;
     }
-    return this.taskToPlayback(task);
+    try {
+      return await this.taskToPlayback(task);
+    } catch {
+      return null;
+    }
   },
 
-  /** 把已完成任务转为本地 PlaybackSource（内部复用） */
-  async taskToPlayback(task: DownloadTask): Promise<PlaybackSource | null> {
+  /** 把已完成任务转为本地 PlaybackSource；文件不可用时抛错，禁止静默伪装成网络源 */
+  async taskToPlayback(task: DownloadTask): Promise<PlaybackSource> {
     try {
       const local = await this.getLocalPlayUrl(task.id);
       const subtitles = await localSubtitlesOf(task);
@@ -1543,8 +1607,8 @@ export const downloadService = {
       return {
         url: local.url,
         localPath,
-        // 产物实况决定播放器选型，口径见 `mergedFormatOf`
-        format: mergedFormatOf(task),
+        // 产物实况决定播放器选型；带本地字节索引时 url 指向 m3u8，口径见 `mergedFormatOf`
+        format: local.format,
         headers: {},
         subtitles,
         lineId: `local:${task.id}`,
@@ -1553,8 +1617,12 @@ export const downloadService = {
         isLocal: true,
       };
     } catch (e) {
-      logger.warn('本地文件不可用', { taskId: task.id, error: toAppError(e).message });
-      return null;
+      const cause = toAppError(e);
+      logger.warn('本地文件不可用', { taskId: task.id, error: cause.message });
+      throw new AppError('E_LOCAL_CORRUPT', '本地文件不可用，请重新下载这一集', {
+        detail: cause.message,
+        cause,
+      });
     }
   },
 

@@ -4,6 +4,7 @@ import {
   findEpisodeOwnerLineId,
   offlineEpisodeMessage,
   resolvePlaybackEpisode,
+  resolvePlaybackLineId,
   resolveTargetEpisode,
 } from '@/player/episodeFallback';
 
@@ -152,6 +153,62 @@ describe('findEpisodeOwnerLineId：按集 id 反查所属线路', () => {
 
   it('无 episodeId（未指定目标集）→ null', () => {
     expect(findEpisodeOwnerLineId(episodes, lines, null)).toBeNull();
+  });
+});
+
+describe('resolvePlaybackLineId：历史线路恢复与失效回退', () => {
+  const episodes = [
+    { id: 'L1:e1', lineId: 'L1' },
+    { id: 'L2:e2', lineId: 'L2' },
+  ];
+  const base = {
+    explicitLineId: null,
+    episodes,
+    lineIds: ['L1', 'L2'],
+    episodeId: null,
+    requestedLineId: null,
+    anchorLineId: null,
+  };
+
+  it('历史记录带有效线路时显式恢复该线路', () => {
+    expect(resolvePlaybackLineId({ ...base, requestedLineId: 'L2' })).toBe('L2');
+  });
+
+  it('目标集所属线路优先于历史线路，避免续播落到另一条线', () => {
+    expect(resolvePlaybackLineId({
+      ...base,
+      episodeId: 'L2:e2',
+      requestedLineId: 'L1',
+    })).toBe('L2');
+  });
+
+  it('旧记录没有线路时仍按目标集归属恢复', () => {
+    expect(resolvePlaybackLineId({ ...base, episodeId: 'L2:e2' })).toBe('L2');
+  });
+
+  it('历史线路已消失时回退有效黑匣子锚点', () => {
+    expect(resolvePlaybackLineId({
+      ...base,
+      requestedLineId: 'gone',
+      anchorLineId: 'L2',
+    })).toBe('L2');
+  });
+
+  it('历史线路与锚点都失效时回退首条可用线路', () => {
+    expect(resolvePlaybackLineId({
+      ...base,
+      requestedLineId: 'gone',
+      anchorLineId: 'gone-too',
+    })).toBe('L1');
+  });
+
+  it('用户显式切换的线路保持最高优先级', () => {
+    expect(resolvePlaybackLineId({
+      ...base,
+      explicitLineId: 'L1',
+      episodeId: 'L2:e2',
+      requestedLineId: 'L2',
+    })).toBe('L1');
   });
 });
 

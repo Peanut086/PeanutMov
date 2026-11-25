@@ -55,6 +55,8 @@ export interface GestureContext {
   brightness: number;
   /** 水平满屏拖动的最大秒数 */
   seekMaxSec: number;
+  /** 相对定位是否可靠；false 时水平拖动取消，音量/亮度仍可用 */
+  seekEnabled?: boolean;
   sensitivity: Sensitivity;
   /** 本次长按是否允许在超过帮助阈值后呼出帮助浮层（缺省不允许） */
   longPressHelpEnabled?: boolean;
@@ -173,8 +175,14 @@ export class GestureRecognizer {
     if (this.mode === 'undetermined') {
       if (Math.abs(dx) < GESTURE_TAP_MAX_MOVE_PX && Math.abs(dy) < GESTURE_TAP_MAX_MOVE_PX) return;
       this.cancelLongPress();
-      if (Math.abs(dx) > Math.abs(dy) * GESTURE_DIRECTION_RATIO) this.mode = 'seek';
-      else if (Math.abs(dy) > Math.abs(dx) * GESTURE_DIRECTION_RATIO) {
+      if (Math.abs(dx) > Math.abs(dy) * GESTURE_DIRECTION_RATIO) {
+        if (ctx.seekEnabled === false) {
+          this.mode = 'none';
+          this.callbacks.onIntent({ type: 'seek-cancel' });
+          return;
+        }
+        this.mode = 'seek';
+      } else if (Math.abs(dy) > Math.abs(dx) * GESTURE_DIRECTION_RATIO) {
         this.mode = sample.side === 'left' ? 'brightness' : 'volume';
         // 记录拖动起点的音量/亮度作为基准，避免逐帧累加漂移；越界/NaN 由 clamp 兜底
         this.baseVolume = clamp(Number.isFinite(ctx.volume) ? ctx.volume : 0, 0, 100);

@@ -7,7 +7,7 @@
  * 不走 PlayerController 的媒体-剧集模型：直播无进度、无历史、无字幕。
  * 频道切换 = 销毁旧引擎 + 加载新 URL（直播切台即释放，技术方案口径）。
  */
-import { onBeforeUnmount, ref, watch } from 'vue';
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 
 import { FullscreenController } from '@/player/FullscreenController';
 import { HlsEngine } from '@/player/HlsEngine';
@@ -50,6 +50,7 @@ const nativeActive = ref(false);
 
 type LiveEngine = HlsEngine | VideoEngine | NativeEngine;
 let engine: LiveEngine | null = null;
+let destroyPromise: Promise<void> | null = null;
 /** 加载代次：切台/卸载后作废仍在飞的旧加载（原生能力探测是异步的） */
 let loadSeq = 0;
 /** 起播超时定时器（CHG-21：超时没出画面通知外层切路） */
@@ -164,10 +165,25 @@ function createEngine(format: PlaybackSource['format'], useNative: boolean, url:
     : new VideoEngine(engineEvents(url, seq));
 }
 
-function destroyEngine(): void {
-  engine?.destroy();
+async function destroyEngine(): Promise<void> {
+  if (destroyPromise) return destroyPromise;
+  const current = engine;
   engine = null;
   nativeActive.value = false;
+  if (!current) return;
+  const pending = (async () => {
+    try {
+      await current.destroy();
+    } catch (e) {
+      logger.warn('直播引擎释放失败', e);
+    }
+  })();
+  destroyPromise = pending;
+  try {
+    await pending;
+  } finally {
+    if (destroyPromise === pending) destroyPromise = null;
+  }
 }
 
 /* 原生画面在 WebView 之下：页面底色要挖洞让画，切回 WebView 引擎/卸载时还原 */
@@ -194,6 +210,8 @@ async function tryEngine(
   nativeActive.value = useNative;
   engine = next;
   next.attach(container);
+  await nextTick();
+  if (seq !== loadSeq || engine !== next) return '已切换';
   try {
     await next.load(source);
     if (seq !== loadSeq || engine !== next) return '已切换';
@@ -207,8 +225,7 @@ async function tryEngine(
   } catch (e) {
     if (seq !== loadSeq || engine !== next) return '已切换';
     logger.warn(useNative ? '直播原生引擎加载失败' : '直播频道加载失败', source.url, e);
-    next.destroy();
-    engine = null;
+    await destroyEngine();
     return e instanceof Error ? e.message : '频道加载失败';
   }
 }
@@ -216,7 +233,8 @@ async function tryEngine(
 async function loadChannel(url: string): Promise<void> {
   const seq = ++loadSeq;
   timeoutReported = false;
-  destroyEngine();
+  await destroyEngine();
+  if (seq !== loadSeq) return;
   errorMessage.value = null;
   state.value = 'loading';
   const container = containerRef.value;
@@ -283,7 +301,7 @@ watch(
         clearTimeout(channelTimer);
         channelTimer = null;
       }
-      destroyEngine();
+      void destroyEngine();
       state.value = 'idle';
       errorMessage.value = null;
       return;
@@ -312,7 +330,7 @@ onBeforeUnmount(() => {
   if (channelTimer !== null) clearTimeout(channelTimer);
   channelTimer = null;
   loadSeq++;
-  destroyEngine();
+  void destroyEngine();
   releaseUnderlay?.();
   releaseUnderlay = null;
   // 卸载时 state 仍可能是 playing（watcher 不会再跑），显式释放避免常亮泄漏到其它页面

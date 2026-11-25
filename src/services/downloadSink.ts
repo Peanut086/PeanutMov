@@ -75,7 +75,7 @@ export function nativeFilePathOf(task: DownloadTask): string {
   // `ep1.mp4.part`，而原生启动清理专门删 `*.mp4.part`（那是转封装残件的约定名），
   // 于是每次冷启动都把一集没下完的 fMP4 清零。容器名在交付阶段才改指 `.mp4`。
   const ext = extensionOf(task.url, task.format);
-  return `${FS_ROOT}/${mediaSegment}/${episodeSegment}.${ext}`;
+  return task.artifactPath ?? `${FS_ROOT}/${mediaSegment}/${episodeSegment}.${ext}`;
 }
 
 /** Android 临时路径：最终路径 + `.part` */

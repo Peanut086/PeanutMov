@@ -10,7 +10,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 
 import type { PlaybackRate, ResizeMode, SaveProgressInput, SubtitleSettings } from '@/types';
-import type { PlayerLoadOptions } from '@/player/types';
+import type { PlayerEventMap, PlayerLoadOptions } from '@/player/types';
 import { PlayerController } from '@/player/PlayerController';
 import type { GestureIntent } from '@/player/GestureRecognizer';
 import { ProgressReporter } from '@/player/ProgressReporter';
@@ -79,6 +79,8 @@ export interface UsePlayerControllerOptions {
     mediaId: string;
     episodeId: string | null;
     episodeNumber: number | null;
+    episodeTitle?: string | null;
+    lineId?: string | null;
     title: string;
     posterUrl: string | null;
     totalEpisodes: number | null;
@@ -125,8 +127,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   });
   const localSubtitles = ref(options.subtitle);
   const resolvedQuality = ref<'auto' | string>('auto');
-  /** 黑屏检测结果（码流在播但一帧画面都没解出来）；null = 正常 */
-  const noVideo = ref<{ videoWidth: number; videoHeight: number; elapsedSec: number } | null>(null);
+  /** 黑屏检测结果（零帧或持续近黑）；null = 正常 */
+  const noVideo = ref<PlayerEventMap['novideo'] | null>(null);
 
   let hideTimer: ReturnType<typeof setTimeout> | null = null;
   let hudTimer: ReturnType<typeof setTimeout> | null = null;
@@ -201,6 +203,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       player.patch({ duration, loading: false });
     });
 
+    c.on('capabilitychange', (capabilities) => {
+      player.patch(capabilities);
+    });
+
     // 每次加载成功（含切集/自动连播）同步当前集 id，
     // 让 canPrev/canNext 这类依赖 player.episodeId 的派生状态实时重算
     c.on('loaded', ({ episodeId }) => {
@@ -255,6 +261,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       setControlsVisible(true);
     });
 
+    c.on('novideoclear', () => {
+      noVideo.value = null;
+    });
+
     // OPT-26（P2-⑫）：在线流停滞——处置在播放页（重新取址要解析服务与路由）
     c.on('stall', (info) => {
       stallSignal.value = { ...info };
@@ -286,6 +296,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
     // v1.8/CHG-25：引擎变化（含原生→WebView 回退）与非致命提示
     c.on('enginechange', ({ kind }) => {
       player.patch({ engineKind: kind });
+    });
+
+    c.on('nativeattempt', ({ active }) => {
+      document.documentElement.classList.toggle('native-underlay', active);
     });
 
     c.on('notice', ({ message }) => {
@@ -355,6 +369,8 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
             mediaId: desc.mediaId,
             episodeId: desc.episodeId,
             episodeNumber: desc.episodeNumber,
+            episodeTitle: desc.episodeTitle ?? null,
+            lineId: desc.lineId ?? null,
             title: desc.title,
             posterUrl: desc.posterUrl,
             positionSec: snapshot.positionSec,
@@ -426,6 +442,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       error: null,
       playing: false,
       currentTime: opts.startPositionSec,
+      duration: 0,
+      durationKnown: false,
+      seekable: false,
+      seekReliable: true,
       subtitleText: '',
     });
     if (opts.startPositionSec > 0) {
@@ -437,8 +457,6 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
       if (!alive || controller.value !== c) return;
       await c.play();
       if (!alive || controller.value !== c) return;
-      // 成功路径显式清空错误：旧一轮（已被取代）的失败不得残留在画面上
-      if (player.error) player.patch({ error: null });
     } catch (e) {
       // REV-28：切集/切线路会作废旧加载，旧加载抛 E_ABORTED 属正常竞态，
       // 不能把取消当失败写到 player.error 上（会盖住正在播放的新画面）。
@@ -515,6 +533,10 @@ export function usePlayerController(options: UsePlayerControllerOptions) {
   }
 
   async function seek(sec: number): Promise<void> {
+    if (!player.seekReliable) {
+      ui.toast('当前文件定位不可靠，已停止快进快退', 'info');
+      return;
+    }
     // 先重置节流，确保 seek 触发的 timeupdate 不被跳过
     lastTimePatchAt = 0;
     controller.value?.seek(sec);

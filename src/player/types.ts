@@ -11,11 +11,16 @@ import type {
   ResizeMode,
   SubtitleTrack,
 } from '@/types';
+import type { LumaField } from '@/player/danmakuContrast';
 
 /* ---------- 事件 ---------- */
+export type NoVideoReason = 'zero-frame' | 'black-frame';
+
 export type PlayerEventMap = {
   ready: { duration: number };
   timeupdate: { currentTime: number; duration: number; buffered: number };
+  /** 时长或定位能力变化；UI 据此禁用绝对拖动与不可靠的 seek。 */
+  capabilitychange: PlaybackCapabilities;
   statechange: { playing: boolean; waiting: boolean };
   ratechange: { rate: PlaybackRate };
   ended: void;
@@ -34,13 +39,20 @@ export type PlayerEventMap = {
   fullscreenchange: { fullscreen: boolean };
   /** v1.8/CHG-25：当前引擎变化（首次接入与原生→WebView 回退都会触发） */
   enginechange: { kind: 'native' | 'hls' | 'video' };
+  /** P2：原生 attempt 开始前建立透明链，回退/销毁时撤销 */
+  nativeattempt: { active: boolean };
   /** v1.8/CHG-25：非致命提示（如原生引擎回退），由 View 转 Toast */
   notice: { message: string };
-  /**
-   * 黑屏检测：码流在播（时间在走）但一帧画面都没解出来。
-   * 触发一次/每次加载，由 View 提示「只有声音没有画面」并给换线路/原生引擎入口。
-   */
-  novideo: { videoWidth: number; videoHeight: number; elapsedSec: number };
+  /** 黑屏形态：零帧 = 未解码出画面；黑帧 = 已出帧但像素持续近黑 */
+  novideo: {
+    videoWidth: number;
+    videoHeight: number;
+    elapsedSec: number;
+    reason: NoVideoReason;
+    maxLuma?: number;
+  };
+  /** 画面恢复：清除上一轮黑屏提示，不必等下次加载 */
+  novideoclear: { reason: NoVideoReason };
   /**
    * OPT-26（P2-⑫）：在线流停滞——位置与缓冲一起停住超过判定窗口。
    *
@@ -69,6 +81,17 @@ export type PlayerEventMap = {
 export type PlayerEventName = keyof PlayerEventMap;
 
 export type PlayerListener<K extends PlayerEventName> = (payload: PlayerEventMap[K]) => void;
+
+/* ---------- 播放能力 ---------- */
+
+export interface PlaybackCapabilities {
+  /** 引擎是否给出了有限且大于 0 的总时长。 */
+  durationKnown: boolean;
+  /** 是否可做进度条绝对拖动；未知时长或定位不可靠时为 false。 */
+  seekable: boolean;
+  /** 相对 seek 是否仍可信；裸 TS 被实测定位失败证伪后为 false。 */
+  seekReliable: boolean;
+}
 
 /* ---------- 状态机 ---------- */
 export type PlayerState =
@@ -135,15 +158,19 @@ export interface PlayableEngine {
   /**
    * 画面帧统计（黑屏检测）：`totalFrames === 0` 且 `videoWidth > 0` 表示
    * 「解码器吃下了码流但一帧都没出」（多为 WebView 不支持该视频编码）。
-   * 原生 surface 引擎无法统计，返回 null。
+   * 无视频轨或主动纯音频返回 null。
    */
   getFrameStats?(): { videoWidth: number; videoHeight: number; totalFrames: number } | null;
+  /** 32×18 像素亮度取样；null = 本轮暂时取不到，抛错 = 此引擎无法取样 */
+  sampleFrameLuma?(): LumaField | null | Promise<LumaField | null>;
+  /** 是否具备真实首帧观察能力；没有时不能用超时伪造黑屏结论 */
+  canObserveFirstFrame?(): boolean;
   setQuality(quality: string): void;
   getQualities(): string[];
   /** 设置画面缩放模式（contain/cover/fill） */
   setResizeMode(mode: ResizeMode): void;
-  /** 销毁并释放资源 */
-  destroy(): void;
+  /** 销毁并释放资源；原生桥接需要等待解绑与 release 完成 */
+  destroy(): void | Promise<void>;
 }
 
 /* ---------- 字幕 ---------- */

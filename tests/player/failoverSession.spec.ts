@@ -145,6 +145,23 @@ describe('额度与去重', () => {
   });
 });
 
+describe('失效地址刷新额度', () => {
+  it('同一 attempt 只刷新一次，下一次加载才重新放行', () => {
+    const round = start();
+    expect(round.claimAddressRefresh()).toBe(true);
+    expect(round.claimAddressRefresh()).toBe(false);
+    start({ key: keyOf('L1', 'e3') });
+    expect(round.attemptId).toBe(2);
+    expect(round.claimAddressRefresh()).toBe(true);
+  });
+
+  it('到点或收口后不再放行刷新', () => {
+    const round = start();
+    round.finish('deadline');
+    expect(round.claimAddressRefresh()).toBe(false);
+  });
+});
+
 describe('截止时间与终态', () => {
   it('到点只有一个终态，且只通知一次；之后再进入同目标才开新一轮', () => {
     const first = start();

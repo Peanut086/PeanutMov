@@ -19,10 +19,16 @@ vi.mock('@/shared/logger', () => ({
 }));
 
 const h = vi.hoisted(() => {
-  type StateCb = (data: { state: string; message?: string; duration?: number }) => void;
+  type StateCb = (data: {
+    state: string;
+    message?: string;
+    duration?: number;
+    positionMs?: number;
+    hasVideoTrack?: boolean;
+  }) => void;
   const stateListeners = new Set<StateCb>();
   const fakes = {
-    prepare: vi.fn(async () => undefined),
+    prepare: vi.fn(async (_opts: unknown) => undefined),
     setRect: vi.fn(async () => undefined),
     play: vi.fn(async () => undefined),
     pause: vi.fn(async () => undefined),
@@ -41,17 +47,23 @@ vi.mock('@/native/exoPlayerPlugin', () => ({
     ...h.fakes,
     addListener: vi.fn(async (_event: string, cb: (d: { state: string }) => void) => {
       h.stateListeners.add(cb as never);
-      return { remove: async () => undefined };
+      return { remove: async () => { h.stateListeners.delete(cb as never); } };
     }),
   },
   exoHeadersOf: (headers: Record<string, string>) =>
     Object.entries(headers).map(([key, value]) => ({ key, value })),
   isExoPlayerAvailable: vi.fn(async () => true),
+  getExoPlayerStatus: vi.fn(async () => ({
+    available: true,
+    supported: true,
+    safeMode: false,
+    reason: null,
+  })),
 }));
 
 import type { PlaybackSource, AppErrorShape } from '@/types';
 import { logger } from '@/shared/logger';
-import { isExoPlayerAvailable } from '@/native/exoPlayerPlugin';
+import { getExoPlayerStatus } from '@/native/exoPlayerPlugin';
 import { PlayerController } from '@/player/PlayerController';
 import type { PlayerLoadOptions } from '@/player/types';
 import { NET_STALL_STUCK_MS, STALL_STUCK_MS } from '@/player/constants';
@@ -97,7 +109,13 @@ function makeOptions(
   };
 }
 
-function emitState(data: { state: string; message?: string; duration?: number }): void {
+function emitState(data: {
+  state: string;
+  message?: string;
+  duration?: number;
+  positionMs?: number;
+  hasVideoTrack?: boolean;
+}): void {
   for (const cb of [...h.stateListeners]) cb(data);
 }
 
@@ -113,12 +131,13 @@ function video(): HTMLVideoElement {
   return el as HTMLVideoElement;
 }
 
-/** 原生链路：prepare 已发起 → 交回 ready + 时长，加载即落定 */
+/** 原生链路：prepare 已发起 → READY + 首帧后加载才落定 */
 async function loadNative(ctl: PlayerController, isLocal = false): Promise<void> {
   mount(ctl);
   const running = ctl.load(makeOptions(true, isLocal));
   await vi.waitFor(() => expect(h.fakes.prepare).toHaveBeenCalled());
-  emitState({ state: 'ready', duration: 600_000 });
+  emitState({ state: 'ready', duration: 600_000, positionMs: 12_000 });
+  emitState({ state: 'firstframe', positionMs: 12_000 });
   await running;
 }
 
@@ -134,6 +153,12 @@ async function loadVideo(ctl: PlayerController): Promise<void> {
   // jsdom 的 play() 是「Not implemented」的拒绝，引擎只认 promise 落定
   Object.defineProperty(el, 'play', { configurable: true, value: async () => undefined });
   Object.defineProperty(el, 'error', { configurable: true, value: null });
+  Object.defineProperty(el, 'videoWidth', { configurable: true, value: 1920 });
+  Object.defineProperty(el, 'videoHeight', { configurable: true, value: 1080 });
+  Object.defineProperty(el, 'getVideoPlaybackQuality', {
+    configurable: true,
+    value: () => ({ totalVideoFrames: 1 }),
+  });
   el.dispatchEvent(new Event('loadedmetadata'));
   await running;
 }
@@ -149,7 +174,12 @@ describe('在线流停滞看门狗（P2-⑫）', () => {
     vi.useRealTimers();
     h.stateListeners.clear();
     document.body.innerHTML = '';
-    vi.mocked(isExoPlayerAvailable).mockImplementation(async () => true);
+    vi.mocked(getExoPlayerStatus).mockResolvedValue({
+      available: true,
+      supported: true,
+      safeMode: false,
+      reason: null,
+    });
     h.fakes.prepare.mockImplementation(async () => undefined);
     h.fakes.progress.mockImplementation(async () => ({
       positionMs: 12_000,
@@ -249,9 +279,11 @@ describe('在线流停滞看门狗（P2-⑫）', () => {
 
     await vi.advanceTimersByTimeAsync(STALL_STUCK_MS + 4_000);
     expect(stalls).toHaveLength(0);
-    expect(notices).toContain('离线起播异常，正在重试');
+    expect(notices).toContain('离线播放停滞，正在重试');
     expect(h.fakes.prepare).toHaveBeenCalledTimes(2);
-    emitState({ state: 'ready', duration: 600_000 });
+    expect(h.fakes.prepare.mock.calls[1]![0]).toMatchObject({ startPositionMs: 12_000 });
+    emitState({ state: 'ready', duration: 600_000, positionMs: 12_000, hasVideoTrack: true });
+    emitState({ state: 'firstframe', positionMs: 12_000 });
 
     await vi.advanceTimersByTimeAsync(STALL_STUCK_MS + 4_000);
     expect(stalls).toHaveLength(0);

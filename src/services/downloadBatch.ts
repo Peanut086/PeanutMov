@@ -112,6 +112,45 @@ export function summarizeBatch(tasks: DownloadTask[]): BatchProgress {
   return { total: tasks.length, completed, failed, active, canceled };
 }
 
+export interface CompletedMediaGroup {
+  mediaId: string;
+  label: string;
+  tasks: DownloadTask[];
+}
+
+function compareDownloadText(a: string, b: string): number {
+  return a.localeCompare(b, 'zh-CN', { numeric: true });
+}
+
+function compareCompletedTasks(a: DownloadTask, b: DownloadTask): number {
+  const left = a.episodeNumber ?? Number.MAX_SAFE_INTEGER;
+  const right = b.episodeNumber ?? Number.MAX_SAFE_INTEGER;
+  if (left !== right) return left - right;
+  const leftCompleted = a.completedAt ?? a.createdAt;
+  const rightCompleted = b.completedAt ?? b.createdAt;
+  if (leftCompleted !== rightCompleted) return leftCompleted - rightCompleted;
+  return compareDownloadText(a.id, b.id);
+}
+
+export function groupCompletedByMedia(rows: DownloadTask[]): CompletedMediaGroup[] {
+  const groups = new Map<string, DownloadTask[]>();
+  for (const task of rows) {
+    if (task.status !== 'completed') continue;
+    const bucket = groups.get(task.mediaId);
+    if (bucket) bucket.push(task);
+    else groups.set(task.mediaId, [task]);
+  }
+
+  return Array.from(groups, ([mediaId, tasks]) => {
+    tasks.sort(compareCompletedTasks);
+    const label = tasks
+      .map((task) => task.title.trim())
+      .filter(Boolean)
+      .sort(compareDownloadText)[0] || '未命名内容';
+    return { mediaId, label, tasks };
+  }).sort((a, b) => compareDownloadText(a.label, b.label) || compareDownloadText(a.mediaId, b.mediaId));
+}
+
 /**
  * 完成提示的分组键（P2-4）：同一次「缓存整季」归一条，无批号的任务自成一组。
  * 前缀区分两种命名空间，避免某个任务的 id 恰好等于别人的 batchId 时被并成一条。

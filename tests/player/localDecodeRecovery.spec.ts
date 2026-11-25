@@ -44,17 +44,23 @@ vi.mock('@/native/exoPlayerPlugin', () => ({
   exoHeadersOf: (headers: Record<string, string>) =>
     Object.entries(headers).map(([key, value]) => ({ key, value })),
   isExoPlayerAvailable: vi.fn(async () => true),
+  getExoPlayerStatus: vi.fn(async () => ({
+    available: true,
+    supported: true,
+    safeMode: false,
+    reason: null,
+  })),
 }));
 
 function emitState(data: Record<string, unknown>): void {
   for (const cb of [...h.stateListeners]) cb(data);
 }
 
-function makeLocalSource(): PlaybackSource {
+function makeLocalSource(format: PlaybackSource['format'] = 'mp4'): PlaybackSource {
   return {
-    url: 'file:///data/user/0/com.qoder.cinema/files/downloads/media-1/ep-1.ts',
-    localPath: 'downloads/media-1/ep-1.ts',
-    format: 'ts',
+    url: `file:///data/user/0/com.qoder.cinema/files/downloads/media-1/ep-1.${format}`,
+    localPath: `downloads/media-1/ep-1.${format}`,
+    format,
     headers: {},
     subtitles: [],
     lineId: 'local',
@@ -89,14 +95,30 @@ const DECODE_ERROR = {
 };
 
 describe('toPlayError 结构化归因（FIX-PLAY-C1）', () => {
-  it('errorCodeName 为 IO 类 → E_NETWORK（复用网络自动重试）', () => {
+  it('errorCodeName 为 IO 类且带 503 → E_HTTP_5XX，保留状态码', () => {
     const e = toPlayError({
       state: 'error',
       message: 'Server returned HTTP 503',
       errorCodeName: 'ERROR_CODE_IO_BAD_HTTP_STATUS',
     });
-    expect(e.code).toBe('E_NETWORK');
+    expect(e.code).toBe('E_HTTP_5XX');
+    expect(e.httpStatus).toBe(503);
     expect(e.detail).toContain('code=ERROR_CODE_IO_BAD_HTTP_STATUS');
+  });
+
+  it('BAD_HTTP_STATUS 402 → 源地址失败，不冒充网络或格式问题', () => {
+    const e = toPlayError({
+      state: 'error',
+      message: 'Source error',
+      errorCodeName: 'ERROR_CODE_IO_BAD_HTTP_STATUS',
+      causeChain: 'InvalidResponseCodeException: Response code: 402',
+      positionMs: 1_842_300,
+    });
+    expect(e.code).toBe('E_SOURCE_UNAVAILABLE');
+    expect(e.httpStatus).toBe(402);
+    expect(e.retryable).toBe(true);
+    expect(e.detail).toContain('Response code: 402');
+    expect(e.detail).toContain('pos=1842.3s');
   });
 
   it('errorCodeName 为解码类 → E_DECODE，detail 带 cause 链与位置', () => {
@@ -122,14 +144,15 @@ describe('本地解码错误一次性容错（FIX-PLAY-C2）', () => {
     h.fakes.play.mockClear();
   });
 
-  async function mountLocal(): Promise<PlayerController> {
+  async function mountLocal(format: PlaybackSource['format'] = 'mp4'): Promise<PlayerController> {
     const ctl = new PlayerController({ onProgress: () => {} });
     const el = document.createElement('div');
     document.body.appendChild(el);
     ctl.mount(el);
-    const loadPromise = ctl.load(makeOptions(makeLocalSource()));
+    const loadPromise = ctl.load(makeOptions(makeLocalSource(format)));
     await vi.waitFor(() => expect(h.fakes.prepare).toHaveBeenCalledTimes(1));
     emitState({ state: 'ready', duration: 60000 });
+    emitState({ state: 'firstframe', positionMs: 0 });
     await loadPromise;
     return ctl;
   }
@@ -147,9 +170,31 @@ describe('本地解码错误一次性容错（FIX-PLAY-C2）', () => {
     const second = h.fakes.prepare.mock.calls[1]![0] as { startPositionMs: number };
     expect(second.startPositionMs).toBe(LOCAL_DECODE_SKIP_SEC * 1000);
     emitState({ state: 'ready', duration: 60000 });
+    emitState({ state: 'firstframe', positionMs: 0 });
     await vi.waitFor(() => expect(h.fakes.play).toHaveBeenCalled());
 
     expect(notices).toEqual(['离线解码异常，正在跳过损坏片段']);
+    expect(errors).toEqual([]);
+    await ctl.destroy();
+  });
+
+  it('裸 TS 首次解码错误 → 从头复位，不再跳到不可靠位置', async () => {
+    const ctl = await mountLocal('ts');
+    const notices: string[] = [];
+    const errors: string[] = [];
+    ctl.on('notice', ({ message }) => notices.push(message));
+    ctl.on('error', (e) => errors.push(e.code));
+
+    emitState(DECODE_ERROR);
+
+    await vi.waitFor(() => expect(h.fakes.prepare).toHaveBeenCalledTimes(2));
+    const second = h.fakes.prepare.mock.calls[1]![0] as { startPositionMs: number };
+    expect(second.startPositionMs).toBe(0);
+    emitState({ state: 'ready', duration: 60000 });
+    emitState({ state: 'firstframe', positionMs: 0 });
+    await vi.waitFor(() => expect(h.fakes.play).toHaveBeenCalledTimes(1));
+
+    expect(notices).toEqual(['离线播放异常，正在从头重试']);
     expect(errors).toEqual([]);
     await ctl.destroy();
   });
@@ -162,6 +207,8 @@ describe('本地解码错误一次性容错（FIX-PLAY-C2）', () => {
     emitState(DECODE_ERROR);
     await vi.waitFor(() => expect(h.fakes.prepare).toHaveBeenCalledTimes(2));
     emitState({ state: 'ready', duration: 60000 });
+    emitState({ state: 'firstframe', positionMs: 0 });
+    await vi.waitFor(() => expect(h.fakes.play).toHaveBeenCalledTimes(1));
 
     emitState(DECODE_ERROR);
 
@@ -179,6 +226,7 @@ describe('本地解码错误一次性容错（FIX-PLAY-C2）', () => {
     const loadPromise = ctl.load(makeOptions(remote));
     await vi.waitFor(() => expect(h.fakes.prepare).toHaveBeenCalled());
     emitState({ state: 'ready', duration: 60000 });
+    emitState({ state: 'firstframe', positionMs: 0 });
     await loadPromise;
     const errors: string[] = [];
     ctl.on('error', (e) => errors.push(e.code));

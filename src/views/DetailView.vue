@@ -10,7 +10,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
 
-import type { Episode, MediaItem, PlayLine } from '@/types';
+import type { Episode, HistoryRecord, MediaItem, PlayLine } from '@/types';
 import { formatClock } from '@/shared/time';
 import { IMG_W_BLUR, IMG_W_POSTER, sizedImage } from '@/shared/imageSize';
 
@@ -234,11 +234,28 @@ const currentSourceName = computed(() => {
 /** 已知来源数量（候选列表长度） */
 const knownSourceCount = computed(() => sourceCandidates.value.length);
 
-const progressRecord = computed(() => {
-  const it = item.value;
-  if (!it) return null;
-  return history.progressOf(it.sourceId, it.id);
-});
+const progressRecord = ref<HistoryRecord | null>(null);
+let progressResolveSeq = 0;
+watch(
+  [() => item.value, () => history.items],
+  async ([it]) => {
+    const seq = ++progressResolveSeq;
+    if (!it) {
+      progressRecord.value = null;
+      return;
+    }
+    const match = await history.resolveLatestProgress({
+      sourceId: it.sourceId,
+      mediaId: it.id,
+      title: it.title,
+      year: it.year,
+    });
+    if (seq === progressResolveSeq && item.value === it) {
+      progressRecord.value = match?.record ?? null;
+    }
+  },
+  { immediate: true },
+);
 
 /** 批次1：线路健康状态 Map（供 LineSelector 显示状态点） */
 const lineStatuses = computed(() => {

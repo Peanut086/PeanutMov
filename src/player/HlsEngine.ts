@@ -33,6 +33,7 @@ export interface HlsEngineEvents {
   onEnded: () => void;
   onError: (error: AppErrorShape) => void;
   onQualityChange: (quality: string, levels: string[]) => void;
+  onFirstFrame?: () => void;
 }
 
 let modulePromise: Promise<HlsModule> | null = null;
@@ -69,6 +70,7 @@ export class HlsEngine implements PlayableEngine {
   private networkRetries = 0;
   private mediaRetries = 0;
   private pendingSource: PlaybackSource | null = null;
+  private loading = false;
 
   constructor(private readonly events: HlsEngineEvents) {
     this.videoEngine = new VideoEngine({
@@ -79,6 +81,7 @@ export class HlsEngine implements PlayableEngine {
       onWaiting: events.onWaiting,
       onPlaying: events.onPlaying,
       onEnded: events.onEnded,
+      onFirstFrame: events.onFirstFrame,
       onError: (error) => {
         // hls.js 接管后原生 error 多为附带现象，仅在无 hls 实例时上报
         if (!this.hls) events.onError(error);
@@ -163,6 +166,7 @@ export class HlsEngine implements PlayableEngine {
       },
     });
     this.hls = hls;
+    this.loading = true;
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -181,6 +185,7 @@ export class HlsEngine implements PlayableEngine {
       hls.on(HlsCtor.Events.MANIFEST_PARSED, () => {
         this.qualities = buildQualityList(hls);
         this.events.onQualityChange(this.currentQuality, this.qualities);
+        this.loading = false;
         settle(true);
       });
 
@@ -236,8 +241,10 @@ export class HlsEngine implements PlayableEngine {
           networkRetries: this.networkRetries,
           mediaRetries: this.mediaRetries,
         });
+        const wasLoading = this.loading;
+        this.loading = false;
         settle(false, error.message);
-        this.events.onError(error);
+        if (!wasLoading) this.events.onError(error);
       });
 
       hls.attachMedia(this.video);
@@ -251,6 +258,14 @@ export class HlsEngine implements PlayableEngine {
   /** 黑屏检测：hls.js 最终仍由 <video> 解码，帧统计口径与 VideoEngine 一致 */
   getFrameStats(): { videoWidth: number; videoHeight: number; totalFrames: number } | null {
     return this.videoEngine.getFrameStats();
+  }
+
+  sampleFrameLuma() {
+    return this.videoEngine.sampleFrameLuma();
+  }
+
+  canObserveFirstFrame(): boolean {
+    return this.videoEngine.canObserveFirstFrame();
   }
 
   pause(): void {
@@ -312,6 +327,7 @@ export class HlsEngine implements PlayableEngine {
   }
 
   destroy(): void {
+    this.loading = false;
     this.destroyHls();
     this.videoEngine.destroy();
     this.pendingSource = null;

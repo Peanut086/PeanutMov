@@ -21,6 +21,7 @@ const h = vi.hoisted(() => {
     cancelRemux: vi.fn(),
     verifyRemuxedMedia: vi.fn(),
     getStorageInfo: vi.fn(),
+    writeBase64: vi.fn(async () => undefined),
     renameFile: vi.fn(async () => undefined),
     deleteFile: vi.fn(async () => undefined),
   };
@@ -62,7 +63,7 @@ vi.mock('@/native/mediaToolPlugin', async (importOriginal) => {
 
 vi.mock('@/native/fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/native/fs')>();
-  return { ...actual, renameFile: h.renameFile, deleteFile: h.deleteFile };
+  return { ...actual, writeBase64: h.writeBase64, renameFile: h.renameFile, deleteFile: h.deleteFile };
 });
 
 // 原生代理在测试环境不可用：让分片请求直接走注入的 fetchImpl
@@ -171,6 +172,7 @@ function mockFetch(playlist: string, failOn?: string, slowFirst?: boolean): type
 function setup(playlist: string, failOn?: string, slowFirst?: boolean) {
   const patches: Array<Partial<DownloadTask>> = [];
   const chunks: Uint8Array[] = [];
+  let written = 0;
   const downloader = createHlsDownloader({
     load: async () => task(),
     saveProgress: async (_id, patch) => {
@@ -184,9 +186,10 @@ function setup(playlist: string, failOn?: string, slowFirst?: boolean) {
       },
       async write(chunk) {
         chunks.push(chunk);
+        written += chunk.byteLength;
       },
       async finish() {
-        return { filePath: TS_PATH, blobKey: null, size: 200 };
+        return { filePath: TS_PATH, blobKey: null, size: written };
       },
       async suspend() {},
       async abort() {},
@@ -212,10 +215,11 @@ async function until(cond: () => boolean): Promise<void> {
 beforeEach(async () => {
   await resetAll();
   h.remuxEnabled.value = true;
-  for (const fn of [h.remuxMp4, h.cancelRemux, h.verifyRemuxedMedia, h.getStorageInfo, h.renameFile, h.deleteFile]) {
+  for (const fn of [h.remuxMp4, h.cancelRemux, h.verifyRemuxedMedia, h.getStorageInfo, h.writeBase64, h.renameFile, h.deleteFile]) {
     fn.mockReset();
   }
   h.cancelRemux.mockImplementation(async () => ({ canceled: true }));
+  h.writeBase64.mockImplementation(async () => undefined);
   h.renameFile.mockImplementation(async () => undefined);
   h.deleteFile.mockImplementation(async () => undefined);
   // 默认放行：空间充足、复检通过（各用例按需要覆写）
@@ -371,7 +375,7 @@ describe('P0-4 容器贯穿交付', () => {
     const fmp4 = setup(FMP4_PLAYLIST);
     await fmp4.downloader.run(task(), new AbortController().signal);
     expect(h.verifyRemuxedMedia).not.toHaveBeenCalled();
-    expect(h.renameFile).not.toHaveBeenCalled();
+    expect(h.renameFile).not.toHaveBeenCalledWith(TS_PATH, MP4_PATH);
     // 容器判定本身照样落库——那是事实，不是可选优化
     expect(fmp4.patches.some((p) => p.container === 'fmp4')).toBe(true);
   });

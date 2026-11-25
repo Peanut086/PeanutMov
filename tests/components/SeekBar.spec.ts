@@ -216,4 +216,38 @@ describe('SeekBar · 时间行口径（设计稿）', () => {
 
     expect(wrapper.get('.seekbar__hit').attributes('aria-valuetext')).toBe('00:00，共 03:20');
   });
+
+  it('未知时长显示 --:--，读屏不冒充 00:00', () => {
+    const wrapper = mount(SeekBar, { props: { currentTime: 12, duration: 0 } });
+
+    expect(wrapper.get('.seekbar__time--dur').text()).toBe('--:--');
+    expect(wrapper.get('.seekbar__hit').attributes('aria-valuetext')).toBe('00:12，总时长未知');
+  });
+
+  it('未知时长仍可按方向键相对定位，End 不跳到 0', async () => {
+    const wrapper = mount(SeekBar, { props: { currentTime: 12, duration: 0 } });
+    const hit = wrapper.get('.seekbar__hit');
+
+    await hit.trigger('keydown', { key: 'ArrowRight' });
+    await hit.trigger('keydown', { key: 'End' });
+
+    expect(wrapper.emitted('seek')).toEqual([[22]]);
+  });
+
+  it('定位能力不可靠时 pointer 与键盘 seek 全部禁用', async () => {
+    const wrapper = mount(SeekBar, {
+      props: { currentTime: 12, duration: 100, seekEnabled: false },
+    });
+    stubTrackGeometry(wrapper.get('.seekbar__hit').element);
+    const hit = wrapper.get('.seekbar__hit');
+
+    await hit.trigger('pointerdown', { clientX: 50 });
+    await hit.trigger('pointerup', { clientX: 50 });
+    await hit.trigger('keydown', { key: 'ArrowRight' });
+    await hit.trigger('keydown', { key: 'Home' });
+
+    expect(wrapper.emitted('seeking')).toBeUndefined();
+    expect(wrapper.emitted('seek')).toBeUndefined();
+    expect(hit.attributes('aria-disabled')).toBe('true');
+  });
 });

@@ -23,6 +23,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import type {
   AppErrorShape,
+  DownloadTask,
   Episode,
   GestureSettings,
   PlaybackRate,
@@ -100,12 +101,19 @@ import { useCutRhythm } from "@/composables/useCutRhythm";
 import { prefersReducedMotion } from "@/composables/useSpring";
 import type { AmbilightBlockReason } from "@/composables/useAmbilight";
 import {
-  findEpisodeOwnerLineId,
   offlineEpisodeMessage,
   resolvePlaybackEpisode,
+  resolvePlaybackLineId,
   resolveTargetEpisode,
 } from "@/player/episodeFallback";
 import { DanmakuOverlay } from "@/player/DanmakuOverlay";
+import { buildLocalEpisodeCatalog } from "@/player/localEpisodeCatalog";
+import { buildLocalPlaybackOptions } from "@/player/localPlayback";
+import {
+  isSameDanmakuIdentity,
+  resolveDanmakuIdentity,
+  type DanmakuPlaybackIdentity,
+} from "@/player/danmakuIdentity";
 import type { GestureIntent } from "@/player/GestureRecognizer";
 import {
   canShowGestureHelp,
@@ -229,7 +237,20 @@ const tParamSec = computed(() => {
 const localIdentity = ref<{
   episodeId: string;
   episodeNumber: number | null;
+  episodeTitle?: string | null;
 } | null>(null);
+
+const completedLocalTasks = computed(() =>
+  downloads.tasks.filter(
+    (task) => task.mediaId === mediaId.value && task.status === "completed",
+  ),
+);
+const localEpisodeCatalog = computed(() =>
+  buildLocalEpisodeCatalog(
+    completedLocalTasks.value,
+    localIdentity.value?.episodeId ?? episodeIdParam.value,
+  ),
+);
 
 /**
  * BB-01 黑匣子恢复点：进入播放页时读一次，为首帧提供「集号锚 + 线路 + 倍速」。
@@ -289,6 +310,22 @@ const fallbackTitle = computed(() => {
 });
 
 const item = computed(() => library.detail?.item ?? null);
+const playingLocalTask = computed(() => {
+  const episodeId = localIdentity.value?.episodeId;
+  if (!episodeId) return null;
+  return completedLocalTasks.value.find((task) => task.episodeId === episodeId) ?? null;
+});
+const mediaHistoryRecord = computed(
+  () => history.items.find((record) => record.mediaId === mediaId.value) ?? null,
+);
+const mediaFavoriteRecord = computed(
+  () => favorites.items.find((record) => record.mediaId === mediaId.value) ?? null,
+);
+const playbackMediaYear = computed<number | null | undefined>(() => {
+  if (item.value) return item.value.year;
+  if (mediaHistoryRecord.value?.mediaSnapshot) return mediaHistoryRecord.value.mediaSnapshot.year;
+  return mediaFavoriteRecord.value?.year;
+});
 /** 染色作用域根节点：与详情页共用同一份取色缓存 */
 const rootRef = ref<HTMLElement | null>(null);
 useScopedPalette(
@@ -316,26 +353,19 @@ const failoverRound = shallowRef<FailoverRound | null>(null);
 const failoverRunning = ref(false);
 
 /**
- * 线路优先级：用户显式切换 > 路由里这一集真正所属的线路 > 路由 query 带的线路 > 首条。
- *
- * 第二条是关键——不同线路的剧集 id 各不相同，默认落到首条线路时路由里的 id 往往不在
- * 该线路的选集列表内，于是解析不到目标集并回退第 1 集（"下载的第 2 集播成了第 1 集"）。
+ * 线路优先级：用户显式切换 > 目标集所属线路 > 路由/历史线路 > 黑匣子锚点 > 首条。
+ * 路由线路已消失时不能原样返回，否则当前线路为空，续播会直接卡在缺集披露态。
  */
-const currentLineId = computed(() => {
-  if (lineId.value) return lineId.value;
-  const ownerLineId = findEpisodeOwnerLineId(
-    library.detail?.episodes ?? [],
-    lines.value.map((line) => line.id),
-    episodeIdParam.value,
-  );
-  if (ownerLineId) return ownerLineId;
-  if (lineIdParam.value) return lineIdParam.value;
-  // BB-01：口令/黑匣子直达（路由没带集 id）时按上次实际在用的线路起播
-  const anchorLine = blackboxAnchor.value?.lineId;
-  if (anchorLine && lines.value.some((line) => line.id === anchorLine))
-    return anchorLine;
-  return lines.value[0]?.id ?? null;
-});
+const currentLineId = computed(() =>
+  resolvePlaybackLineId({
+    explicitLineId: lineId.value,
+    episodes: library.detail?.episodes ?? [],
+    lineIds: lines.value.map((line) => line.id),
+    episodeId: episodeIdParam.value,
+    requestedLineId: lineIdParam.value,
+    anchorLineId: blackboxAnchor.value?.lineId ?? null,
+  }),
+);
 const currentLine = computed(
   () => lines.value.find((l) => l.id === currentLineId.value) ?? null,
 );
@@ -348,6 +378,21 @@ const episodes = computed<Episode[]>(() => {
     ? det.episodes.filter((ep) => ep.lineId === id)
     : det.episodes;
   return filtered.sort((a, b) => a.number - b.number);
+});
+
+const navigationEpisodes = computed<Episode[]>(() => {
+  if (!localIdentity.value) return episodes.value;
+  return localEpisodeCatalog.value.map(({ episode, task }) => ({
+    id: episode.episodeId,
+    mediaId: mediaId.value,
+    sourceId: task.sourceId,
+    lineId: task.lineId ?? "local",
+    number: episode.number,
+    title: episode.title,
+    durationSec: null,
+    subtitles: [],
+    updatedAt: task.updatedAt,
+  }));
 });
 
 /**
@@ -381,7 +426,9 @@ const currentEpisode = computed<Episode | null>(
 );
 
 /** 路由明确指向某一集，但当前线路里没有任何口径能定位到它 */
-const targetEpisodeMissing = computed(() => episodeResolution.value.missing);
+const targetEpisodeMissing = computed(
+  () => !localIdentity.value && episodeResolution.value.missing,
+);
 
 /**
  * 正在播（或原本要播）的集号：当前集 > 路由 id 的历史集号 > 黑匣子集号锚。
@@ -425,11 +472,26 @@ const routeEpisodeNumber = computed<number | null>(() => {
 const playingIdentity = computed<{
   episodeId: string;
   episodeNumber: number | null;
+  episodeTitle?: string | null;
 } | null>(() => {
   const local = localIdentity.value;
   if (local) return local;
   const ep = currentEpisode.value;
-  return ep ? { episodeId: ep.id, episodeNumber: ep.number } : null;
+  return ep ? { episodeId: ep.id, episodeNumber: ep.number, episodeTitle: ep.title } : null;
+});
+
+const danmakuIdentity = computed(() => {
+  const identity = playingIdentity.value;
+  return resolveDanmakuIdentity({
+    episodeId: identity?.episodeId ?? null,
+    episodeNumber: identity?.episodeNumber ?? null,
+    localTaskTitle: playingLocalTask.value?.title,
+    detailTitle: item.value?.title,
+    detailYear: item.value?.year,
+    historyTitle: mediaHistoryRecord.value?.title,
+    historyYear: mediaHistoryRecord.value?.mediaSnapshot?.year,
+    favoriteYear: mediaFavoriteRecord.value?.year,
+  });
 });
 
 /** 批次1：线路健康状态 Map（供 LineSelector 显示状态点） */
@@ -473,7 +535,7 @@ const recommendedLineId = computed(() => {
   if (!it || lines.value.length === 0) return null;
   const ranked = rankLines({
     lines: lines.value,
-    historyEpisodeId: null, // 播放页不恢复历史线路
+    historyEpisodeId: null, // 评分推荐与续播线路解耦
     episodes: episodes.value,
     buildKey: (line) => lineKey(it.sourceId, it.sourceItemId, line.name),
   });
@@ -511,6 +573,26 @@ function announceOfflineEpisode(): void {
   if (n === null || announcedOffline.value === n) return;
   announcedOffline.value = n;
   toast.info(offlineEpisodeMessage(n), 3600);
+}
+
+const historyLineUnavailable = computed(() => {
+  const requested = lineIdParam.value;
+  const recorded = mediaHistoryRecord.value?.lineId;
+  return detailReady.value
+    && requested !== null
+    && recorded === requested
+    && lines.value.length > 0
+    && !lines.value.some((line) => line.id === requested);
+});
+
+const announcedHistoryLineFallback = ref<string | null>(null);
+
+function announceHistoryLineFallback(): void {
+  const requested = lineIdParam.value;
+  if (!historyLineUnavailable.value || requested === null) return;
+  if (announcedHistoryLineFallback.value === requested) return;
+  announcedHistoryLineFallback.value = requested;
+  toast.info("历史线路已不可用，已切换到可用线路", 3600);
 }
 
 /* ---------- 播放器 composable ---------- */
@@ -650,23 +732,28 @@ const playerCtl = usePlayerController({
     const it = item.value;
     // 用「正在播的这一集」而不是详情列表解析出的当前集：写错集号会让历史记录自增殖
     const identity = playingIdentity.value;
-    if (!it) return null;
+    const localTask = playingLocalTask.value;
+    if (!it && !localTask) return null;
     return {
-      sourceId: it.sourceId,
-      mediaId: it.id,
+      sourceId: it?.sourceId ?? localTask?.sourceId ?? "",
+      mediaId: it?.id ?? mediaId.value,
       episodeId: identity?.episodeId ?? null,
       episodeNumber: identity?.episodeNumber ?? null,
-      title: it.title,
-      posterUrl: it.posterUrl,
-      totalEpisodes: episodes.value.length > 0 ? episodes.value.length : null,
-      // REV-24：媒体快照，用于缓存清理后自愈
-      mediaSnapshot: {
-        sourceItemId: it.sourceItemId,
-        type: it.type,
-        year: it.year,
-        episodeCount: it.episodeCount,
-        originalTitle: it.originalTitle,
-      },
+      episodeTitle: identity?.episodeTitle ?? null,
+      lineId: currentPlayback.value?.lineId ?? currentLineId.value,
+      title: it?.title ?? localTask?.title ?? "",
+      posterUrl: it?.posterUrl ?? localTask?.posterUrl ?? null,
+      totalEpisodes: navigationEpisodes.value.length > 0 ? navigationEpisodes.value.length : null,
+      // REV-24：媒体快照，用于缓存清理后自愈；离线任务没有完整条目时不编造快照
+      ...(it ? {
+        mediaSnapshot: {
+          sourceItemId: it.sourceItemId,
+          type: it.type,
+          year: it.year,
+          episodeCount: it.episodeCount,
+          originalTitle: it.originalTitle,
+        },
+      } : {}),
     };
   },
 });
@@ -725,21 +812,21 @@ const {
 function goToNextEpisode(): void {
   const id = nextEpisodeId.value;
   if (!id) return;
-  const ep = episodes.value.find((e) => e.id === id);
+  const ep = navigationEpisodes.value.find((e) => e.id === id);
   if (ep) chooseEpisode(ep);
 }
 
 function goToPrevEpisode(): void {
   const id = prevEpisodeId.value;
   if (!id) return;
-  const ep = episodes.value.find((e) => e.id === id);
+  const ep = navigationEpisodes.value.find((e) => e.id === id);
   if (ep) chooseEpisode(ep);
 }
 
 /** P0-1：自动连播倒计时结束后走路由更新 */
 watch(autoNextTarget, (targetId) => {
   if (!targetId) return;
-  const ep = episodes.value.find((e) => e.id === targetId);
+  const ep = navigationEpisodes.value.find((e) => e.id === targetId);
   acknowledgeAutoNext();
   if (ep) chooseEpisode(ep);
 });
@@ -747,7 +834,7 @@ watch(autoNextTarget, (targetId) => {
 /** B1：通知栏/锁屏/线控的上下集，与自动连播共用同一条路由入口 */
 watch(remoteEpisodeTarget, (targetId) => {
   if (!targetId) return;
-  const ep = episodes.value.find((e) => e.id === targetId);
+  const ep = navigationEpisodes.value.find((e) => e.id === targetId);
   acknowledgeRemoteEpisode();
   if (ep) chooseEpisode(ep);
 });
@@ -1430,52 +1517,66 @@ const pageAbort = new AbortController();
  * REV-24：详情加载失败但本地有下载完成的任务时，直接加载本地播放。
  * 不走 resolveAndLoad（它依赖 item/episodes），而是直接构造播放参数。
  */
-async function loadLocalPlay(
-  playback: PlaybackSource,
-  title: string,
-  posterUrl: string | null,
-  identity: { episodeId: string; episodeNumber: number | null },
-): Promise<void> {
-  const episodeId = identity.episodeId;
-  // 起播即锁定身份：后台详情加载完成后 currentEpisode 会跟着网络列表变化，这里不跟着漂
-  localIdentity.value = identity;
+async function loadLocalPlay(task: DownloadTask): Promise<void> {
+  const epoch = ++loadEpoch;
+  const identity = {
+    episodeId: task.episodeId,
+    episodeNumber: task.episodeNumber,
+    episodeTitle: task.episodeTitle,
+  };
   pageLoading.value = true;
   loadError.value = null;
+  loadErrorShape.value = null;
+  // 先锁定本地意图，详情随后加载出不同选集时不能把它误报成在线目标集丢失
+  localIdentity.value = identity;
   startLoadingProgress();
   try {
+    const playback = await downloadService.taskToPlayback(task);
+    if (!pageAlive || epoch !== loadEpoch) return;
     const prepared = await preparePlayback(playback);
-    currentPlayback.value = prepared;
-    // 从历史记录获取起播位置
-    const record = history.items.find(
-      (r) => r.mediaId === mediaId.value && r.episodeId === episodeId,
-    );
+    if (!pageAlive || epoch !== loadEpoch) return;
+    // 当前源精确记录优先；换源后按同作品、同季、同集读取续播
+    const progressMatch = await history.resolveProgress({
+      sourceId: task.sourceId,
+      mediaId: mediaId.value ?? "local",
+      title: task.title,
+      year: playbackMediaYear.value ?? null,
+      episodeNumber: task.episodeNumber,
+      episodeTitle: task.episodeTitle,
+    });
+    if (!pageAlive || epoch !== loadEpoch) return;
+    const record = progressMatch?.record;
+    const sameEpisode = record?.episodeId === task.episodeId
+      || (progressMatch?.episodeNumber != null && progressMatch?.episodeNumber === task.episodeNumber);
     let start = 0;
-    if (record && !restart.value) {
-      start = record.positionSec;
+    if (record && sameEpisode && !restart.value) {
+      const ratio = record.durationSec > 0 ? record.positionSec / record.durationSec : 0;
+      if (ratio > 0.05 && ratio < 0.95) start = record.positionSec;
     }
     if (stageRef.value && !controller.value) {
       createController(stageRef.value);
     }
-    // P0-3：与 resolveAndLoad 走同一个组合式 load——自动起播（await c.play()）
-    // 与错误落点（player.error）都在那条链里，直连 controller.load 会两者都错过。
-    await load({
+    const opts = buildLocalPlaybackOptions({
       mediaId: mediaId.value ?? "local",
-      episodeId,
-      lineId: "local",
-      title,
-      posterUrl,
+      task,
+      tasks: completedLocalTasks.value,
       playback: prepared,
       startPositionSec: start,
-      totalEpisodes: null,
-      episodes: [],
-      preferLocal: true,
+      preferNativeEngine: nativeEngineEnabled.value || forceNativeEngine.value,
+      loadTask: (candidate) => downloadService.taskToPlayback(candidate),
+      preparePlayback,
     });
+    currentPlayback.value = opts.playback;
+    // P0-3：与 resolveAndLoad 走同一个组合式 load——自动起播与错误落点都在那条链里
+    await load(opts);
   } catch (e) {
-    if (isCanceled(e)) return;
+    if (isCanceled(e) || !pageAlive || epoch !== loadEpoch) return;
     loadError.value = toErrorShape(e, "E_NO_PLAY_URL").message;
   } finally {
-    pageLoading.value = false;
-    cancelLoadingProgress();
+    if (pageAlive && epoch === loadEpoch) {
+      pageLoading.value = false;
+      cancelLoadingProgress();
+    }
   }
 }
 
@@ -1488,27 +1589,32 @@ async function loadLocalPlay(
  * 由调用方回落到常规（网络）链路。
  */
 async function tryPlayLocalFirst(episodeId: string): Promise<boolean> {
-  const record = history.items.find(
-    (r) => r.mediaId === mediaId.value && r.episodeId === episodeId,
-  );
-  const completed = downloads.tasks.filter(
-    (t) => t.mediaId === mediaId.value && t.status === "completed",
-  );
+  const requestedEpisode = episodes.value.find((ep) => ep.id === episodeId);
+  const requestedNumber = requestedEpisode?.number
+    ?? history.items.find(
+      (record) => record.mediaId === mediaId.value && record.episodeId === episodeId,
+    )?.episodeNumber
+    ?? null;
   // 与 resolvePlay 同一套匹配口径（P0-2）：宁可不起播，也不播成别的集
-  const localTask = selectCompletedTask(completed, {
+  const localTask = selectCompletedTask(completedLocalTasks.value, {
     episodeId,
-    episodeNumber: record?.episodeNumber ?? null,
+    episodeNumber: requestedNumber,
   });
   if (!localTask) return false;
 
-  const playback = await downloadService.taskToPlayback(localTask);
-  if (!playback || !pageAlive) return false;
-  await loadLocalPlay(playback, localTask.title, localTask.posterUrl, {
-    episodeId,
-    episodeNumber: localTask.episodeNumber ?? record?.episodeNumber ?? null,
-  });
-  bindEmbeddedTracks();
-  return true;
+  try {
+    await loadLocalPlay(localTask);
+    bindEmbeddedTracks();
+    return true;
+  } catch (e) {
+    if (isCanceled(e)) return true;
+    if (pageAlive) {
+      pageLoading.value = false;
+      cancelLoadingProgress();
+      loadError.value = toErrorShape(e, "E_LOCAL_CORRUPT").message;
+    }
+    return true;
+  }
 }
 
 /**
@@ -1602,13 +1708,23 @@ async function resolveAndLoad(): Promise<boolean> {
       expiresAt: prepared.expiresAt === null ? "源侧未报" : null,
       learnedTtlSec: secondsOf(playUrlLifetimeService.ttlOf(prepared.url)),
     });
-    const rec = history.progressOf(it.sourceId, it.id);
+    const progressMatch = await history.resolveProgress({
+      sourceId: it.sourceId,
+      mediaId: it.id,
+      title: it.title,
+      year: it.year,
+      episodeNumber: ep.number,
+      episodeTitle: ep.title,
+    });
+    const rec = progressMatch?.record;
+    const sameEpisode = rec?.episodeId === ep.id
+      || (progressMatch?.episodeNumber != null && progressMatch.episodeNumber === ep.number);
     let start = 0;
     if (!restart.value) {
       // 口令深链 `?t=` 是显式意图，优先于一切记忆（切线路/换集后 query 会被重建，天然只生效一次）
       if (tParamSec.value !== null) {
         start = tParamSec.value;
-      } else if (rec && rec.episodeId === ep.id) {
+      } else if (rec && sameEpisode) {
         const duration =
           rec.durationSec > 0 ? rec.durationSec : (ep.durationSec ?? 0);
         const ratio = duration > 0 ? rec.positionSec / duration : 0;
@@ -1820,6 +1936,7 @@ onMounted(async () => {
   // EXT-07：控制器建好后订阅内嵌轨道状态（切集由控制器自己重置）
   bindEmbeddedTracks();
   await resolveAndLoad();
+  announceHistoryLineFallback();
   // BB-01：倍速记忆——只在进入页面这一次生效，之后用户手动调整不再被覆盖
   if (blackboxAnchor.value && blackboxAnchor.value.rate !== player.rate) {
     setRate(blackboxAnchor.value.rate);
@@ -1931,13 +2048,13 @@ const audioBlurSrc = computed(() =>
 const episodeLabel = computed(() => {
   const identity = playingIdentity.value;
   if (!identity) return "";
-  const ep = currentEpisode.value;
+  const ep = navigationEpisodes.value.find((entry) => entry.id === identity.episodeId);
   const number =
     identity.episodeNumber ??
     (ep?.id === identity.episodeId ? ep.number : null);
   if (number === null) return "";
-  if (!hasEpisodeNav.value && episodes.value.length <= 1) return "";
-  // 副标题只有当详情里的这一集正是正在播的这一集时才可信
+  if (!hasEpisodeNav.value && navigationEpisodes.value.length <= 1) return "";
+  // 副标题只有当目录里的这一集正是正在播的这一集时才可信
   const sub =
     ep && ep.number === number && ep.title && ep.title !== `第 ${number} 集`
       ? ` · ${ep.title}`
@@ -1946,13 +2063,13 @@ const episodeLabel = computed(() => {
 });
 /** chrome 摘要用的集号/总集数（1 起；单集影片不给集号） */
 const epTotal = computed(() =>
-  hasEpisodeNav.value ? episodes.value.length : 0,
+  hasEpisodeNav.value ? navigationEpisodes.value.length : 0,
 );
 const epIndex = computed(() => {
-  const ep = currentEpisode.value;
-  if (!ep) return 0;
-  const index = episodes.value.findIndex((item) => item.id === ep.id);
-  return index >= 0 ? index + 1 : ep.number;
+  const identity = playingIdentity.value;
+  if (!identity) return 0;
+  const index = navigationEpisodes.value.findIndex((entry) => entry.id === identity.episodeId);
+  return index >= 0 ? index + 1 : (identity.episodeNumber ?? 0);
 });
 /** 跳过条右侧的数字：片头给结束时刻，片尾给片尾长度 */
 const skipTargetSec = computed(() => {
@@ -2093,7 +2210,10 @@ async function replaceRoute(
   await router.replace({
     name: "player",
     params: { mediaId: mediaId.value, ...(episodeId ? { episodeId } : {}) },
-    query: targetLineId ? { lineId: targetLineId } : {},
+    query: {
+      ...(route.query.local === "1" || localIdentity.value ? { local: "1" } : {}),
+      ...(targetLineId ? { lineId: targetLineId } : {}),
+    },
   });
 }
 
@@ -2206,6 +2326,14 @@ const FAILOVER_ERROR_CODES = new Set([
   // P1-③-7：忙态也是「这条源此刻给不出地址」，值得兜底——但兜法与坏了不同，见 `runFailover`
   "E_SOURCE_BUSY",
 ]);
+
+/** HLS 直链被源站拒绝时先刷新地址，不把同一坏 URL 再交给内置引擎重撞 */
+function isExpiredHlsAddress(error: AppErrorShape): boolean {
+  const playback = currentPlayback.value;
+  return playback?.isLocal !== true
+    && playback?.format === "hls"
+    && (error.httpStatus === 402 || error.httpStatus === 403);
+}
 
 /** v1.8/CHG-26：错误码指向「源健康问题」时，错误面板给出去体检的入口 */
 const HEALTH_CHECK_CODES = new Set([
@@ -2493,7 +2621,7 @@ async function runFailover(
   origin: "player" | "resolve",
 ): Promise<void> {
   if (failoverRunning.value) return;
-  if (!FAILOVER_ERROR_CODES.has(error.code)) return;
+  if (!FAILOVER_ERROR_CODES.has(error.code) && !isExpiredHlsAddress(error)) return;
   const opened = failoverHandle();
   if (!opened) {
     publishFailoverError(error, origin);
@@ -2508,6 +2636,23 @@ async function runFailover(
   }
   failoverRunning.value = true;
   try {
+    if (isExpiredHlsAddress(error) && opened.claimAddressRefresh()) {
+      logger.warn("兜底链：HLS 地址失效，刷新当前线路", {
+        ...opened.snapshot(),
+        httpStatus: error.httpStatus,
+        fromLineId: currentLineId.value,
+      });
+      playTraceService.note("failover", "HLS 地址失效，刷新当前线路", {
+        httpStatus: error.httpStatus,
+        line: currentLine.value?.name ?? null,
+      });
+      player.patch({ error: null });
+      toast.info("播放地址已失效，正在重新获取…");
+      library.invalidatePlayCache(mediaId.value);
+      await resolveAndLoad();
+      if (!pageAlive) return;
+      if (player.error === null && loadError.value === null) return;
+    }
     // P1-③-7：「该源正忙」不是这条线路坏了——同一个源的其它线路共用那个还压着上一个请求的爬虫实例，
     // 换线只是白撞一次闸门。于是冷却在 `BUSY_WAIT_MAX_MS` 以内就原地等闸门（面板上的倒计时到点自动
     // 重试一次，P0-③-2 已做成），超过它才跳过换线直接换源。两种都不消耗换线额度，
@@ -2666,7 +2811,7 @@ watch(
       // 批次1：记录线路失败（按错误分类）
       const line = currentLine.value;
       const it = item.value;
-      if (line && it) {
+      if (line && it && !isExpiredHlsAddress(error)) {
         lineHealthService.recordFail(
           lineKey(it.sourceId, it.sourceItemId, line.name),
           error.code,
@@ -2827,13 +2972,9 @@ const isFavorite = computed(() => {
   return it ? favorites.isFavorite(it.sourceId, it.id) : false;
 });
 
-const downloadedIds = computed(() => {
-  const it = item.value;
-  if (!it) return [];
-  return downloads.tasks
-    .filter((t) => t.mediaId === it.id && t.status === "completed")
-    .map((t) => t.episodeId);
-});
+const downloadedIds = computed(() =>
+  completedLocalTasks.value.map((task) => task.episodeId),
+);
 
 async function copyError(): Promise<void> {
   const err = player.error;
@@ -2985,7 +3126,7 @@ function onAmbilightBlocked(reason: AmbilightBlockReason): void {
  */
 function chooseEpisode(ep: Episode): void {
   drawerOpen.value = false;
-  if (ep.id === currentEpisode.value?.id) return;
+  if (ep.id === playingIdentity.value?.episodeId) return;
   /*
    * G-A06：过片幕布在路由替换**前**触发。播放页整页重建，旧实例的 DOM 留不到新帧上，
    * 所以状态交给模块级（见 useEpisodeLeader），渲染层在 App 壳里。
@@ -2998,7 +3139,10 @@ function chooseEpisode(ep: Episode): void {
   void router.replace({
     name: "player",
     params: { mediaId: mediaId.value, episodeId: ep.id },
-    query: currentLineId.value ? { lineId: currentLineId.value } : {},
+    query: {
+      ...(route.query.local === "1" || localIdentity.value ? { local: "1" } : {}),
+      ...(currentLineId.value ? { lineId: currentLineId.value } : {}),
+    },
   });
 }
 
@@ -3121,7 +3265,7 @@ const danmakuSettings = computed(
 const danmakuReady = computed(
   () =>
     danmakuSettings.value.enabled &&
-    currentEpisode.value !== null &&
+    danmakuIdentity.value !== null &&
     !pageLoading.value,
 );
 
@@ -3234,7 +3378,7 @@ const danmakuChipReading = computed(() => {
 });
 
 const canIgnoreDanmakuYear = computed(() => {
-  const year = item.value?.year;
+  const year = danmakuIdentity.value?.year;
   const outcome = danmakuOutcome.value;
   return (
     year !== null &&
@@ -3258,23 +3402,23 @@ function loadDanmaku(
   ) => Promise<DanmakuMatchResult> = (title, year, episode) =>
     danmakuService.match(title, year, episode),
 ): Promise<DanmakuLoadOutcome> {
-  const it = item.value;
-  const ep = currentEpisode.value;
-  if (!it || !ep || !danmakuSettings.value.enabled) {
+  const identity = danmakuIdentity.value;
+  if (!identity || !danmakuSettings.value.enabled) {
     danmakuOverlay.value?.clear();
     return Promise.resolve({ kind: "skipped" });
   }
-  const key = `${it.title}|${it.year ?? "na"}|${ep.number}`;
+  const key = `${identity.episodeId}|${identity.matchKey}`;
   const running = danmakuInFlight.get(key);
   if (running !== undefined) return running;
   // 新一轮判定开始：先收回上一集的读数，别让「2096 条」顶着正在加载的这一集
   danmakuOutcome.value = null;
-  const promise = fetchDanmaku(it.title, it.year, ep.number, fetcher)
+  const promise = fetchDanmaku(identity, fetcher)
     .then((outcome) => {
       // 只报当前这一集的结局：切集之后上一集的判定不该顶着这一集的读数
-      const now = currentEpisode.value;
-      if (now?.number === ep.number) danmakuOutcome.value = outcome;
-      playTraceService.note("danmaku", `弹幕结局：${outcome.kind}`, describeDanmakuOutcome(outcome));
+      if (isSameDanmakuIdentity(danmakuIdentity.value, identity)) {
+        danmakuOutcome.value = outcome;
+        playTraceService.note("danmaku", `弹幕结局：${outcome.kind}`, describeDanmakuOutcome(outcome));
+      }
       return outcome;
     })
     .finally(() => {
@@ -3286,23 +3430,23 @@ function loadDanmaku(
 }
 
 async function fetchDanmaku(
-  title: string,
-  year: number | null,
-  episode: number,
+  identity: DanmakuPlaybackIdentity,
   fetcher: (
     title: string,
     year: number | null,
     episode: number,
   ) => Promise<DanmakuMatchResult>,
 ): Promise<DanmakuLoadOutcome> {
+  const { title, year, episodeNumber: episode } = identity;
   const overlay = ensureDanmakuOverlay();
   if (overlay === null) {
-    // 渲染层挂不上就谈不上「显示」：以前这里照样返回 true，界面念「弹幕已开启」而画面是空的
+    // 渲染层挂不上就谈不上「显示”：以前这里照样返回 true，界面念「弹幕已开启」而画面是空的
     logger.warn("弹幕渲染层未就绪，本集弹幕未加载", { title, episode });
     return { kind: "not-mounted" };
   }
   try {
     const { match, missReason } = await fetcher(title, year, episode);
+    if (!isSameDanmakuIdentity(danmakuIdentity.value, identity)) return { kind: "skipped" };
     if (match === null || match.comments.length === 0) {
       // 上一集的弹幕不能留在这一集画面上：未命中先清空，界面才不会念「有弹幕」而飘着别集的字
       overlay.clear();
@@ -3337,19 +3481,18 @@ async function fetchDanmaku(
  * 导入即代表用户想用这份文件，所以顺带打开弹幕总开关（否则缓存写了也看不见）。
  */
 async function importLocalDanmaku(file: File): Promise<void> {
-  const it = item.value;
-  const ep = currentEpisode.value;
-  if (!it || !ep) return;
+  const identity = danmakuIdentity.value;
+  if (!identity) return;
   let count = 0;
   try {
     count = await danmakuService.importLocalXml(
-      it.title,
-      it.year,
-      ep.number,
+      identity.title,
+      identity.year,
+      identity.episodeNumber,
       file,
     );
   } catch (e) {
-    logger.warn("本地弹幕文件读取失败", { title: it.title, episode: ep.number, name: file.name }, e);
+    logger.warn("本地弹幕文件读取失败", { title: identity.title, episode: identity.episodeNumber, name: file.name }, e);
     toast.info("本地弹幕文件读取失败", 2400);
     return;
   }
@@ -3378,10 +3521,9 @@ async function importLocalDanmaku(file: File): Promise<void> {
  * 回来）；「命中了串片」「当时源正在限流」这两种情况在界面上就都没有第二次机会。
  */
 async function runDanmakuRematch(ignoreYear: boolean): Promise<void> {
-  const it = item.value;
-  const ep = currentEpisode.value;
-  if (!it || !ep) {
-    logger.warn("重新匹配弹幕时当前集不存在", { title: it?.title ?? null });
+  const identity = danmakuIdentity.value;
+  if (!identity) {
+    logger.warn("重新匹配弹幕时当前集不存在", { title: item.value?.title ?? null });
     return;
   }
   if (!danmakuSettings.value.enabled) {
@@ -3495,7 +3637,7 @@ function writeAudioLanguagePref(value: string): void {
 
 /** 偏好作用域：按集（同一影片切集也重新应用一次） */
 function trackPrefsKey(): string {
-  return `${mediaId.value}:${currentEpisode.value?.id ?? ""}`;
+  return `${mediaId.value}:${playingIdentity.value?.episodeId ?? ""}`;
 }
 
 /**
@@ -3705,10 +3847,14 @@ watch(
 
 // 切集重新匹配弹幕
 watch(
-  () => currentEpisode.value?.id,
+  () => {
+    const identity = danmakuIdentity.value;
+    return identity ? `${identity.episodeId}|${identity.matchKey}` : null;
+  },
   () => {
     // 节奏属于这一集：不换集会拿上一集的格子给这一集画一条假曲线
     cutRhythm.reset();
+    if (!danmakuReady.value) return;
     void loadDanmaku().then((outcome) => announceDanmaku(outcome, false));
   },
 );
@@ -3723,7 +3869,7 @@ const danmakuPick = useDanmakuPick({
   overlay: danmakuOverlay,
   enabled: danmakuInteractive,
   mediaId,
-  episodeNumber: computed(() => currentEpisode.value?.number ?? null),
+  episodeNumber: computed(() => danmakuIdentity.value?.episodeNumber ?? null),
   seek: (sec) => void seek(sec),
   copy: (text) => void copyDanmakuText(text),
 });
@@ -3778,6 +3924,16 @@ watch(episodeIdParam, async (next, prev) => {
     return;
   // OPT-26（P2-⑫）：停滞恢复额度按集发放，换集重新开始
   stallRecoverRounds.value = 0;
+  if (route.query.local === "1" || localIdentity.value) {
+    if (next && (await tryPlayLocalFirst(next))) {
+      announceOfflineEpisode();
+      return;
+    }
+    loadError.value = "要播放的本地文件已不存在，请重新下载这一集";
+    loadErrorShape.value = null;
+    pageLoading.value = false;
+    return;
+  }
   await resolveAndLoad();
   // 直接带旧集号进入（历史/继续观看）时同样提示已下线（AC-68）
   announceOfflineEpisode();
@@ -3791,6 +3947,7 @@ watch(mediaId, async (next, prev) => {
   // 复位每媒体状态（旧线路 id 对新片无效、旧下线提示不跨片）
   lineId.value = null;
   announcedOffline.value = null;
+  announcedHistoryLineFallback.value = null;
   localMissingTaskId.value = null;
   // P0-2：换片属于新的用户意图——在飞的换源搜索作废，预算由随后的
   // `beginLoadAttempt` 判定为不同目标而自然取代上一轮
@@ -3920,7 +4077,7 @@ function onKeydown(ev: KeyboardEvent): void {
       return;
     case "percent":
       // 数字键 = 百分比定位（0→开头、9→九成处），比逐帧拖进度条快
-      if (player.duration > 0) seek(player.duration * (action.tenths / 10));
+      if (player.seekable) seek(player.duration * (action.tenths / 10));
       return;
     case "fullscreen":
       void toggleFullscreen();
@@ -4001,17 +4158,6 @@ onMounted(() => {
   window.addEventListener("keydown", onKeydown);
   pictureRef.value?.addEventListener("wheel", onWheel, { passive: false });
 });
-
-/* 原生引擎（ExoPlayer）surface 在 WebView 之下：html/body/.app-root 任一不透明都会盖住画面 */
-watch(
-  () => player.engineKind,
-  (kind) => {
-    document.documentElement.classList.toggle(
-      "native-underlay",
-      kind === "native",
-    );
-  },
-);
 
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
@@ -4314,6 +4460,7 @@ onBeforeUnmount(() => {
                 !pageLoading && !loadError && !player.error && !screenLocked
               "
               :seek-max-sec="gestureSettings.seekMaxSec"
+              :seek-enabled="player.seekReliable"
               :sensitivity="gestureSettings.sensitivity"
               :long-press-help-enabled="gestureHelpEnabled"
               :pinch="pinchResizeEnabled"
@@ -4355,6 +4502,7 @@ onBeforeUnmount(() => {
               :waiting="player.loading || player.waiting"
               :current-time="player.currentTime"
               :duration="player.duration"
+              :seek-reliable="player.seekReliable"
               :buffered="player.buffered"
               :rate="player.rate"
               :can-prev="canPrev"
@@ -4494,17 +4642,20 @@ onBeforeUnmount(() => {
         :inert="screenLocked || undefined"
         aria-label="播放信息与快捷控制"
       >
-        <!-- 黑屏检测：声音在播但一帧画面都没解出来（多为 WebView 不支持该编码） -->
+        <!-- 黑屏检测：零帧或已解码但画面持续近黑 -->
         <div
           v-if="noVideo && !noVideoDismissed && !pageLoading && !player.error"
           class="player-novideo"
           role="alert"
           data-test="player-novideo"
         >
-          <p class="player-novideo__title">当前线路只有声音，没有画面</p>
-          <p class="player-novideo__hint">
+          <p class="player-novideo__title">当前线路没有可见画面</p>
+          <p v-if="noVideo.reason === 'zero-frame'" class="player-novideo__hint">
             该视频编码（常见 HEVC）WebView
             解不出来，换线路或改用原生引擎通常可解。
+          </p>
+          <p v-else class="player-novideo__hint">
+            已连续检测到黑帧，可换线路或改用原生引擎重试。
           </p>
           <div class="player-novideo__actions">
             <button
@@ -4586,7 +4737,7 @@ onBeforeUnmount(() => {
         <p class="pl-fold__stat">
           <span>
             已观看 <b>{{ formatPlayerClock(player.currentTime) }}</b> /
-            <span class="pl-num">{{ formatPlayerClock(player.duration) }}</span>
+            <span class="pl-num">{{ player.duration > 0 ? formatPlayerClock(player.duration) : "--:--" }}</span>
           </span>
           <span class="sep">·</span>
           <span
@@ -4773,7 +4924,7 @@ onBeforeUnmount(() => {
             全 {{ epTotal }} 集 · 当前第 {{ epIndex }} 集 · 绿点＝已下载
           </p>
           <EpisodeList
-            :episodes="episodes"
+            :episodes="navigationEpisodes"
             :current-id="playingIdentity?.episodeId ?? null"
             :downloaded-ids="downloadedIds"
             @select="chooseEpisode"

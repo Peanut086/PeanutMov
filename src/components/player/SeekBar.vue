@@ -26,6 +26,8 @@ const props = withDefaults(
     buffered?: number;
     /** 是否禁用（loading/error） */
     disabled?: boolean;
+    /** 定位能力是否可靠；false 时禁止拖动与键盘 seek */
+    seekEnabled?: boolean;
     /** P1-4：键盘方向键步进秒数（默认 10） */
     seekStep?: number;
     /**
@@ -57,7 +59,7 @@ const props = withDefaults(
      */
     rhythm?: RhythmBand | null;
   }>(),
-  { buffered: 0, disabled: false, seekStep: 10, film: null, marks: null, detent: 0, cells: 0, rhythm: null },
+  { buffered: 0, disabled: false, seekEnabled: true, seekStep: 10, film: null, marks: null, detent: 0, cells: 0, rhythm: null },
 );
 
 const emit = defineEmits<{
@@ -79,10 +81,13 @@ const hoverPercent = ref<number | null>(null);
 const safeDuration = computed(() =>
   Number.isFinite(props.duration) && props.duration > 0 ? props.duration : 0,
 );
+const seekDisabled = computed(() => props.disabled || !props.seekEnabled);
 const displaySec = computed(() =>
   dragging.value
     ? previewSec.value
-    : clamp(props.currentTime, 0, safeDuration.value),
+    : safeDuration.value > 0
+      ? clamp(props.currentTime, 0, safeDuration.value)
+      : Math.max(0, props.currentTime),
 );
 
 const percent = computed(() =>
@@ -166,7 +171,7 @@ const bubbleLeft = computed(() => {
 
 /** 是否显示时间气泡 */
 const showBubble = computed(
-  () => bubbleSec.value !== null && safeDuration.value > 0 && !props.disabled,
+  () => bubbleSec.value !== null && safeDuration.value > 0 && !seekDisabled.value,
 );
 
 /* ---------- A-03 胶片预览 ---------- */
@@ -181,7 +186,7 @@ const filmSlots = computed(() => props.film ?? []);
 const filmReady = computed(() => filmSlots.value.some((url) => url !== null));
 const showFilm = computed(
   () =>
-    !props.disabled &&
+    !seekDisabled.value &&
     safeDuration.value > 0 &&
     filmReady.value &&
     (dragging.value || hoverPercent.value !== null),
@@ -236,7 +241,7 @@ const DETENT_RADIUS_PX = 16;
 const detentLevel = computed(() => clamp(props.detent, 0, 100) / 100);
 /** 磁吸是否生效：0 档时下面所有分支都短路，进度条回到升级前的行为 */
 const detentActive = computed(
-  () => detentLevel.value > 0 && !props.disabled && safeDuration.value > 0,
+  () => detentLevel.value > 0 && !seekDisabled.value && safeDuration.value > 0,
 );
 
 /** 一格代表多少秒（0 = 没有可用分段，不画刻度） */
@@ -281,7 +286,7 @@ const peakBins = computed(() => new Set(props.rhythm?.peaks ?? []));
  */
 const showRhythm = computed(
   () =>
-    !props.disabled &&
+    !seekDisabled.value &&
     safeDuration.value > 0 &&
     props.rhythm !== null &&
     rhythmBars.value.length > 0,
@@ -387,7 +392,7 @@ function positionToPercent(clientX: number): number {
 }
 
 function onPointerDown(ev: PointerEvent): void {
-  if (props.disabled || safeDuration.value <= 0) return;
+  if (seekDisabled.value || safeDuration.value <= 0) return;
   dragging.value = true;
   resetDetentState();
   previewSec.value = seekSecAt(ev.clientX);
@@ -396,6 +401,14 @@ function onPointerDown(ev: PointerEvent): void {
 }
 
 function onPointerMove(ev: PointerEvent): void {
+  if (seekDisabled.value) {
+    if (dragging.value) {
+      dragging.value = false;
+      resetDetentState();
+    }
+    hoverPercent.value = null;
+    return;
+  }
   // hover 预览（无论是否拖动都更新位置）
   hoverPercent.value = positionToPercent(ev.clientX);
   if (!dragging.value) return;
@@ -406,6 +419,10 @@ function onPointerMove(ev: PointerEvent): void {
 function onPointerUp(ev: PointerEvent): void {
   if (!dragging.value) return;
   dragging.value = false;
+  if (seekDisabled.value) {
+    resetDetentState();
+    return;
+  }
   const target = seekSecAt(ev.clientX);
   previewSec.value = target;
   emit("seek", target);
@@ -417,33 +434,35 @@ function onPointerLeave(): void {
 }
 
 function onKeydown(ev: KeyboardEvent): void {
-  if (props.disabled) return;
+  if (seekDisabled.value) return;
   const step = ev.shiftKey ? 30 : props.seekStep;
+  const hasDuration = safeDuration.value > 0;
   if (ev.key === "ArrowLeft") {
     ev.preventDefault();
-    emit("seek", clamp(props.currentTime - step, 0, safeDuration.value));
+    emit("seek", hasDuration ? clamp(props.currentTime - step, 0, safeDuration.value) : Math.max(0, props.currentTime - step));
   } else if (ev.key === "ArrowRight") {
     ev.preventDefault();
-    emit("seek", clamp(props.currentTime + step, 0, safeDuration.value));
+    emit("seek", hasDuration ? clamp(props.currentTime + step, 0, safeDuration.value) : props.currentTime + step);
   } else if (ev.key === "Home") {
     ev.preventDefault();
     emit("seek", 0);
-  } else if (ev.key === "End") {
+  } else if (ev.key === "End" && hasDuration) {
     ev.preventDefault();
     emit("seek", safeDuration.value);
   }
 }
 
-const ariaText = computed(
-  () =>
-    `${formatPlayerClock(displaySec.value)}，共 ${formatPlayerClock(safeDuration.value)}`,
+const ariaText = computed(() =>
+  safeDuration.value > 0
+    ? `${formatPlayerClock(displaySec.value)}，共 ${formatPlayerClock(safeDuration.value)}`
+    : `${formatPlayerClock(displaySec.value)}，总时长未知`,
 );
 </script>
 
 <template>
   <div
     class="seekbar"
-    :class="{ 'seekbar--dragging': dragging, 'seekbar--disabled': disabled }"
+    :class="{ 'seekbar--dragging': dragging, 'seekbar--disabled': seekDisabled }"
     :data-scrub="dragging ? '1' : '0'"
   >
     <!-- 时间行在上、轨道在下（B 站/YouTube 口径）；右侧是剩余时间 -->
@@ -453,7 +472,7 @@ const ariaText = computed(
       }}</span>
       <span v-if="markHintText" class="seekbar__hint">{{ markHintText }}</span>
       <span class="seekbar__time seekbar__time--dur">{{
-        formatPlayerClock(remainingSec)
+        safeDuration > 0 ? formatPlayerClock(remainingSec) : "--:--"
       }}</span>
     </div>
 
@@ -467,7 +486,7 @@ const ariaText = computed(
       :aria-valuenow="Math.round(displaySec)"
       :aria-valuetext="ariaText"
       aria-label="播放进度"
-      :aria-disabled="disabled"
+      :aria-disabled="seekDisabled"
       @pointerdown="onPointerDown"
       @pointermove="onPointerMove"
       @pointerup="onPointerUp"
@@ -561,7 +580,7 @@ const ariaText = computed(
         <!-- hover 指示线（非拖动时显示） -->
         <div
           v-if="
-            hoverPercent !== null && !dragging && !disabled && safeDuration > 0
+            hoverPercent !== null && !dragging && !seekDisabled && safeDuration > 0
           "
           class="seekbar__hover-line"
           :style="{ left: `${hoverPercent}%` }"

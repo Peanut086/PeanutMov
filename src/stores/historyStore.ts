@@ -6,6 +6,8 @@ import { ref } from 'vue';
 
 import { historyService } from '@/services/historyService';
 import { appEvents } from '@/services/events';
+import { resolveLatestPlaybackProgress, resolvePlaybackProgress } from '@/services/playbackProgressService';
+import type { PlaybackProgressMatch, PlaybackProgressTarget } from '@/services/playbackProgressService';
 import { toErrorShape } from '@/shared/errors';
 import { historyIdOf } from '@/shared/id';
 import type { AppErrorShape, HistoryRecord, LoadState, SaveProgressInput } from '@/types';
@@ -105,6 +107,15 @@ export const useHistoryStore = defineStore('history', () => {
     return items.value.find((record) => record.id === id) ?? null;
   }
 
+  /** 当前源精确续播优先；无精确记录时再解析其他源的同季同集候选。 */
+  function resolveProgress(target: PlaybackProgressTarget): Promise<PlaybackProgressMatch | null> {
+    return resolvePlaybackProgress(target, items.value);
+  }
+
+  function resolveLatestProgress(target: PlaybackProgressTarget): Promise<PlaybackProgressMatch | null> {
+    return resolveLatestPlaybackProgress(target, items.value);
+  }
+
   function $dispose(): void {
     unsubscribe?.();
     unsubscribe = null;
@@ -120,6 +131,8 @@ export const useHistoryStore = defineStore('history', () => {
     remove,
     clear,
     progressOf,
+    resolveProgress,
+    resolveLatestProgress,
     $dispose,
   };
 });

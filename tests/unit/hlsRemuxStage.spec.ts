@@ -29,10 +29,14 @@ vi.mock('@/native/mediaToolPlugin', async (importOriginal) => {
   };
 });
 
-const { deleteFile } = vi.hoisted(() => ({ deleteFile: vi.fn(async () => undefined) }));
+const { deleteFile, writeBase64, renameFile } = vi.hoisted(() => ({
+  deleteFile: vi.fn(async () => undefined),
+  writeBase64: vi.fn(async () => undefined),
+  renameFile: vi.fn(async () => undefined),
+}));
 vi.mock('@/native/fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/native/fs')>();
-  return { ...actual, deleteFile };
+  return { ...actual, deleteFile, writeBase64, renameFile };
 });
 
 // 原生代理在测试环境不可用：让分片请求直接走注入的 fetchImpl
@@ -104,6 +108,7 @@ function mockFetch(): typeof fetch {
 function setup(options: { findTwinArtifact?: (mediaId: string, taskId: string, digest: string) => Promise<string | null> } = {}) {
   const patches: Array<Partial<DownloadTask>> = [];
   const stages: string[] = [];
+  let written = 0;
   const notifier: PostProcessNotifier = (_task, stage, state, extra) => {
     stages.push(`${stage}:${state}${extra?.reason ? `:${extra.reason}` : ''}`);
   };
@@ -118,9 +123,9 @@ function setup(options: { findTwinArtifact?: (mediaId: string, taskId: string, d
       async begin() {
         return { actualStartBytes: 0 };
       },
-      async write() {},
+      async write(data: Uint8Array) { written += data.byteLength; },
       async finish() {
-        return { filePath: TS_PATH, blobKey: null, size: 200 };
+        return { filePath: TS_PATH, blobKey: null, size: written };
       },
       async suspend() {},
       async abort() {},
@@ -164,7 +169,7 @@ describe('OPT-05 转封装阶段状态', () => {
     expect(commitIndex).toBeGreaterThanOrEqual(0);
     expect(deleteFile).toHaveBeenCalledWith(TS_PATH);
     // 交付阶段一路记到 input-cleaned，开机对账据此跳过这条
-    expect(patches.at(-1)?.remux).toMatchObject({ delivery: 'input-cleaned', probeVerdict: 'pass' });
+    expect(patches.some((patch) => patch.remux?.delivery === 'input-cleaned' && patch.remux?.probeVerdict === 'pass')).toBe(true);
   });
 
   /**
@@ -249,7 +254,7 @@ describe('OPT-05 转封装阶段状态', () => {
         },
         async write() {},
         async finish() {
-          return { filePath: TS_PATH, blobKey: null, size: 200 };
+          return { filePath: TS_PATH, blobKey: null, size: 376 };
         },
         async suspend() {},
         async abort() {},
@@ -345,7 +350,7 @@ describe('OPT-05 转封装阶段状态', () => {
         },
         async write() {},
         async finish() {
-          return { filePath: TS_PATH, blobKey: null, size: 200 };
+          return { filePath: TS_PATH, blobKey: null, size: 376 };
         },
         async suspend() {},
         async abort() {},
@@ -452,7 +457,7 @@ describe('OPT-05 转封装阶段状态', () => {
         },
         async write() {},
         async finish() {
-          return { filePath: TS_PATH, blobKey: null, size: 200 };
+          return { filePath: TS_PATH, blobKey: null, size: 376 };
         },
         async suspend() {},
         async abort() {},
@@ -490,5 +495,24 @@ describe('OPT-05 转封装阶段状态', () => {
 
     await expect(downloader.run(task(), new AbortController().signal)).resolves.toBeUndefined();
     expect(deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('转封装改名交付后清空 TS 字节索引，不生成指向 MP4 的旧清单', async () => {
+    remuxMp4.mockResolvedValue({
+      ok: true,
+      skipped: false,
+      outputBytes: 180,
+      durationMs: 12,
+      probeVerdict: 'pass',
+      inputRetained: true,
+    });
+    const { downloader, patches } = setup();
+
+    await downloader.run(task(), new AbortController().signal);
+
+    const mp4PatchAt = patches.findIndex((patch) => patch.filePath === TS_PATH.replace(/\.ts$/, '.mp4'));
+    expect(mp4PatchAt).toBeGreaterThanOrEqual(0);
+    expect(patches.slice(mp4PatchAt).some((patch) => patch.hlsIndex === null && patch.hlsIndexPath === null)).toBe(true);
+    expect(patches.some((patch) => patch.hlsIndexPath !== undefined && patch.hlsIndexPath !== null)).toBe(false);
   });
 });

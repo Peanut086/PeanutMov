@@ -31,6 +31,8 @@ const props = withDefaults(
     waiting: boolean;
     currentTime: number;
     duration: number;
+    /** 相对定位是否可靠；false 时进度条与键盘 seek 停用 */
+    seekReliable?: boolean;
     /** 已缓冲到的秒数 */
     buffered: number;
     rate: PlaybackRate;
@@ -76,6 +78,7 @@ const props = withDefaults(
   {
     epIndex: 0,
     epTotal: 0,
+    seekReliable: true,
     subtitleLabel: "",
     lineName: "",
     danmakuEnabled: false,
@@ -149,6 +152,9 @@ const bufferPercent = computed(() =>
 );
 const remainingSec = computed(() =>
   Math.max(0, props.duration - props.currentTime),
+);
+const remainingText = computed(() =>
+  props.duration > 0 ? `剩余 ${formatPlayerClock(remainingSec.value)}` : "总时长未知",
 );
 const skipLabel = computed(() =>
   props.skipZone === "credits" ? "跳过片尾" : "跳过片头",
@@ -267,7 +273,7 @@ onBeforeUnmount(() => {
             >
             <span class="sep">·</span>
           </template>
-          <span>剩余 {{ formatPlayerClock(remainingSec) }}</span>
+          <span>{{ remainingText }}</span>
           <span class="tail">
             <span class="pl-top__buf"
               ><span class="sep">·</span>缓冲 {{ bufferPercent }}%</span
@@ -409,6 +415,7 @@ onBeforeUnmount(() => {
           :duration="duration"
           :buffered="buffered"
           :disabled="waiting && duration === 0"
+          :seek-enabled="seekReliable"
           :seek-step="seekStep"
           :film="film"
           :marks="marks"

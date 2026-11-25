@@ -20,6 +20,9 @@ export const usePlayerStore = defineStore('player', () => {
   const waiting = ref(false);
   const currentTime = ref(0);
   const duration = ref(0);
+  const durationKnown = ref(false);
+  const seekable = ref(false);
+  const seekReliable = ref(false);
   const buffered = ref(0);
   const rate = ref<PlaybackRate>(DEFAULT_PLAYBACK_RATE);
   /**
@@ -63,6 +66,9 @@ export const usePlayerStore = defineStore('player', () => {
     waiting.value = false;
     currentTime.value = 0;
     duration.value = 0;
+    durationKnown.value = false;
+    seekable.value = false;
+    seekReliable.value = false;
     buffered.value = 0;
     rate.value = DEFAULT_PLAYBACK_RATE;
     volume.value = 100;
@@ -90,6 +96,9 @@ export const usePlayerStore = defineStore('player', () => {
     waiting: boolean;
     currentTime: number;
     duration: number;
+    durationKnown: boolean;
+    seekable: boolean;
+    seekReliable: boolean;
     buffered: number;
     rate: PlaybackRate;
     volume: number;
@@ -114,6 +123,9 @@ export const usePlayerStore = defineStore('player', () => {
     if (p.waiting !== undefined) waiting.value = p.waiting;
     if (p.currentTime !== undefined) currentTime.value = p.currentTime;
     if (p.duration !== undefined) duration.value = p.duration;
+    if (p.durationKnown !== undefined) durationKnown.value = p.durationKnown;
+    if (p.seekable !== undefined) seekable.value = p.seekable;
+    if (p.seekReliable !== undefined) seekReliable.value = p.seekReliable;
     if (p.buffered !== undefined) buffered.value = p.buffered;
     if (p.rate !== undefined) rate.value = p.rate;
     if (p.volume !== undefined) volume.value = p.volume;
@@ -140,6 +152,9 @@ export const usePlayerStore = defineStore('player', () => {
     waiting,
     currentTime,
     duration,
+    durationKnown,
+    seekable,
+    seekReliable,
     buffered,
     rate,
     volume,

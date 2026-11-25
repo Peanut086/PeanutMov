@@ -19,6 +19,7 @@ vi.mock('vue-router', () => ({
 
 import FavoritesView from '@/views/FavoritesView.vue';
 import HistoryView from '@/views/HistoryView.vue';
+import HistoryListItem from '@/components/media/HistoryListItem.vue';
 import { favoriteService } from '@/services/favoriteService';
 import { historyRepo } from '@/db/repositories/historyRepo';
 import { sourceRepo } from '@/db/repositories/sourceRepo';
@@ -98,6 +99,7 @@ function stateOf(view: ReturnType<typeof mount>): string | undefined {
 }
 
 beforeEach(async () => {
+  routerPush.mockClear();
   setActivePinia(createPinia());
   await resetAll();
   await sourceRepo.save(makeSource('src-1'));
@@ -189,6 +191,37 @@ describe('HistoryView 四态交给 StateView', () => {
 
     expect(stateOf(view)).toBe('success');
     expect(view.findAll('.history-group')).toHaveLength(1);
+    view.unmount();
+  });
+
+  it('继续播放显式携带历史线路', async () => {
+    const record = { ...HISTORY_RECORD, lineId: 'line-2' };
+    await historyRepo.save(record);
+    const view = mount(HistoryView, { global: { stubs: { Teleport: true } } });
+    await settle();
+
+    view.findComponent(HistoryListItem).vm.$emit('select', record);
+
+    expect(routerPush).toHaveBeenCalledWith({
+      name: 'player',
+      params: { mediaId: record.mediaId, episodeId: record.episodeId },
+      query: { lineId: 'line-2' },
+    });
+    view.unmount();
+  });
+
+  it('旧历史没有线路时不塞空 query，仍走 episode owner 回退', async () => {
+    await historyRepo.save(HISTORY_RECORD);
+    const view = mount(HistoryView, { global: { stubs: { Teleport: true } } });
+    await settle();
+
+    view.findComponent(HistoryListItem).vm.$emit('select', HISTORY_RECORD);
+
+    expect(routerPush).toHaveBeenCalledWith({
+      name: 'player',
+      params: { mediaId: HISTORY_RECORD.mediaId, episodeId: HISTORY_RECORD.episodeId },
+      query: {},
+    });
     view.unmount();
   });
 });

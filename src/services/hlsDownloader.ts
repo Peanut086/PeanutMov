@@ -28,9 +28,10 @@ import {
 } from '@/services/remuxDelivery';
 import { findProtectedKeyEvidence } from '@/player/sourceGuard';
 import { createSink, type DownloadSink } from '@/services/downloadSink';
+import { isCompleteLocalHlsIndex, writeLocalHlsIndex } from '@/services/localHlsIndex';
 import { appEvents } from '@/services/events';
 import { classifyConnectivityError } from '@/services/connectivityError';
-import type { DownloadContainer, DownloadTask } from '@/types';
+import type { DownloadContainer, DownloadHlsIndex, DownloadHlsSegment, DownloadTask } from '@/types';
 
 /**
  * 后处理阶段回调（EXT-04/FR-60）：转封装发生在分片写完之后，但任务状态要到
@@ -114,6 +115,7 @@ export interface HlsSegment {
   duration: number;
   key?: HlsKey;
   byteRange?: { offset: number; length: number };
+  discontinuity?: boolean;
 }
 
 /** 解析后的播放列表 */
@@ -298,6 +300,7 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
   let lastRangeEnd: number | undefined;
   // FIX-PLAY-D1：DISCONTINUITY 边界计数只做归因元数据，不改变拼接行为
   let discontinuityCount = 0;
+  let pendingDiscontinuity = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -308,6 +311,7 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
       mediaSequence = parseInt(line.substring('#EXT-X-MEDIA-SEQUENCE:'.length), 10);
     } else if (line.startsWith('#EXT-X-DISCONTINUITY')) {
       discontinuityCount += 1;
+      pendingDiscontinuity = true;
     } else if (line.startsWith('#EXT-X-KEY:')) {
       const attrs = parseAttributes(line.substring('#EXT-X-KEY:'.length));
       // FIX-PLAY-D3：METHOD 归一为大写——`method="aes-128"` 这类源侧变体
@@ -361,7 +365,9 @@ function parseMediaPlaylist(lines: string[], baseUrl: string): HlsPlaylist {
         duration: currentDuration,
         key: currentKey,
         byteRange,
+        discontinuity: pendingDiscontinuity,
       });
+      pendingDiscontinuity = false;
       currentDuration = 0;
     }
   }
@@ -620,7 +626,7 @@ function foldFingerprint(acc: number, part: string): number {
 /** 只描述清单分片结构，排除签名 URL、Cookie 与密钥 URI，避免换链即误判换片。 */
 export function hlsPlaylistFingerprint(playlist: HlsPlaylist): string {
   const durations = playlist.segments
-    .map((segment) => `${Math.round(segment.duration * 1000)}:${segment.byteRange?.length ?? 0}`)
+    .map((segment) => `${Math.round(segment.duration * 1000)}:${segment.byteRange?.length ?? 0}:${segment.discontinuity === true ? 1 : 0}`)
     .join(',');
   const parts = [
     String(playlist.mediaSequence ?? 0),
@@ -647,6 +653,12 @@ export function hlsPlaylistFingerprint(playlist: HlsPlaylist): string {
 export function isPlaceholderContent(total: number, distinct: number): boolean {
   if (total < PLACEHOLDER_MIN_SEGMENTS) return false;
   return distinct / total < PLACEHOLDER_MIN_DISTINCT_RATIO;
+}
+
+function isScreenedMpegTsSegment(data: Uint8Array): boolean {
+  return data[0] === 0x47 && TS_PACKET_SIZES.some(
+    (packetSize) => data.length >= packetSize && data.length % packetSize === 0,
+  );
 }
 
 /**
@@ -839,6 +851,8 @@ export class HlsDownloader {
         completedSegments: [],
         hlsTotalSegments: 0,
         hlsPlaylistFingerprint: playlistFingerprint,
+        hlsIndex: null,
+        hlsIndexPath: null,
         resumable: false,
         filePath: null,
         blobKey: null,
@@ -849,6 +863,8 @@ export class HlsDownloader {
         completedSegments: [],
         hlsTotalSegments: 0,
         hlsPlaylistFingerprint: playlistFingerprint,
+        hlsIndex: null,
+        hlsIndexPath: null,
         resumable: false,
         filePath: null,
         blobKey: null,
@@ -940,6 +956,29 @@ export class HlsDownloader {
     // 直接引用调用方数组会把上一跳持有的任务对象一起改写。
     let completedSegments = [...(task.completedSegments ?? [])];
     const startBytes = completedSegments.length > 0 ? task.downloadedBytes : 0;
+    let detectedContainer = playlist.container ?? 'other';
+    const canBuildLocalIndex = isNative() && task.sink === 'filesystem' && !playlist.initSegment && detectedContainer !== 'fmp4';
+    const emptyLocalIndex = (): DownloadHlsIndex => ({
+      version: 1,
+      playlistFingerprint,
+      targetDuration: playlist.targetDuration ?? 0,
+      mediaSequence: playlist.mediaSequence ?? 0,
+      segments: [],
+    });
+    let hlsIndex: DownloadHlsIndex | null = canBuildLocalIndex
+      && task.hlsIndex?.version === 1
+      && task.hlsIndex.playlistFingerprint === playlistFingerprint
+      && task.hlsIndex.segments.length > 0
+      ? { ...task.hlsIndex, segments: task.hlsIndex.segments.map((segment) => ({ ...segment })) }
+      : null;
+    if (hlsIndex) detectedContainer = 'ts';
+    const localIndexPatch = (): Partial<DownloadTask> => ({
+      hlsIndex: hlsIndex
+        ? { ...hlsIndex, segments: hlsIndex.segments.map((segment) => ({ ...segment })) }
+        : null,
+      hlsIndexPath: null,
+      ...(hlsIndex ? { container: 'ts' as const } : {}),
+    });
     // P1-2: 以 .part 实际大小为准，与 DB 不一致时从头下载避免错位
     const firstBegin = await sink.begin({ task: { ...task, resumable: true }, startBytes });
     let started = firstBegin;
@@ -984,6 +1023,7 @@ export class HlsDownloader {
           },
         );
         completedSegments = [];
+        hlsIndex = canBuildLocalIndex ? emptyLocalIndex() : null;
         // P2-6：整集重下要烧掉一整份流量（实测一集 780MB），不能像现在这样只在日志里留一行。
         // 直链侧同样的处境早就有话术（`downloadEngine` 的「该地址不支持断点续传，将重新下载」），
         // 这里补齐，用户至少知道进度为什么没了、不是 App 在下错东西。
@@ -1009,6 +1049,7 @@ export class HlsDownloader {
       updatedAt: now(),
       completedSegments,
       hlsPlaylistFingerprint: playlistFingerprint,
+      ...localIndexPatch(),
     });
 
     // 6. 写入初始化分片（FIX-D5：用独立标志，不再向 completedSegments 写入 -1）
@@ -1049,6 +1090,10 @@ export class HlsDownloader {
       const doneSet = new Set(completedSegments.filter((i) => i >= 0));
       let completedCount = 0;
       while (doneSet.has(completedCount)) completedCount += 1;
+      if (hlsIndex) {
+        if (completedCount === 0) hlsIndex = emptyLocalIndex();
+        else if (!isCompleteLocalHlsIndex(hlsIndex, completedCount)) hlsIndex = null;
+      }
       let segmentBytes = completedCount > 0 ? downloaded - initSegmentSize : 0;
 
       // 7. 滑动窗口并行下载分片（FIX-D8：用结果队列替代 Set<Promise>+Promise.race，
@@ -1220,6 +1265,21 @@ export class HlsDownloader {
           contentDigests.set(digest, (contentDigests.get(digest) ?? 0) + 1);
           artifactDigest = foldFingerprint(artifactDigest, digest);
           await sink.write(data);
+          if (!hlsIndex && canBuildLocalIndex && nextWriteIndex === 0 && isScreenedMpegTsSegment(data)) {
+            detectedContainer = 'ts';
+            hlsIndex = emptyLocalIndex();
+          }
+          if (hlsIndex) {
+            const sourceSegment = playlist.segments[nextWriteIndex]!;
+            const localSegment: DownloadHlsSegment = {
+              index: nextWriteIndex,
+              offset: downloaded,
+              length: data.byteLength,
+              duration: sourceSegment.duration,
+              discontinuity: sourceSegment.discontinuity === true,
+            };
+            hlsIndex.segments.push(localSegment);
+          }
           downloaded += data.byteLength;
           segmentBytes += data.byteLength;
           completedCount += 1;
@@ -1248,6 +1308,7 @@ export class HlsDownloader {
               hlsTotalSegments: totalSegments,
               hlsDiscontinuities: playlist.discontinuityCount ?? 0,
               hlsPlaylistFingerprint: playlistFingerprint,
+              ...localIndexPatch(),
             });
           }
         }
@@ -1306,6 +1367,7 @@ export class HlsDownloader {
           hlsTotalSegments: totalSegments,
           hlsDiscontinuities: playlist.discontinuityCount ?? 0,
           hlsPlaylistFingerprint: playlistFingerprint,
+          ...localIndexPatch(),
         });
         throw new AppError(
           'E_NETWORK',
@@ -1342,6 +1404,20 @@ export class HlsDownloader {
           sinkSize: result.size,
           downloaded,
         });
+        if (hlsIndex) {
+          throw new AppError(
+            'E_LOCAL_CORRUPT',
+            'HLS 产物大小与分片记账不一致，已保留文件但不生成播放清单',
+            { retryable: true },
+          );
+        }
+      }
+      if (hlsIndex && !isCompleteLocalHlsIndex(hlsIndex, totalSegments, result.size)) {
+        throw new AppError(
+          'E_LOCAL_CORRUPT',
+          'HLS 本地字节索引不完整，已保留合并 TS 但拒绝交付',
+          { retryable: true },
+        );
       }
       await this.deps.saveProgress(task.id, {
         downloadedBytes: result.size,
@@ -1357,12 +1433,13 @@ export class HlsDownloader {
         hlsTotalSegments: totalSegments,
         hlsDiscontinuities: playlist.discontinuityCount ?? 0,
         hlsPlaylistFingerprint: playlistFingerprint,
+        ...localIndexPatch(),
         /*
          * P0-4：容器判定跟着产物一起落库。此前 `container` 只有转封装交付那几笔才会写，
          * 一条没转封装的 TS/fMP4 记录永远停在「尚未判定」，MIME、文件自检、播放器选型
          * 只能各自按扩展名再猜一次。
          */
-        container: playlist.container ?? 'other',
+        container: detectedContainer,
         /*
          * DL-R0：本轮一片都没新写（采纳了已晋升的成品）时，滚动指纹还停在种子值上，
          * 那份数字不代表任何内容。写进库会让两条同样「只收尾」的任务互相认成双胞胎，
@@ -1384,7 +1461,7 @@ export class HlsDownloader {
          */
         initMap: playlist.initSegment ? 'declared' : 'none',
         initMapDistinct: playlist.initMapCount ?? 0,
-        containerDetected: playlist.container ?? 'other',
+        containerDetected: detectedContainer,
         segmentIndex: nextWriteIndex - 1,
       });
 
@@ -1399,7 +1476,7 @@ export class HlsDownloader {
        * 一份没验证过的 .mp4 或一份没被引用的 .mp4，而记录还指着已经不存在的 .ts——
        * 用户侧就是「转封装过的视频报时间轴异常 / 整集重下」。
        *
-       * P0-4：交付按清单声明的容器分流，并受 `download.remuxToMp4` 开关约束——
+       * P0-4：交付按清单声明与首片实际字节判定的容器分流，并受 `download.remuxToMp4` 开关约束——
        * - fMP4 的字节本来就是 MP4 家族，请原生转封装只会拿到一句 `skipped: fmp4-passthrough`
        *   （什么都不做），所以这里只做「复检 → 改名 → 落库」，一次转码都不跑；
        * - TS 与「认不出来」（沿用旧口径，交给原生探测）走转封装；
@@ -1409,7 +1486,6 @@ export class HlsDownloader {
        */
       let deliveredPath = result.filePath;
       let delivery: RemuxDelivery | null = null;
-      const detectedContainer: DownloadContainer = playlist.container ?? 'other';
       if ((playlist.initMapCount ?? 0) > 1) {
         // P0-4：中途换过初始化段——这份合并产物只有一个文件头，不能按有效 fMP4 交付
         logger.warn('P0-4：清单声明了多个初始化段，容器降级为 other 并按原件兜底交付', {
@@ -1613,6 +1689,8 @@ export class HlsDownloader {
             filePath: null,
             blobKey: null,
             contentDigest: null,
+            hlsIndex: null,
+            hlsIndexPath: null,
             ...(artifactGone
               ? { downloadedBytes: 0, totalBytes: null, completedSegments: [], hlsTotalSegments: 0 }
               : {}),
@@ -1622,6 +1700,24 @@ export class HlsDownloader {
         throw new AppError('E_FAKE_SOURCE_CONTENT', `该线路的产物疑似占位内容（${refusal}），请更换线路或源`, {
           retryable: false,
         });
+      }
+
+      if (hlsIndex && result.filePath && deliveredPath === result.filePath && task.sink === 'filesystem') {
+        try {
+          const indexPath = await writeLocalHlsIndex(result.filePath, hlsIndex);
+          await this.deps.saveProgress(task.id, {
+            hlsIndex,
+            hlsIndexPath: indexPath,
+            updatedAt: now(),
+          });
+          logger.debug('本地 HLS 索引已生成', { taskId: task.id, indexPath });
+        } catch (e) {
+          throw new AppError(
+            'E_LOCAL_CORRUPT',
+            '本地 HLS 索引生成或落库失败，已保留合并 TS，拒绝静默回退裸 TS',
+            { retryable: true, cause: e },
+          );
+        }
       }
     } catch (e) {
       // 错误处理
@@ -1658,6 +1754,7 @@ export class HlsDownloader {
                 completedSegments,
                 resumable: true,
                 hlsPlaylistFingerprint: playlistFingerprint,
+                ...localIndexPatch(),
                 updatedAt: now(),
               })
               .catch(() => undefined);

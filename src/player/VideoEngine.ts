@@ -10,6 +10,7 @@ import { AppError, toErrorShape } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
+import { videoFrameLumaSource } from '@/player/frameLuma';
 
 export interface VideoEngineEvents {
   onLoadedMetadata: (duration: number, videoWidth: number, videoHeight: number) => void;
@@ -20,6 +21,8 @@ export interface VideoEngineEvents {
   onPlaying: () => void;
   onEnded: () => void;
   onError: (error: AppErrorShape) => void;
+  /** 首个视频帧真正提交渲染；旧环境由控制器轮询帧统计兜底 */
+  onFirstFrame?: () => void;
 }
 
 /** 原生 HLS 支持判定（Safari / iOS） */
@@ -41,6 +44,10 @@ export class VideoEngine implements PlayableEngine {
   private container: HTMLElement | null = null;
   private listeners: Array<() => void> = [];
   private destroyed = false;
+  private loading = false;
+  private frameCallbackId: number | null = null;
+  private firstFrameSent = false;
+  private readonly frameLuma = videoFrameLumaSource(() => this.container);
 
   constructor(private readonly events: VideoEngineEvents) {
     this.video = document.createElement('video');
@@ -48,8 +55,8 @@ export class VideoEngine implements PlayableEngine {
     this.video.setAttribute('webkit-playsinline', 'true');
     this.video.preload = 'metadata';
     this.video.controls = false;
-    // 不设置 `crossOrigin`：项目内没有 canvas 抓帧需求，而设成 anonymous 会让
-    // 未返回 ACAO 头的源站直接加载失败（字节合法也播不了）。hls.js 走 MSE，无需该属性。
+    // 不设置 `crossOrigin`：匿名跨域会让未返回 ACAO 头的源站直接加载失败；
+    // 黑帧取样遇到 Canvas 污染时由调用方降级，不能为诊断牺牲播放兼容性。
     this.bindNativeEvents();
   }
 
@@ -67,6 +74,9 @@ export class VideoEngine implements PlayableEngine {
         reject(new Error('engine destroyed'));
         return;
       }
+      this.loading = true;
+      this.cancelFrameCallback();
+      this.firstFrameSent = false;
       const url = withHeadersHint(source.url, source.headers);
       const onLoaded = (): void => {
         cleanup();
@@ -74,6 +84,7 @@ export class VideoEngine implements PlayableEngine {
       };
       const onError = (): void => {
         cleanup();
+        this.cancelFrameCallback();
         // P1-2：按 MediaError.code 映射具体错误码，不再统一折叠为 E_DECODE
         const mediaError = this.video.error;
         const msg = mediaError?.message ?? 'media error';
@@ -94,12 +105,14 @@ export class VideoEngine implements PlayableEngine {
         }
       };
       const cleanup = (): void => {
+        this.loading = false;
         this.video.removeEventListener('loadedmetadata', onLoaded);
         this.video.removeEventListener('error', onError);
       };
       this.video.addEventListener('loadedmetadata', onLoaded, { once: true });
       this.video.addEventListener('error', onError, { once: true });
       this.video.src = url;
+      this.observeFirstFrame();
       this.video.load();
     });
   }
@@ -169,6 +182,18 @@ export class VideoEngine implements PlayableEngine {
     };
   }
 
+  sampleFrameLuma() {
+    return this.frameLuma(this.video.videoWidth, this.video.videoHeight, 'fill');
+  }
+
+  canObserveFirstFrame(): boolean {
+    const video = this.video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (callback: () => void) => number;
+    };
+    return typeof video.requestVideoFrameCallback === 'function'
+      || typeof video.getVideoPlaybackQuality === 'function';
+  }
+
   /** 原生引擎无多码率，返回空数组 */
   getQualities(): string[] {
     return [];
@@ -188,8 +213,34 @@ export class VideoEngine implements PlayableEngine {
     this.video.style.objectFit = mode;
   }
 
+  private observeFirstFrame(): void {
+    const video = this.video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (callback: () => void) => number;
+    };
+    if (typeof video.requestVideoFrameCallback !== 'function') return;
+    this.frameCallbackId = video.requestVideoFrameCallback(() => {
+      this.frameCallbackId = null;
+      if (this.destroyed || this.firstFrameSent) return;
+      this.firstFrameSent = true;
+      this.events.onFirstFrame?.();
+    });
+  }
+
+  private cancelFrameCallback(): void {
+    const video = this.video as HTMLVideoElement & {
+      cancelVideoFrameCallback?: (handle: number) => void;
+    };
+    if (this.frameCallbackId === null) return;
+    if (typeof video.cancelVideoFrameCallback === 'function') {
+      video.cancelVideoFrameCallback(this.frameCallbackId);
+    }
+    this.frameCallbackId = null;
+  }
+
   destroy(): void {
     this.destroyed = true;
+    this.loading = false;
+    this.cancelFrameCallback();
     this.pause();
     for (const off of this.listeners) off();
     this.listeners = [];
@@ -243,6 +294,7 @@ export class VideoEngine implements PlayableEngine {
         networkState: v.networkState,
         readyState: v.readyState,
       });
+      if (this.loading || this.destroyed) return;
       this.events.onError(mapMediaError(v.error));
     });
   }

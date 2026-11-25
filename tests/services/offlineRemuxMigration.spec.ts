@@ -26,6 +26,7 @@ const h = vi.hoisted(() => {
     stat: vi.fn(),
     getStorageInfo: vi.fn(),
     verifyRemuxedMedia: vi.fn(),
+    repairTs: vi.fn(),
     emit: vi.fn(),
   };
 });
@@ -64,6 +65,12 @@ vi.mock('@/services/settingsService', () => ({
 }));
 
 vi.mock('@/services/events', () => ({ appEvents: { emit: h.emit } }));
+
+vi.mock('@/services/localTsRepair', () => ({
+  isRepairableTsTask: (task: DownloadTask) =>
+    task.status === 'completed' && task.sink === 'filesystem' && typeof task.filePath === 'string' && /\.ts$/i.test(task.filePath),
+  repairLocalTsIndex: h.repairTs,
+}));
 
 import type { DownloadTask } from '@/types';
 
@@ -157,10 +164,11 @@ async function boot(prepare?: (mod: typeof import('@/services/offlineRemuxMigrat
 beforeEach(() => {
   vi.resetModules();
   h.seq.length = 0;
-  for (const fn of [h.listByStatus, h.get, h.save, h.remuxMp4, h.deleteFile, h.renameFile, h.stat, h.getStorageInfo, h.verifyRemuxedMedia, h.emit]) {
+  for (const fn of [h.listByStatus, h.get, h.save, h.remuxMp4, h.deleteFile, h.renameFile, h.stat, h.getStorageInfo, h.verifyRemuxedMedia, h.repairTs, h.emit]) {
     fn.mockReset();
   }
   h.renameFile.mockImplementation(async () => undefined);
+  h.repairTs.mockResolvedValue({ status: 'repaired' });
   remuxEnabled.value = true;
 });
 
@@ -177,6 +185,30 @@ describe('P0-3 开机对账接线', () => {
     expect(saved.some((t) => t.filePath === TS1 && t.remux?.outcome === 'failed' && t.remux?.reason === 'artifact-missing')).toBe(true);
     expect(h.remuxMp4).not.toHaveBeenCalled();
     expect(h.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('转封装开关关闭时仍修复存量 TS 索引，且不启动转封装', async () => {
+    remuxEnabled.value = false;
+    const todo = record({ id: 'todo', filePath: TS1, downloadedBytes: 1000, totalBytes: 1000 });
+    wire({ files: { [TS1]: 1000 }, records: [todo] });
+
+    await boot();
+
+    expect(h.remuxMp4).not.toHaveBeenCalled();
+    expect(h.repairTs).toHaveBeenCalledWith('todo');
+  });
+
+  it('单条索引修复失败不阻断其它存量 TS，正在播放的任务跳过', async () => {
+    remuxEnabled.value = false;
+    const first = record({ id: 'first', filePath: TS1 });
+    const second = record({ id: 'second', episodeId: 'demo:m1:e2', episodeNumber: 2, filePath: TS2 });
+    const playing = record({ id: 'playing', episodeId: 'demo:m1:e3', episodeNumber: 3, filePath: `${DIR}/e3.ts` });
+    wire({ files: { [TS1]: 1000, [TS2]: 1000, [`${DIR}/e3.ts`]: 1000 }, records: [first, second, playing] });
+    h.repairTs.mockRejectedValueOnce(new Error('scan failed'));
+
+    await boot((mod) => mod.markOfflineFileInUse('playing'));
+
+    expect(h.repairTs.mock.calls.map((call) => call[0])).toEqual(['first', 'second']);
   });
 
   it('对账排在迁移之前，且交付顺序是「改指 .mp4 落库 → 才删 .ts」', async () => {

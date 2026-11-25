@@ -255,6 +255,7 @@ describe('后处理阶段不参与停滞判定', () => {
 
   it('预算用尽后照旧判停滞（免检不是终身制）', async () => {
     await seedStale();
+    vi.spyOn(libraryService, 'resolvePlay').mockResolvedValue(makePlayback());
     // 负预算 = 登记时刻就已经超过截止，等价于转封装跑过了它自己的超时
     beginPhase('task-stall', 'postprocess', '转封装 MP4', -1);
     expect(isInTrackedPostProcess('task-stall', Date.now())).toBe(false);

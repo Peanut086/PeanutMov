@@ -146,6 +146,7 @@ export function videoFrameLumaSource(getStage: () => HTMLElement | null): FrameL
       );
     } catch (e) {
       if (e instanceof DOMException && e.name === 'SecurityError') {
+        scratch = null;
         throw new FrameLumaUnavailableError('tainted', '画布被跨域视频污染');
       }
       return null;
@@ -155,6 +156,7 @@ export function videoFrameLumaSource(getStage: () => HTMLElement | null): FrameL
       data = ctx.getImageData(0, 0, LUMA_COLS, LUMA_ROWS).data;
     } catch (e) {
       if (e instanceof DOMException && e.name === 'SecurityError') {
+        scratch = null;
         throw new FrameLumaUnavailableError('tainted', '画布被跨域视频污染');
       }
       return null;

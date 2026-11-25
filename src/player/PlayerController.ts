@@ -25,14 +25,20 @@ import { guessFormatFromUrl } from '@/shared/url';
 import type {
   EpisodeRef,
   PlayableEngine,
+  PlaybackCapabilities,
   PlayerEventMap,
   PlayerEventName,
   PlayerListener,
   PlayerLoadOptions,
   PlayerState,
+  NoVideoReason,
 } from '@/player/types';
 import {
+  BLACK_FRAME_CHECK_INTERVAL_MS,
+  BLACK_FRAME_CONFIRMATIONS,
   CONTROLS_HIDE_DELAY_MS,
+  FIRST_FRAME_POLL_MS,
+  FIRST_FRAME_TIMEOUT_MS,
   HLS_METADATA_TIMEOUT_MS,
   LOCAL_DECODE_SKIP_SEC,
   LOAD_METADATA_TIMEOUT_MS,
@@ -44,6 +50,7 @@ import {
   QUALITY_AUTO,
   RESUME_MAX_RATIO,
   RESUME_MIN_RATIO,
+  RAW_TS_SEEK_VERIFY_MS,
   SEEK_SETTLE_TIMEOUT_MS,
   SEEK_SETTLE_TOLERANCE_SEC,
   STALL_CHECK_INTERVAL_MS,
@@ -60,14 +67,17 @@ import {
   type EmbeddedTextTrack,
   type EmbeddedTrackState,
   type NativeMediaInfo,
+  type NativeSurfaceDiagnostic,
 } from '@/player/NativeEngine';
-import { isExoPlayerAvailable } from '@/native/exoPlayerPlugin';
+import { getExoPlayerStatus, type ExoPlayerStatus } from '@/native/exoPlayerPlugin';
 import { SubtitleManager } from '@/player/SubtitleManager';
 import { GestureRecognizer, type GestureIntent } from '@/player/GestureRecognizer';
 import { ProgressReporter, type ProgressSnapshot } from '@/player/ProgressReporter';
 import { FullscreenController } from '@/player/FullscreenController';
 import { OrientationController } from '@/player/OrientationController';
 import { assertSourceSupported, isWebPlayPageUrl, scanManifestForDrm } from '@/player/sourceGuard';
+import { isBlackFrame } from '@/player/blackFrame';
+import { FrameLumaUnavailableError } from '@/player/frameLuma';
 
 /**
  * EXT-07：内嵌字幕/音轨面板类型与空状态。
@@ -78,7 +88,7 @@ import { assertSourceSupported, isWebPlayPageUrl, scanManifestForDrm } from '@/p
 export { emptyEmbeddedTracks };
 export type { EmbeddedAudioTrack, EmbeddedTextTrack, EmbeddedTrackState };
 
-/** 帧统计（`getFrameStats` 的返回；原生 surface 引擎为 null） */
+/** 帧统计（`getFrameStats` 的返回；纯音频或旧原生桥无法提供时为 null） */
 export interface FrameStats {
   videoWidth: number;
   videoHeight: number;
@@ -98,6 +108,33 @@ export function isNoVideo(stats: FrameStats | null, elapsedSec: number): boolean
   return elapsedSec >= 1;
 }
 
+function nativeStatusNotice(status: ExoPlayerStatus): string {
+  switch (status.reason) {
+    case 'safe_mode':
+      return '安全模式已关闭原生播放器，已切回内置引擎';
+    case 'plugin_missing':
+      return '原生播放器插件不可用，已切回内置引擎';
+    case 'unsupported':
+      return '当前环境不支持原生播放器，已切回内置引擎';
+    default:
+      return '原生播放器当前不可用，已切回内置引擎';
+  }
+}
+
+function isSafeModeError(error: AppErrorShape): boolean {
+  return error.code === 'E_INVALID_STATE'
+    && /safe mode|安全模式/i.test(`${error.message} ${error.detail ?? ''}`);
+}
+
+function nativeLoadNotice(error: AppErrorShape): string {
+  if (isSafeModeError(error)) return '安全模式已关闭原生播放器，已切回内置引擎';
+  if (error.code === 'E_TIMEOUT') return '原生加载超时，已切回内置引擎';
+  if (error.code === 'E_NETWORK') return '原生加载网络失败，已切回内置引擎';
+  if (error.code === 'E_DECODE') return '原生加载解码失败，已切回内置引擎';
+  if (error.httpStatus !== null) return '原生加载地址失败，已切回内置引擎';
+  return '原生引擎本次加载失败，已切回内置引擎';
+}
+
 /**
  * P1-②-3：原生侧这些错误码是**确定性结论**——说的是"这条地址给不出来 / 拿不到 / 加密"，
  * 不是"我这个内核解不动"。两个引擎都没播起来时，归属跟着它们走。
@@ -110,7 +147,11 @@ const DETERMINISTIC_NATIVE_CODES = new Set<ErrorCode>([
   'E_TIMEOUT',
   'E_SOURCE_UNAVAILABLE',
   'E_NO_PLAY_URL',
+  'E_HTTP_400',
+  'E_HTTP_401',
+  'E_HTTP_403',
   'E_HTTP_404',
+  'E_HTTP_429',
   'E_HTTP_5XX',
   'E_DRM_PROTECTED',
   'E_SOURCE_BUSY',
@@ -154,6 +195,9 @@ export function isPlaybackStalled(
 export class PlayerController {
   private container: HTMLElement | null = null;
   private engine: PlayableEngine | null = null;
+  private loadingEngine: PlayableEngine | null = null;
+  private engineDestroyPromise: Promise<void> | null = null;
+  private nativeAttemptActive = false;
   /** v1.8/CHG-25：当前引擎类型（native/hls/video），供 View 做能力互斥（弹幕/字幕） */
   private engineKind: 'native' | 'hls' | 'video' | null = null;
   private videoHost: HTMLDivElement | null = null;
@@ -197,6 +241,13 @@ export class PlayerController {
    */
   private seekSettleTarget: number | null = null;
   private seekSettleTimer: ReturnType<typeof setTimeout> | null = null;
+  private rawTsSeekUnreliable = false;
+  private reportedDurationSec = 0;
+  private playbackCapabilities: PlaybackCapabilities = {
+    durationKnown: false,
+    seekable: false,
+    seekReliable: false,
+  };
 
   /**
    * P0-2：本地播放停滞自愈状态。
@@ -221,6 +272,18 @@ export class PlayerController {
   /** FIX-PLAY-C2：本轮加载是否还有"解码错误跳过坏段"这一次机会（每次 load 重置） */
   private localDecodeRecovered = false;
 
+  /** P1-5：READY 与真实首帧分离；每次 load 只允许因无首帧重备一次 */
+  private firstFrameSeen = false;
+  private videoTrackAbsent = false;
+  private metadataReady = false;
+  private pendingReadyDuration: number | null = null;
+  private firstFrameRecovered = false;
+  private firstFrameWaitCanceled = false;
+  private firstFrameTimer: ReturnType<typeof setTimeout> | null = null;
+  private firstFrameCancel: (() => void) | null = null;
+  private configureLoadedEngine: (() => void) | null = null;
+  private loadCompleted = false;
+
   /** m3u8 DRM 预检的取消句柄（AC-40）：切集/重试/销毁时中止上一轮预检 */
   private preflightAbort: AbortController | null = null;
   /** 预检代次：新一次加载/卸载时递增，旧预检返回后据此放弃，避免旧结果污染新播放 */
@@ -236,6 +299,10 @@ export class PlayerController {
 
   /** 加载代次：load() 入口递增，await 后校验，过期则中止（防止卸载后僵尸播放） */
   private loadSeq = 0;
+  /** 引擎链代次：每次 attachEngine 递增，旧引擎回调不得写入当前加载/播放状态 */
+  private engineAttempt = 0;
+  /** 当前正在加载的引擎代次；网络重试/本地复位也走 attachEngine，不能只看顶层 state */
+  private engineLoadingAttempt: number | null = null;
 
   private readonly subtitles: SubtitleManager;
   private readonly progress: ProgressReporter;
@@ -323,6 +390,11 @@ export class PlayerController {
     this.clearPreload();
     // 黑屏检测按「每次加载」重置
     this.clearNoVideoCheck();
+    this.clearFirstFrameWait();
+    this.firstFrameRecovered = false;
+    this.firstFrameWaitCanceled = false;
+    this.configureLoadedEngine = null;
+    this.loadCompleted = false;
     // P0-2：停滞自愈按「每次加载」重置（复位机会不得跨集复用）
     this.stopStallWatchdog();
     this.stallRecovered = false;
@@ -330,6 +402,10 @@ export class PlayerController {
     this.stallNoticeIssued = false;
     // FIX-PLAY-C2：解码容错机会同样按「每次加载」重置
     this.localDecodeRecovered = false;
+    this.rawTsSeekUnreliable = false;
+    this.reportedDurationSec = 0;
+    this.syncPlaybackCapabilities();
+    this.clearSeekSettle();
     this.setState('loading');
     this.options = opts;
     this.networkRetries = 0;
@@ -348,28 +424,40 @@ export class PlayerController {
       await this.attachEngine(opts.playback);
       // 加载期间被更新的加载/销毁取消：不覆盖新状态、不误报错误
       if (this.destroyed || seq !== this.loadSeq) {
-        this.destroyEngine();
         throw new AppError('E_ABORTED', '播放已切换，本次加载作废');
       }
-      const start = this.resolveStartPosition(opts);
-      // P0-3：原生引擎把续播位置随 prepare 一起下发了（NativeEngine.load → startPositionMs），
-      // 这里再 seek 一次等于二次定位——本地大文件上每次定位都要重扫容器并重启硬解，
-      // 起播因此多卡 1~3 秒。位置已由引擎预置时跳过补 seek。
+      let start = this.resolveStartPosition(opts);
       const prepositionedByEngine = (opts.playback.startPositionMs ?? 0) > 0;
-      if (start > 0 && !(this.engineKind === 'native' && prepositionedByEngine)) {
-        this.engine?.seek(start);
+      let rawTsRestartNeeded = false;
+      const configureEngine = (): void => {
+        const rawTsPrepositioned = this.isRawTsPlayback()
+          && prepositionedByEngine
+          && start > 0
+          && Math.abs((this.engine?.getCurrentTime() ?? 0) - start) > SEEK_SETTLE_TOLERANCE_SEC;
+        if (rawTsPrepositioned) {
+          start = 0;
+          rawTsRestartNeeded = true;
+          this.markRawTsSeekUnreliable();
+        }
+        // P0-3：原生引擎把续播位置随 prepare 一起下发了（NativeEngine.load → startPositionMs），
+        // 这里再 seek 一次等于二次定位——本地大文件上每次定位都要重扫容器并重启硬解，
+        // 起播因此多卡 1~3 秒。位置已由引擎预置时跳过补 seek。
+        if (start > 0 && !(this.engineKind === 'native' && prepositionedByEngine)) {
+          this.engine?.seek(start);
+        }
+        this.engine?.setRate(this.rate);
+        this.engine?.setVolume(this.volume);
+        this.engine?.setResizeMode(this.resizeMode);
+      };
+      this.configureLoadedEngine = configureEngine;
+      configureEngine();
+      if (rawTsRestartNeeded) {
+        await this.restartLocalPlayback(0, 0, '此旧文件不支持可靠续播，正在从头播放', false);
+        return;
       }
-      this.engine?.setRate(this.rate);
-      this.engine?.setVolume(this.volume);
-      this.engine?.setResizeMode(this.resizeMode);
-      this.setState('ready');
-      this.progress.update(start, this.engine?.getDuration() ?? 0);
-      this.progress.start();
-      // 切集/自动连播后通知 UI 同步当前集（上下集按钮禁用态依赖 player.episodeId）
-      this.emit('loaded', { episodeId: opts.episodeId });
-      this.scheduleControlsHide();
-      // P1-6: 起播后即预载下一集（给足时间预热连接/DNS），临近片尾的二次调用由幂等保护跳过
-      this.preloadNext();
+      if (this.firstFrameSeen || this.audioOnly || this.videoTrackAbsent) {
+        this.finishLoad(seq);
+      }
     } catch (e) {
       // 预检被更新的加载/销毁取消：不覆盖新状态、不误报错误
       if (e instanceof AppError && e.code === 'E_ABORTED') throw e;
@@ -380,6 +468,18 @@ export class PlayerController {
       this.emit('error', error);
       throw e instanceof AppError ? e : new AppError('E_DECODE', error.message, { cause: e });
     }
+  }
+
+  private finishLoad(seq: number): void {
+    const opts = this.options;
+    if (this.destroyed || seq !== this.loadSeq || this.loadCompleted || !opts) return;
+    this.loadCompleted = true;
+    this.emitPendingReady();
+    this.setState('ready');
+    this.progress.update(this.engine?.getCurrentTime() ?? 0, this.engine?.getDuration() ?? 0);
+    this.progress.start();
+    this.emit('loaded', { episodeId: opts.episodeId });
+    this.preloadNext();
   }
 
   /**
@@ -396,6 +496,7 @@ export class PlayerController {
       message: shape.message,
       reason: shape.reason ?? null,
       detail: shape.detail ?? null,
+      httpStatus: shape.httpStatus ?? null,
       format: playback.format,
       isLocal: playback.isLocal === true,
       url: playback.url,
@@ -433,8 +534,34 @@ export class PlayerController {
     });
   }
 
+  private assertEngineAttempt(attempt: number): void {
+    if (this.destroyed || attempt !== this.engineAttempt) {
+      throw new AppError('E_ABORTED', '播放器已切换，本次加载作废');
+    }
+  }
+
+  private async disposeLoadingEngine(engine: PlayableEngine): Promise<void> {
+    try {
+      await engine.destroy();
+    } catch (e) {
+      logger.warn('destroy: loading engine.destroy 抛错', e);
+    } finally {
+      if (this.loadingEngine === engine) this.loadingEngine = null;
+    }
+  }
+
   /** 根据格式与原生能力选择引擎并 attach/load */
   private async attachEngine(playback: PlaybackSource): Promise<void> {
+    const attempt = ++this.engineAttempt;
+    this.engineLoadingAttempt = attempt;
+    this.reportedDurationSec = 0;
+    this.syncPlaybackCapabilities();
+    this.clearFirstFrameWait();
+    this.firstFrameWaitCanceled = false;
+    this.firstFrameSeen = false;
+    this.videoTrackAbsent = false;
+    this.metadataReady = false;
+    this.pendingReadyDuration = null;
     // 解析层应已把网页播放页换回直链；走到这里仍是页面说明解析失败，
     // 快速报错交给容错链换线/换源，不让两个引擎对着 HTML 白等超时。
     // P1-②-3：原生这一跳的失败要留到链尾——两个引擎都没播起来时，结论按原生原因归类
@@ -445,7 +572,8 @@ export class PlayerController {
     }
     const format = playback.format === 'other' ? guessFormatFromUrl(playback.url) ?? 'mp4' : playback.format;
 
-    this.destroyEngine();
+    await this.destroyEngine();
+    this.assertEngineAttempt(attempt);
 
     const host = this.videoHost ?? this.container;
     if (!host) throw new AppError('E_INVALID_STATE', '播放器容器未挂载');
@@ -455,12 +583,27 @@ export class PlayerController {
     // （`.ts` 直接解不了封装，`.mp4` 的 seek 与硬件解码也不受控），ExoPlayer 走
     // FileDataSource + 硬解， seek 精确、后台可续播。
     const preferNativeForLocal = playback.isLocal;
-    const useNativeEngine = (this.options?.preferNativeEngine === true || preferNativeForLocal)
-      && await isExoPlayerAvailable();
+    const wantsNativeEngine = this.options?.preferNativeEngine === true || preferNativeForLocal;
+    const nativeStatus = wantsNativeEngine ? await getExoPlayerStatus() : null;
+    const useNativeEngine = wantsNativeEngine && nativeStatus?.available === true;
+    this.assertEngineAttempt(attempt);
+    if (nativeStatus) {
+      logger.info('原生播放器能力状态', {
+        ...nativeStatus,
+        preferNativeEngine: this.options?.preferNativeEngine === true,
+        local: playback.isLocal,
+      });
+    }
 
     // P1-5：离线裸 .ts 只有原生引擎能解。原生不可用（安全模式 / 插件缺失 / 非 Android）
     // 时直接报错，不要让 WebView 的 <video> 对着必然失败的文件等满元数据超时。
     if (playback.isLocal && format === 'ts' && !useNativeEngine) {
+      if (nativeStatus?.reason === 'safe_mode') {
+        throw new AppError('E_INVALID_STATE', '安全模式已关闭原生播放器', {
+          detail: 'safe mode active: native player disabled',
+          retryable: false,
+        });
+      }
       // OPT-26（P0-②-1）：这是本机能力档位问题，带子原因才不会套上种子的文案与出口
       throw new AppError('E_UNSUPPORTED_FORMAT', '该离线文件需要原生播放器，当前不可用', {
         reason: 'player_capability',
@@ -477,6 +620,7 @@ export class PlayerController {
       assertSourceSupported(playback.url);
       await this.runManifestPreflight(playback, preflightEpoch);
     }
+    this.assertEngineAttempt(attempt);
 
     /*
      * v1.8/CHG-25：实验性原生引擎（ExoPlayer surface 模式）。
@@ -488,17 +632,20 @@ export class PlayerController {
     if (useNativeEngine) {
       this.nativeAttemptedInLastChain = true;
       const nativeEngine = new NativeEngine({
-        onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
+        onLoadedMetadata: (duration, hasVideoTrack) =>
+          this.handleLoadedMetadata(attempt, duration, { hasVideoTrack }),
         onTimeUpdate: (currentTime, duration, buffered) =>
           this.handleTimeUpdate(currentTime, duration, buffered),
         onWaiting: () => this.emit('statechange', { playing: true, waiting: true }),
         onEnded: () => this.handleEnded(),
-        onError: (error) => this.handleEngineError(error),
+        onError: (error) => this.handleEngineError(error, attempt),
         onQualitiesChange: (qualities) => this.emit('qualitychange', { quality: this.quality, levels: qualities }),
         // EXT-07：内嵌字幕/音轨状态（两个原生引擎构造点都要接）
         onEmbeddedTracksChange: (state) => this.setEmbeddedTracks(state),
         // P1-a：原生侧回报"seek 后画面落地"，立即收口等待态并写历史
-        onSeekSettled: () => this.settleSeek(),
+        onSeekSettled: ({ targetMs, positionMs }) =>
+          this.verifySeekPosition(targetMs / 1000, positionMs / 1000),
+        onFirstFrame: (positionSec) => this.handleFirstFrame(attempt, positionSec),
         // B1：原生侧播放意图变化（通知栏/线控/音频焦点）与上下集指令
         onPlayingChange: (playing) => this.handleRemotePlaying(playing),
         onRemoteCommand: (command) => this.emit('remotecommand', { command }),
@@ -508,25 +655,46 @@ export class PlayerController {
       // 切集重建引擎后，后台播放/纯音频开关必须重放，否则用户设置被静默重置
       nativeEngine.setBackgroundPlayback(this.backgroundPlayback);
       nativeEngine.setAudioOnly(this.audioOnly);
+      this.assertEngineAttempt(attempt);
+      this.loadingEngine = nativeEngine;
+      this.setNativeAttempt(true, attempt);
       try {
         await this.withMetadataTimeout(nativeEngine.load(playback), NATIVE_METADATA_TIMEOUT_MS);
-        // 加载期间被销毁：销毁刚创建的引擎，不赋值给 this.engine
-        if (this.destroyed) {
-          nativeEngine.destroy();
-          throw new AppError('E_ABORTED', '播放器已销毁，本次加载作废');
-        }
+        this.assertEngineAttempt(attempt);
+        this.engineLoadingAttempt = null;
         this.engine = nativeEngine;
+        if (this.loadingEngine === nativeEngine) this.loadingEngine = null;
         this.setEngineKind('native');
         this.quality = QUALITY_AUTO;
         this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
-        this.progress.update(0, nativeEngine.getDuration());
+        this.progress.update(nativeEngine.getCurrentTime(), nativeEngine.getDuration());
         return;
       } catch (nativeError) {
+        const nativeShape = toErrorShape(nativeError, 'E_DECODE');
+        if (this.destroyed || attempt !== this.engineAttempt
+          || nativeShape.code === 'E_ABORTED' || nativeShape.code === 'E_CANCELED') {
+          await this.disposeLoadingEngine(nativeEngine);
+          this.setNativeAttempt(false, attempt);
+          throw new AppError('E_ABORTED', '播放器已切换，本次加载作废');
+        }
+        await this.disposeLoadingEngine(nativeEngine);
+        this.setNativeAttempt(false, attempt);
+        this.assertEngineAttempt(attempt);
         nativeAttemptError = nativeError;
-        try {
-          nativeEngine.destroy();
-        } catch {
-          /* 回退路径上的清理失败可忽略 */
+        if (format === 'hls' && (nativeShape.httpStatus === 402 || nativeShape.httpStatus === 403)) {
+          logger.warn('原生 HLS 地址失效，交回页面重新获取', {
+            ...this.engineErrorFields(playback, nativeError),
+            from: 'native',
+            to: 'resolve',
+          });
+          throw nativeError instanceof AppError
+            ? nativeError
+            : new AppError(nativeShape.code, nativeShape.message, {
+                detail: nativeShape.detail,
+                retryable: nativeShape.retryable,
+                httpStatus: nativeShape.httpStatus,
+                cause: nativeError,
+              });
         }
         logger.warn('引擎回退：原生引擎加载失败', {
           ...this.engineErrorFields(playback, nativeError),
@@ -537,16 +705,25 @@ export class PlayerController {
         // 静默回退等于让 <video> 对着必然失败的文件白等 20s 元数据超时，
         // 用户看到的就是"点了播放一直卡住"——这里直接给明确结论。
         if (playback.isLocal && format === 'ts') {
+          if (isSafeModeError(nativeShape)) {
+            throw nativeError instanceof AppError
+              ? nativeError
+              : new AppError(nativeShape.code, nativeShape.message, {
+                  detail: nativeShape.detail,
+                  retryable: nativeShape.retryable,
+                  cause: nativeError,
+                });
+          }
           throw new AppError('E_UNSUPPORTED_FORMAT', '该离线文件需要原生播放器，当前不可用', {
             detail: toErrorShape(nativeError, 'E_DECODE').message,
             reason: 'player_capability',
           });
         }
-        this.emit('notice', { message: '原生引擎不可用，已切回内置引擎' });
+        this.emit('notice', { message: nativeLoadNotice(nativeShape) });
         // 落入下方 WebView 分支继续加载
       }
-    } else if (this.options?.preferNativeEngine === true) {
-      this.emit('notice', { message: '原生引擎不可用，已切回内置引擎' });
+    } else if (this.options?.preferNativeEngine === true && nativeStatus) {
+      this.emit('notice', { message: nativeStatusNotice(nativeStatus) });
     }
 
     // P0-7: 有头 HLS 强制 hls.js（原生 <video> 无法注入头）
@@ -557,13 +734,15 @@ export class PlayerController {
     let webviewError: unknown = null;
     if (useHls) {
       const supported = await isHlsSupported();
+      this.assertEngineAttempt(attempt);
       if (!supported) {
         throw new AppError('E_UNSUPPORTED_FORMAT', '当前环境不支持 HLS 播放', {
           reason: 'player_capability',
         });
       }
       const hlsEngine = new HlsEngine({
-        onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
+        onLoadedMetadata: (duration, videoWidth, videoHeight) =>
+          this.handleLoadedMetadata(attempt, duration, { videoWidth, videoHeight }),
         onTimeUpdate: (currentTime, duration, buffered) =>
           this.handleTimeUpdate(currentTime, duration, buffered),
         onPlay: () => this.setState('playing'),
@@ -574,33 +753,41 @@ export class PlayerController {
           this.setState('playing');
         },
         onEnded: () => this.handleEnded(),
-        onError: (error) => this.handleEngineError(error),
+        onError: (error) => this.handleEngineError(error, attempt),
+        onFirstFrame: () => this.handleFirstFrame(attempt),
         onQualityChange: (quality, levels) => {
           this.quality = quality;
           this.emit('qualitychange', { quality, levels });
         },
       });
       hlsEngine.attach(host);
+      this.loadingEngine = hlsEngine;
       try {
         await this.withMetadataTimeout(hlsEngine.load(playback), HLS_METADATA_TIMEOUT_MS);
-        // 加载期间被销毁：销毁刚创建的引擎，不赋值给 this.engine
-        if (this.destroyed) {
-          hlsEngine.destroy();
-          throw new AppError('E_ABORTED', '播放器已销毁，本次加载作废');
-        }
+        this.assertEngineAttempt(attempt);
+        this.engineLoadingAttempt = null;
         this.engine = hlsEngine;
+        if (this.loadingEngine === hlsEngine) this.loadingEngine = null;
         this.setEngineKind('hls');
         this.progress.update(0, hlsEngine.getDuration());
         return;
       } catch (e) {
+        const shape = toErrorShape(e, 'E_DECODE');
+        if (this.destroyed || attempt !== this.engineAttempt
+          || shape.code === 'E_ABORTED' || shape.code === 'E_CANCELED') {
+          await this.disposeLoadingEngine(hlsEngine);
+          throw new AppError('E_ABORTED', '播放器已切换，本次加载作废');
+        }
         logger.warn('内置引擎（hls.js）加载失败', this.engineErrorFields(playback, e));
+        await this.disposeLoadingEngine(hlsEngine);
+        this.assertEngineAttempt(attempt);
         webviewFailed = true;
         webviewError = e;
-        this.destroyEngine();
       }
     } else {
       const videoEngine = new VideoEngine({
-        onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
+        onLoadedMetadata: (duration, videoWidth, videoHeight) =>
+          this.handleLoadedMetadata(attempt, duration, { videoWidth, videoHeight }),
         onTimeUpdate: (currentTime, duration, buffered) =>
           this.handleTimeUpdate(currentTime, duration, buffered),
         onPlay: () => this.setState('playing'),
@@ -611,31 +798,42 @@ export class PlayerController {
           this.setState('playing');
         },
         onEnded: () => this.handleEnded(),
-        onError: (error) => this.handleEngineError(error),
+        onError: (error) => this.handleEngineError(error, attempt),
+        onFirstFrame: () => this.handleFirstFrame(attempt),
       });
       videoEngine.attach(host);
+      this.loadingEngine = videoEngine;
       try {
         await this.withMetadataTimeout(videoEngine.load(playback));
-        // 加载期间被销毁：销毁刚创建的引擎，不赋值给 this.engine
-        if (this.destroyed) {
-          videoEngine.destroy();
-          throw new AppError('E_ABORTED', '播放器已销毁，本次加载作废');
-        }
+        this.assertEngineAttempt(attempt);
+        this.engineLoadingAttempt = null;
         this.engine = videoEngine;
+        if (this.loadingEngine === videoEngine) this.loadingEngine = null;
         this.setEngineKind('video');
         this.quality = QUALITY_AUTO;
         this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
         return;
       } catch (e) {
+        const shape = toErrorShape(e, 'E_DECODE');
+        if (this.destroyed || attempt !== this.engineAttempt
+          || shape.code === 'E_ABORTED' || shape.code === 'E_CANCELED') {
+          await this.disposeLoadingEngine(videoEngine);
+          throw new AppError('E_ABORTED', '播放器已切换，本次加载作废');
+        }
         logger.warn('内置引擎（<video>）加载失败', this.engineErrorFields(playback, e));
+        await this.disposeLoadingEngine(videoEngine);
+        this.assertEngineAttempt(attempt);
         webviewFailed = true;
         webviewError = e;
-        this.destroyEngine();
       }
     }
 
     // v1.8 优化：WebView 引擎失败后自动降级到原生引擎
-    if (webviewFailed && this.options?.preferNativeEngine !== true && await isExoPlayerAvailable()) {
+    const fallbackNativeStatus = webviewFailed && this.options?.preferNativeEngine !== true
+      ? await getExoPlayerStatus()
+      : null;
+    this.assertEngineAttempt(attempt);
+    if (webviewFailed && fallbackNativeStatus?.available === true) {
       logger.warn('引擎回退：内置引擎失败，降级原生引擎', {
         ...this.engineErrorFields(playback, webviewError),
         from: 'webview',
@@ -644,16 +842,19 @@ export class PlayerController {
       this.emit('notice', { message: '内置引擎加载失败，自动切换到原生引擎' });
       this.nativeAttemptedInLastChain = true;
       const nativeEngine = new NativeEngine({
-        onLoadedMetadata: (duration) => this.handleLoadedMetadata(duration),
+        onLoadedMetadata: (duration, hasVideoTrack) =>
+          this.handleLoadedMetadata(attempt, duration, { hasVideoTrack }),
         onTimeUpdate: (currentTime, duration, buffered) =>
           this.handleTimeUpdate(currentTime, duration, buffered),
         onWaiting: () => this.emit('statechange', { playing: true, waiting: true }),
         onEnded: () => this.handleEnded(),
-        onError: (error) => this.handleEngineError(error),
+        onError: (error) => this.handleEngineError(error, attempt),
         onQualitiesChange: (qualities) => this.emit('qualitychange', { quality: this.quality, levels: qualities }),
         // EXT-07：WebView 失败降级到原生时同样要接轨道状态
         onEmbeddedTracksChange: (state) => this.setEmbeddedTracks(state),
-        onSeekSettled: () => this.settleSeek(),
+        onSeekSettled: ({ targetMs, positionMs }) =>
+          this.verifySeekPosition(targetMs / 1000, positionMs / 1000),
+        onFirstFrame: (positionSec) => this.handleFirstFrame(attempt, positionSec),
         // B1：原生侧播放意图变化（通知栏/线控/音频焦点）与上下集指令
         onPlayingChange: (playing) => this.handleRemotePlaying(playing),
         onRemoteCommand: (command) => this.emit('remotecommand', { command }),
@@ -663,25 +864,31 @@ export class PlayerController {
       // 切集重建引擎后，后台播放/纯音频开关必须重放，否则用户设置被静默重置
       nativeEngine.setBackgroundPlayback(this.backgroundPlayback);
       nativeEngine.setAudioOnly(this.audioOnly);
+      this.assertEngineAttempt(attempt);
+      this.loadingEngine = nativeEngine;
+      this.setNativeAttempt(true, attempt);
       try {
         await this.withMetadataTimeout(nativeEngine.load(playback), NATIVE_METADATA_TIMEOUT_MS);
-        // 加载期间被销毁：销毁刚创建的引擎，不赋值给 this.engine
-        if (this.destroyed) {
-          nativeEngine.destroy();
-          throw new AppError('E_ABORTED', '播放器已销毁，本次加载作废');
-        }
+        this.assertEngineAttempt(attempt);
+        this.engineLoadingAttempt = null;
         this.engine = nativeEngine;
+        if (this.loadingEngine === nativeEngine) this.loadingEngine = null;
         this.setEngineKind('native');
         this.quality = QUALITY_AUTO;
         this.emit('qualitychange', { quality: QUALITY_AUTO, levels: [] });
-        this.progress.update(0, nativeEngine.getDuration());
+        this.progress.update(nativeEngine.getCurrentTime(), nativeEngine.getDuration());
         return;
       } catch (nativeError) {
-        try {
-          nativeEngine.destroy();
-        } catch {
-          /* 回退路径上的清理失败可忽略 */
+        const nativeShape = toErrorShape(nativeError, 'E_DECODE');
+        if (this.destroyed || attempt !== this.engineAttempt
+          || nativeShape.code === 'E_ABORTED' || nativeShape.code === 'E_CANCELED') {
+          await this.disposeLoadingEngine(nativeEngine);
+          this.setNativeAttempt(false, attempt);
+          throw new AppError('E_ABORTED', '播放器已切换，本次加载作废');
         }
+        await this.disposeLoadingEngine(nativeEngine);
+        this.setNativeAttempt(false, attempt);
+        this.assertEngineAttempt(attempt);
         // P1-②-3：归属以两边合判为准，日志同一行既给两边现场也给最终结论
         const chained = this.engineChainError(nativeError, webviewError);
         logger.error('播放引擎加载失败：原生降级也未通过', {
@@ -766,15 +973,194 @@ export class PlayerController {
     return opts.startPositionSec;
   }
 
-  private handleLoadedMetadata(duration: number): void {
+  private isRawTsPlayback(): boolean {
+    return this.options?.playback.isLocal === true && this.options.playback.format === 'ts';
+  }
+
+  getPlaybackCapabilities(): PlaybackCapabilities {
+    const seekReliable = !(this.isRawTsPlayback() && this.rawTsSeekUnreliable);
+    return {
+      durationKnown: Number.isFinite(this.reportedDurationSec) && this.reportedDurationSec > 0,
+      seekable: Number.isFinite(this.reportedDurationSec)
+        && this.reportedDurationSec > 0
+        && seekReliable,
+      seekReliable,
+    };
+  }
+
+  private syncPlaybackCapabilities(): void {
+    const next = this.getPlaybackCapabilities();
+    const current = this.playbackCapabilities;
+    if (current.durationKnown === next.durationKnown
+      && current.seekable === next.seekable
+      && current.seekReliable === next.seekReliable) return;
+    this.playbackCapabilities = next;
+    this.emit('capabilitychange', next);
+  }
+
+  private markRawTsSeekUnreliable(): void {
+    this.rawTsSeekUnreliable = true;
+    this.syncPlaybackCapabilities();
+  }
+
+  private markFirstFrameSeen(): void {
+    this.firstFrameSeen = true;
+    if (this.noVideoReason === 'zero-frame') this.clearNoVideoNotice('zero-frame');
+  }
+
+  private handleFirstFrame(attempt: number, positionSec?: number): void {
+    if (this.destroyed || attempt !== this.engineAttempt) return;
+    const first = !this.firstFrameSeen;
+    this.markFirstFrameSeen();
+    if ((positionSec ?? this.engine?.getCurrentTime() ?? 0) > 0) this.scheduleNoVideoCheck();
+    if (!first) return;
+    if (this.engineLoadingAttempt === attempt
+      || positionSec === undefined
+      || !this.options
+      || !this.isRawTsPlayback()) return;
+    const start = this.resolveStartPosition(this.options);
+    if (start > 0 && Math.abs(positionSec - start) > SEEK_SETTLE_TOLERANCE_SEC) {
+      this.markRawTsSeekUnreliable();
+      void this.restartLocalPlayback(0, 0, '此旧文件不支持可靠续播，正在从头播放');
+    }
+  }
+
+  private handleLoadedMetadata(
+    attempt: number,
+    duration: number,
+    video: { hasVideoTrack?: boolean; videoWidth?: number; videoHeight?: number } = {},
+  ): void {
+    if (this.destroyed || attempt !== this.engineAttempt) return;
+    this.metadataReady = true;
+    this.reportedDurationSec = Number.isFinite(duration) && duration > 0 ? duration : 0;
+    this.syncPlaybackCapabilities();
+    this.pendingReadyDuration = duration;
+    const dimensionsKnown = video.videoWidth !== undefined && video.videoHeight !== undefined;
+    if (video.hasVideoTrack === false
+      || (video.hasVideoTrack === undefined && dimensionsKnown && video.videoWidth === 0 && video.videoHeight === 0)) {
+      this.videoTrackAbsent = true;
+    }
     this.progress.update(this.engine?.getCurrentTime() ?? 0, duration);
     // 原生引擎缓冲恢复只上报 ready（playWhenReady 未变，不会有 playing 事件）：
     // 播放态下 waiting 已在别处置真，这里收口，否则"正在缓冲"永挂
     if (this.state === 'playing') this.emit('statechange', { playing: true, waiting: false });
+    if (this.loadCompleted) {
+      this.pendingReadyDuration = null;
+      this.emit('ready', { duration });
+    }
+  }
+
+  private emitPendingReady(): void {
+    const duration = this.pendingReadyDuration;
+    if (duration === null) return;
+    this.pendingReadyDuration = null;
     this.emit('ready', { duration });
   }
 
+  private async waitForFirstFrame(seq: number): Promise<void> {
+    for (let round = 0; round < 2; round += 1) {
+      const ready = await this.observeFirstFrame(seq);
+      if (this.destroyed || seq !== this.loadSeq) {
+        throw new AppError('E_ABORTED', '播放已切换，本次加载作废');
+      }
+      if (this.firstFrameWaitCanceled) return;
+      if (ready) return;
+      if (round === 0 && !this.firstFrameRecovered) {
+        this.firstFrameRecovered = true;
+        this.emit('notice', { message: '未检测到画面，正在重试一次' });
+        logger.warn('首帧超时，重备一次', {
+          engine: this.engineKind,
+          format: this.options?.playback.format,
+          isLocal: this.options?.playback.isLocal === true,
+          surface: this.nativeSurfaceDiagnostic(),
+        });
+        await this.attachEngine((this.options as PlayerLoadOptions).playback);
+        if (this.destroyed || seq !== this.loadSeq) {
+          throw new AppError('E_ABORTED', '播放已切换，本次加载作废');
+        }
+        if (this.firstFrameWaitCanceled) return;
+        this.configureLoadedEngine?.();
+        await this.engine?.play();
+        continue;
+      }
+      if (!this.metadataReady) {
+        throw new AppError('E_TIMEOUT', '首帧加载超时，请检查网络后重试');
+      }
+      this.reportNoVideoFromGate();
+      return;
+    }
+  }
+
+  private observeFirstFrame(seq: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      let finished = false;
+      const finish = (value: boolean): void => {
+        if (finished) return;
+        finished = true;
+        if (this.firstFrameTimer !== null) clearTimeout(this.firstFrameTimer);
+        this.firstFrameTimer = null;
+        this.firstFrameCancel = null;
+        resolve(value);
+      };
+      this.firstFrameCancel = () => {
+        this.firstFrameWaitCanceled = true;
+        finish(false);
+      };
+      const check = (): void => {
+        if (finished) return;
+        if (this.destroyed || seq !== this.loadSeq) {
+          finish(false);
+          return;
+        }
+        if (this.metadataReady && (this.audioOnly || this.videoTrackAbsent)) {
+          finish(true);
+          return;
+        }
+        if (this.metadataReady && this.engine?.canObserveFirstFrame?.() === false) {
+          finish(true);
+          return;
+        }
+        const stats = this.engine?.getFrameStats?.() ?? null;
+        if (stats && stats.totalFrames > 0) this.markFirstFrameSeen();
+        if (this.metadataReady && this.firstFrameSeen) {
+          finish(true);
+          return;
+        }
+        if (Date.now() - startedAt >= FIRST_FRAME_TIMEOUT_MS) {
+          finish(false);
+          return;
+        }
+        this.firstFrameTimer = setTimeout(check, FIRST_FRAME_POLL_MS);
+      };
+      check();
+    });
+  }
+
+  private reportNoVideoFromGate(): void {
+    if (this.noVideoReported) return;
+    const stats = this.engine?.getFrameStats?.() ?? null;
+    if (!stats || stats.totalFrames !== 0) return;
+    this.noVideoReported = true;
+    this.noVideoReason = 'zero-frame';
+    const elapsedSec = this.engine?.getCurrentTime() ?? 0;
+    logger.warn('未检测到画面：首帧闸门判定为零帧', {
+      videoWidth: stats.videoWidth,
+      videoHeight: stats.videoHeight,
+      elapsedSec,
+      surface: this.nativeSurfaceDiagnostic(),
+    });
+    this.emit('novideo', {
+      videoWidth: stats.videoWidth,
+      videoHeight: stats.videoHeight,
+      elapsedSec,
+      reason: 'zero-frame',
+    });
+  }
+
   private handleTimeUpdate(currentTime: number, duration: number, buffered: number): void {
+    this.reportedDurationSec = Number.isFinite(duration) && duration > 0 ? duration : 0;
+    this.syncPlaybackCapabilities();
     this.progress.update(currentTime, duration);
     // P1-a：引擎回报已经跑到目标附近 = 定位真的落了地
     if (this.seekSettleTarget !== null
@@ -818,6 +1204,19 @@ export class PlayerController {
 
   private noVideoTimer: ReturnType<typeof setTimeout> | null = null;
   private noVideoReported = false;
+  private noVideoReason: NoVideoReason | null = null;
+  private blackFrameStreak = 0;
+  private blackFrameCheckInFlight = false;
+  private blackFrameSamplingUnavailable = false;
+
+  private clearFirstFrameWait(): void {
+    if (this.firstFrameTimer !== null) {
+      clearTimeout(this.firstFrameTimer);
+      this.firstFrameTimer = null;
+    }
+    this.firstFrameCancel?.();
+    this.firstFrameCancel = null;
+  }
 
   private clearNoVideoCheck(): void {
     if (this.noVideoTimer !== null) {
@@ -825,47 +1224,129 @@ export class PlayerController {
       this.noVideoTimer = null;
     }
     this.noVideoReported = false;
+    this.noVideoReason = null;
+    this.blackFrameStreak = 0;
+    this.blackFrameSamplingUnavailable = false;
   }
 
-  private scheduleNoVideoCheck(): void {
-    if (this.noVideoReported || this.noVideoTimer !== null) return;
+  private clearNoVideoNotice(reason: NoVideoReason): void {
+    if (!this.noVideoReported || this.noVideoReason !== reason) return;
+    this.noVideoReported = false;
+    this.noVideoReason = null;
+    this.blackFrameStreak = 0;
+    this.emit('novideoclear', { reason });
+  }
+
+  private scheduleNoVideoCheck(delay = NO_VIDEO_CHECK_DELAY_MS): void {
+    if (this.destroyed || this.noVideoTimer !== null) return;
+    if (this.blackFrameSamplingUnavailable && this.noVideoReason !== 'zero-frame') return;
     this.noVideoTimer = setTimeout(() => {
       this.noVideoTimer = null;
-      this.checkNoVideo();
-    }, NO_VIDEO_CHECK_DELAY_MS);
+      void this.checkNoVideo().finally(() => {
+        if (!this.destroyed && this.state === 'playing') {
+          this.scheduleNoVideoCheck(BLACK_FRAME_CHECK_INTERVAL_MS);
+        }
+      });
+    }, delay);
   }
 
-  /**
-   * 一帧都没解出来 → 上报 `novideo`（每次加载最多一次）。
-   *
-   * 判据三条同时成立才算：有视频元数据（videoWidth > 0）、时间在推进（>1s）、
-   * `totalFrames === 0`。原生 surface 引擎拿不到帧统计（返回 null）直接跳过，
-   * 避免误报。
-   */
-  private checkNoVideo(): void {
-    if (this.destroyed || this.noVideoReported) return;
-    const stats = this.engine?.getFrameStats?.() ?? null;
-    const elapsedSec = this.engine?.getCurrentTime() ?? 0;
-    if (!isNoVideo(stats, elapsedSec)) return;
-    if (!stats) return;
+  /** 零帧与黑帧分开判定；像素取样失败只降级，不把“拿不到”当成黑。 */
+  private async checkNoVideo(): Promise<void> {
+    if (this.destroyed || this.blackFrameCheckInFlight) return;
+    const engine = this.engine;
+    const attempt = this.engineAttempt;
+    if (!engine) return;
+    const stats = engine.getFrameStats?.() ?? null;
+    const elapsedSec = engine.getCurrentTime();
+    if (isNoVideo(stats, elapsedSec)) {
+      this.blackFrameStreak = 0;
+      if (!this.noVideoReported) {
+        this.noVideoReported = true;
+        this.noVideoReason = 'zero-frame';
+        logger.warn('未检测到画面：码流推进但零帧', {
+          videoWidth: stats?.videoWidth ?? 0,
+          videoHeight: stats?.videoHeight ?? 0,
+          elapsedSec,
+          surface: this.nativeSurfaceDiagnostic(),
+        });
+        this.emit('novideo', {
+          videoWidth: stats?.videoWidth ?? 0,
+          videoHeight: stats?.videoHeight ?? 0,
+          elapsedSec,
+          reason: 'zero-frame',
+        });
+      }
+      return;
+    }
+    if (!stats || stats.totalFrames <= 0 || stats.videoWidth <= 0 || this.audioOnly || this.videoTrackAbsent) {
+      this.blackFrameStreak = 0;
+      return;
+    }
+    if (this.noVideoReason === 'zero-frame') this.clearNoVideoNotice('zero-frame');
+    if (!engine.sampleFrameLuma || this.blackFrameSamplingUnavailable) return;
+
+    this.blackFrameCheckInFlight = true;
+    let verdict: ReturnType<typeof isBlackFrame> = null;
+    try {
+      verdict = isBlackFrame(await engine.sampleFrameLuma());
+    } catch (e) {
+      if (this.destroyed || attempt !== this.engineAttempt || engine !== this.engine) return;
+      if (e instanceof FrameLumaUnavailableError) {
+        this.blackFrameSamplingUnavailable = true;
+        logger.info('黑帧像素取样不可用，已降级', {
+          engine: this.engineKind,
+          reason: e.reason,
+        });
+      } else {
+        logger.warn('黑帧像素取样失败', e);
+      }
+      return;
+    } finally {
+      this.blackFrameCheckInFlight = false;
+    }
+    if (this.destroyed || attempt !== this.engineAttempt || engine !== this.engine) return;
+    if (!verdict) {
+      this.blackFrameStreak = 0;
+      return;
+    }
+    if (!verdict.black) {
+      this.blackFrameStreak = 0;
+      if (this.noVideoReason === 'black-frame') this.clearNoVideoNotice('black-frame');
+      return;
+    }
+
+    this.blackFrameStreak += 1;
+    if (this.blackFrameStreak < BLACK_FRAME_CONFIRMATIONS || this.noVideoReported) return;
     this.noVideoReported = true;
+    this.noVideoReason = 'black-frame';
+    logger.warn('未检测到画面：解码帧持续近黑', {
+      videoWidth: stats.videoWidth,
+      videoHeight: stats.videoHeight,
+      elapsedSec,
+      maxLuma: verdict.maxLuma,
+      meanLuma: verdict.meanLuma,
+      confirmations: this.blackFrameStreak,
+      surface: this.nativeSurfaceDiagnostic(),
+    });
     this.emit('novideo', {
       videoWidth: stats.videoWidth,
       videoHeight: stats.videoHeight,
       elapsedSec,
+      reason: 'black-frame',
+      maxLuma: verdict.maxLuma,
     });
   }
 
-  private handleEngineError(error: AppErrorShape): void {
+  private handleEngineError(error: AppErrorShape, attempt: number): void {
+    if (this.destroyed || attempt !== this.engineAttempt) return;
     /*
      * OPT-26（P0-②-2）：运行期报错先落一行——此前只有本地解码那一支有日志，
      * 「播到一半黑屏/卡住」在导出日志里是空白，只能靠用户复述。
      *
-     * 只在引擎已经就位时才记：加载期内 `attachEngine` 先把 engineKind 清空，
-     * 同一个 `<video>` 的 error 事件会同时打到"加载监听"和"运行期监听"上（历史行为）。
-     * 加载失败由回退链那几行负责，这里再记一次就是同一次失败的两条线索。
+     * 加载期的原始 error 只由引擎 load Promise 与回退链结算，不能再进入 UI/重试/换线。
      */
-    if (this.engineKind !== null) {
+    const loading = this.engineLoadingAttempt === attempt;
+    if (!loading && this.engineKind !== null) {
       logger.warn('播放中引擎报错', {
         code: error.code,
         message: error.message,
@@ -874,8 +1355,11 @@ export class PlayerController {
         engine: this.engineKind,
         position: this.engine?.getCurrentTime() ?? 0,
         isLocal: this.options?.playback.isLocal === true,
+        surface: this.nativeSurfaceDiagnostic(),
       });
     }
+    if (loading) return;
+    this.clearFirstFrameWait();
     // FIX-PLAY-C2：本地产物的解码类错误不走换线/网络重试——离线播放没有"另一条线"，
     // 报错文案里的"切换线路"对已下载文件是误导。先做一次"跳过坏点复位重播"
     // （坏分片影响通常局部化），仍失败收口成 E_LOCAL_CORRUPT 指引重新下载。
@@ -884,8 +1368,12 @@ export class PlayerController {
       this.stopStallWatchdog();
       if (!this.localDecodeRecovered) {
         this.localDecodeRecovered = true;
-        logger.warn('本地播放解码错误，跳过坏段复位重播', { position, detail: error.detail });
-        void this.restartLocalPlayback(position, position + LOCAL_DECODE_SKIP_SEC);
+        logger.warn(this.isRawTsPlayback() ? '本地裸 TS 解码错误，从头复位重播' : '本地播放解码错误，跳过坏段复位重播', {
+          position,
+          detail: error.detail,
+        });
+        const resumeAtSec = this.isRawTsPlayback() ? 0 : position + LOCAL_DECODE_SKIP_SEC;
+        void this.restartLocalPlayback(position, resumeAtSec);
         return;
       }
       this.setState('error');
@@ -904,7 +1392,7 @@ export class PlayerController {
         const opts = this.options;
         if (!opts || this.destroyed) return;
         void this.attachEngine(opts.playback)
-          .then(() => this.engine?.play())
+          .then(() => this.play())
           .catch((e: unknown) => {
             this.setState('error');
             this.emit('error', toErrorShape(e, 'E_NETWORK'));
@@ -926,6 +1414,8 @@ export class PlayerController {
 
   async play(): Promise<void> {
     if (!this.engine || this.destroyed) return;
+    const seq = this.loadSeq;
+    this.firstFrameWaitCanceled = false;
     try {
       await this.engine.play();
       // 播放期间被销毁：立即暂停，不更新状态
@@ -933,8 +1423,10 @@ export class PlayerController {
         this.engine.pause();
         return;
       }
+      await this.waitForFirstFrame(seq);
+      if (this.destroyed || seq !== this.loadSeq || this.firstFrameWaitCanceled) return;
+      this.finishLoad(seq);
       this.setState('playing');
-      this.progress.start();
       this.startStallWatchdog();
     } catch (e) {
       this.emit('error', toErrorShape(e, 'E_DECODE'));
@@ -944,6 +1436,8 @@ export class PlayerController {
 
   pause(): void {
     this.stopStallWatchdog();
+    this.firstFrameWaitCanceled = true;
+    this.clearFirstFrameWait();
     this.engine?.pause();
     this.setState('paused');
     void this.progress.flush();
@@ -1057,18 +1551,30 @@ export class PlayerController {
    * 复位能救的是"引擎侧一次性状态错乱"；时间轴本身坏掉的产物复位后仍会停滞，
    * 由第二次 tick 收口成 E_LOCAL_STALL。
    *
-   * FIX-PLAY-C2：`resumeAtSec` 传值时从该位置续播（解码错误跳过坏段），
-   * 不传维持旧行为——按原 playback 的续播位从头起播。
+   * FIX-PLAY-C2：可定位的本地格式在解码错误后从 `resumeAtSec` 续播；
+   * 裸 TS 传 0 从头重备，避免再次落到不可靠的历史位置。
    */
-  private async restartLocalPlayback(stalledAtSec: number, resumeAtSec?: number): Promise<void> {
+  private async restartLocalPlayback(
+    stalledAtSec: number,
+    resumeAtSec?: number,
+    notice?: string,
+    playAfterRestart = true,
+  ): Promise<void> {
     const opts = this.options;
     if (!opts || this.destroyed) return;
+    const rawTs = this.isRawTsPlayback();
     this.emit('notice', {
-      message: resumeAtSec === undefined ? '离线起播异常，正在重试' : '离线解码异常，正在跳过损坏片段',
+      message: notice ?? (rawTs
+        ? resumeAtSec === undefined ? '离线播放停滞，正在从头重试' : '离线播放异常，正在从头重试'
+        : resumeAtSec === undefined
+          ? '离线播放停滞，正在重试'
+          : '离线解码异常，正在跳过损坏片段'),
     });
-    const playback = resumeAtSec === undefined
+    const restartPositionSec = resumeAtSec ?? (rawTs ? 0 : stalledAtSec);
+    const playback = restartPositionSec === (opts.playback.startPositionMs ?? 0) / 1000
       ? opts.playback
-      : { ...opts.playback, startPositionMs: Math.max(0, Math.round(resumeAtSec * 1000)) };
+      : { ...opts.playback, startPositionMs: Math.max(0, Math.round(restartPositionSec * 1000)) };
+    this.options = { ...opts, startPositionSec: restartPositionSec };
     try {
       await this.attachEngine(playback);
     } catch (e) {
@@ -1083,8 +1589,18 @@ export class PlayerController {
     }
     if (this.destroyed) return;
     this.setState('ready');
+    const currentTime = this.engine?.getCurrentTime() ?? 0;
+    const duration = this.engine?.getDuration() ?? 0;
+    this.reportedDurationSec = Number.isFinite(duration) && duration > 0 ? duration : 0;
+    this.syncPlaybackCapabilities();
+    this.progress.update(currentTime, duration);
+    this.emit('timeupdate', {
+      currentTime,
+      duration,
+      buffered: this.engine?.getBuffered() ?? 0,
+    });
     logger.warn('本地播放复位重备', { stalledAtSec, resumeAtSec, url: opts.playback.url });
-    await this.play();
+    if (playAfterRestart) await this.play();
   }
 
   async toggle(): Promise<void> {
@@ -1093,11 +1609,15 @@ export class PlayerController {
   }
 
   seek(sec: number): void {
+    if (!this.getPlaybackCapabilities().seekReliable) {
+      this.emit('notice', { message: '当前文件定位不可靠，已停止快进快退' });
+      return;
+    }
     const duration = this.engine?.getDuration() ?? 0;
     const target = duration > 0 ? Math.min(Math.max(0, sec), duration) : Math.max(0, sec);
     this.engine?.seek(target);
     this.emit('timeupdate', {
-      currentTime: target,
+      currentTime: this.engine?.getCurrentTime() ?? 0,
       duration,
       buffered: this.engine?.getBuffered() ?? 0,
     });
@@ -1106,13 +1626,37 @@ export class PlayerController {
     this.armSeekSettle(target);
   }
 
+  private verifySeekPosition(targetSec: number, actualSec: number): void {
+    if (this.seekSettleTarget === null) return;
+    if (Math.abs(actualSec - targetSec) <= SEEK_SETTLE_TOLERANCE_SEC) {
+      this.settleSeek();
+      return;
+    }
+    if (this.isRawTsPlayback()) {
+      this.markRawTsSeekUnreliable();
+      this.clearSeekSettle();
+      void this.restartLocalPlayback(0, 0, '此旧文件不支持可靠定位，正在从头播放');
+      return;
+    }
+    this.settleSeek();
+  }
+
   /** 登记一次待落地的 seek；裸 TS 额外给一句"正在定位"提示（转封装失败时的兜底路径） */
   private armSeekSettle(target: number): void {
-    const isRawTs = this.options?.playback.isLocal === true && this.options.playback.format === 'ts';
+    const isRawTs = this.isRawTsPlayback();
     const shouldHint = isRawTs && this.seekSettleTarget === null;
     this.seekSettleTarget = target;
     if (this.seekSettleTimer !== null) clearTimeout(this.seekSettleTimer);
-    this.seekSettleTimer = setTimeout(() => this.settleSeek(), SEEK_SETTLE_TIMEOUT_MS);
+    this.seekSettleTimer = setTimeout(
+      () => {
+        if (this.isRawTsPlayback()) {
+          this.settleSeek();
+          return;
+        }
+        this.verifySeekPosition(target, this.engine?.getCurrentTime() ?? 0);
+      },
+      isRawTs ? RAW_TS_SEEK_VERIFY_MS : SEEK_SETTLE_TIMEOUT_MS,
+    );
     if (shouldHint) this.emit('notice', { message: '正在定位画面…' });
   }
 
@@ -1476,6 +2020,18 @@ export class PlayerController {
     return this.nativeAttemptedInLastChain;
   }
 
+  private setNativeAttempt(active: boolean, attempt?: number): void {
+    if (attempt !== undefined && attempt !== this.engineAttempt) return;
+    if (this.nativeAttemptActive === active) return;
+    this.nativeAttemptActive = active;
+    this.emit('nativeattempt', { active });
+  }
+
+  private nativeSurfaceDiagnostic(): NativeSurfaceDiagnostic | null {
+    const engine = this.engine ?? this.loadingEngine;
+    return engine instanceof NativeEngine ? engine.getSurfaceDiagnostic() : null;
+  }
+
   private setEngineKind(kind: 'native' | 'hls' | 'video'): void {
     if (this.engineKind === kind) return;
     const from = this.engineKind;
@@ -1525,31 +2081,49 @@ export class PlayerController {
     }, CONTROLS_HIDE_DELAY_MS);
   }
 
-  private destroyEngine(): void {
+  private async destroyEngine(): Promise<void> {
     this.clearSeekSettle();
-    if (!this.engine) return;
-    try {
-      this.engine.destroy();
-    } catch (e) {
-      logger.warn('destroy: engine.destroy 抛错', e);
-    }
+    if (this.engineDestroyPromise) await this.engineDestroyPromise;
+    const engines = [...new Set([this.engine, this.loadingEngine].filter((e): e is PlayableEngine => e !== null))];
     this.engine = null;
-    logger.info('destroy: 引擎已拆');
+    this.loadingEngine = null;
+    this.setNativeAttempt(false);
+    if (engines.length === 0) return;
+    const pending = (async () => {
+      for (const engine of engines) {
+        try {
+          await engine.destroy();
+        } catch (e) {
+          logger.warn('destroy: engine.destroy 抛错', e);
+        }
+      }
+      logger.info('destroy: 引擎已拆');
+    })();
+    this.engineDestroyPromise = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.engineDestroyPromise === pending) this.engineDestroyPromise = null;
+    }
   }
 
   async destroy(): Promise<void> {
     logger.info('destroy: 开始', { hasEngine: this.engine != null });
     this.destroyed = true;
+    this.engineAttempt += 1;
+    this.engineLoadingAttempt = null;
     this.supersedePreflight();
     if (this.hideTimer !== null) clearTimeout(this.hideTimer);
     this.hideTimer = null;
     this.clearRetryTimer();
     this.clearNoVideoCheck();
+    this.clearFirstFrameWait();
+    this.configureLoadedEngine = null;
     this.stopStallWatchdog();
     this.progress.stop();
     // 引擎先拆：原生引擎出声不归页面 DOM 管，进度落盘卡住/失败不得拖住销毁
     // （真机实证：flush 抛错中断 destroy → 离开播放页后声音不停）
-    this.destroyEngine();
+    await this.destroyEngine();
     this.engineKind = null;
     // EXT-07：轨道状态与订阅者一并释放（不通知，View 正在卸载）
     this.embeddedTracks = emptyEmbeddedTracks();

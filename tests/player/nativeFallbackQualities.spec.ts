@@ -32,14 +32,18 @@ vi.mock('@/native/exoPlayerPlugin', () => ({
     ...h.fakes,
     addListener: vi.fn(async (_event: string, cb: (d: Record<string, unknown>) => void) => {
       h.stateListeners.add(cb);
-      return () => {
-        h.stateListeners.delete(cb);
-      };
+      return { remove: async () => { h.stateListeners.delete(cb); } };
     }),
   },
   exoHeadersOf: (headers: Record<string, string>) =>
     Object.entries(headers).map(([key, value]) => ({ key, value })),
   isExoPlayerAvailable: vi.fn(async () => true),
+  getExoPlayerStatus: vi.fn(async () => ({
+    available: true,
+    supported: true,
+    safeMode: false,
+    reason: null,
+  })),
 }));
 
 function emitState(data: Record<string, unknown>): void {
@@ -99,6 +103,7 @@ describe('原生降级路径的清晰度回调（A2）', () => {
 
     await vi.waitFor(() => expect(h.fakes.prepare).toHaveBeenCalled());
     emitState({ state: 'ready', duration: 60_000 });
+    emitState({ state: 'firstframe', positionMs: 0 });
     await loadPromise;
 
     expect(ctl.getEngineKind()).toBe('native');

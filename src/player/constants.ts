@@ -81,6 +81,15 @@ export const RESUME_MAX_RATIO = 0.95;
  * 黑屏 + 声音，App 却以为在正常播放。5s 足够区分「慢起播」与「解不出帧」。
  */
 export const NO_VIDEO_CHECK_DELAY_MS = 5000;
+/** 有帧后的像素复核间隔；只做 32×18 取样，不按原始分辨率抓帧 */
+export const BLACK_FRAME_CHECK_INTERVAL_MS = 3000;
+/** 连续两轮近黑才提示，避免起播/切帧瞬间的偶发黑帧误报 */
+export const BLACK_FRAME_CONFIRMATIONS = 2;
+
+/** READY 后等待真实首帧的窗口；超时只允许重备一次 */
+export const FIRST_FRAME_TIMEOUT_MS = 5000;
+/** WebView 帧统计轮询间隔；requestVideoFrameCallback 不可用时也能收口 */
+export const FIRST_FRAME_POLL_MS = 100;
 
 /** 清晰度自动档标签 */
 export const QUALITY_AUTO = 'auto';
@@ -99,6 +108,8 @@ export const SEEK_SETTLE_TIMEOUT_MS = 8000;
  * 把旧位置写回历史（进度倒退）并让"正在定位"提示一闪而过。
  */
 export const SEEK_SETTLE_TOLERANCE_SEC = 3;
+/** 裸 TS 没有可靠索引，2.5s 内未落到目标附近就按不可定位收口，避免反复重试。 */
+export const RAW_TS_SEEK_VERIFY_MS = 2500;
 
 /**
  * P0-2：本地播放停滞自愈窗口。

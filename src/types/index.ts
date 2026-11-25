@@ -457,6 +457,9 @@ export interface HistoryRecord {
   mediaId: string;
   episodeId: string | null;
   episodeNumber: number | null;
+  episodeTitle?: string | null;
+  /** 实际播放线路；旧记录可能没有，读取时按 null 处理 */
+  lineId?: string | null;
   title: string;
   posterUrl: string | null;
   positionSec: number;
@@ -476,6 +479,9 @@ export interface SaveProgressInput {
   mediaId: string;
   episodeId: string | null;
   episodeNumber: number | null;
+  episodeTitle?: string | null;
+  /** 实际播放线路；缺省时保留旧记录里的值 */
+  lineId?: string | null;
   title: string;
   posterUrl: string | null;
   positionSec: number;
@@ -574,6 +580,24 @@ export interface DownloadRemuxInfo {
   mp4Path?: string;
 }
 
+/** 本地 HLS 的一片：偏移与长度都指合并后的 TS 成品。 */
+export interface DownloadHlsSegment {
+  index: number;
+  offset: number;
+  length: number;
+  duration: number;
+  discontinuity: boolean;
+}
+
+/** 新下载的本地 HLS 索引；旧记录没有这份元数据，不能反推字节边界。 */
+export interface DownloadHlsIndex {
+  version: 1;
+  playlistFingerprint: string;
+  targetDuration: number;
+  mediaSequence: number;
+  segments: DownloadHlsSegment[];
+}
+
 /** 预检摘要（FR-65） */
 export interface DownloadPreflightDigest {
   at: number;
@@ -625,6 +649,10 @@ export interface DownloadTask {
   sink: DownloadSinkKind;
   /** Android 相对 Data 目录的路径；Web 为 null */
   filePath: string | null;
+  /** 安全重下候选的独立落盘路径；普通任务为空，绝不能覆盖旧成品 */
+  artifactPath?: string | null;
+  /** 安全重下候选指向的旧 completed 任务；成功后候选记录被消除 */
+  replacesTaskId?: string | null;
   /** IndexedDB blobs 的 key；Android 为 null */
   blobKey: string | null;
   /** 字幕文件本地路径列表（Android 相对 Data 目录；Web 为 blob key） */
@@ -666,6 +694,10 @@ export interface DownloadTask {
   hlsDiscontinuities?: number;
   /** 排除签名与密钥 URI 后的 HLS 清单指纹，用于判断旧分片能否续传 */
   hlsPlaylistFingerprint?: string | null;
+  /** P1：合并 TS 的本地 HLS 字节索引；仅 Android TS 下载生成。 */
+  hlsIndex?: DownloadHlsIndex | null;
+  /** P1：本地 m3u8 sidecar 路径；与 hlsIndex 同时落库。 */
+  hlsIndexPath?: string | null;
   errorMessage: string | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;

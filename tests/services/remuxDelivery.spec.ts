@@ -111,7 +111,13 @@ describe('deliverRemux：复检 → 落库 → 删输入', () => {
     expect(order).toEqual(['update', 'update', 'removeInput', 'update']);
     // 第一笔是发布标记：崩在下一笔之前对账也能找到那份 .mp4
     expect((patches[0]?.remux as { delivery?: string }).delivery).toBe('published');
-    expect(patches[1]).toMatchObject({ filePath: MP4, format: 'mp4', totalBytes: 180 });
+    expect(patches[1]).toMatchObject({
+      filePath: MP4,
+      format: 'mp4',
+      totalBytes: 180,
+      hlsIndex: null,
+      hlsIndexPath: null,
+    });
     expect((patches[2]?.remux as { delivery?: string }).delivery).toBe('input-cleaned');
     expect(delivery).toMatchObject({ outcome: 'done', deliveredPath: MP4, phase: 'input-cleaned', inputRetained: false });
   });

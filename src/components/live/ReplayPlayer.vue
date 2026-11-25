@@ -9,7 +9,7 @@
  * - 状态：idle / loading / playing / paused / ended / error
  * - 事件：`retry`（重新加载）/ `back`（返回节目单）
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { FullscreenController } from '@/player/FullscreenController';
 import { HlsEngine } from '@/player/HlsEngine';
@@ -57,6 +57,7 @@ const nativeActive = ref(false);
 
 type ReplayEngine = HlsEngine | VideoEngine | NativeEngine;
 let engine: ReplayEngine | null = null;
+let destroyPromise: Promise<void> | null = null;
 /** 加载代次：换节目/卸载后作废仍在飞的旧加载（原生能力探测是异步的） */
 let loadSeq = 0;
 /** FR-68：回看起播看门狗（与直播同口径） */
@@ -165,11 +166,26 @@ function createEngine(format: PlaybackSource['format'], useNative: boolean): Rep
     : new VideoEngine(engineEvents());
 }
 
-function destroyEngine(): void {
+async function destroyEngine(): Promise<void> {
+  if (destroyPromise) return destroyPromise;
   clearStartTimer();
-  engine?.destroy();
+  const current = engine;
   engine = null;
   nativeActive.value = false;
+  if (!current) return;
+  const pending = (async () => {
+    try {
+      await current.destroy();
+    } catch (e) {
+      logger.warn('回看引擎释放失败', e);
+    }
+  })();
+  destroyPromise = pending;
+  try {
+    await pending;
+  } finally {
+    if (destroyPromise === pending) destroyPromise = null;
+  }
 }
 
 /* 原生画面在 WebView 之下：页面底色要挖洞让画，切回 WebView 引擎/卸载时还原 */
@@ -196,6 +212,8 @@ async function tryEngine(
   nativeActive.value = useNative;
   engine = next;
   next.attach(container);
+  await nextTick();
+  if (seq !== loadSeq || engine !== next) return '已切换';
   armStartTimer(next);
   try {
     await next.load(source);
@@ -210,8 +228,7 @@ async function tryEngine(
       { host: safeHost(source.url), channel: props.channelName, template: props.programmeTitle },
       e,
     );
-    next.destroy();
-    engine = null;
+    await destroyEngine();
     return e instanceof Error ? e.message : '回看加载失败';
   }
 }
@@ -227,7 +244,8 @@ function safeHost(url: string): string {
 
 async function load(url: string): Promise<void> {
   const seq = ++loadSeq;
-  destroyEngine();
+  await destroyEngine();
+  if (seq !== loadSeq) return;
   errorMessage.value = null;
   currentTime.value = 0;
   duration.value = 0;
@@ -278,7 +296,7 @@ watch(
   (url) => {
     if (!url) {
       loadSeq++;
-      destroyEngine();
+      void destroyEngine();
       state.value = 'idle';
       return;
     }
@@ -326,7 +344,7 @@ async function toggleFullscreen(): Promise<void> {
 
 onBeforeUnmount(() => {
   loadSeq++;
-  destroyEngine();
+  void destroyEngine();
   releaseUnderlay?.();
   releaseUnderlay = null;
   // 卸载时 state 可能仍是 playing（watcher 不会再跑），显式释放避免常亮泄漏到其它页面

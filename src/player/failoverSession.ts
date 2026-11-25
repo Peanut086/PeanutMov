@@ -103,6 +103,8 @@ export class FailoverRound {
   private readonly failures = new Set<string>();
   private linesTried = 0;
   private sourcesTried = 0;
+  /** 每个 attempt 只允许刷新一次失效地址；留在会话里，路由重建不会重新放行 */
+  private readonly addressRefreshes = new Set<number>();
   /**
    * 换线引起的路由变化令牌：接下来这次「卸载 + 重建」属于本轮自己干的。
    *
@@ -280,6 +282,13 @@ export class FailoverRound {
     const key = String(attemptId);
     if (this.failures.has(key)) return false;
     this.failures.add(key);
+    return true;
+  }
+
+  /** 领取本 attempt 的同线路地址刷新机会；调用即消费，失败也不退回 */
+  claimAddressRefresh(): boolean {
+    if (!this.acceptsAttempts() || this.addressRefreshes.has(this.attemptId)) return false;
+    this.addressRefreshes.add(this.attemptId);
     return true;
   }
 

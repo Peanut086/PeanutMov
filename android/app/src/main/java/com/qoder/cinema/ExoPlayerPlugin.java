@@ -96,6 +96,16 @@ public class ExoPlayerPlugin extends Plugin {
     private ExoPlayer player;
     private PlayerView playerView;
     private FrameLayout overlay;
+    private String activeSessionId = "";
+    private int activeRequestGeneration = -1;
+    private boolean hasVideoTrack = false;
+    private int videoTrackCount = 0;
+    private int videoWidth = 0;
+    private int videoHeight = 0;
+    private boolean firstFrameRendered = false;
+    private android.graphics.drawable.Drawable originalWebViewBackground;
+    private boolean webViewBackgroundSaved = false;
+    private boolean webViewBackgroundTransparent = false;
     /** v1.8/CHG-25：本次会话累计丢帧（AnalyticsListener 累加，progress() 上报 AC-125 采样） */
     private long droppedFrames = 0;
     /**
@@ -183,7 +193,10 @@ public class ExoPlayerPlugin extends Plugin {
     @PluginMethod
     public void isSupported(PluginCall call) {
         JSObject result = new JSObject();
+        boolean safeMode = MainApplication.isSafeMode(getContext());
         result.put("supported", true);
+        result.put("safeMode", safeMode);
+        result.put("available", !safeMode);
         call.resolve(result);
     }
 
@@ -201,6 +214,8 @@ public class ExoPlayerPlugin extends Plugin {
             call.reject("safe mode active: native player disabled");
             return;
         }
+        final String sessionId = call.getString("sessionId", "");
+        final int requestGeneration = call.getData().optInt("requestGeneration", 0);
         getBridge().executeOnMainThread(() -> {
             // REV-24：哨兵包裹 ExoPlayer 初始化——native crash 时下次启动可检测到
             String sourceId = call.getString("sourceId", "");
@@ -220,9 +235,21 @@ public class ExoPlayerPlugin extends Plugin {
                 Log.w("ExoPlayerPlugin", "failed to write exoplayer sentinel", e);
             }
             try {
+                activeSessionId = sessionId;
+                activeRequestGeneration = requestGeneration;
+                hasVideoTrack = false;
+                videoTrackCount = 0;
+                videoWidth = 0;
+                videoHeight = 0;
+                firstFrameRendered = false;
+                setWebViewTransparent();
                 ensureOverlay();
                 // v1.8/CHG-25：切集会再次 prepare——先释放旧实例，避免播放器泄漏
                 releasePlayerQuietly();
+                activeSessionId = sessionId;
+                activeRequestGeneration = requestGeneration;
+                setWebViewTransparent();
+                emitSurfaceDiagnostic("prepare-start");
                 droppedFrames = 0;
 
                 Map<String, String> headers = new HashMap<>();
@@ -300,7 +327,10 @@ public class ExoPlayerPlugin extends Plugin {
                         .setMediaSourceFactory(mediaSourceFactory)
                         .setLoadControl(loadControl)
                         .build();
-                player.setMediaItem(mediaItem, startPositionMs);
+                final ExoPlayer eventPlayer = player;
+                final String eventSessionId = activeSessionId;
+                final int eventRequestGeneration = activeRequestGeneration;
+                eventPlayer.setMediaItem(mediaItem, startPositionMs);
                 // B1：声明媒体音频属性并交给 ExoPlayer 托管焦点。
                 // handleAudioFocus=true 时播放器自动 request/abandon：来电或别的 App
                 // 抢焦点 → playWhenReady 置 false（下面的监听会同步给 JS），恢复后自动续播。
@@ -308,9 +338,10 @@ public class ExoPlayerPlugin extends Plugin {
                         .setUsage(C.USAGE_MEDIA)
                         .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
                         .build(), /* handleAudioFocus= */ true);
-                player.addListener(new Player.Listener() {
+                eventPlayer.addListener(new Player.Listener() {
                     @Override
                     public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                        if (!isCurrentPlayer(eventPlayer, eventSessionId, eventRequestGeneration)) return;
                         // 通知栏/线控/音频焦点都可能改播放意图，JS 必须跟着同步，
                         // 否则会出现「画面在播、按钮显示暂停」的双状态源
                         reportPlaying(playWhenReady);
@@ -319,33 +350,40 @@ public class ExoPlayerPlugin extends Plugin {
 
                     @Override
                     public void onIsPlayingChanged(boolean isPlaying) {
+                        if (!isCurrentPlayer(eventPlayer, eventSessionId, eventRequestGeneration)) return;
                         // 缓冲结束真正出声时刷新通知图标（意图未变，isPlaying 变了）
                         PlaybackService.refresh();
                     }
 
                     @Override
                     public void onPlaybackStateChanged(int playbackState) {
+                        if (!isCurrentPlayer(eventPlayer, eventSessionId, eventRequestGeneration)) return;
                         JSObject data = new JSObject();
                         if (playbackState == Player.STATE_READY) {
+                            updateVideoTrackStats(eventPlayer.getCurrentTracks());
                             data.put("state", "ready");
-                            data.put("duration", player.getDuration());
-                            notifyListeners("exostate", data);
-                            // P1-b：定位后重新 READY 也算"画面落地"。某些 seek 不触发渲染器重启，
-                            // onRenderedFirstFrame 不会再来一次，这里兜底，两者谁先到算谁。
-                            reportSeekSettled("ready");
+                            data.put("duration", eventPlayer.getDuration());
+                            data.put("positionMs", eventPlayer.getCurrentPosition());
+                            data.put("hasVideoTrack", hasVideoTrack);
+                            data.put("videoTrackCount", videoTrackCount);
+                            data.put("videoWidth", videoWidth);
+                            data.put("videoHeight", videoHeight);
+                            notifyCurrentState(data);
+                            emitSurfaceDiagnostic("ready");
                         } else if (playbackState == Player.STATE_BUFFERING) {
                             // v1.8/CHG-25：等待态（JS 侧 HUD loading）
                             data.put("state", "buffering");
-                            notifyListeners("exostate", data);
+                            notifyCurrentState(data);
                         } else if (playbackState == Player.STATE_ENDED) {
                             // v1.8/CHG-25：播完事件（JS 侧自动连播依赖）
                             data.put("state", "ended");
-                            notifyListeners("exostate", data);
+                            notifyCurrentState(data);
                         }
                     }
 
                     @Override
                     public void onPlayerError(PlaybackException error) {
+                        if (!isCurrentPlayer(eventPlayer, eventSessionId, eventRequestGeneration)) return;
                         JSObject data = new JSObject();
                         data.put("state", "error");
                         data.put("message", error.getMessage());
@@ -353,7 +391,7 @@ public class ExoPlayerPlugin extends Plugin {
                         // 「网络 vs 解码」——离线文件损坏常被误归成通用 E_DECODE，用户也
                         // 没有可反馈的定位信息。这里补齐错误码名、cause 链与出错位置。
                         data.put("errorCodeName", error.getErrorCodeName());
-                        data.put("positionMs", player.getCurrentPosition());
+                        data.put("positionMs", eventPlayer.getCurrentPosition());
                         StringBuilder causeChain = new StringBuilder();
                         Throwable cause = error.getCause();
                         for (int i = 0; i < 3 && cause != null; i++, cause = cause.getCause()) {
@@ -365,11 +403,14 @@ public class ExoPlayerPlugin extends Plugin {
                             if (causeChain.length() > 600) break;
                         }
                         data.put("causeChain", causeChain.toString());
-                        notifyListeners("exostate", data);
+                        notifyCurrentState(data);
                     }
 
                     @Override
                     public void onTracksChanged(Tracks tracks) {
+                        if (!isCurrentPlayer(eventPlayer, eventSessionId, eventRequestGeneration)) return;
+                        updateVideoTrackStats(tracks);
+                        emitSurfaceDiagnostic("tracks-changed");
                         // v1.8 优化：提取视频轨列表（清晰度切换）
                         videoTracks.clear();
                         textTracks.clear();
@@ -438,12 +479,12 @@ public class ExoPlayerPlugin extends Plugin {
                         JSObject data = new JSObject();
                         data.put("state", "qualities");
                         data.put("qualities", new JSArray(videoTracks));
-                        notifyListeners("exostate", data);
+                        notifyCurrentState(data);
                         // 通知 JS 侧字幕列表更新（兼容既有载荷）
                         JSObject subData = new JSObject();
                         subData.put("state", "textTracks");
                         subData.put("textTracks", new JSArray(textTracks));
-                        notifyListeners("exostate", subData);
+                        notifyCurrentState(subData);
                         // EXT-07：字幕 + 音轨 + 双方选中项一次下发
                         JSObject tracksData = new JSObject();
                         tracksData.put("state", "embeddedTracks");
@@ -451,25 +492,34 @@ public class ExoPlayerPlugin extends Plugin {
                         tracksData.put("audioTracks", new JSArray(audioTracks));
                         tracksData.put("activeTextId", activeTextId);
                         tracksData.put("activeAudioId", activeAudioId);
-                        notifyListeners("exostate", tracksData);
+                        notifyCurrentState(tracksData);
                     }
                 });
                 // v1.8/CHG-25：丢帧计数（AC-125 转正门槛的量化指标）
-                player.addAnalyticsListener(new AnalyticsListener() {
+                eventPlayer.addAnalyticsListener(new AnalyticsListener() {
                     @Override
                     public void onDroppedVideoFrames(AnalyticsListener.EventTime eventTime, int droppedFrames, long droppedToKeyframes) {
+                        if (!isCurrentPlayer(eventPlayer, eventSessionId, eventRequestGeneration)) return;
                         ExoPlayerPlugin.this.droppedFrames += droppedFrames;
                     }
 
                     @Override
                     public void onRenderedFirstFrame(AnalyticsListener.EventTime eventTime, Object renderingId,
                                                      long elapsedRealtimeEpochMs) {
+                        if (!isCurrentPlayer(eventPlayer, eventSessionId, eventRequestGeneration)) return;
+                        firstFrameRendered = true;
+                        JSObject firstFrame = new JSObject();
+                        firstFrame.put("state", "firstframe");
+                        firstFrame.put("positionMs", eventPlayer.getCurrentPosition());
+                        notifyCurrentState(firstFrame);
+                        emitSurfaceDiagnostic("first-frame");
                         // P1-b：seek → 画面真正落地。JS 侧靠这个事件收口"正在定位"等待态并写历史。
                         reportSeekSettled("first-frame");
                     }
                 });
 
-                playerView.setPlayer(player);
+                playerView.setPlayer(eventPlayer);
+                emitSurfaceDiagnostic("player-attached");
                 ensureMediaSession();
                 // 纯音频模式跨切集保持：ensureOverlay 会把容器置回 VISIBLE
                 applyAudioOnly();
@@ -481,12 +531,14 @@ public class ExoPlayerPlugin extends Plugin {
                     player.setPlayWhenReady(true);
                 }
                 startWatchdog();
-                // v1.8 修复：WebView 背景透明，让下层 surface 透出
-                getBridge().getWebView().setBackgroundColor(Color.TRANSPARENT);
+                emitSurfaceDiagnostic("prepared");
                 CrashSentinel.end(token);
                 call.resolve();
             } catch (Exception e) {
                 CrashSentinel.end(token);
+                releasePlayerQuietly();
+                releaseNativeUi();
+                restoreWebViewBackground();
                 call.reject("prepare failed: " + e.getMessage());
             }
         });
@@ -510,6 +562,7 @@ public class ExoPlayerPlugin extends Plugin {
             overlay.getLayoutParams().width = Math.round(width * density);
             overlay.getLayoutParams().height = Math.round(height * density);
             overlay.requestLayout();
+            overlay.post(() -> emitSurfaceDiagnostic("rect-updated"));
             call.resolve();
         });
     }
@@ -558,7 +611,7 @@ public class ExoPlayerPlugin extends Plugin {
      * 只有 seek 置位、这里清零，所以初起播不会误报。耗时就是用户看到的
      * "进度条跳了、画面卡住"的长度：MP4 一般几十到几百毫秒，裸 TS 要秒级。
      *
-     * @param via 结算来源（first-frame = 渲染出帧，ready = 播放器重新进入 READY）
+     * @param via 结算来源（当前由首帧渲染上报）
      */
     private void reportSeekSettled(String via) {
         if (seekRequestedAtMs <= 0) return;
@@ -570,7 +623,8 @@ public class ExoPlayerPlugin extends Plugin {
         data.put("state", "seeksettled");
         data.put("targetMs", targetMs);
         data.put("latencyMs", latencyMs);
-        notifyListeners("exostate", data);
+        data.put("positionMs", player.getCurrentPosition());
+        notifyCurrentState(data);
     }
 
     @PluginMethod
@@ -882,6 +936,7 @@ public class ExoPlayerPlugin extends Plugin {
         } catch (Exception e) {
             Log.w("ExoPlayerPlugin", "applyAudioOnly failed: " + e.getMessage());
         }
+        emitSurfaceDiagnostic(audioOnly ? "audio-only" : "audio-only-disabled");
     }
 
     /** 通知栏/线控的「上一集/下一集」交给 JS：剧集列表与换线逻辑都在 JS 侧 */
@@ -889,7 +944,7 @@ public class ExoPlayerPlugin extends Plugin {
         JSObject data = new JSObject();
         data.put("state", "remote");
         data.put("command", command);
-        notifyListeners("exostate", data);
+        notifyCurrentState(data);
     }
 
     /** 播放意图变化上报（去重），并在起播时拉起前台服务 */
@@ -898,7 +953,7 @@ public class ExoPlayerPlugin extends Plugin {
         reportedPlaying = playing;
         JSObject data = new JSObject();
         data.put("state", playing ? "playing" : "paused");
-        notifyListeners("exostate", data);
+        notifyCurrentState(data);
         if (playing && mediaSession != null) {
             PlaybackService.start(getContext(), mediaSession, commandSink);
         }
@@ -995,18 +1050,106 @@ public class ExoPlayerPlugin extends Plugin {
         mediaSession = null;
     }
 
+    private boolean isCurrentPlayer(ExoPlayer eventPlayer, String sessionId, int requestGeneration) {
+        return eventPlayer == player
+                && sessionId.equals(activeSessionId)
+                && requestGeneration == activeRequestGeneration;
+    }
+
+    private void notifyCurrentState(JSObject data) {
+        data.put("sessionId", activeSessionId);
+        data.put("requestGeneration", activeRequestGeneration);
+        notifyListeners("exostate", data);
+    }
+
+    private void updateVideoTrackStats(Tracks tracks) {
+        hasVideoTrack = false;
+        videoTrackCount = 0;
+        videoWidth = 0;
+        videoHeight = 0;
+        for (Tracks.Group group : tracks.getGroups()) {
+            if (group.getMediaTrackGroup().type != C.TRACK_TYPE_VIDEO || group.length == 0) continue;
+            hasVideoTrack = true;
+            for (int i = 0; i < group.length; i++) {
+                if (!group.isTrackSupported(i)) continue;
+                videoTrackCount++;
+                Format format = group.getTrackFormat(i);
+                if (videoWidth == 0 && format.width > 0 && format.height > 0) {
+                    videoWidth = format.width;
+                    videoHeight = format.height;
+                }
+            }
+        }
+    }
+
+    private void setWebViewTransparent() {
+        if (!webViewBackgroundSaved) {
+            originalWebViewBackground = getBridge().getWebView().getBackground();
+            webViewBackgroundSaved = true;
+        }
+        getBridge().getWebView().setBackgroundColor(Color.TRANSPARENT);
+        webViewBackgroundTransparent = true;
+    }
+
+    private void restoreWebViewBackground() {
+        if (!webViewBackgroundSaved) return;
+        getBridge().getWebView().setBackground(originalWebViewBackground);
+        originalWebViewBackground = null;
+        webViewBackgroundSaved = false;
+        webViewBackgroundTransparent = false;
+    }
+
+    @OptIn(markerClass = UnstableApi.class)
+    private void emitSurfaceDiagnostic(String reason) {
+        if (activeSessionId.isEmpty() || overlay == null || playerView == null) return;
+        JSObject data = new JSObject();
+        data.put("state", "surface");
+        data.put("reason", reason);
+        data.put("visible", overlay.isShown());
+        data.put("audioOnly", audioOnly);
+        data.put("playerAttached", playerView.getPlayer() == player && player != null);
+        data.put("hasVideoTrack", hasVideoTrack);
+        data.put("videoTrackCount", videoTrackCount);
+        data.put("videoWidth", videoWidth);
+        data.put("videoHeight", videoHeight);
+        data.put("firstFrameRendered", firstFrameRendered);
+        float density = getContext().getResources().getDisplayMetrics().density;
+        JSObject rect = new JSObject();
+        rect.put("x", overlay.getX() / density);
+        rect.put("y", overlay.getY() / density);
+        rect.put("width", overlay.getWidth() / density);
+        rect.put("height", overlay.getHeight() / density);
+        data.put("rect", rect);
+        View surface = playerView.getVideoSurfaceView();
+        if (surface instanceof SurfaceView) {
+            SurfaceView surfaceView = (SurfaceView) surface;
+            data.put("surfaceValid", surfaceView.getHolder().getSurface().isValid());
+            data.put("surfaceShown", surfaceView.isShown());
+            data.put("surfaceWidth", surfaceView.getWidth());
+            data.put("surfaceHeight", surfaceView.getHeight());
+        } else {
+            data.put("surfaceValid", false);
+            data.put("surfaceShown", false);
+            data.put("surfaceWidth", 0);
+            data.put("surfaceHeight", 0);
+        }
+        data.put("webViewBackgroundTransparent", webViewBackgroundTransparent);
+        notifyCurrentState(data);
+    }
+
     @PluginMethod
     public void release(PluginCall call) {
+        String requestedSessionId = call.getString("sessionId");
+        int requestedGeneration = call.getData().optInt("requestGeneration", -1);
         getBridge().executeOnMainThread(() -> {
+            if ((requestedSessionId != null && !requestedSessionId.equals(activeSessionId))
+                    || (requestedGeneration >= 0 && requestedGeneration != activeRequestGeneration)) {
+                call.resolve();
+                return;
+            }
             releasePlayerQuietly();
-            // 弹幕取样的整帧位图按 surface 尺寸分配（1080p 约 8MB），离开播放页必须撤掉
-            recycleLumaScratch();
-            if (playerView != null) playerView.setPlayer(null);
-            if (overlay != null) overlay.setVisibility(View.GONE);
-            // P1-4：离开播放页 = 取样目标作废，明确告诉 JS 停轮询（别等它自己数满失败次数）
-            bumpSurfaceGeneration();
-            // 恢复 WebView 透明：让 CSS 主题背景负责绘制，避免深色主题下闪白
-            getBridge().getWebView().setBackgroundColor(Color.TRANSPARENT);
+            releaseNativeUi();
+            restoreWebViewBackground();
             call.resolve();
         });
     }
@@ -1014,10 +1157,26 @@ public class ExoPlayerPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         releasePlayerQuietly();
+        releaseNativeUi();
+        restoreWebViewBackground();
         super.handleOnDestroy();
     }
 
+    private void releaseNativeUi() {
+        recycleLumaScratch();
+        if (playerView != null) playerView.setPlayer(null);
+        if (overlay != null) overlay.setVisibility(View.GONE);
+        bumpSurfaceGeneration();
+    }
+
     private void releasePlayerQuietly() {
+        activeSessionId = "";
+        activeRequestGeneration = -1;
+        hasVideoTrack = false;
+        videoTrackCount = 0;
+        videoWidth = 0;
+        videoHeight = 0;
+        firstFrameRendered = false;
         cancelWatchdog();
         seekRequestedAtMs = 0L;
         seekTargetMs = -1L;
@@ -1247,7 +1406,7 @@ public class ExoPlayerPlugin extends Plugin {
         data.put("state", "surface");
         data.put("generation", surfaceGeneration);
         data.put("valid", surfaceSamplable());
-        notifyListeners("exostate", data);
+        notifyCurrentState(data);
     }
 
     /**
@@ -1277,7 +1436,9 @@ public class ExoPlayerPlugin extends Plugin {
         ((SurfaceView) surface).getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
+                firstFrameRendered = false;
                 bumpSurfaceGeneration();
+                emitSurfaceDiagnostic("surface-created");
             }
 
             @Override
@@ -1287,7 +1448,9 @@ public class ExoPlayerPlugin extends Plugin {
 
             @Override
             public void surfaceDestroyed(SurfaceHolder holder) {
+                firstFrameRendered = false;
                 bumpSurfaceGeneration();
+                emitSurfaceDiagnostic("surface-destroyed");
             }
         });
     }

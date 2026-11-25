@@ -30,12 +30,13 @@ import { useCompletionCeremony } from '@/composables/useCompletionCeremony';
 import { attachSparkCanvas } from '@/services/sparkField';
 import { useUiStore } from '@/stores/uiStore';
 import { toErrorShape } from '@/shared/errors';
-import { planCompletionToasts } from '@/services/downloadBatch';
+import { groupCompletedByMedia, planCompletionToasts } from '@/services/downloadBatch';
 import type { BatchProgress } from '@/services/downloadBatch';
 import type { StorageUsage } from '@/services/downloadService';
 import { downloadService } from '@/services/downloadService';
 import { appEvents, type OfflineOptimizeSnapshot } from '@/services/events';
 import { getOfflineOptimizeState } from '@/services/offlineRemuxMigration';
+import { isRepairableTsTask } from '@/services/localTsRepair';
 import { useDebounce } from '@/composables/useDebounce';
 
 const router = useRouter();
@@ -65,6 +66,10 @@ function remuxDetailText(remux: NonNullable<DownloadTask['remux']>): string {
 }
 
 const detailRemuxText = computed(() => (detailTask.value?.remux ? remuxDetailText(detailTask.value.remux) : ''));
+const detailRepairable = computed(() => (detailTask.value ? isRepairableTsTask(detailTask.value) : false));
+const detailRepairBusy = ref(false);
+const detailRedownloadBusy = ref(false);
+const detailBusy = computed(() => detailRepairBusy.value || detailRedownloadBusy.value);
 
 /** 功能扩展-10：批量模式 */
 const batchMode = ref(false);
@@ -131,7 +136,7 @@ watch(
 );
 
 /**
- * P3-1：列表次序 = 队列次序。
+ * P3-1：未完成任务的列表次序 = 队列次序。
  *
  * `downloadRepo.listAll` 本来就按 `priority` 升序、同值按 `createdAt` 升序返回，所以这个
  * 排序对首次加载是恒等的；但 store 收到状态事件是**原位替换**元素，置顶之后数组顺序会
@@ -141,16 +146,23 @@ function inQueueOrder(rows: DownloadTask[]): DownloadTask[] {
   return [...rows].sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
 }
 
+const completedGroups = computed(() => groupCompletedByMedia(downloads.tasks));
+const visibleCompletedGroups = computed(() =>
+  filter.value === 'all' || filter.value === 'completed' ? completedGroups.value : [],
+);
+const completedTasks = computed(() => completedGroups.value.flatMap((group) => group.tasks));
+const remainingTasks = computed(() => downloads.tasks.filter((task) => task.status !== 'completed'));
+
 const filtered = computed(() => {
   switch (filter.value) {
     case 'active':
       return inQueueOrder(downloads.tasks.filter((t) => t.status === 'downloading' || t.status === 'queued' || t.status === 'paused'));
     case 'completed':
-      return inQueueOrder(downloads.tasks.filter((t) => t.status === 'completed'));
+      return completedTasks.value;
     case 'failed':
       return inQueueOrder(downloads.tasks.filter((t) => t.status === 'failed'));
     default:
-      return inQueueOrder(downloads.tasks);
+      return [...inQueueOrder(remainingTasks.value), ...completedTasks.value];
   }
 });
 
@@ -158,12 +170,16 @@ const activeDownloading = computed(() => downloads.tasks.some((t) => t.status ==
 const hasPaused = computed(() => downloads.tasks.some((t) => t.status === 'paused'));
 const hasFailed = computed(() => downloads.tasks.some((t) => t.status === 'failed'));
 
-// EXT-04：按 batchId 分组任务（有 batchId 的归组，无 batchId 的单独成组）
 const batchGroups = computed(() => {
   const groups = new Map<string, { batchId: string; label: string; tasks: DownloadTask[] }>();
   const noBatch: DownloadTask[] = [];
+  const rows = filter.value === 'completed'
+    ? []
+    : filter.value === 'all'
+      ? inQueueOrder(remainingTasks.value)
+      : filtered.value;
 
-  for (const task of filtered.value) {
+  for (const task of rows) {
     if (task.batchId) {
       if (!groups.has(task.batchId)) {
         groups.set(task.batchId, {
@@ -178,7 +194,6 @@ const batchGroups = computed(() => {
     }
   }
 
-  // 把无 batchId 的任务作为单独一组（batchId 为空字符串）
   if (noBatch.length > 0) {
     groups.set('', { batchId: '', label: '单独下载', tasks: noBatch });
   }
@@ -409,28 +424,23 @@ async function retryBatch(batchId: string): Promise<void> {
   }
 }
 
-// EXT-04：删除本批已完成
-async function deleteBatchCompleted(batchId: string): Promise<void> {
-  // DL-P1-3：空 batchId 是「单独下载」组，同样要能删（下面按组内任务操作，不依赖批次号）
+async function deleteCompletedMedia(mediaId: string): Promise<void> {
   if (batchOperating.value) return;
-  const group = batchGroups.value.find((g) => g.batchId === batchId);
+  const group = completedGroups.value.find((entry) => entry.mediaId === mediaId);
   if (!group) return;
-  const completedCount = group.tasks.filter((t) => t.status === 'completed').length;
-  if (completedCount === 0) {
-    toast.info('没有已完成的任务');
-    return;
-  }
   const ok = await ui.confirm({
-    title: `删除 ${completedCount} 个已完成任务？`,
-    message: '将删除选中的下载任务与本地文件，此操作不可撤销。',
+    title: `删除《${group.label}》的已完成任务？`,
+    message: `将删除 ${group.tasks.length} 个任务与本地文件，此操作不可撤销。`,
     confirmText: '删除',
     danger: true,
   });
   if (!ok) return;
   batchOperating.value = true;
   try {
-    const completedIds = group.tasks.filter((t) => t.status === 'completed').map((t) => t.id);
-    const { removed, filesLeftBehind, failed } = await downloads.removeMany(completedIds, true);
+    const { removed, filesLeftBehind, failed } = await downloads.removeMany(
+      group.tasks.map((task) => task.id),
+      true,
+    );
     const parts = [`已删除 ${removed} 个任务`];
     if (failed > 0) parts.push(`${failed} 个未能删除`);
     if (filesLeftBehind > 0) parts.push(`${filesLeftBehind} 个本地文件没删掉，需手动清理`);
@@ -543,6 +553,47 @@ async function onRetry(task: DownloadTask): Promise<void> {
   }
 }
 
+async function onRepairIndex(): Promise<void> {
+  const task = detailTask.value;
+  if (!task || !detailRepairable.value || detailBusy.value) return;
+  detailRepairBusy.value = true;
+  try {
+    const result = await downloadService.repairLocalIndex(task.id, { force: true });
+    if (result.status === 'repaired') toast.success(result.message);
+    else toast.info(result.message);
+    await downloads.load();
+    detailTask.value = downloads.tasks.find((entry) => entry.id === task.id) ?? detailTask.value;
+    if (result.status === 'repaired' || result.status === 'already') detailOpen.value = false;
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    detailRepairBusy.value = false;
+  }
+}
+
+async function onSafeRedownload(): Promise<void> {
+  const task = detailTask.value;
+  if (!task || !detailRepairable.value || detailBusy.value) return;
+  const ok = await ui.confirm({
+    title: '安全重新下载？',
+    message: '将新建独立候选任务；下载并复检通过后才替换当前文件。失败或取消不会影响原文件。',
+    confirmText: '开始候选下载',
+  });
+  if (!ok) return;
+  detailRedownloadBusy.value = true;
+  try {
+    await downloadService.safeRedownload(task.id);
+    detailOpen.value = false;
+    detailTask.value = null;
+    toast.success('候选下载已加入队列，原文件暂未改动');
+    await downloads.load();
+  } catch (e) {
+    toast.error(toErrorShape(e).message);
+  } finally {
+    detailRedownloadBusy.value = false;
+  }
+}
+
 /**
  * P3-1：置顶。
  *
@@ -591,13 +642,23 @@ function onPlay(task: DownloadTask): void {
   });
 }
 
+function onDetails(task: DownloadTask): void {
+  detailTask.value = task;
+  detailOpen.value = true;
+}
+
+function onDetailPlay(): void {
+  const task = detailTask.value;
+  detailOpen.value = false;
+  if (task) onPlay(task);
+}
+
 function onSelect(task: DownloadTask): void {
   if (task.status === 'completed') {
     onPlay(task);
     return;
   }
-  detailTask.value = task;
-  detailOpen.value = true;
+  onDetails(task);
 }
 
 function goLibrary(): void {
@@ -691,17 +752,13 @@ function goLibrary(): void {
           <span class="speed-value">当前：{{ currentSpeedText }}</span>
         </div>
 
-        <!-- EXT-04：按批次分组展示 -->
-        <div v-if="batchGroups.length > 0" class="downloads-batches state-enter">
+        <div v-if="batchGroups.length > 0 || visibleCompletedGroups.length > 0" class="downloads-batches state-enter">
           <div v-for="group in batchGroups" :key="group.batchId || '__solo__'" class="batch-group">
-            <!-- DL-P1-3：「单独下载」组（batchId 为空）也要有批次卡片：下面两个处理函数
-                 早就按组内任务操作了，卡片却被 v-if 挡住，等于那套逻辑永远点不到。 -->
             <DownloadBatchGroup
               :progress="getBatchProgress(group.tasks)"
               :label="group.label"
               :busy="batchOperating"
               @retry="retryBatch(group.batchId)"
-              @delete-completed="deleteBatchCompleted(group.batchId)"
             />
             <TransitionGroup tag="ul" name="dl-flip" class="downloads-list">
               <li v-for="task in group.tasks" :key="task.id">
@@ -718,12 +775,57 @@ function goLibrary(): void {
                   @retry="onRetry"
                   @front="onFront"
                   @remove="onRemove"
+                  @details="onDetails"
                   @select="onSelect"
                   @toggle-select="toggleSelect"
                 />
               </li>
             </TransitionGroup>
           </div>
+
+          <section
+            v-for="group in visibleCompletedGroups"
+            :key="`media:${group.mediaId}`"
+            class="completed-media"
+            role="group"
+            :aria-label="`${group.label}，已下载 ${group.tasks.length} 项`"
+          >
+            <div class="completed-media__head">
+              <div class="completed-media__heading">
+                <h2 class="completed-media__title truncate-1">{{ group.label }}</h2>
+                <span class="completed-media__count">已下载 {{ group.tasks.length }} 项</span>
+              </div>
+              <button
+                class="btn btn--secondary btn--sm"
+                type="button"
+                :disabled="batchOperating"
+                @click="deleteCompletedMedia(group.mediaId)"
+              >
+                删除本剧已完成
+              </button>
+            </div>
+            <TransitionGroup tag="ul" name="dl-flip" class="downloads-list">
+              <li v-for="task in group.tasks" :key="task.id">
+                <DownloadItem
+                  :task="task"
+                  :offline="isOffline"
+                  :batch-mode="batchMode"
+                  :selected="selectedIds.has(task.id)"
+                  :celebrate="task.id === celebrateId"
+                  :postprocess="downloads.postprocess[task.id] ?? null"
+                  @play="onPlay"
+                  @pause="onPause"
+                  @resume="onResume"
+                  @retry="onRetry"
+                  @front="onFront"
+                  @remove="onRemove"
+                  @details="onDetails"
+                  @select="onSelect"
+                  @toggle-select="toggleSelect"
+                />
+              </li>
+            </TransitionGroup>
+          </section>
         </div>
 
         <EmptyState
@@ -773,6 +875,9 @@ function goLibrary(): void {
         </p>
         <p class="task-detail__line">状态：{{ detailTask.status }}</p>
         <p v-if="detailRemuxText" class="task-detail__line">{{ detailRemuxText }}</p>
+        <p v-if="detailRepairable" class="task-detail__line">
+          修复拖动索引会只读扫描原文件；时间轴不可靠时不会改写文件。
+        </p>
         <p v-if="detailTask.errorMessage" class="task-detail__line task-detail__line--error">
           {{ detailTask.errorMessage }}
         </p>
@@ -787,10 +892,41 @@ function goLibrary(): void {
         <li v-if="detailTask?.status === 'failed'">
           <button class="sheet-list__item" type="button" @click="detailTask && onRetry(detailTask)">重试</button>
         </li>
+        <li v-if="detailTask?.status === 'completed'">
+          <button
+            class="sheet-list__item"
+            type="button"
+            :disabled="detailBusy"
+            @click="onDetailPlay"
+          >
+            播放
+          </button>
+        </li>
+        <li v-if="detailRepairable">
+          <button
+            class="sheet-list__item"
+            type="button"
+            :disabled="detailBusy"
+            @click="onRepairIndex"
+          >
+            {{ detailRepairBusy ? '正在扫描原文件…' : '重新扫描并修复拖动索引' }}
+          </button>
+        </li>
+        <li v-if="detailRepairable">
+          <button
+            class="sheet-list__item"
+            type="button"
+            :disabled="detailBusy"
+            @click="onSafeRedownload"
+          >
+            {{ detailRedownloadBusy ? '正在创建候选任务…' : '安全重新下载' }}
+          </button>
+        </li>
         <li>
           <button
             class="sheet-list__item sheet-list__item--danger"
             type="button"
+            :disabled="detailBusy"
             @click="detailTask && onRemove(detailTask)"
           >
             删除任务与文件
@@ -1163,6 +1299,43 @@ function goLibrary(): void {
 }
 
 .batch-group .downloads-list {
+  margin-top: 0;
+}
+
+.completed-media {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.completed-media__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background-color: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+}
+
+.completed-media__heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.completed-media__title {
+  margin: 0;
+  font: var(--text-label-strong);
+  color: var(--color-text-primary);
+}
+
+.completed-media__count {
+  color: var(--color-text-secondary);
+  font: var(--text-caption);
+}
+
+.completed-media .downloads-list {
   margin-top: 0;
 }
 </style>

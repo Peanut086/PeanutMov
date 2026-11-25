@@ -37,6 +37,8 @@ const props = withDefaults(
   defineProps<{
     /** 水平满屏拖动映射秒数 */
     seekMaxSec?: number;
+    /** 定位不可靠时取消水平拖动，不影响音量/亮度 */
+    seekEnabled?: boolean;
     sensitivity?: 'low' | 'medium' | 'high';
     /** OPT-10：是否启用触摸光晕反馈 */
     touchGlow?: boolean;
@@ -49,6 +51,7 @@ const props = withDefaults(
   }>(),
   {
     seekMaxSec: 90,
+    seekEnabled: true,
     sensitivity: 'medium',
     touchGlow: true,
     longPressHelpEnabled: false,
@@ -78,6 +81,7 @@ function ctx(): GestureContext {
     volume: Math.min(100, Math.max(0, player.volume)),
     brightness: clampBrightness(player.brightness),
     seekMaxSec: props.seekMaxSec,
+    seekEnabled: props.seekEnabled,
     sensitivity: props.sensitivity,
     longPressHelpEnabled: props.longPressHelpEnabled,
   };

@@ -114,6 +114,54 @@ describe('REV-24 「隐藏演示内容」作用于继续观看（AC-98）', () =
     expect(await historyService.listContinueWatching()).toHaveLength(1);
   });
 
+  it('下载页入口明确抛出本地文件错误；常规解析仍保留网络回退', async () => {
+    const { downloadService } = await import('@/services/downloadService');
+    const mediaId = mediaIdOf(DEMO_SOURCE_ID, DEMO_ITEMS[0]?.itemId ?? '');
+    const episodeId = `${mediaId}:ep1`;
+    const missingSpy = vi.spyOn(downloadService, 'getLocalPlayUrl').mockRejectedValue(
+      new Error('file not found'),
+    );
+    const { downloadRepo } = await import('@/db/repositories/downloadRepo');
+    await downloadRepo.save({
+      id: 'task-missing-entry',
+      sourceId: DEMO_SOURCE_ID,
+      mediaId,
+      episodeId,
+      episodeNumber: 1,
+      title: '演示影片',
+      episodeTitle: '第 1 集',
+      posterUrl: null,
+      url: 'https://cdn.example.com/a.mp4',
+      headers: {},
+      format: 'mp4',
+      quality: null,
+      status: 'completed',
+      priority: 1,
+      totalBytes: 1000,
+      downloadedBytes: 1000,
+      speedBps: 0,
+      retries: 0,
+      maxRetries: 2,
+      resumable: true,
+      sink: 'idb-blob',
+      filePath: null,
+      blobKey: 'blob-lost-entry',
+      errorCode: null,
+      errorMessage: null,
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+      completedAt: 1_700_000_000_000,
+    });
+    const task = await downloadRepo.get('task-missing-entry');
+
+    await expect(downloadService.taskToPlayback(task!)).rejects.toMatchObject({
+      code: 'E_LOCAL_CORRUPT',
+      message: '本地文件不可用，请重新下载这一集',
+    });
+    await expect(downloadService.findLocalForMedia(mediaId, { episodeId })).resolves.toBeNull();
+    missingSpy.mockRestore();
+  });
+
   it('演示源仍存在于源管理列表（开关只影响内容可见性，AC-98 后半段）', async () => {
     await settingsService.update({ hideDemoContent: true });
     const sources = await useSourceList();

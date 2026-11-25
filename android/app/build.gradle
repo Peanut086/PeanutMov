@@ -153,9 +153,12 @@ dependencies {
     // 播放器仍由 ExoPlayerPlugin 持有，本依赖只用 MediaSession 与 MediaStyleNotificationHelper，
     // 不引入 MediaSessionService（那会把播放器搬进服务，牵动 AND-20 主线程约束）。
     implementation "androidx.media3:media3-session:1.3.1"
+    // P1-B：只用于独立 TS 无损转封装 PoC；版本必须与其余 Media3 模块一致
+    implementation "androidx.media3:media3-transformer:1.3.1"
     // P2-15: xCrash 原生崩溃/ANR 捕获（爱奇艺开源，Maven Central AAR）
     implementation "com.iqiyi.xcrash:xcrash-android-lib:3.1.0"
     testImplementation "junit:junit:$junitVersion"
+    testImplementation "org.json:json:20240303"
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')

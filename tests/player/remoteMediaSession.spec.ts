@@ -37,14 +37,18 @@ vi.mock('@/native/exoPlayerPlugin', () => ({
     ...h.fakes,
     addListener: vi.fn(async (_event: string, cb: (d: Record<string, unknown>) => void) => {
       h.stateListeners.add(cb);
-      return () => {
-        h.stateListeners.delete(cb);
-      };
+      return { remove: async () => { h.stateListeners.delete(cb); } };
     }),
   },
   exoHeadersOf: (headers: Record<string, string>) =>
     Object.entries(headers).map(([key, value]) => ({ key, value })),
   isExoPlayerAvailable: vi.fn(async () => true),
+  getExoPlayerStatus: vi.fn(async () => ({
+    available: true,
+    supported: true,
+    safeMode: false,
+    reason: null,
+  })),
 }));
 
 function emitState(data: Record<string, unknown>): void {
@@ -90,6 +94,7 @@ async function loadNative(ctl: PlayerController, episodeId = 'episode-1'): Promi
   const pending = ctl.load(makeOptions(episodeId));
   await vi.waitFor(() => expect(h.fakes.prepare).toHaveBeenCalled());
   emitState({ state: 'ready', duration: 60_000 });
+  emitState({ state: 'firstframe', positionMs: 0 });
   await pending;
 }
 

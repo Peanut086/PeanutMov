@@ -74,6 +74,7 @@ function play(rec: HistoryRecord, origin?: HTMLElement): void {
   void router.push({
     name: 'player',
     params: { mediaId: rec.mediaId, ...(rec.episodeId ? { episodeId: rec.episodeId } : {}) },
+    query: rec.lineId ? { lineId: rec.lineId } : {},
   });
 }
 

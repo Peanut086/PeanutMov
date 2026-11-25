@@ -87,6 +87,26 @@ export function findEpisodeOwnerLineId(
   return ownerLineId && lineIds.includes(ownerLineId) ? ownerLineId : null;
 }
 
+export function resolvePlaybackLineId(input: {
+  explicitLineId: string | null;
+  episodes: readonly { id: string; lineId: string }[];
+  lineIds: readonly string[];
+  episodeId: string | null;
+  requestedLineId: string | null;
+  anchorLineId: string | null;
+}): string | null {
+  if (input.explicitLineId) return input.explicitLineId;
+  const ownerLineId = findEpisodeOwnerLineId(input.episodes, input.lineIds, input.episodeId);
+  if (ownerLineId) return ownerLineId;
+  if (input.requestedLineId && input.lineIds.includes(input.requestedLineId)) {
+    return input.requestedLineId;
+  }
+  if (input.anchorLineId && input.lineIds.includes(input.anchorLineId)) {
+    return input.anchorLineId;
+  }
+  return input.lineIds[0] ?? null;
+}
+
 /** 播放页目标集的定位口径；`none` = 全部口径都落空（P1-1 的披露态） */
 export type EpisodeMatchedBy =
   | 'line-id'

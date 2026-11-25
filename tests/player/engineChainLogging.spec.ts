@@ -17,7 +17,14 @@ vi.mock('@/shared/logger', () => ({
 }));
 
 const h = vi.hoisted(() => {
-  type StateCb = (data: { state: string; message?: string; duration?: number }) => void;
+  type StateCb = (data: {
+    state: string;
+    message?: string;
+    duration?: number;
+    errorCodeName?: string;
+    causeChain?: string;
+    positionMs?: number;
+  }) => void;
   const stateListeners = new Set<StateCb>();
   const fakes = {
     prepare: vi.fn(async () => undefined),
@@ -39,29 +46,35 @@ vi.mock('@/native/exoPlayerPlugin', () => ({
     ...h.fakes,
     addListener: vi.fn(async (_event: string, cb: (d: { state: string }) => void) => {
       h.stateListeners.add(cb as never);
-      return { remove: async () => undefined };
+      return { remove: async () => { h.stateListeners.delete(cb as never); } };
     }),
   },
   exoHeadersOf: (headers: Record<string, string>) =>
     Object.entries(headers).map(([key, value]) => ({ key, value })),
   isExoPlayerAvailable: vi.fn(async () => true),
+  getExoPlayerStatus: vi.fn(async () => ({
+    available: true,
+    supported: true,
+    safeMode: false,
+    reason: null,
+  })),
 }));
 
 import type { PlaybackSource } from '@/types';
 import { logger } from '@/shared/logger';
 import { toErrorShape } from '@/shared/errors';
 import { guidanceOf } from '@/shared/sourceFailure';
-import { isExoPlayerAvailable } from '@/native/exoPlayerPlugin';
+import { getExoPlayerStatus } from '@/native/exoPlayerPlugin';
 import { PlayerController } from '@/player/PlayerController';
 import type { PlayerLoadOptions } from '@/player/types';
 
 /** 带 CDN 鉴权参数：日志里的地址必须是脱敏后的形状（脱敏在真 logger 里，见 url.spec.ts） */
 const PLAY_URL = 'https://a.com/vod/10.mp4';
 
-function makeSource(): PlaybackSource {
+function makeSource(format: PlaybackSource['format'] = 'mp4'): PlaybackSource {
   return {
     url: PLAY_URL,
-    format: 'mp4',
+    format,
     headers: {},
     subtitles: [],
     lineId: 'line-1',
@@ -71,14 +84,17 @@ function makeSource(): PlaybackSource {
   };
 }
 
-function makeOptions(preferNativeEngine?: boolean): PlayerLoadOptions {
+function makeOptions(
+  preferNativeEngine?: boolean,
+  format: PlaybackSource['format'] = 'mp4',
+): PlayerLoadOptions {
   return {
     mediaId: 'media-1',
     episodeId: 'episode-1',
     lineId: 'line-1',
     title: '士兵突击',
     posterUrl: null,
-    playback: makeSource(),
+    playback: makeSource(format),
     startPositionSec: 0,
     totalEpisodes: 1,
     episodes: [{ episodeId: 'episode-1', number: 1, title: '第 1 集' }],
@@ -87,7 +103,14 @@ function makeOptions(preferNativeEngine?: boolean): PlayerLoadOptions {
   };
 }
 
-function emitState(data: { state: string; message?: string; duration?: number }): void {
+function emitState(data: {
+  state: string;
+  message?: string;
+  duration?: number;
+  errorCodeName?: string;
+  causeChain?: string;
+  positionMs?: number;
+}): void {
   for (const cb of [...h.stateListeners]) cb(data);
 }
 
@@ -138,7 +161,12 @@ describe('引擎链日志（P0-②-2）', () => {
   afterEach(() => {
     h.stateListeners.clear();
     document.body.innerHTML = '';
-    vi.mocked(isExoPlayerAvailable).mockImplementation(async () => true);
+    vi.mocked(getExoPlayerStatus).mockResolvedValue({
+      available: true,
+      supported: true,
+      safeMode: false,
+      reason: null,
+    });
     h.fakes.prepare.mockImplementation(async () => undefined);
     vi.clearAllMocks();
   });
@@ -151,6 +179,7 @@ describe('引擎链日志（P0-②-2）', () => {
     failVideo();
     await vi.waitFor(() => expect(h.fakes.prepare).toHaveBeenCalled());
     emitState({ state: 'ready', duration: 60000 });
+    emitState({ state: 'firstframe', positionMs: 0 });
     await loadPromise;
 
     expect(ctl.getEngineKind()).toBe('native');
@@ -228,6 +257,12 @@ describe('引擎链日志（P0-②-2）', () => {
     expect(ctl.getEngineKind()).toBe('video');
 
     const el = video();
+    Object.defineProperty(el, 'play', { configurable: true, value: async () => undefined });
+    Object.defineProperty(el, 'getVideoPlaybackQuality', {
+      configurable: true,
+      value: () => ({ totalVideoFrames: 1 }),
+    });
+    await ctl.play();
     Object.defineProperty(el, 'error', {
       value: { code: 4, message: 'MEDIA_SRC_NOT_SUPPORTED' },
       configurable: true,
@@ -308,7 +343,12 @@ describe('引擎链日志（P0-②-2）', () => {
   });
 
   it('原生不可用：链在内置就断了，"没用过原生"这件事留在日志与状态里', async () => {
-    vi.mocked(isExoPlayerAvailable).mockResolvedValueOnce(false);
+    vi.mocked(getExoPlayerStatus).mockResolvedValueOnce({
+      available: false,
+      supported: false,
+      safeMode: false,
+      reason: 'plugin_missing',
+    });
     const ctl = new PlayerController({ onProgress: () => {} });
     mount(ctl);
     const outcome = ctl.load(makeOptions()).catch((e: unknown) => e);
@@ -327,6 +367,58 @@ describe('引擎链日志（P0-②-2）', () => {
       attributedCode: null,
       attributedDetail: null,
     });
+    await ctl.destroy();
+  });
+
+  it.each([402, 403])('原生 HLS %i 直接交回页面刷新，不再把坏地址交给内置引擎', async (status) => {
+    const ctl = new PlayerController({ onProgress: () => {} });
+    mount(ctl);
+    const errors: string[] = [];
+    const notices: string[] = [];
+    ctl.on('error', (e) => errors.push(e.code));
+    ctl.on('notice', ({ message }) => notices.push(message));
+    const outcome = ctl.load(makeOptions(true, 'hls')).catch((e: unknown) => e);
+    await vi.waitFor(() => expect(h.fakes.prepare).toHaveBeenCalledTimes(1));
+    emitState({
+      state: 'error',
+      message: 'Source error',
+      errorCodeName: 'ERROR_CODE_IO_BAD_HTTP_STATUS',
+      causeChain: `InvalidResponseCodeException: Response code: ${status}`,
+      positionMs: 1_842_300,
+    });
+
+    const shape = toErrorShape(await outcome);
+    expect(shape.httpStatus).toBe(status);
+    expect(shape.code).toBe(status === 402 ? 'E_SOURCE_UNAVAILABLE' : 'E_HTTP_403');
+    expect(errors).toEqual([shape.code]);
+    expect(notices).toEqual([]);
+    expect(document.querySelector('video')).toBeNull();
+    expect(logPayload('原生 HLS 地址失效，交回页面重新获取', 'warn')).toMatchObject({
+      from: 'native',
+      to: 'resolve',
+      httpStatus: status,
+    });
+    expect(loggedMessages('warn')).not.toContain('播放中引擎报错');
+    await ctl.destroy();
+  });
+
+  it('原生 HTTP 403 的确定性结论不被内置 code 4 覆盖', async () => {
+    h.fakes.prepare.mockRejectedValue(new Error('InvalidResponseCodeException: Response code: 403'));
+    const ctl = new PlayerController({ onProgress: () => {} });
+    mount(ctl);
+    const errors: string[] = [];
+    ctl.on('error', (e) => errors.push(e.code));
+    const outcome = ctl.load(makeOptions()).catch((e: unknown) => e);
+    await waitForVideo();
+    setMediaError(video(), 4, 'MEDIA_SRC_NOT_SUPPORTED');
+    failVideo();
+    await vi.waitFor(() => expect(h.fakes.prepare).toHaveBeenCalledTimes(1));
+
+    const shape = toErrorShape(await outcome);
+    expect(shape.code).toBe('E_HTTP_403');
+    expect(shape.httpStatus).toBe(403);
+    expect(errors).toEqual(['E_HTTP_403']);
+    expect(loggedMessages('warn')).not.toContain('播放中引擎报错');
     await ctl.destroy();
   });
 });

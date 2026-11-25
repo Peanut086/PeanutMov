@@ -220,6 +220,8 @@ export async function deliverRemux(args: {
       container: deliveredContainer,
       downloadedBytes: outputBytes,
       totalBytes: outputBytes,
+      hlsIndex: null,
+      hlsIndexPath: null,
       remux: committedInfo,
     });
   } catch (persistErr) {

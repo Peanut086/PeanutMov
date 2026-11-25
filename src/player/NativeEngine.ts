@@ -7,18 +7,24 @@
  * - rect 对齐：ResizeObserver + 窗口 resize/orientationchange 后逐帧追到几何稳定
  * - 清晰度为空数组（面板天然隐藏）；PoC 边界见 `契约变更-v1.7.md` §2.4
  */
-import type { AppErrorShape, PlaybackSource, ResizeMode } from '@/types';
-import { AppError } from '@/shared/errors';
+import type { AppErrorShape, ErrorCode, PlaybackSource, ResizeMode } from '@/types';
+import { AppError, ERROR_MESSAGES, httpStatusToErrorCode } from '@/shared/errors';
 import { logger } from '@/shared/logger';
 import type { PluginListenerHandle } from '@capacitor/core';
 
 import type { EngineCapabilities, PlayableEngine } from '@/player/types';
 import { assertSourceSupported } from '@/player/sourceGuard';
-import { ExoPlayer, exoHeadersOf, type ExoQuality } from '@/native/exoPlayerPlugin';
+import { ExoPlayer, exoHeadersOf, type ExoQuality, type ExoRect } from '@/native/exoPlayerPlugin';
+import { nativeFrameLumaSource } from '@/player/frameLuma';
 
-// P2-2: 进度轮询从 500ms 放宽到 1000ms，减少 CPU 开销
 const PROGRESS_POLL_MS = 1000;
 const RECT_SETTLE_MS = 2000;
+let nativeSessionSequence = 0;
+
+function createNativeSessionId(): string {
+  nativeSessionSequence += 1;
+  return `${Date.now().toString(36)}-${nativeSessionSequence.toString(36)}`;
+}
 
 /**
  * 把 Capacitor localhost URL 转成原生 file:// URI（ExoPlayer 需要）。
@@ -35,7 +41,7 @@ function toNativeFileUri(url: string): string {
 }
 
 export interface NativeEngineEvents {
-  onLoadedMetadata: (duration: number) => void;
+  onLoadedMetadata: (duration: number, hasVideoTrack?: boolean) => void;
   onTimeUpdate: (currentTime: number, duration: number, buffered: number) => void;
   onWaiting: () => void;
   onEnded: () => void;
@@ -45,7 +51,9 @@ export interface NativeEngineEvents {
   /** EXT-07：内嵌字幕/音轨列表与选中项更新 */
   onEmbeddedTracksChange?: (state: EmbeddedTrackState) => void;
   /** P1-a：seek 后画面真正渲染出第一帧（Java onRenderedFirstFrame 上报） */
-  onSeekSettled?: (info: { targetMs: number; latencyMs: number }) => void;
+  onSeekSettled?: (info: { targetMs: number; latencyMs: number; positionMs: number }) => void;
+  /** 原生 surface 真实渲染出首帧；与 READY 分开，READY 不等于已有画面。 */
+  onFirstFrame?: (positionSec: number) => void;
   /**
    * B1：原生侧播放意图变化（通知栏/锁屏/线控/音频焦点被抢都会触发）。
    *
@@ -64,6 +72,25 @@ export interface NativeMediaInfo {
   title: string;
   subtitle: string;
   artworkUrl: string | null;
+}
+
+/** P2-1：原生 Surface 现场快照；字段缺席表示旧插件无法提供该项。 */
+export interface NativeSurfaceDiagnostic {
+  reason?: string;
+  visible?: boolean;
+  audioOnly?: boolean;
+  playerAttached?: boolean;
+  hasVideoTrack?: boolean;
+  videoTrackCount?: number;
+  videoWidth?: number;
+  videoHeight?: number;
+  firstFrameRendered?: boolean;
+  rect?: ExoRect;
+  surfaceValid?: boolean;
+  surfaceShown?: boolean;
+  surfaceWidth?: number;
+  surfaceHeight?: number;
+  webViewBackgroundTransparent?: boolean;
 }
 
 /* ---------- EXT-07：内嵌字幕 / 音轨 ---------- */
@@ -135,6 +162,25 @@ type ExoStateData = {
   errorCodeName?: string;
   causeChain?: string;
   positionMs?: number;
+  hasVideoTrack?: boolean;
+  videoTrackCount?: number;
+  videoWidth?: number;
+  videoHeight?: number;
+  firstFrameRendered?: boolean;
+  audioOnly?: boolean;
+  visible?: boolean;
+  playerAttached?: boolean;
+  surfaceValid?: boolean;
+  surfaceShown?: boolean;
+  surfaceWidth?: number;
+  surfaceHeight?: number;
+  webViewBackgroundTransparent?: boolean;
+  rect?: ExoRect;
+  reason?: string;
+  sessionId?: string;
+  requestGeneration?: number;
+  generation?: number;
+  valid?: boolean;
 };
 
 /**
@@ -157,19 +203,35 @@ export class NativeEngine implements PlayableEngine {
 
   private host: HTMLElement | null = null;
   private detachState: PluginListenerHandle | null = null;
+  private detachPromise: Promise<void> | null = null;
+  private releasePromise: Promise<void> | null = null;
+  private releaseSessionKey = '';
+  private destroyPromise: Promise<void> | null = null;
+  private nativeSessionStarted = false;
+  private sessionId = '';
+  private requestGeneration = 0;
+  private lastRect: ExoRect | null = null;
+  private surfaceDiagnostic: NativeSurfaceDiagnostic | null = null;
+  private lastSurfaceLogKey = '';
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private observer: ResizeObserver | null = null;
   private onWindowResize: (() => void) | null = null;
   private onScroll: (() => void) | null = null;
   private scrollRaf: number | null = null;
 
-  /** load() 的结算句柄：ready/error 事件到达前由 exostate 负责 resolve/reject */
+  /** load() 的结算句柄：READY/错误事件到达前由 exostate 负责 resolve/reject */
   private pending: { resolve: () => void; reject: (e: unknown) => void } | null = null;
 
   private positionSec = 0;
   private durationSec = 0;
   private droppedFrames = 0;
   private ready = false;
+  private firstFrameRendered = false;
+  private readonly frameLuma = nativeFrameLumaSource();
+  private hasVideoTrack: boolean | null = null;
+  private videoWidth = 0;
+  private videoHeight = 0;
+  private audioOnly = false;
   /** v1.8 优化：当前清晰度列表 */
   private qualities: ExoQuality[] = [];
   /** EXT-07：内嵌字幕/音轨状态（Java 推送 + 本地乐观更新） */
@@ -188,19 +250,59 @@ export class NativeEngine implements PlayableEngine {
     const host = this.host;
     if (!host) throw new AppError('E_INVALID_STATE', '播放器容器未挂载');
 
+    this.stopPolling();
+    this.teardownRectWatch();
     this.ready = false;
+    this.firstFrameRendered = false;
+    this.hasVideoTrack = null;
+    this.videoWidth = 0;
+    this.videoHeight = 0;
     this.positionSec = 0;
     this.durationSec = 0;
+    this.pending?.reject(new AppError('E_ABORTED', '播放器已切换，本次加载作废'));
+    this.pending = null;
+    this.surfaceDiagnostic = null;
+    this.lastSurfaceLogKey = '';
     // EXT-07：切集/换线重置轨道面板，避免上一集字幕/音轨残留在菜单里
     this.patchTracks(emptyEmbeddedTracks());
 
-    // PluginListenerHandle 是 { remove } 对象不是函数（Capacitor 7）：
-    // 旧代码 `this.detachState?.()` 每次抛 TypeError，release 被跳过 →
-    // 离开播放页后原生引擎继续出声（真机实证 2026-11-03）
-    void this.detachState?.remove().catch(() => undefined);
-    this.detachState = await ExoPlayer.addListener('exostate', (data: ExoStateData) =>
-      this.onState(data),
-    );
+    const previousSessionId = this.sessionId;
+    const previousGeneration = this.requestGeneration;
+    const sessionId = createNativeSessionId();
+    const requestGeneration = ++this.requestGeneration;
+    this.sessionId = sessionId;
+    this.requestGeneration = requestGeneration;
+
+    await this.detachStateListener();
+    if (!this.isCurrentSession(sessionId, requestGeneration)) {
+      throw new AppError('E_ABORTED', '播放器已切换，本次加载作废');
+    }
+    const releasePrevious = this.nativeSessionStarted || this.releasePromise !== null;
+    this.nativeSessionStarted = false;
+    if (releasePrevious) {
+      await this.releaseNative(previousSessionId, previousGeneration);
+    }
+    if (!this.isCurrentSession(sessionId, requestGeneration)) {
+      throw new AppError('E_ABORTED', '播放器已切换，本次加载作废');
+    }
+
+    try {
+      const handle = await ExoPlayer.addListener('exostate', (data: ExoStateData) => {
+        if (this.isCurrentSession(sessionId, requestGeneration)) this.onState(data);
+      });
+      if (!this.isCurrentSession(sessionId, requestGeneration)) {
+        try {
+          await handle.remove();
+        } catch (e) {
+          logger.debug('ExoPlayer 过期状态监听解绑失败', e);
+        }
+        throw new AppError('E_ABORTED', '播放器已切换，本次加载作废');
+      }
+      this.detachState = handle;
+    } catch (e) {
+      if (e instanceof AppError && e.code === 'E_ABORTED') throw e;
+      throw toLoadError(e);
+    }
 
     const loadPromise = new Promise<void>((resolve, reject) => {
       this.pending = { resolve, reject };
@@ -208,6 +310,8 @@ export class NativeEngine implements PlayableEngine {
     try {
       // 本地文件用 file:// URI（ExoPlayer 无法访问 Capacitor https://localhost 桥）
       const nativeUrl = source.isLocal ? toNativeFileUri(source.url) : source.url;
+      const rect = rectOf(host);
+      this.lastRect = rect;
       // OPT-26（P0-②-2）：用 info 而不是 debug——release 包把 debug 全滤掉了，于是
       // 「ExoPlayer 到底收到什么地址、按什么 mime 嗅的」在真机日志里查不到，
       // 而 UnrecognizedInputFormatException 一类的根因恰恰只有这一行能证实。
@@ -218,28 +322,37 @@ export class NativeEngine implements PlayableEngine {
         format: source.format,
         mime: source.format === 'hls' ? 'application/x-mpegURL' : null,
         startPositionMs: source.startPositionMs ?? 0,
+        sessionId,
+        requestGeneration,
       });
+      this.nativeSessionStarted = true;
       await ExoPlayer.prepare({
         url: nativeUrl,
         headers: exoHeadersOf(source.headers ?? {}),
         // format 由 URL 路径推不出来的（中转/代理地址）必须显式带过去，否则 ExoPlayer
         // 按 progressive 嗅探 m3u8 → UnrecognizedInputFormatException（真机实证）
         mime: source.format === 'hls' ? 'application/x-mpegURL' : undefined,
-        rect: rectOf(host),
+        rect,
         // P0-7: 续播位置随 prepare 下发
         startPositionMs: source.startPositionMs ?? 0,
+        sessionId,
+        requestGeneration,
         // B1：会话元数据只能随 MediaItem 下发，事后补设会动播放进度
         title: this.mediaInfo?.title,
         subtitle: this.mediaInfo?.subtitle,
         artworkUrl: this.mediaInfo?.artworkUrl ?? undefined,
       });
+      if (!this.isCurrentSession(sessionId, requestGeneration)) {
+        throw new AppError('E_ABORTED', '播放器已切换，本次加载作废');
+      }
     } catch (e) {
-      this.pending = null;
+      if (this.isCurrentSession(sessionId, requestGeneration)) this.pending = null;
+      if (e instanceof AppError && e.code === 'E_ABORTED') throw e;
       throw toLoadError(e);
     }
 
-    this.watchRect(host);
-    this.startPolling();
+    this.watchRect(host, sessionId, requestGeneration);
+    this.startPolling(sessionId, requestGeneration);
     // ready / error 由 exostate 事件结算；外层（PlayerController）再套元数据超时
     return loadPromise;
   }
@@ -253,7 +366,6 @@ export class NativeEngine implements PlayableEngine {
   }
 
   seek(sec: number): void {
-    this.positionSec = sec;
     void ExoPlayer.seek({ positionMs: Math.round(Math.max(0, sec) * 1000) }).catch(
       (e: unknown) => logger.debug('ExoPlayer seek 失败', e),
     );
@@ -280,6 +392,31 @@ export class NativeEngine implements PlayableEngine {
   /** 近似值：原生侧无缓冲水位事件，用当前进度代替（进度条视觉一致） */
   getBuffered(): number {
     return this.positionSec;
+  }
+
+  getFrameStats(): { videoWidth: number; videoHeight: number; totalFrames: number } | null {
+    if (this.audioOnly || this.hasVideoTrack !== true) return null;
+    return {
+      videoWidth: this.videoWidth,
+      videoHeight: this.videoHeight,
+      totalFrames: this.firstFrameRendered ? 1 : 0,
+    };
+  }
+
+  sampleFrameLuma() {
+    return this.frameLuma(1, 1, 'fill');
+  }
+
+  getSurfaceDiagnostic(): NativeSurfaceDiagnostic | null {
+    if (!this.surfaceDiagnostic) return null;
+    return {
+      ...this.surfaceDiagnostic,
+      rect: this.surfaceDiagnostic.rect ? { ...this.surfaceDiagnostic.rect } : undefined,
+    };
+  }
+
+  canObserveFirstFrame(): boolean {
+    return true;
   }
 
   getQualities(): string[] {
@@ -397,6 +534,8 @@ export class NativeEngine implements PlayableEngine {
 
   /** B2：纯音频模式（禁视频轨 + 收起 surface，画面位置交还 WebView） */
   setAudioOnly(enabled: boolean): void {
+    if (this.audioOnly !== enabled) this.firstFrameRendered = false;
+    this.audioOnly = enabled;
     this.callOptional('setAudioOnly', { enabled });
   }
 
@@ -430,43 +569,87 @@ export class NativeEngine implements PlayableEngine {
     return this.droppedFrames;
   }
 
-  destroy(): void {
+  destroy(): Promise<void> {
+    if (this.destroyPromise) return this.destroyPromise;
+    this.destroyPromise = this.performDestroy();
+    return this.destroyPromise;
+  }
+
+  private async performDestroy(): Promise<void> {
     logger.info('NativeEngine.destroy: release 播放器');
+    const sessionId = this.sessionId;
+    const requestGeneration = this.requestGeneration;
+    this.sessionId = '';
+    this.requestGeneration += 1;
     try {
       this.stopPolling();
       this.teardownRectWatch();
-      void this.detachState?.remove().catch(() => undefined);
     } catch (e) {
-      // 清理步骤异常不得拦住 release：否则原生引擎成孤儿，声音关不掉
       logger.warn('NativeEngine.destroy: teardown 异常', (e as Error)?.message ?? String(e));
     }
-    this.detachState = null;
+    await this.detachStateListener();
+    if (this.nativeSessionStarted || this.releasePromise) {
+      await this.releaseNative(sessionId, requestGeneration);
+    }
+    this.nativeSessionStarted = false;
+    this.pending?.reject(new AppError('E_ABORTED', '播放器已销毁，本次加载作废'));
     this.pending = null;
     this.ready = false;
+    this.firstFrameRendered = false;
+    this.hasVideoTrack = null;
+    this.videoWidth = 0;
+    this.videoHeight = 0;
+    this.surfaceDiagnostic = null;
     this.tracks = emptyEmbeddedTracks();
-    try {
-      const p = ExoPlayer.release();
-      logger.info('NativeEngine.destroy: release 桥接已发出');
-      void p.catch((e: unknown) => logger.debug('ExoPlayer release 失败', e));
-    } catch (e) {
-      logger.warn('NativeEngine.destroy: release 同步异常', (e as Error)?.message ?? String(e));
-    }
+    logger.info('NativeEngine.destroy: release 完成');
   }
 
   /* ---------- 内部 ---------- */
 
   private onState(data: ExoStateData): void {
+    if (!this.acceptsState(data)) return;
     switch (data.state) {
       case 'ready': {
         if (typeof data.duration === 'number' && data.duration > 0) {
           this.durationSec = data.duration / 1000;
         }
+        if (typeof data.positionMs === 'number' && data.positionMs >= 0) {
+          this.positionSec = data.positionMs / 1000;
+        }
         this.ready = true;
-        this.events.onLoadedMetadata(this.durationSec);
+        if (typeof data.hasVideoTrack === 'boolean') this.hasVideoTrack = data.hasVideoTrack;
+        if (typeof data.videoWidth === 'number') this.videoWidth = data.videoWidth;
+        if (typeof data.videoHeight === 'number') this.videoHeight = data.videoHeight;
+        this.patchSurfaceDiagnostic({
+          hasVideoTrack: this.hasVideoTrack ?? undefined,
+          videoWidth: this.videoWidth,
+          videoHeight: this.videoHeight,
+        });
+        logger.info('NativeEngine.ready', {
+          durationMs: this.durationSec > 0 ? Math.round(this.durationSec * 1000) : null,
+          positionMs: Math.round(this.positionSec * 1000),
+          hasVideoTrack: this.hasVideoTrack,
+          videoWidth: this.videoWidth,
+          videoHeight: this.videoHeight,
+          sessionId: this.sessionId,
+          requestGeneration: this.requestGeneration,
+        });
+        this.events.onLoadedMetadata(this.durationSec, this.hasVideoTrack ?? undefined);
         this.pending?.resolve();
         this.pending = null;
         // EXT-07：READY 后补拉一次轨道（兜住「Java 上报早于 JS 监听」的窗口）
         void this.refreshEmbeddedTracks();
+        break;
+      }
+      case 'firstframe': {
+        if (typeof data.positionMs === 'number') this.positionSec = data.positionMs / 1000;
+        this.firstFrameRendered = true;
+        this.patchSurfaceDiagnostic({ firstFrameRendered: true });
+        this.events.onFirstFrame?.(this.positionSec);
+        break;
+      }
+      case 'surface': {
+        this.updateSurfaceDiagnostic(data);
         break;
       }
       case 'buffering':
@@ -477,6 +660,12 @@ export class NativeEngine implements PlayableEngine {
         this.events.onSeekSettled?.({
           targetMs: data.targetMs ?? 0,
           latencyMs: data.latencyMs ?? 0,
+          positionMs: data.positionMs ?? 0,
+        });
+        logger.info('NativeEngine.seekSettled', {
+          targetMs: data.targetMs,
+          latencyMs: data.latencyMs,
+          positionMs: data.positionMs,
         });
         break;
       case 'ended':
@@ -523,6 +712,15 @@ export class NativeEngine implements PlayableEngine {
       }
       case 'error': {
         const error = toPlayError(data);
+        logger.warn('NativeEngine.error', {
+          errorCodeName: data.errorCodeName,
+          causeChain: data.causeChain,
+          positionMs: data.positionMs,
+          code: error.code,
+          sessionId: this.sessionId,
+          requestGeneration: this.requestGeneration,
+          surface: this.getSurfaceDiagnostic(),
+        });
         if (this.pending) {
           this.pending.reject(error);
           this.pending = null;
@@ -533,6 +731,103 @@ export class NativeEngine implements PlayableEngine {
       }
       default:
         break;
+    }
+  }
+
+  private isCurrentSession(sessionId: string, requestGeneration: number): boolean {
+    return this.sessionId === sessionId && this.requestGeneration === requestGeneration;
+  }
+
+  private acceptsState(data: ExoStateData): boolean {
+    if (data.sessionId === undefined && data.requestGeneration === undefined) return true;
+    return data.sessionId === this.sessionId && data.requestGeneration === this.requestGeneration;
+  }
+
+  private patchSurfaceDiagnostic(patch: NativeSurfaceDiagnostic): void {
+    this.surfaceDiagnostic = {
+      ...(this.surfaceDiagnostic ?? {}),
+      ...patch,
+      rect: patch.rect ?? this.surfaceDiagnostic?.rect ?? this.lastRect ?? undefined,
+    };
+  }
+
+  private updateSurfaceDiagnostic(data: ExoStateData): void {
+    if (typeof data.audioOnly === 'boolean') this.audioOnly = data.audioOnly;
+    if (typeof data.hasVideoTrack === 'boolean') this.hasVideoTrack = data.hasVideoTrack;
+    if (typeof data.videoWidth === 'number') this.videoWidth = data.videoWidth;
+    if (typeof data.videoHeight === 'number') this.videoHeight = data.videoHeight;
+    if (typeof data.firstFrameRendered === 'boolean') this.firstFrameRendered = data.firstFrameRendered;
+    if (data.rect) this.lastRect = data.rect;
+    const diagnostic: NativeSurfaceDiagnostic = {
+      ...(this.surfaceDiagnostic ?? {}),
+      reason: data.reason ?? this.surfaceDiagnostic?.reason,
+      visible: data.visible ?? this.surfaceDiagnostic?.visible,
+      audioOnly: data.audioOnly ?? this.audioOnly,
+      playerAttached: data.playerAttached ?? this.surfaceDiagnostic?.playerAttached,
+      hasVideoTrack: data.hasVideoTrack ?? this.hasVideoTrack ?? undefined,
+      videoTrackCount: data.videoTrackCount ?? this.surfaceDiagnostic?.videoTrackCount,
+      videoWidth: data.videoWidth ?? this.videoWidth,
+      videoHeight: data.videoHeight ?? this.videoHeight,
+      firstFrameRendered: data.firstFrameRendered ?? this.firstFrameRendered,
+      rect: data.rect ?? this.lastRect ?? undefined,
+      surfaceValid: data.surfaceValid ?? data.valid ?? this.surfaceDiagnostic?.surfaceValid,
+      surfaceShown: data.surfaceShown ?? this.surfaceDiagnostic?.surfaceShown,
+      surfaceWidth: data.surfaceWidth ?? this.surfaceDiagnostic?.surfaceWidth,
+      surfaceHeight: data.surfaceHeight ?? this.surfaceDiagnostic?.surfaceHeight,
+      webViewBackgroundTransparent: data.webViewBackgroundTransparent
+        ?? this.surfaceDiagnostic?.webViewBackgroundTransparent,
+    };
+    this.surfaceDiagnostic = diagnostic;
+    const key = JSON.stringify({ ...diagnostic, reason: undefined });
+    if (key === this.lastSurfaceLogKey) return;
+    this.lastSurfaceLogKey = key;
+    logger.info('NativeEngine.surface', {
+      ...diagnostic,
+      sessionId: this.sessionId,
+      requestGeneration: this.requestGeneration,
+    });
+  }
+
+  private async detachStateListener(): Promise<void> {
+    if (this.detachPromise) return this.detachPromise;
+    const handle = this.detachState;
+    this.detachState = null;
+    if (!handle) return;
+    let pending: Promise<void>;
+    try {
+      pending = Promise.resolve(handle.remove()).catch((e: unknown) => {
+        logger.debug('ExoPlayer 状态监听解绑失败', e);
+      });
+    } catch (e) {
+      logger.debug('ExoPlayer 状态监听解绑失败', e);
+      return;
+    }
+    this.detachPromise = pending;
+    try {
+      await pending;
+    } finally {
+      if (this.detachPromise === pending) this.detachPromise = null;
+    }
+  }
+
+  private async releaseNative(sessionId: string, requestGeneration: number): Promise<void> {
+    const key = `${sessionId}:${requestGeneration}`;
+    if (this.releasePromise && this.releaseSessionKey === key) return this.releasePromise;
+    if (this.isCurrentSession(sessionId, requestGeneration)) this.nativeSessionStarted = false;
+    const pending = (this.releasePromise ?? Promise.resolve())
+      .then(() => ExoPlayer.release({ sessionId, requestGeneration }))
+      .catch((e: unknown) => {
+        logger.debug('ExoPlayer release 失败', e);
+      });
+    this.releasePromise = pending;
+    this.releaseSessionKey = key;
+    try {
+      await pending;
+    } finally {
+      if (this.releasePromise === pending) {
+        this.releasePromise = null;
+        this.releaseSessionKey = '';
+      }
     }
   }
 
@@ -547,12 +842,13 @@ export class NativeEngine implements PlayableEngine {
     return ExoPlayer as unknown as Partial<ExoPlayerExtBridge>;
   }
 
-  private startPolling(): void {
+  private startPolling(sessionId: string, requestGeneration: number): void {
     this.stopPolling();
     this.pollTimer = setInterval(() => {
-      if (!this.ready) return;
+      if (!this.ready || !this.isCurrentSession(sessionId, requestGeneration)) return;
       void ExoPlayer.progress()
         .then((p) => {
+          if (!this.isCurrentSession(sessionId, requestGeneration)) return;
           if (p.positionMs >= 0) this.positionSec = p.positionMs / 1000;
           if (p.durationMs > 0) this.durationSec = p.durationMs / 1000;
           if (typeof p.droppedFrames === 'number') this.droppedFrames = p.droppedFrames;
@@ -568,7 +864,7 @@ export class NativeEngine implements PlayableEngine {
   }
 
   /** 全屏/旋屏/窗口变化 → 短窗口内逐帧对齐；页面滚动 → 逐帧对齐（直播页整页滚动） */
-  private watchRect(host: HTMLElement): void {
+  private watchRect(host: HTMLElement, sessionId: string, requestGeneration: number): void {
     this.teardownRectWatch();
     let lastKey = '';
     let settleUntil = 0;
@@ -576,7 +872,9 @@ export class NativeEngine implements PlayableEngine {
       if (this.scrollRaf !== null) return;
       this.scrollRaf = requestAnimationFrame(() => {
         this.scrollRaf = null;
+        if (!this.isCurrentSession(sessionId, requestGeneration)) return;
         const rect = rectOf(host);
+        this.lastRect = rect;
         const key = `${rect.x},${rect.y},${rect.width},${rect.height}`;
         if (key !== lastKey) {
           lastKey = key;
@@ -673,30 +971,63 @@ function rectOf(host: HTMLElement): { x: number; y: number; width: number; heigh
   };
 }
 
+function httpStatusFromText(text: string): number | null {
+  const match = /Response code:\s*(\d{3})|\bHTTP(?:\/\d(?:\.\d)?)?\s+(\d{3})\b/i.exec(text);
+  const status = Number(match?.[1] ?? match?.[2]);
+  return Number.isInteger(status) && status >= 400 && status <= 599 ? status : null;
+}
+
+function httpPlayError(status: number, detail: string | null): AppErrorShape {
+  const mapped = httpStatusToErrorCode(status);
+  const code: ErrorCode = status === 402 || mapped === 'E_UNKNOWN' ? 'E_SOURCE_UNAVAILABLE' : mapped;
+  return {
+    code,
+    message: status === 402 ? '播放地址已失效或访问受限，请重新获取' : ERROR_MESSAGES[code],
+    detail,
+    retryable: code === 'E_SOURCE_UNAVAILABLE' || code === 'E_HTTP_429' || code === 'E_HTTP_5XX',
+    httpStatus: status,
+  };
+}
+
 function toLoadError(e: unknown): AppError {
-  /*
-   * OPT-26（P0-②-2）：桥接原文（`UnrecognizedInputFormatException`、mime 嗅探失败那类）
-   * 此前只留在 `cause` 里——日志和「复制错误信息」都取不到，于是原生加载失败只剩下
-   * 「原生引擎加载失败」这句同义反复。detail 截断到 200，长堆栈不进 UI。
-   */
   const raw = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
+  const detail = raw.length > 0 ? raw.slice(0, 200) : null;
+  if (/safe mode active|native player disabled/i.test(raw)) {
+    return new AppError('E_INVALID_STATE', '安全模式已关闭原生播放器', {
+      cause: e,
+      detail,
+      retryable: false,
+    });
+  }
+  const status = httpStatusFromText(raw);
+  if (status !== null) {
+    const shape = httpPlayError(status, detail);
+    return new AppError(shape.code, shape.message, {
+      cause: e,
+      detail: shape.detail,
+      retryable: shape.retryable,
+      httpStatus: status,
+    });
+  }
   return new AppError('E_DECODE', '原生引擎加载失败', {
     cause: e,
-    detail: raw.length > 0 ? raw.slice(0, 200) : null,
+    detail,
   });
 }
 
-/**
- * 播放中错误分类：网络类（IO/超时/断连）归 E_NETWORK 以复用控制器自动重试，
- * 解码/解析/格式类归 E_DECODE 交给控制器的本地容错。
- *
- * FIX-PLAY-C1：优先用原生侧新发的 `errorCodeName`（ExoPlayer PlaybackException 枚举名）
- * 精确分类，缺席时才回退旧的 message 正则；错误码名/cause 链/出错位置拼进 detail，
- * 「复制错误信息」就能带上全部归因字段。
- */
+/** 播放中错误分类：先保留真实 HTTP 状态，再按 IO/超时/解码归类。 */
 export function toPlayError(data: ExoStateData): AppErrorShape {
   const text = data.message ?? '';
   const codeName = data.errorCodeName ?? '';
+  const extras = [
+    codeName ? `code=${codeName}` : '',
+    data.causeChain ? `cause=${data.causeChain}` : '',
+    typeof data.positionMs === 'number' ? `pos=${(data.positionMs / 1000).toFixed(1)}s` : '',
+  ].filter(Boolean).join(' | ');
+  const detail = [text, extras].filter(Boolean).join('\n') || null;
+  const status = httpStatusFromText([text, data.causeChain ?? ''].filter(Boolean).join('\n'));
+  if (status !== null) return httpPlayError(status, detail);
+
   let isNetwork: boolean;
   if (codeName) {
     isNetwork = codeName.startsWith('ERROR_CODE_IO_')
@@ -706,15 +1037,10 @@ export function toPlayError(data: ExoStateData): AppErrorShape {
   } else {
     isNetwork = /http|network|connect|timeout|source/i.test(text);
   }
-  const extras = [
-    codeName ? `code=${codeName}` : '',
-    data.causeChain ? `cause=${data.causeChain}` : '',
-    typeof data.positionMs === 'number' ? `pos=${(data.positionMs / 1000).toFixed(1)}s` : '',
-  ].filter(Boolean).join(' | ');
   return {
     code: isNetwork ? 'E_NETWORK' : 'E_DECODE',
     message: isNetwork ? '视频加载失败，请检查网络' : '视频播放失败，请尝试切换线路',
-    detail: [text, extras].filter(Boolean).join('\n') || null,
+    detail,
     retryable: true,
     httpStatus: null,
   };

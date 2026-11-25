@@ -47,6 +47,7 @@ const emit = defineEmits<{
   (e: 'front', task: DownloadTask): void;
   (e: 'remove', task: DownloadTask): void;
   (e: 'select', task: DownloadTask): void;
+  (e: 'details', task: DownloadTask): void;
   (e: 'toggleSelect', task: DownloadTask): void;
 }>();
 
@@ -311,6 +312,20 @@ const sparklinePath = computed(() => {
         @click.stop="emit('retry', task)"
       >
         <IconRefresh :size="20" />
+      </button>
+
+      <button
+        v-if="canPlay"
+        class="download-item__action"
+        type="button"
+        aria-label="下载详情与修复"
+        @click.stop="emit('details', task)"
+      >
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+          <circle cx="5.5" cy="12" r="1.7" />
+          <circle cx="12" cy="12" r="1.7" />
+          <circle cx="18.5" cy="12" r="1.7" />
+        </svg>
       </button>
 
       <button

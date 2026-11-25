@@ -12,6 +12,9 @@ import com.qoder.cinema.download.DownloadThrottle;
 
 import android.os.StatFs;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.Map;
@@ -66,6 +69,7 @@ public class MediaToolPlugin extends Plugin {
 
     /** 进行中 + 排队中的转封装任务，key 为输入文件规范化路径 */
     private final Map<String, Job> jobs = new ConcurrentHashMap<>();
+    private final AtomicBoolean transformerProbeRunning = new AtomicBoolean(false);
     /** 已 begin 但尚未 end 的后处理计数；插件销毁时按它把前台服务计数补齐，避免泄漏 */
     private final AtomicInteger openPostprocess = new AtomicInteger(0);
     private ExecutorService worker;
@@ -372,6 +376,79 @@ public class MediaToolPlugin extends Plugin {
     }
 
     /**
+     * P1-B：Media3 Transformer 无损转封装 PoC。输入永远保留，输出先写 `.mp4.part`；
+     * 只有禁止转码、输入输出编码样本指纹、B 切片、时长和首中尾定位全部通过才返回 ok。
+     */
+    @PluginMethod
+    public void probeTsRemux(PluginCall call) {
+        String inputPath = trimToNull(call.getString("inputPath"));
+        String outputPath = trimToNull(call.getString("outputPath"));
+        if (inputPath == null || outputPath == null) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "inputPath/outputPath required");
+            return;
+        }
+        Long timeoutArg = optLongOrNull(call.getData(), "timeoutMs");
+        long timeoutMs = TransformerTsProbe.DEFAULT_TIMEOUT_MS;
+        if (timeoutArg != null) {
+            if (timeoutArg <= 0) {
+                reject(call, MediaRemuxer.CODE_INVALID_INPUT, "timeoutMs must be > 0");
+                return;
+            }
+            timeoutMs = Math.min(timeoutArg, TransformerTsProbe.MAX_TIMEOUT_MS);
+        }
+
+        File input;
+        File output;
+        try {
+            input = resolveInData(getContext().getFilesDir(), inputPath);
+            output = resolveInData(getContext().getFilesDir(), outputPath);
+        } catch (IllegalArgumentException e) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, e.getMessage());
+            return;
+        }
+        if (input.equals(output)) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "input and output must differ");
+            return;
+        }
+        if (!output.getName().toLowerCase(java.util.Locale.US).endsWith(".mp4")) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "outputPath must end with .mp4");
+            return;
+        }
+        if (!input.isFile() || input.length() <= 0) {
+            reject(call, MediaRemuxer.CODE_FILE_MISSING, "input missing or empty");
+            return;
+        }
+        File part = new File(output.getAbsolutePath() + ".part");
+        if (output.exists() || part.exists()) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "output or .mp4.part already exists");
+            return;
+        }
+        if (!transformerProbeRunning.compareAndSet(false, true)) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "transformer probe already running");
+            return;
+        }
+
+        try {
+            TransformerTsProbe.run(getContext(), input, output, timeoutMs, result -> {
+                transformerProbeRunning.set(false);
+                AppLog.i(TAG, "transformer-poc done verdict=" + result.optString("verdict")
+                        + " input=" + inputPath + " output=" + outputPath
+                        + " elapsedMs=" + result.optLong("elapsedMs"));
+                try {
+                    JSObject response = JSObject.fromJSONObject(result);
+                    response.put("inputPath", inputPath);
+                    response.put("outputPath", outputPath);
+                    call.resolve(response);
+                } catch (Exception ignored) {
+                }
+            });
+        } catch (Exception e) {
+            transformerProbeRunning.set(false);
+            reject(call, MediaRemuxer.CODE_UNSUPPORTED, "transformer probe start failed: " + e.getMessage());
+        }
+    }
+
+    /**
      * 取消转封装：置取消位 → 工作线程在下一个检查点返回 `E_CANCELED` 并删除 `.part`。
      * 请求支持 `taskId`（API-17）或 `inputPath`（前端 JS 桥），未命中返回 `{canceled:false}`。
      */
@@ -650,6 +727,80 @@ public class MediaToolPlugin extends Plugin {
             executor.execute(() -> runTsScan(target, call));
         } catch (RejectedExecutionException e) {
             reject(call, MediaRemuxer.CODE_INVALID_INPUT, "scan executor rejected");
+        }
+    }
+
+    /** D：只读提取 TS 视频 PTS/DTS 时间轴；不重写文件，也不推断缺失时长。 */
+    @PluginMethod
+    public void scanTsTimeline(PluginCall call) {
+        String path = trimToNull(call.getString("path"));
+        if (path == null) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "path required");
+            return;
+        }
+        File file;
+        try {
+            file = resolveInData(getContext().getFilesDir(), path);
+        } catch (IllegalArgumentException e) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, e.getMessage());
+            return;
+        }
+        if (!file.isFile() || file.length() <= 0) {
+            reject(call, MediaRemuxer.CODE_FILE_MISSING, "input missing or empty");
+            return;
+        }
+        ExecutorService executor = scanWorker;
+        if (executor == null || executor.isShutdown()) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "plugin not ready");
+            return;
+        }
+        final File target = file;
+        try {
+            executor.execute(() -> runTsTimelineScan(target, call));
+        } catch (RejectedExecutionException e) {
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "scan executor rejected");
+        }
+    }
+
+    private void runTsTimelineScan(File file, PluginCall call) {
+        try {
+            JSONObject scanned = TsTimelineScanner.scan(file);
+            JSObject result = new JSObject();
+            result.put("ok", scanned.optBoolean("ok", false));
+            result.put("timelineReliable", scanned.optBoolean("timelineReliable", false));
+            result.put("verdict", scanned.optString("verdict", "no-timeline"));
+            result.put("fileSize", scanned.optLong("fileSize", file.length()));
+            result.put("packetSize", scanned.optInt("packetSize", 0));
+            result.put("alignedStart", scanned.optLong("alignedStart", -1));
+            result.put("totalPackets", scanned.optLong("totalPackets", 0));
+            result.put("badPackets", scanned.optLong("badPackets", 0));
+            result.put("firstBadOffset", scanned.optLong("firstBadOffset", -1));
+            result.put("tailBytes", scanned.optLong("tailBytes", 0));
+            result.put("timestampCount", scanned.optLong("timestampCount", 0));
+            result.put("timelineSource", scanned.optString("timelineSource", ""));
+            result.put("durationUs", scanned.optLong("durationUs", 0));
+            result.put("discontinuities", scanned.optInt("discontinuities", 0));
+            JSArray segments = new JSArray();
+            JSONArray rawSegments = scanned.optJSONArray("segments");
+            if (rawSegments != null) {
+                for (int i = 0; i < rawSegments.length(); i++) {
+                    JSONObject raw = rawSegments.optJSONObject(i);
+                    if (raw == null) continue;
+                    JSObject segment = new JSObject();
+                    segment.put("offset", raw.optLong("offset", -1));
+                    segment.put("durationUs", raw.optLong("durationUs", 0));
+                    segment.put("discontinuity", raw.optBoolean("discontinuity", false));
+                    segments.put(segment);
+                }
+            }
+            result.put("segments", segments);
+            AppLog.i(TAG, "ts-timeline verdict=" + result.getString("verdict")
+                    + " durationUs=" + result.getLong("durationUs")
+                    + " segments=" + segments.length() + " size=" + file.length());
+            call.resolve(result);
+        } catch (Exception e) {
+            AppLog.w(TAG, "ts-timeline failed", e);
+            reject(call, MediaRemuxer.CODE_INVALID_INPUT, "timeline scan failed: " + e.getMessage());
         }
     }
 
