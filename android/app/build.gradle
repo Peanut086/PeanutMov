@@ -13,10 +13,10 @@ apply plugin: 'com.android.application'
 // package.json 使用的是内置 groovy.json.JsonSlurper，不依赖 node；回退分支
 // 通过临时移走 package.json 验证（见 docs/09-后端自测/DEV-05 文档）。
 //
-// OPT-06：回退值必须与 package.json 当前版本保持一致（现为 0.1.2），
+// OPT-06：回退值必须与 package.json 当前版本保持一致（现为 0.1.3），
 // 否则"可读/不可读"两条构建路径会产出不同 versionCode，覆盖安装会被拒。
-def FALLBACK_VERSION_NAME = '0.1.2'
-def FALLBACK_VERSION_CODE = 102 // 0.1.2 → 102，与 semver 编码规则一致
+def FALLBACK_VERSION_NAME = '0.1.3'
+def FALLBACK_VERSION_CODE = 103 // 0.1.3 → 103，与 semver 编码规则一致
 
 // versionCode 编码上限（超出即发生版本号碰撞，见上方派生规则）
 def VERSION_CODE_MAJOR_MAX = 199
