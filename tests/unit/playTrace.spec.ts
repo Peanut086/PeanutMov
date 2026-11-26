@@ -92,8 +92,9 @@ describe('决策链窗口', () => {
 
   it('buildReport 给出窗口跨度，readings 缺省时按窗口时间现捞日志', () => {
     playTraceService.beginAttempt(TARGET);
-    buffer.entries = [entry('W', 'player', '在线流停滞，交由播放页重新取址', Date.now())];
-    const report = playTraceService.buildReport({ now: Date.now() + 5_000 });
+    const start = playTraceService.windowStartedAt();
+    buffer.entries = [entry('W', 'player', '在线流停滞，交由播放页重新取址', start)];
+    const report = playTraceService.buildReport({ now: start + 5_000 });
     expect(report.windowMs).toBe(5_000);
     expect(report.logLines).toHaveLength(1);
     expect(report.logLines[0]).toContain('在线流停滞');

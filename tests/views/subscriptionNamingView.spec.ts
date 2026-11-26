@@ -10,7 +10,7 @@
  */
 import { createPinia, setActivePinia } from 'pinia';
 import { mount, type VueWrapper } from '@vue/test-utils';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import SubscriptionListView from '@/views/SubscriptionListView.vue';
 import SourceManageSection from '@/components/source/SourceManageSection.vue';
@@ -54,7 +54,15 @@ function makeSource(subscriptionId: string): Source {
 async function mountView(): Promise<VueWrapper> {
   setActivePinia(createPinia());
   const wrapper = mount(SubscriptionListView);
-  for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  const store = useSourceStore();
+  await vi.waitFor(() => {
+    expect(wrapper.findAll('.subs-row').length).toBeGreaterThan(0);
+    const subscriptionCount = new Set(
+      store.sources.map((source) => source.subscriptionId).filter((id): id is string => Boolean(id)),
+    ).size;
+    expect(store.subscriptionSummaries).toHaveLength(subscriptionCount);
+  });
+  await wrapper.vm.$nextTick();
   return wrapper;
 }
 
@@ -138,7 +146,8 @@ describe('源管理区摘要行同名口径', () => {
     setActivePinia(createPinia());
     const wrapper = mount(SourceManageSection);
     await useSourceStore().load();
-    for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => expect(wrapper.find('.source-manage__summary-id').exists()).toBe(true));
+    await wrapper.vm.$nextTick();
     return wrapper;
   }
 
