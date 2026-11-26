@@ -10,11 +10,13 @@ import { computed, onBeforeUnmount, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { APP_NAME, APP_VERSION, BUILD_TIME, DB_VERSION } from '@/shared/constants';
-import { getPlatform } from '@/shared/platform';
+import { getPlatform, isAndroid } from '@/shared/platform';
 import { formatDateStamp } from '@/shared/time';
 
 import AppHeader from '@/components/layout/AppHeader.vue';
 import BottomSheet from '@/components/common/BottomSheet.vue';
+import LoadingSpinner from '@/components/common/LoadingSpinner.vue';
+import { formatBytes } from '@/components/common/format';
 import SettingsGroup from '@/components/settings/SettingsGroup.vue';
 import SettingsRow from '@/components/settings/SettingsRow.vue';
 import logoUrl from '@/assets/logo.svg';
@@ -23,7 +25,11 @@ import { useOnlineStatus } from '@/composables/useOnlineStatus';
 import { useHaptic } from '@/composables/useHaptic';
 import { prefersReducedMotion } from '@/composables/useSpring';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { onAppStateChange } from '@/native/appLifecycle';
 import { playClack } from '@/services/sfxService';
+import { updateErrorMessage, updateService } from '@/services/updateService';
+import type { UpdateManifest } from '@/services/updateService';
+import type { DownloadedApk } from '@/native/updatePlugin';
 
 const router = useRouter();
 const toast = useToast();
@@ -36,6 +42,18 @@ const tapTimer = ref<ReturnType<typeof setTimeout> | null>(null);
 const debugVisible = ref(false);
 const licensesOpen = ref(false);
 const castOpen = ref(false);
+
+const updateSheetOpen = ref(false);
+const updateChecking = ref(false);
+const updateDownloading = ref(false);
+const updateProgress = ref(0);
+const updateInfo = ref<UpdateManifest | null>(null);
+const downloadedUpdate = ref<DownloadedApk | null>(null);
+const updateError = ref<string | null>(null);
+const updateStatusText = ref('检查更新');
+const installPermissionAllowed = ref(true);
+
+const updateSizeText = computed(() => updateInfo.value ? formatBytes(updateInfo.value.apk.sizeBytes) : '');
 
 /* F3：NG 场记板 overlay 状态 */
 const clapperOpen = ref(false);
@@ -58,6 +76,125 @@ const platformText = computed(() => {
       return 'iOS';
     default:
       return 'Web';
+  }
+});
+
+async function refreshInstallPermission(): Promise<void> {
+  if (!updateInfo.value) return;
+  try {
+    installPermissionAllowed.value = await updateService.canInstallPackages();
+  } catch (error) {
+    updateError.value = updateErrorMessage(error);
+  }
+}
+
+async function onCheckUpdate(): Promise<void> {
+  if (!isAndroid()) {
+    toast.info('仅 Android 客户端支持应用内更新');
+    return;
+  }
+  if (isOffline.value) {
+    toast.info('当前离线，暂无法检查更新');
+    return;
+  }
+
+  updateChecking.value = true;
+  updateDownloading.value = false;
+  updateProgress.value = 0;
+  updateInfo.value = null;
+  downloadedUpdate.value = null;
+  updateError.value = null;
+  updateStatusText.value = '检查中…';
+  updateSheetOpen.value = true;
+  try {
+    const result = await updateService.checkForUpdate();
+    if (result.status === 'unsupported') {
+      updateSheetOpen.value = false;
+      toast.info('仅 Android 客户端支持应用内更新');
+      return;
+    }
+    if (result.status === 'up-to-date') {
+      updateStatusText.value = '已是最新';
+      updateSheetOpen.value = false;
+      toast.success(`已是最新版本 ${result.currentVersion.versionName}`);
+      return;
+    }
+    updateInfo.value = result.update;
+    updateStatusText.value = `发现 v${result.update.versionName}`;
+    await refreshInstallPermission();
+  } catch (error) {
+    updateError.value = updateErrorMessage(error);
+    updateStatusText.value = '检查失败';
+  } finally {
+    updateChecking.value = false;
+  }
+}
+
+async function onOpenInstallPermission(): Promise<void> {
+  try {
+    await updateService.openUnknownSourcesSettings();
+    toast.info('允许安装后返回，即可继续安装更新');
+  } catch (error) {
+    toast.error(updateErrorMessage(error));
+  }
+}
+
+async function onDownloadUpdate(): Promise<void> {
+  if (!updateInfo.value || updateDownloading.value) return;
+  if (isOffline.value) {
+    toast.info('当前离线，暂无法下载更新');
+    return;
+  }
+
+  updateDownloading.value = true;
+  updateProgress.value = 0;
+  updateError.value = null;
+  updateStatusText.value = '下载中…';
+  try {
+    downloadedUpdate.value = await updateService.downloadUpdate(
+      updateInfo.value,
+      (percent) => { updateProgress.value = percent; },
+    );
+    updateStatusText.value = '下载完成';
+    toast.success('更新包已下载，可以开始安装');
+  } catch (error) {
+    updateError.value = updateErrorMessage(error);
+    updateStatusText.value = '下载失败';
+  } finally {
+    updateDownloading.value = false;
+  }
+}
+
+async function onInstallUpdate(): Promise<void> {
+  if (!downloadedUpdate.value) return;
+  updateError.value = null;
+  try {
+    await updateService.installDownloadedUpdate(downloadedUpdate.value);
+    toast.success('已打开系统安装器');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (message.startsWith('APK_HASH_') || message.startsWith('INVALID_APK')) {
+      downloadedUpdate.value = null;
+      updateProgress.value = 0;
+    }
+    updateError.value = updateErrorMessage(error);
+    updateStatusText.value = '安装失败';
+  }
+}
+
+function onRetryUpdate(): void {
+  if (downloadedUpdate.value) {
+    void onInstallUpdate();
+  } else if (updateInfo.value) {
+    void onDownloadUpdate();
+  } else {
+    void onCheckUpdate();
+  }
+}
+
+const stopAppStateListener = onAppStateChange((state) => {
+  if (state === 'active' && updateSheetOpen.value && updateInfo.value && !updateDownloading.value) {
+    void refreshInstallPermission();
   }
 });
 
@@ -113,6 +250,7 @@ function triggerClapper(): void {
 
 onBeforeUnmount(() => {
   clearClapperTimers();
+  stopAppStateListener();
   if (tapTimer.value !== null) clearTimeout(tapTimer.value);
 });
 
@@ -149,6 +287,14 @@ function onFeedback(): void {
       </section>
 
       <SettingsGroup>
+        <SettingsRow
+          v-if="isAndroid()"
+          label="检查更新"
+          :value="updateStatusText"
+          :disabled="updateChecking || updateDownloading"
+          chevron
+          @click="onCheckUpdate"
+        />
         <SettingsRow label="合规声明" chevron @click="go('/legal/compliance')" />
         <SettingsRow label="开源许可" chevron @click="licensesOpen = true" />
         <SettingsRow label="投屏能力说明" chevron @click="castOpen = true" />
@@ -201,6 +347,74 @@ function onFeedback(): void {
         <li>部分视频 App 仅支持接收 URL，受版权保护的内容可能拒绝播放。</li>
         <li>浏览器环境通常不支持系统投屏，会提示「当前平台不支持」。</li>
       </ul>
+    </BottomSheet>
+
+    <BottomSheet v-model="updateSheetOpen" title="检查更新">
+      <div class="update-sheet">
+        <div v-if="updateChecking" class="update-sheet__loading">
+          <LoadingSpinner :size="24" />
+          <span>正在向 GitHub 检查更新…</span>
+        </div>
+
+        <div v-else-if="updateError" class="update-sheet__error" role="alert">
+          <p>{{ updateError }}</p>
+          <button
+            v-if="updateInfo && !installPermissionAllowed"
+            class="btn btn--primary"
+            type="button"
+            @click="onOpenInstallPermission"
+          >
+            允许安装未知应用
+          </button>
+          <button v-else class="btn btn--ghost" type="button" @click="onRetryUpdate">
+            {{ downloadedUpdate ? '重试安装' : updateInfo ? '重试下载' : '重新检查' }}
+          </button>
+        </div>
+
+        <template v-else-if="updateInfo">
+          <div class="update-sheet__version">
+            <span class="update-sheet__eyebrow">发现新版本</span>
+            <strong>v{{ updateInfo.versionName }}</strong>
+            <span>{{ updateSizeText }}</span>
+          </div>
+          <p v-if="updateInfo.notes" class="update-sheet__notes">{{ updateInfo.notes }}</p>
+
+          <div v-if="updateDownloading || downloadedUpdate" class="update-sheet__progress">
+            <div class="update-sheet__progress-label">
+              <span>{{ updateDownloading ? '正在下载更新包' : '更新包已下载' }}</span>
+              <span>{{ updateProgress }}%</span>
+            </div>
+            <progress :value="updateProgress" max="100" :aria-label="`更新下载进度 ${updateProgress}%`" />
+          </div>
+
+          <button
+            v-if="!installPermissionAllowed"
+            class="btn btn--primary update-sheet__action"
+            type="button"
+            @click="onOpenInstallPermission"
+          >
+            允许安装未知应用
+          </button>
+          <button
+            v-else-if="!downloadedUpdate"
+            class="btn btn--primary update-sheet__action"
+            type="button"
+            :disabled="updateDownloading"
+            @click="onDownloadUpdate"
+          >
+            {{ updateDownloading ? '正在下载…' : '下载并安装' }}
+          </button>
+          <button
+            v-else
+            class="btn btn--primary update-sheet__action"
+            type="button"
+            @click="onInstallUpdate"
+          >
+            安装更新
+          </button>
+          <p class="update-sheet__hint">更新包经 SHA-256 与签名校验后交给系统安装器。</p>
+        </template>
+      </div>
     </BottomSheet>
 
     <!-- F3：NG 场记板彩蛋（连点版本号 5 次） -->
@@ -330,6 +544,115 @@ function onFeedback(): void {
   font: var(--text-caption);
   color: var(--color-text-tertiary);
   line-height: 1.8;
+}
+
+.update-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.update-sheet__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-6) 0;
+  color: var(--color-text-secondary);
+  font: var(--text-label);
+}
+
+.update-sheet__version {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+}
+
+.update-sheet__eyebrow {
+  grid-column: 1 / -1;
+  font: var(--text-caption);
+  color: var(--color-brand-text);
+}
+
+.update-sheet__version strong {
+  font: var(--text-title-2);
+  color: var(--color-text-primary);
+}
+
+.update-sheet__version > span:last-child {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.update-sheet__notes {
+  font: var(--text-body);
+  color: var(--color-text-secondary);
+  line-height: 1.65;
+  white-space: pre-line;
+}
+
+.update-sheet__progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.update-sheet__progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font: var(--text-caption);
+  color: var(--color-text-secondary);
+}
+
+.update-sheet__progress progress {
+  width: 100%;
+  height: 8px;
+  overflow: hidden;
+  border: none;
+  border-radius: var(--radius-full);
+  background-color: var(--color-bg-elevated);
+  accent-color: var(--color-brand);
+}
+
+.update-sheet__progress progress::-webkit-progress-bar {
+  border-radius: var(--radius-full);
+  background-color: var(--color-bg-elevated);
+}
+
+.update-sheet__progress progress::-webkit-progress-value {
+  border-radius: var(--radius-full);
+  background-color: var(--color-brand);
+  transition: width var(--duration-fast) var(--ease-standard);
+}
+
+.update-sheet__action {
+  width: 100%;
+  min-height: 44px;
+}
+
+.update-sheet__hint {
+  font: var(--text-caption);
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
+
+.update-sheet__error {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-danger-soft);
+  color: var(--color-danger);
+  font: var(--text-label);
+  line-height: 1.6;
+}
+
+.update-sheet__error p {
+  margin: 0;
 }
 
 .license-list {

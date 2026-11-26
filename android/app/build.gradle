@@ -90,9 +90,26 @@ def resolvedVersion = resolveVersion()
 def appVersionName = resolvedVersion[0]
 def appVersionCode = resolvedVersion[1]
 
+def releaseStoreFile = System.getenv('ANDROID_KEYSTORE_PATH')
+def releaseStorePassword = System.getenv('ANDROID_KEYSTORE_PASSWORD')
+def releaseKeyAlias = System.getenv('ANDROID_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('ANDROID_KEY_PASSWORD')
+def hasReleaseSigning = [releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword]
+        .every { it != null && !it.isEmpty() }
+
 android {
     namespace "com.qoder.cinema"
     compileSdk rootProject.ext.compileSdkVersion
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
     defaultConfig {
         applicationId "com.qoder.cinema"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -108,6 +125,7 @@ android {
     }
     buildTypes {
         release {
+            if (hasReleaseSigning) signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

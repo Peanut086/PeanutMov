@@ -61,6 +61,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(PlayerUiPlugin.class);
         // P2-2：提醒投递诊断 + 系统授权页入口（src/native/notificationScheduler.ts 调用）
         registerPlugin(ReminderPlugin.class);
+        registerPlugin(AppUpdatePlugin.class);
         // S-01：core-splashscreen 依赖一直装着，但没人调 installSplashScreen()，于是
         // postSplashScreenTheme 从未生效——Activity 全程挂在开屏主题上，窗口背景成了开屏图层。
         // 必须在 super.onCreate() 之前安装（它会就地切换主题）。
