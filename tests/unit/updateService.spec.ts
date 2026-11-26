@@ -6,6 +6,8 @@ import { updateErrorMessage, updateService } from '@/services/updateService';
 
 const mocks = vi.hoisted(() => ({
   isAndroid: vi.fn(),
+  isNativePlatform: vi.fn(),
+  httpRequest: vi.fn(),
   getCurrentVersion: vi.fn(),
   canInstallPackages: vi.fn(),
   openUnknownSourcesSettings: vi.fn(),
@@ -25,6 +27,10 @@ const listeners = vi.hoisted(() => ({
   error: undefined as undefined | ((event: unknown) => void),
 }));
 
+vi.mock('@capacitor/core', () => ({
+  Capacitor: { isNativePlatform: mocks.isNativePlatform },
+  CapacitorHttp: { request: mocks.httpRequest },
+}));
 vi.mock('@/shared/platform', () => ({ isAndroid: mocks.isAndroid }));
 vi.mock('@/native/updatePlugin', () => ({
   AppUpdate: {
@@ -72,6 +78,7 @@ describe('updateService', () => {
     listeners.completed = undefined;
     listeners.error = undefined;
     mocks.isAndroid.mockReturnValue(true);
+    mocks.isNativePlatform.mockReturnValue(false);
     mocks.getCurrentVersion.mockResolvedValue({ versionName: '0.1.0', versionCode: 100 });
     mocks.canInstallPackages.mockResolvedValue({ allowed: true });
     mocks.isNativeDownloadAvailable.mockResolvedValue(true);
@@ -110,6 +117,47 @@ describe('updateService', () => {
       'https://github.com/Peanut086/PeanutMov/releases/latest/download/update.json',
       expect.objectContaining({ cache: 'no-store' }),
     );
+  });
+
+  it('uses native HTTP on Android so GitHub redirects are not blocked by CORS', async () => {
+    mocks.isNativePlatform.mockReturnValue(true);
+    mocks.httpRequest.mockResolvedValue({ status: 200, data: MANIFEST });
+
+    await expect(updateService.checkForUpdate()).resolves.toMatchObject({
+      status: 'available',
+      update: MANIFEST,
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(mocks.httpRequest).toHaveBeenCalledWith({
+      url: 'https://github.com/Peanut086/PeanutMov/releases/latest/download/update.json',
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      responseType: 'json',
+      connectTimeout: 12_000,
+      readTimeout: 12_000,
+    });
+  });
+
+  it('surfaces native manifest HTTP failures', async () => {
+    mocks.isNativePlatform.mockReturnValue(true);
+    mocks.httpRequest.mockResolvedValue({ status: 404, data: {} });
+
+    await expect(updateService.checkForUpdate()).rejects.toMatchObject({
+      code: 'E_NETWORK',
+      message: '检查更新失败（HTTP 404）',
+    });
+  });
+
+  it('times out a stalled native manifest request', async () => {
+    vi.useFakeTimers();
+    mocks.isNativePlatform.mockReturnValue(true);
+    mocks.httpRequest.mockReturnValue(new Promise(() => {}));
+
+    const result = updateService.checkForUpdate();
+    const assertion = expect(result).rejects.toMatchObject({ code: 'E_TIMEOUT' });
+    await vi.advanceTimersByTimeAsync(12_001);
+    await assertion;
   });
 
   it('reports up-to-date when the manifest versionCode is not newer', async () => {

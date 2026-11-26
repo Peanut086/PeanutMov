@@ -1,3 +1,5 @@
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
+
 import { AppError } from '@/shared/errors';
 import { isAndroid } from '@/shared/platform';
 
@@ -93,21 +95,49 @@ function parseManifest(value: unknown): UpdateManifest {
 
 async function fetchManifest(): Promise<UpdateManifest> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new AppError('E_TIMEOUT', '检查更新超时，请检查网络后重试'));
+    }, CHECK_TIMEOUT_MS);
+  });
+
   try {
-    const response = await fetch(MANIFEST_URL, {
-      cache: 'no-store',
-      headers: { Accept: 'application/json' },
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new AppError('E_NETWORK', `检查更新失败（HTTP ${response.status}）`);
-    }
     let data: unknown;
-    try {
-      data = await response.json();
-    } catch {
-      throw new AppError('E_PARSE', '无法读取 GitHub 更新清单');
+    if (Capacitor.isNativePlatform()) {
+      const response = await Promise.race([
+        CapacitorHttp.request({
+          url: MANIFEST_URL,
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          responseType: 'json',
+          connectTimeout: CHECK_TIMEOUT_MS,
+          readTimeout: CHECK_TIMEOUT_MS,
+        }),
+        timedOut,
+      ]);
+      if (response.status < 200 || response.status >= 300) {
+        throw new AppError('E_NETWORK', `检查更新失败（HTTP ${response.status}）`);
+      }
+      data = response.data;
+    } else {
+      const response = await Promise.race([
+        fetch(MANIFEST_URL, {
+          cache: 'no-store',
+          headers: { Accept: 'application/json' },
+          signal: controller.signal,
+        }),
+        timedOut,
+      ]);
+      if (!response.ok) {
+        throw new AppError('E_NETWORK', `检查更新失败（HTTP ${response.status}）`);
+      }
+      try {
+        data = await response.json();
+      } catch {
+        throw new AppError('E_PARSE', '无法读取 GitHub 更新清单');
+      }
     }
     return parseManifest(data);
   } catch (error) {
@@ -117,7 +147,7 @@ async function fetchManifest(): Promise<UpdateManifest> {
     }
     throw new AppError('E_NETWORK', '无法连接 GitHub，请检查网络或代理设置');
   } finally {
-    clearTimeout(timeout);
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
